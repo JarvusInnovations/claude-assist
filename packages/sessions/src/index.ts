@@ -1,4 +1,4 @@
-import { createPlugin } from '@claude-assist/core';
+import { createPlugin } from '@jarvus/claude-assist-core';
 import { SyncService } from './sync.js';
 import { registerRoutes } from './routes.js';
 import { join, dirname } from 'node:path';

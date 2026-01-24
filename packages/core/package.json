@@ -1,5 +1,5 @@
 {
-  "name": "@claude-assist/core",
+  "name": "@jarvus/claude-assist-core",
   "version": "0.1.0",
   "type": "module",
   "main": "dist/index.js",

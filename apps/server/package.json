@@ -1,5 +1,5 @@
 {
-  "name": "@claude-assist/server",
+  "name": "@jarvus/claude-assist-server",
   "version": "0.1.0",
   "type": "module",
   "private": true,
@@ -17,8 +17,8 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "@claude-assist/core": "workspace:*",
-    "@claude-assist/sessions": "workspace:*",
+    "@jarvus/claude-assist-core": "workspace:*",
+    "@jarvus/claude-assist-sessions": "workspace:*",
     "fastify": "^5.7.1",
     "postgres": "^3.4.8"
   }

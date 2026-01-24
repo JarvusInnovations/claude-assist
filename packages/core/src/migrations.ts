@@ -34,7 +34,8 @@ export async function runMigrations(
     );
   }
 
-  // Ensure migrations table exists
+  // Ensure schema and migrations table exist
+  await sql.unsafe(`CREATE SCHEMA IF NOT EXISTS ${schema}`);
   await sql.unsafe(`
     CREATE TABLE IF NOT EXISTS ${schema}.schema_migrations (
       id SERIAL PRIMARY KEY,

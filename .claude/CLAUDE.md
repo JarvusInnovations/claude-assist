@@ -21,7 +21,7 @@ bun add -d <pkg>         # Dev dependency
 bun add -p <pkg>         # Peer dependency
 ```
 
-For workspace dependencies: `"@claude-assist/core": "workspace:*"`
+For workspace dependencies: `"@jarvus/claude-assist-core": "workspace:*"`
 
 ## Structure
 
@@ -41,14 +41,14 @@ skills/
 Each module is a Fastify plugin using `createPlugin()` from core:
 
 ```typescript
-import { createPlugin } from '@claude-assist/core';
+import { createPlugin } from '@jarvus/claude-assist-core';
 
 export default createPlugin('mymodule', async (fastify, options) => {
   // Register routes, scheduled tasks, etc.
 });
 ```
 
-- Packages use `@claude-assist/` namespace
+- Packages use `@jarvus/claude-assist-*` namespace
 - Schema-per-module in PostgreSQL (e.g., `sessions.`, `google.`)
 - Migrations in `migrations/*.sql` (numbered: `001-foo.sql`, `002-bar.sql`)
 - Access `fastify.sql` for database, `fastify.scheduler` for tasks
@@ -117,10 +117,7 @@ Archives Claude Code transcripts from `~/.claude/` with multi-machine support.
 bunx @jarvus/claude-assist-sessions push --machine laptop --server https://devbox:3000
 ```
 
-**NPM publishing pattern:**
-
-- Internal workspace name: `@claude-assist/sessions`
-- Published npm name: `@jarvus/claude-assist-sessions` (via `publishConfig` in package.json)
+**NPM namespace:** All packages use `@jarvus/claude-assist-*` for both workspace and published names.
 
 ## PostgreSQL Patterns
 

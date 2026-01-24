@@ -1,7 +1,7 @@
 import Fastify from 'fastify';
 import postgres from 'postgres';
-import { createScheduler } from '@claude-assist/core';
-import sessionsPlugin from '@claude-assist/sessions';
+import { createScheduler } from '@jarvus/claude-assist-core';
+import sessionsPlugin from '@jarvus/claude-assist-sessions';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { env } from './env.js';

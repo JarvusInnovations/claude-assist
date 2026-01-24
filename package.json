@@ -5,7 +5,7 @@
   "workspaces": ["packages/*", "apps/*"],
   "scripts": {
     "build": "bun run --filter '*' build",
-    "dev": "bun run --filter @claude-assist/server dev",
+    "dev": "bun run --filter @jarvus/claude-assist-server dev",
     "test": "bun run --filter '*' test"
   },
   "devDependencies": {
