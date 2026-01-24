@@ -94,4 +94,77 @@ docker-compose up -d             # Full stack
 | `packages/core/src/migrations.ts` | SQL migration runner |
 | `packages/core/src/search.ts` | Postgres tsvector helpers |
 | `packages/core/src/plugin.ts` | Fastify plugin factory |
+| `packages/sessions/src/index.ts` | Session archival plugin |
+| `packages/sessions/src/sync.ts` | Sync service for local/satellite ingestion |
+| `packages/sessions/src/parser.ts` | JSONL transcript parser |
+| `packages/sessions/bin/push.ts` | CLI for satellite machines |
 | `apps/server/src/server.ts` | Main application entry |
+
+## Sessions Module (Phase 2)
+
+Archives Claude Code transcripts from `~/.claude/` with multi-machine support.
+
+**Key concepts:**
+
+- Scans `~/.claude/session-signals/*.ended.json` for completed sessions
+- Extracts `user_messages`, `tools_used`, `files_touched` from JSONL transcripts
+- Stores raw transcript in DB (Claude prunes after ~1 month)
+- MD5 hash-based change detection to avoid duplicates
+
+**CLI tool** for satellite machines:
+
+```bash
+bunx @jarvus/claude-assist-sessions push --machine laptop --server https://devbox:3000
+```
+
+**NPM publishing pattern:**
+
+- Internal workspace name: `@claude-assist/sessions`
+- Published npm name: `@jarvus/claude-assist-sessions` (via `publishConfig` in package.json)
+
+## PostgreSQL Patterns
+
+**Weighted full-text search** (search_vector trigger):
+
+```sql
+setweight(to_tsvector('english', search_text), 'A') ||       -- User prompts (highest)
+setweight(to_tsvector('english', tools_used), 'B') ||        -- Tools/files
+setweight(to_tsvector('english', project_path), 'C')         -- Project path
+```
+
+**JSONB array containment** - use explicit array syntax with postgres.js:
+
+```typescript
+// Correct - explicit ARRAY[]::text[] cast
+fastify.sql`AND tools_used ?| ARRAY[${fastify.sql(toolsArray)}]::text[]`
+
+// Wrong - may not serialize correctly
+fastify.sql`AND tools_used ?| ${toolsArray}`
+```
+
+**Array indexing** - always use `!` assertion after length check:
+
+```typescript
+if (rows.length > 0) {
+  return rows[0]!;  // TypeScript knows it's defined
+}
+```
+
+## Scheduler Tasks
+
+Register tasks in plugin setup:
+
+```typescript
+fastify.scheduler.register({
+  name: 'sessions:sync-local',
+  schedule: '*/5 * * * *',  // Every 5 minutes
+  runOnStartup: true,
+  handler: async () => { /* ... */ },
+});
+```
+
+## Lessons Learned
+
+- **Silent error swallowing**: Track parse error counts for debugging visibility
+- **Timestamp fallbacks**: Derive missing `started_at` from `ended_at`, not `new Date()`
+- **PostgreSQL arrays**: Use explicit `ARRAY[]::text[]` cast with `?|` operator
