@@ -215,6 +215,9 @@ export class SyncService {
       ? new Date(parseFloat(signal.ended_at) * 1000)
       : parsed.endedAt;
 
+    // Compute started_at: prefer parsed value, fall back to ended_at for historical sessions
+    const startedAt = parsed.startedAt ?? endedAt ?? new Date();
+
     // Build search text from user messages (Kuato pattern)
     const searchText = parsed.userMessages.join(' ');
 
@@ -230,7 +233,7 @@ export class SyncService {
         UPDATE sessions.sessions SET
           project_path = ${signal.cwd},
           git_branch = ${parsed.gitBranch},
-          started_at = ${parsed.startedAt ?? new Date()},
+          started_at = ${startedAt},
           ended_at = ${endedAt},
           user_messages = ${JSON.stringify(parsed.userMessages)}::jsonb,
           tools_used = ${JSON.stringify(parsed.toolsUsed)}::jsonb,
@@ -264,7 +267,7 @@ export class SyncService {
         ${machineId},
         ${signal.cwd},
         ${parsed.gitBranch},
-        ${parsed.startedAt ?? new Date()},
+        ${startedAt},
         ${endedAt},
         ${JSON.stringify(parsed.userMessages)}::jsonb,
         ${JSON.stringify(parsed.toolsUsed)}::jsonb,

@@ -87,6 +87,8 @@ export interface ParsedSession {
   messageCount: number;
   gitBranch: string | null;
   claudeVersion: string | null;
+  /** Number of JSONL lines that failed to parse */
+  parseErrors: number;
 }
 
 /**

@@ -27,6 +27,7 @@ export function parseTranscript(
   let messageCount = 0;
   let gitBranch: string | null = null;
   let claudeVersion: string | null = null;
+  let parseErrors = 0;
 
   for (const line of lines) {
     if (!line.trim()) continue;
@@ -84,7 +85,8 @@ export function parseTranscript(
         }
       }
     } catch {
-      // Skip malformed lines
+      // Track parse failures for debugging
+      parseErrors++;
       continue;
     }
   }
@@ -102,6 +104,7 @@ export function parseTranscript(
     messageCount,
     gitBranch,
     claudeVersion,
+    parseErrors,
   };
 }
 
