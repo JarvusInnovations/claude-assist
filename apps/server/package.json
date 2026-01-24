@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@claude-assist/core": "workspace:*",
+    "@claude-assist/sessions": "workspace:*",
     "fastify": "^5.7.1",
     "postgres": "^3.4.8"
   }
