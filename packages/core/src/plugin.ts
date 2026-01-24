@@ -79,7 +79,7 @@ export function createPlugin(
   // Wrap with fastify-plugin to avoid encapsulation
   return fp(plugin, {
     name,
-    fastify: '4.x',
+    fastify: '5.x',
     dependencies: [], // Add dependencies as needed
   });
 }

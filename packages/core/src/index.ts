@@ -17,6 +17,7 @@ export {
   createSearchHelpers,
   createSearchTriggerSQL,
   type SearchHelpers,
+  type ParameterizedSQL,
 } from './search.js';
 
 // Plugin

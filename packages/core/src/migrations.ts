@@ -1,4 +1,4 @@
-import postgres from 'postgres';
+import type postgres from 'postgres';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -13,11 +13,26 @@ interface MigrationRecord {
   applied_at: Date;
 }
 
+/**
+ * Validate that a string is a valid SQL identifier (schema name, table name, etc.)
+ */
+function isValidIdentifier(name: string): boolean {
+  return /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name);
+}
+
 export async function runMigrations(
   sql: postgres.Sql,
   config: MigrationConfig
 ): Promise<string[]> {
   const { migrationsDir, schema = 'public' } = config;
+
+  // Validate schema name to prevent SQL injection
+  if (!isValidIdentifier(schema)) {
+    throw new Error(
+      `Invalid schema name: "${schema}". ` +
+        'Must contain only letters, numbers, and underscores, and start with a letter or underscore.'
+    );
+  }
 
   // Ensure migrations table exists
   await sql.unsafe(`
@@ -70,6 +85,14 @@ export async function getMigrationStatus(
   config: MigrationConfig
 ): Promise<{ applied: string[]; pending: string[] }> {
   const { migrationsDir, schema = 'public' } = config;
+
+  // Validate schema name to prevent SQL injection
+  if (!isValidIdentifier(schema)) {
+    throw new Error(
+      `Invalid schema name: "${schema}". ` +
+        'Must contain only letters, numbers, and underscores, and start with a letter or underscore.'
+    );
+  }
 
   // Check if migrations table exists
   const tableExists = await sql`
