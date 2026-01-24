@@ -1,6 +1,6 @@
 # claude-assist
 
-Backend services for Hari (personal executive assistant). Bun monorepo with Fastify + PostgreSQL.
+Backend services for Claude-based personal assistants. Bun monorepo with Fastify + PostgreSQL.
 
 ## Commands
 

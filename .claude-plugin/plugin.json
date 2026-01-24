@@ -1,6 +1,6 @@
 {
   "name": "claude-assist",
-  "description": "Backend services for Hari: session recall, email triage, calendar queries. Provides postgres-backed APIs for managing Claude sessions, Gmail integration, and Google Calendar.",
+  "description": "Backend services for Claude-based assistants: session recall, email triage, calendar queries. Provides postgres-backed APIs for managing Claude sessions, Gmail integration, and Google Calendar.",
   "version": "0.1.0",
   "author": {
     "name": "Chris Alfano",
