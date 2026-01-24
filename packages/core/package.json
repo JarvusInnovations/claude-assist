@@ -1,0 +1,23 @@
+{
+  "name": "@claude-assist/core",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^25.0.10"
+  },
+  "peerDependencies": {
+    "fastify": "^5.7.1",
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "croner": "^9.1.0",
+    "postgres": "^3.4.8"
+  }
+}
