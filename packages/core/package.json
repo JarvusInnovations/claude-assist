@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "croner": "^9.1.0",
+    "fastify-plugin": "^5.1.0",
     "postgres": "^3.4.8"
   }
 }
