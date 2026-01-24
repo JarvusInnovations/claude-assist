@@ -26,9 +26,14 @@ For workspace dependencies: `"@claude-assist/core": "workspace:*"`
 ## Structure
 
 ```
-packages/core/     # Shared: scheduler, migrations, search, plugin helpers
-apps/server/       # Fastify host application
-skills/*/SKILL.md  # Claude skills (on-demand loaded)
+packages/
+  core/        # Shared: scheduler, migrations, search, plugin helpers
+  sessions/    # Session archive module (Phase 2)
+  google/      # Google Suite module (Phase 3)
+apps/
+  server/      # Fastify host application
+skills/
+  */SKILL.md   # Claude skills (on-demand loaded)
 ```
 
 ## Module Conventions
@@ -43,6 +48,7 @@ export default createPlugin('mymodule', async (fastify, options) => {
 });
 ```
 
+- Packages use `@claude-assist/` namespace
 - Schema-per-module in PostgreSQL (e.g., `sessions.`, `google.`)
 - Migrations in `migrations/*.sql` (numbered: `001-foo.sql`, `002-bar.sql`)
 - Access `fastify.sql` for database, `fastify.scheduler` for tasks
