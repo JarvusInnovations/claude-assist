@@ -195,13 +195,16 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
         ${machine ? fastify.sql`AND m.machine_id = ${machine}` : fastify.sql``}
     `;
 
-    // Top tools
+    // Top tools (only from sessions with valid tools_used arrays)
     const topTools = await fastify.sql`
       SELECT tool, COUNT(*)::int as count
       FROM sessions.sessions s
       JOIN sessions.machines m ON s.machine_id = m.id,
       LATERAL jsonb_array_elements_text(s.tools_used) as tool
       WHERE s.started_at > NOW() - INTERVAL '1 day' * ${daysNum}
+        AND s.tools_used IS NOT NULL
+        AND jsonb_typeof(s.tools_used) = 'array'
+        AND jsonb_array_length(s.tools_used) > 0
         ${machine ? fastify.sql`AND m.machine_id = ${machine}` : fastify.sql``}
       GROUP BY tool
       ORDER BY count DESC
