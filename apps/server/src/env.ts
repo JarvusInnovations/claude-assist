@@ -16,6 +16,10 @@ export const env = {
 
   // Logging
   LOG_LEVEL: process.env.LOG_LEVEL || 'info',
+
+  // Session Outlines (optional - read directly by sessions plugin)
+  ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+  OUTLINE_CONCURRENCY: parseInt(process.env.OUTLINE_CONCURRENCY || '5', 10),
 } as const;
 
 export type Env = typeof env;

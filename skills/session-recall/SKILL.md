@@ -58,7 +58,7 @@ GET /sessions?search=...&days=...&tools=...&machine=...&project=...
 
 Parameters:
 
-- `search` - Full-text search query (weighted: user prompts > tools/files > project)
+- `search` - Full-text search query (weighted: user prompts + outlines > tools/files > project)
 - `days` - Limit to sessions within N days (default: 30)
 - `tools` - Filter by tools used (comma-separated, e.g., `Edit,Bash`)
 - `machine` - Filter by machine ID (e.g., `localhost`, `laptop`)
@@ -76,6 +76,7 @@ Example response:
     "ended_at": "2025-01-20T11:30:00Z",
     "project_path": "/Users/chris/repos/myproject",
     "git_branch": "feature/new-api",
+    "outline": "Drafted and refined the RTD proposal document, focusing on technical requirements and timeline.\n\n- RTD proposal structure and formatting\n- Technical requirements documentation\n- Timeline and milestone planning",
     "first_user_prompt": "Help me with RTD proposal",
     "message_count": 45,
     "tools_used": ["Edit", "Read", "Bash"],
@@ -86,6 +87,8 @@ Example response:
   }
 ]
 ```
+
+**Note:** The `outline` field contains an AI-generated summary of the session (if available). Falls back to `first_user_prompt` if outline hasn't been generated yet.
 
 ### Get Session Details
 
@@ -172,6 +175,51 @@ Triggers an immediate sync of local sessions. Returns sync results:
 }
 ```
 
+### Generate Outlines
+
+```bash
+POST /sessions/outlines
+```
+
+Manually triggers AI outline generation for sessions without outlines (or with stale outlines). Requires `ANTHROPIC_API_KEY` to be configured.
+
+Optional body:
+
+```json
+{
+  "sessionIds": ["uuid1", "uuid2"]
+}
+```
+
+Returns:
+
+```json
+{
+  "sessionsProcessed": 50,
+  "outlinesGenerated": 45,
+  "skipped": 3,
+  "errors": ["Failed to generate outline for uuid3: rate limit"]
+}
+```
+
+### Outline Generation Progress
+
+```bash
+GET /sessions/outlines/progress
+```
+
+Check the progress of background outline generation:
+
+```json
+{
+  "completed": 25,
+  "total": 50,
+  "currentSession": "9c8a4c11-c051-4381-90cd-ef3f380a91c8",
+  "errors": 2,
+  "isRunning": true
+}
+```
+
 ### Push from Satellite (API)
 
 ```bash
@@ -227,3 +275,5 @@ Options:
 - Satellite machines push manually via CLI
 - MD5 content hashing prevents duplicate ingestion
 - Raw transcripts are stored for complete archive (Claude prunes after ~1 month)
+- AI-generated outlines created asynchronously using Claude Haiku (if `ANTHROPIC_API_KEY` configured)
+- Outlines are regenerated automatically when session transcripts change

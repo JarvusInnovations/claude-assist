@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import type { SyncService } from './sync.js';
+import type { OutlineService } from './outline.js';
 import type {
   PushPayload,
   SessionRecord,
@@ -9,6 +10,7 @@ import type {
 
 export interface RoutesConfig {
   syncService: SyncService;
+  outlineService: OutlineService | null;
 }
 
 /**
@@ -16,7 +18,7 @@ export interface RoutesConfig {
  */
 export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
   fastify,
-  { syncService }
+  { syncService, outlineService }
 ) => {
   // GET /sessions - Search sessions with full-text search and filters
   fastify.get<{
@@ -28,6 +30,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       project?: string;
       limit?: string;
       offset?: string;
+      include_empty?: string;
     };
   }>('/sessions', async (request) => {
     const {
@@ -38,7 +41,9 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       project,
       limit = '20',
       offset = '0',
+      include_empty,
     } = request.query;
+    const excludeEmpty = include_empty !== 'true';
 
     const daysNum = parseInt(days, 10) || 30;
     const limitNum = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
@@ -56,18 +61,17 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
           s.ended_at,
           s.project_path,
           s.git_branch,
-          s.user_messages,
           s.tools_used,
           s.files_touched,
           s.message_count,
-          s.input_tokens,
-          s.output_tokens,
+          s.outline,
           m.machine_id,
           ts_rank(s.search_vector, websearch_to_tsquery('english', ${search})) as rank
         FROM sessions.sessions s
         JOIN sessions.machines m ON s.machine_id = m.id
         WHERE s.started_at > NOW() - INTERVAL '1 day' * ${daysNum}
           AND s.search_vector @@ websearch_to_tsquery('english', ${search})
+          ${excludeEmpty ? fastify.sql`AND s.output_tokens > 0` : fastify.sql``}
           ${machine ? fastify.sql`AND m.machine_id = ${machine}` : fastify.sql``}
           ${project ? fastify.sql`AND s.project_path ILIKE ${'%' + project + '%'}` : fastify.sql``}
           ${tools ? fastify.sql`AND s.tools_used ?| ARRAY[${fastify.sql(tools.split(',').map(t => t.trim()))}]::text[]` : fastify.sql``}
@@ -83,16 +87,15 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
           s.ended_at,
           s.project_path,
           s.git_branch,
-          s.user_messages,
           s.tools_used,
           s.files_touched,
           s.message_count,
-          s.input_tokens,
-          s.output_tokens,
+          s.outline,
           m.machine_id
         FROM sessions.sessions s
         JOIN sessions.machines m ON s.machine_id = m.id
         WHERE s.started_at > NOW() - INTERVAL '1 day' * ${daysNum}
+          ${excludeEmpty ? fastify.sql`AND s.output_tokens > 0` : fastify.sql``}
           ${machine ? fastify.sql`AND m.machine_id = ${machine}` : fastify.sql``}
           ${project ? fastify.sql`AND s.project_path ILIKE ${'%' + project + '%'}` : fastify.sql``}
           ${tools ? fastify.sql`AND s.tools_used ?| ARRAY[${fastify.sql(tools.split(',').map(t => t.trim()))}]::text[]` : fastify.sql``}
@@ -107,12 +110,10 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       ended_at: s.ended_at,
       project_path: s.project_path,
       git_branch: s.git_branch,
-      first_user_prompt: s.user_messages?.[0] ?? null,
+      outline: s.outline ?? null,
       message_count: s.message_count,
       tools_used: s.tools_used,
       files_touched: s.files_touched,
-      input_tokens: s.input_tokens,
-      output_tokens: s.output_tokens,
       machine: s.machine_id,
     }));
   });
@@ -154,6 +155,8 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       output_tokens: session.output_tokens,
       cache_read_tokens: session.cache_read_tokens,
       claude_version: session.claude_version,
+      outline: session.outline,
+      outline_hash: session.outline_hash,
     };
 
     if (withTranscript) {
@@ -294,4 +297,21 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
     `;
     return machines;
   });
+
+  // Outline generation endpoints (only if outlineService is available)
+  if (outlineService) {
+    // POST /sessions/outlines - Manually trigger outline generation
+    fastify.post<{
+      Body?: { sessionIds?: string[] };
+    }>('/sessions/outlines', async (request) => {
+      const sessionIds = request.body?.sessionIds;
+      const result = await outlineService.generateOutlinesSync(sessionIds);
+      return result;
+    });
+
+    // GET /sessions/outlines/progress - Check outline generation progress
+    fastify.get('/sessions/outlines/progress', async () => {
+      return outlineService.getProgress();
+    });
+  }
 };
