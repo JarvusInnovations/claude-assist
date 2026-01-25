@@ -167,3 +167,33 @@ export interface SessionRecord {
   claude_version: string | null;
   synced_at: Date;
 }
+
+/**
+ * Lightweight session inventory item for two-phase sync
+ * Contains hash without full transcript content
+ */
+export interface SessionInventoryItem {
+  sessionId: string;
+  transcriptHash: string;
+  transcriptPath: string;
+  signal?: SessionSignal;
+}
+
+/**
+ * Inventory payload for Phase 1 of two-phase sync
+ */
+export interface InventoryPayload {
+  machineId: string;
+  hostname?: string;
+  inventory: SessionInventoryItem[];
+}
+
+/**
+ * Server response to inventory request
+ */
+export interface InventoryResponse {
+  /** Session IDs that the server needs (new or changed hash) */
+  neededSessionIds: string[];
+  /** Sessions already up-to-date on server */
+  upToDateCount: number;
+}

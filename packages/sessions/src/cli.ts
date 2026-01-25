@@ -1,6 +1,12 @@
 import { hostname as getHostname } from 'node:os';
 import { SessionScanner } from './scanner.js';
-import type { PushPayload, SessionPushData, SyncResult } from './types.js';
+import type {
+  PushPayload,
+  SessionPushData,
+  SyncResult,
+  InventoryPayload,
+  InventoryResponse,
+} from './types.js';
 
 export interface PushOptions {
   machineId: string;
@@ -11,7 +17,7 @@ export interface PushOptions {
 }
 
 /**
- * Push local sessions to a remote server
+ * Push local sessions to a remote server using two-phase sync
  */
 export async function push(options: PushOptions): Promise<void> {
   const {
@@ -24,24 +30,73 @@ export async function push(options: PushOptions): Promise<void> {
 
   const log = verbose ? console.log.bind(console) : () => {};
 
+  const scanner = new SessionScanner({ claudeDir });
+
+  // Phase 1: Get inventory and check with server
   log(`Scanning for sessions...`);
   if (claudeDir) {
     log(`Using Claude directory: ${claudeDir}`);
   }
 
-  const scanner = new SessionScanner({ claudeDir });
-  const discovered = await scanner.getAllSessions();
+  const inventory = await scanner.getSessionInventory();
 
-  log(`Found ${discovered.length} sessions`);
+  console.log(`Found ${inventory.length} sessions locally`);
 
-  if (discovered.length === 0) {
+  if (inventory.length === 0) {
     console.log('No sessions found to push');
     return;
   }
 
-  // Build push payload
-  const sessions: SessionPushData[] = discovered.map((session) => {
-    log(`  ${session.sessionId} (${Math.round(session.transcriptContent.length / 1024)}KB)`);
+  if (dryRun) {
+    console.log('Dry run - would check inventory with server');
+    for (const item of inventory) {
+      log(`  ${item.sessionId} (hash: ${item.transcriptHash.slice(0, 8)}...)`);
+    }
+    return;
+  }
+
+  // Send inventory to server
+  const inventoryPayload: InventoryPayload = {
+    machineId,
+    hostname: getHostname(),
+    inventory,
+  };
+
+  log(`Checking inventory with ${serverUrl}/sessions/inventory...`);
+
+  const inventoryResponse = await fetch(`${serverUrl}/sessions/inventory`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(inventoryPayload),
+  });
+
+  if (!inventoryResponse.ok) {
+    const text = await inventoryResponse.text();
+    throw new Error(
+      `Inventory check failed: ${inventoryResponse.status} ${inventoryResponse.statusText}\n${text}`
+    );
+  }
+
+  const inventoryResult = (await inventoryResponse.json()) as InventoryResponse;
+
+  console.log(
+    `Server needs ${inventoryResult.neededSessionIds.length} sessions (${inventoryResult.upToDateCount} already up-to-date)`
+  );
+
+  // Phase 2: Send only needed sessions
+  if (inventoryResult.neededSessionIds.length === 0) {
+    console.log('All sessions already synced - nothing to push');
+    return;
+  }
+
+  log(`Loading ${inventoryResult.neededSessionIds.length} sessions to push...`);
+  const neededIds = new Set(inventoryResult.neededSessionIds);
+  const sessionsToSend = await scanner.getSessionsByIds(neededIds);
+
+  const sessions: SessionPushData[] = sessionsToSend.map((session) => {
+    log(
+      `  ${session.sessionId} (${Math.round(session.transcriptContent.length / 1024)}KB)`
+    );
     return {
       signal: session.signal,
       sessionId: session.sessionId,
@@ -50,20 +105,16 @@ export async function push(options: PushOptions): Promise<void> {
     };
   });
 
-  console.log(`Collected ${sessions.length} sessions to push`);
-
-  if (dryRun) {
-    console.log('Dry run - not pushing to server');
-    return;
-  }
-
   const payload: PushPayload = {
     machineId,
     hostname: getHostname(),
     sessions,
   };
 
-  console.log(`Pushing to ${serverUrl}/sessions/push...`);
+  const totalSize = JSON.stringify(payload).length;
+  console.log(
+    `Pushing ${sessions.length} sessions (${Math.round(totalSize / 1024)}KB) to ${serverUrl}/sessions/push...`
+  );
 
   const response = await fetch(`${serverUrl}/sessions/push`, {
     method: 'POST',
@@ -73,7 +124,9 @@ export async function push(options: PushOptions): Promise<void> {
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`Push failed: ${response.status} ${response.statusText}\n${text}`);
+    throw new Error(
+      `Push failed: ${response.status} ${response.statusText}\n${text}`
+    );
   }
 
   const result = (await response.json()) as SyncResult;
