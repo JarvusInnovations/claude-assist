@@ -19,8 +19,14 @@ export default createPlugin('sessions', async (fastify, options) => {
   // Initialize sync service with optional path mapping for Docker
   // SESSIONS_ORIGINAL_CLAUDE_DIR: The original path on host (e.g., /Users/chris/.claude)
   // This allows the scanner to translate transcript paths when running in Docker
+  // SESSIONS_MIN_FILE_SIZE: Minimum transcript file size in bytes (default 500)
+  const minFileSize = process.env.SESSIONS_MIN_FILE_SIZE
+    ? parseInt(process.env.SESSIONS_MIN_FILE_SIZE, 10)
+    : undefined;
+
   const syncService = new SyncService(fastify.sql, fastify.log, {
     originalClaudeDir: process.env.SESSIONS_ORIGINAL_CLAUDE_DIR,
+    minFileSize,
   });
 
   // Register API routes

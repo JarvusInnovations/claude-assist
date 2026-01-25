@@ -61,8 +61,8 @@ export class SyncService {
       // Get known content hashes for this machine
       const knownHashes = await this.getKnownHashes(machine.id);
 
-      // Discover new/changed sessions
-      const discovered = await this.scanner.discoverSessions(knownHashes);
+      // Discover new/changed sessions (scans projects directory for all sessions)
+      const discovered = await this.scanner.discoverAllSessions(knownHashes);
       result.sessionsScanned = discovered.length;
 
       // Process each discovered session
@@ -75,9 +75,9 @@ export class SyncService {
             result.sessionsUpdated++;
           }
         } catch (error) {
-          const message = `Failed to ingest ${session.signal.session_id}: ${error}`;
+          const message = `Failed to ingest ${session.sessionId}: ${error}`;
           result.errors.push(message);
-          this.log.error({ error, sessionId: session.signal.session_id }, message);
+          this.log.error({ error, sessionId: session.sessionId }, message);
         }
       }
 
@@ -134,7 +134,8 @@ export class SyncService {
 
           const discovered: DiscoveredSession = {
             signal: sessionData.signal,
-            transcriptPath: sessionData.signal.transcript_path,
+            sessionId: sessionData.sessionId,
+            transcriptPath: sessionData.transcriptPath,
             transcriptContent: sessionData.transcript,
             transcriptHash,
           };
@@ -146,9 +147,9 @@ export class SyncService {
             result.sessionsUpdated++;
           }
         } catch (error) {
-          const message = `Failed to ingest ${sessionData.signal.session_id}: ${error}`;
+          const message = `Failed to ingest ${sessionData.sessionId}: ${error}`;
           result.errors.push(message);
-          this.log.error({ error, sessionId: sessionData.signal.session_id }, message);
+          this.log.error({ error, sessionId: sessionData.sessionId }, message);
         }
       }
 
@@ -200,23 +201,27 @@ export class SyncService {
 
   /**
    * Ingest a discovered session into the database
+   * Handles sessions with or without signal files
    */
   private async ingestSession(
     machineId: number,
     discovered: DiscoveredSession
   ): Promise<boolean> {
-    const { signal, transcriptContent, transcriptHash, transcriptPath } = discovered;
+    const { signal, sessionId, transcriptContent, transcriptHash, transcriptPath } = discovered;
 
     // Parse transcript to extract structured data
-    const parsed = parseTranscript(signal.session_id, transcriptContent);
+    const parsed = parseTranscript(sessionId, transcriptContent);
 
-    // Compute ended_at from signal or parsed data
-    const endedAt = signal.ended_at
+    // Compute ended_at: prefer signal, then parsed data
+    const endedAt = signal?.ended_at
       ? new Date(parseFloat(signal.ended_at) * 1000)
       : parsed.endedAt;
 
     // Compute started_at: prefer parsed value, fall back to ended_at for historical sessions
     const startedAt = parsed.startedAt ?? endedAt ?? new Date();
+
+    // Get project path: prefer signal cwd, fall back to parsed cwd from transcript
+    const projectPath = signal?.cwd ?? parsed.cwd;
 
     // Build search text from user messages (Kuato pattern)
     const searchText = parsed.userMessages.join(' ');
@@ -224,14 +229,14 @@ export class SyncService {
     // Check if session already exists
     const existing = await this.sql<{ id: string }[]>`
       SELECT id FROM sessions.sessions
-      WHERE id = ${signal.session_id}::uuid AND machine_id = ${machineId}
+      WHERE id = ${sessionId}::uuid AND machine_id = ${machineId}
     `;
 
     if (existing.length > 0) {
       // Update existing session
       await this.sql`
         UPDATE sessions.sessions SET
-          project_path = ${signal.cwd},
+          project_path = ${projectPath},
           git_branch = ${parsed.gitBranch},
           started_at = ${startedAt},
           ended_at = ${endedAt},
@@ -248,7 +253,7 @@ export class SyncService {
           message_count = ${parsed.messageCount},
           claude_version = ${parsed.claudeVersion},
           synced_at = NOW()
-        WHERE id = ${signal.session_id}::uuid AND machine_id = ${machineId}
+        WHERE id = ${sessionId}::uuid AND machine_id = ${machineId}
       `;
       return false;
     }
@@ -263,9 +268,9 @@ export class SyncService {
         transcript_path, transcript_hash, raw_transcript,
         search_text, message_count, claude_version
       ) VALUES (
-        ${signal.session_id}::uuid,
+        ${sessionId}::uuid,
         ${machineId},
-        ${signal.cwd},
+        ${projectPath},
         ${parsed.gitBranch},
         ${startedAt},
         ${endedAt},

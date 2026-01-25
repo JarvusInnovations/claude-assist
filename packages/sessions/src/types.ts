@@ -87,15 +87,20 @@ export interface ParsedSession {
   messageCount: number;
   gitBranch: string | null;
   claudeVersion: string | null;
+  /** Working directory extracted from transcript messages */
+  cwd: string | null;
   /** Number of JSONL lines that failed to parse */
   parseErrors: number;
 }
 
 /**
  * Discovered session from filesystem scan
+ * Signal is optional - sessions may be discovered by scanning projects directory
+ * without a corresponding .ended.json signal file
  */
 export interface DiscoveredSession {
-  signal: SessionSignal;
+  signal?: SessionSignal;
+  sessionId: string;
   transcriptPath: string;
   transcriptContent: string;
   transcriptHash: string;
@@ -111,7 +116,9 @@ export interface PushPayload {
 }
 
 export interface SessionPushData {
-  signal: SessionSignal;
+  signal?: SessionSignal;
+  sessionId: string;
+  transcriptPath: string;
   transcript: string; // Raw JSONL content
 }
 

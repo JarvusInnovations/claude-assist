@@ -41,9 +41,11 @@ export async function push(options: PushOptions): Promise<void> {
 
   // Build push payload
   const sessions: SessionPushData[] = discovered.map((session) => {
-    log(`  ${session.signal.session_id} (${Math.round(session.transcriptContent.length / 1024)}KB)`);
+    log(`  ${session.sessionId} (${Math.round(session.transcriptContent.length / 1024)}KB)`);
     return {
       signal: session.signal,
+      sessionId: session.sessionId,
+      transcriptPath: session.transcriptPath,
       transcript: session.transcriptContent,
     };
   });

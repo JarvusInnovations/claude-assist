@@ -27,6 +27,7 @@ export function parseTranscript(
   let messageCount = 0;
   let gitBranch: string | null = null;
   let claudeVersion: string | null = null;
+  let cwd: string | null = null;
   let parseErrors = 0;
 
   for (const line of lines) {
@@ -48,6 +49,9 @@ export function parseTranscript(
       }
       if (msg.version && !claudeVersion) {
         claudeVersion = msg.version;
+      }
+      if (msg.cwd && !cwd) {
+        cwd = msg.cwd;
       }
 
       // Skip queue operations
@@ -104,6 +108,7 @@ export function parseTranscript(
     messageCount,
     gitBranch,
     claudeVersion,
+    cwd,
     parseErrors,
   };
 }
