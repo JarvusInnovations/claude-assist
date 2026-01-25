@@ -2,6 +2,19 @@
 
 Backend services for a Claude-based personal executive assistant. Provides postgres-backed APIs for session recall, email triage, and calendar queries.
 
+## Plugin Installation
+
+Install as a Claude Code plugin to use the session-recall skill:
+
+```
+/plugin marketplace add JarvusInnovations/claude-assist
+/plugin install claude-assist@jarvus-claude-assist
+```
+
+After installation, the `/session-recall` skill becomes available. Use it when you need to search past Claude sessions.
+
+**Note:** The plugin requires a running backend server with PostgreSQL. See [Quick Start](#quick-start) below.
+
 ## Prerequisites
 
 - [Bun](https://bun.sh) v1.0+
