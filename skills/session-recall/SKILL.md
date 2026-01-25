@@ -15,12 +15,37 @@ Search and retrieve context from past Claude Code sessions across multiple machi
 - You need context from earlier work
 - User asks about work done on a different machine
 
+## Important Behavior
+
+### Default to Current Project
+
+When searching sessions, **always filter by the current project path** unless:
+
+- The user explicitly asks to search across all projects
+- The user asks about work on "another project" or "different repo"
+- The context clearly implies cross-project search is needed
+
+The `project=` parameter matches any substring of the project path, so use a **minimally unique string** that appropriately scopes the search. For example:
+
+- For `/Users/chris/repos/claude-assist`, use `project=claude-assist` (not the full path)
+- For `/home/dev/projects/api-server`, use `project=api-server`
+
+This keeps queries concise while still filtering effectively.
+
+### Server Endpoint
+
+The session recall server may not be running on `localhost:3000`. If your first API request fails (connection refused, timeout, or 404):
+
+1. **Ask the user**: "The session recall server doesn't seem to be running at localhost:3000. Is it running on a different endpoint?"
+2. Use whatever endpoint the user provides for subsequent requests
+3. Common alternatives: different ports, remote servers, or Docker container URLs
+
 ## Quick Start
 
-Search sessions by topic:
+Search sessions by topic (scoped to current project):
 
 ```bash
-curl "http://localhost:3000/sessions?search=RTD+proposal&days=14"
+curl "http://localhost:3000/sessions?search=RTD+proposal&days=14&project=myproject"
 ```
 
 ## Available Endpoints
