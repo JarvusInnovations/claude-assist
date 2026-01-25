@@ -122,3 +122,7 @@ bunx @jarvus/claude-assist-sessions push [options]
   --dry-run              Scan without pushing
   -v, --verbose          Detailed output
 ```
+
+## Acknowledgments
+
+This module was heavily inspired by [kuato](https://github.com/alexknowshtml/kuato), a session recall tool that addresses Claude Code's "agent amnesia" between conversations. The core design patterns—extracting user messages, tools used, and files touched as the primary search signals, with weighted full-text search prioritizing user prompts—originated from kuato's approach to session archaeology.
