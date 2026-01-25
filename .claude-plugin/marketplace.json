@@ -10,7 +10,10 @@
   "plugins": [
     {
       "name": "claude-assist",
-      "source": ".",
+      "source": {
+        "source": "github",
+        "repo": "JarvusInnovations/claude-assist"
+      },
       "description": "Search past Claude sessions for context across multiple machines",
       "skills": [
         "./skills/session-recall"
