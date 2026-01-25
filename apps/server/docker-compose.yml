@@ -26,6 +26,7 @@ services:
       PORT: 3000
       HOST: 0.0.0.0
       NODE_ENV: production
+      SESSIONS_ORIGINAL_CLAUDE_DIR: ${HOME}/.claude
     volumes:
       - ~/.claude:/root/.claude:ro
     depends_on:

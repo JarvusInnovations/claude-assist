@@ -6,6 +6,8 @@ import type { SessionSignal, DiscoveredSession } from './types.js';
 
 export interface ScannerConfig {
   claudeDir?: string;
+  /** Original claude dir path to translate from (for Docker path mapping) */
+  originalClaudeDir?: string;
 }
 
 /**
@@ -14,10 +16,26 @@ export interface ScannerConfig {
 export class SessionScanner {
   private claudeDir: string;
   private signalsDir: string;
+  private originalClaudeDir: string | null;
 
   constructor(config: ScannerConfig = {}) {
     this.claudeDir = config.claudeDir ?? join(homedir(), '.claude');
     this.signalsDir = join(this.claudeDir, 'session-signals');
+    this.originalClaudeDir = config.originalClaudeDir ?? null;
+  }
+
+  /**
+   * Translate a path from the original location to the current claudeDir
+   * This handles Docker path mapping (e.g., /Users/chris/.claude -> /root/.claude)
+   */
+  private translatePath(originalPath: string): string {
+    if (!this.originalClaudeDir) {
+      return originalPath;
+    }
+    if (originalPath.startsWith(this.originalClaudeDir)) {
+      return originalPath.replace(this.originalClaudeDir, this.claudeDir);
+    }
+    return originalPath;
   }
 
   /**
@@ -65,8 +83,8 @@ export class SessionScanner {
     const signalContent = await readFile(signalPath, 'utf-8');
     const signal: SessionSignal = JSON.parse(signalContent);
 
-    // Check if transcript exists
-    const transcriptPath = signal.transcript_path;
+    // Check if transcript exists (translate path for Docker environments)
+    const transcriptPath = this.translatePath(signal.transcript_path);
     const transcriptStat = await stat(transcriptPath).catch(() => null);
 
     if (!transcriptStat) {

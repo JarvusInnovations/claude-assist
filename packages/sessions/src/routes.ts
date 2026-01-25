@@ -65,7 +65,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
           AND s.search_vector @@ websearch_to_tsquery('english', ${search})
           ${machine ? fastify.sql`AND m.machine_id = ${machine}` : fastify.sql``}
           ${project ? fastify.sql`AND s.project_path ILIKE ${'%' + project + '%'}` : fastify.sql``}
-          ${tools ? fastify.sql`AND s.tools_used ?| ARRAY[${fastify.sql(tools.split(',').map(t => t.trim()))}]::text[]` : fastify.sql``}
+          ${tools ? fastify.sql`AND s.tools_used ?| ${tools.split(',').map(t => t.trim())}` : fastify.sql``}
         ORDER BY rank DESC, s.started_at DESC
         LIMIT ${limitNum} OFFSET ${offsetNum}
       `;
@@ -90,7 +90,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
         WHERE s.started_at > NOW() - INTERVAL '1 day' * ${daysNum}
           ${machine ? fastify.sql`AND m.machine_id = ${machine}` : fastify.sql``}
           ${project ? fastify.sql`AND s.project_path ILIKE ${'%' + project + '%'}` : fastify.sql``}
-          ${tools ? fastify.sql`AND s.tools_used ?| ARRAY[${fastify.sql(tools.split(',').map(t => t.trim()))}]::text[]` : fastify.sql``}
+          ${tools ? fastify.sql`AND s.tools_used ?| ${tools.split(',').map(t => t.trim())}` : fastify.sql``}
         ORDER BY s.started_at DESC
         LIMIT ${limitNum} OFFSET ${offsetNum}
       `;

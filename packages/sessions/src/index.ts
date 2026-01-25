@@ -16,8 +16,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
  * - Scheduled sync every 5 minutes
  */
 export default createPlugin('sessions', async (fastify, options) => {
-  // Initialize sync service
-  const syncService = new SyncService(fastify.sql, fastify.log);
+  // Initialize sync service with optional path mapping for Docker
+  // SESSIONS_ORIGINAL_CLAUDE_DIR: The original path on host (e.g., /Users/chris/.claude)
+  // This allows the scanner to translate transcript paths when running in Docker
+  const syncService = new SyncService(fastify.sql, fastify.log, {
+    originalClaudeDir: process.env.SESSIONS_ORIGINAL_CLAUDE_DIR,
+  });
 
   // Register API routes
   await fastify.register(registerRoutes, { syncService });
