@@ -34,6 +34,7 @@ interface SessionForOutline {
   transcript_hash: string;
   outline: string | null;
   outline_hash: string | null;
+  output_tokens: string;
 }
 
 /**
@@ -303,16 +304,16 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
     let sessions: SessionForOutline[];
     if (sessionIds && sessionIds.length > 0) {
       sessions = await this.sql<SessionForOutline[]>`
-        SELECT id, project_path, git_branch, raw_transcript, transcript_hash, outline, outline_hash
+        SELECT id, project_path, git_branch, raw_transcript, transcript_hash, outline, outline_hash, output_tokens
         FROM sessions.sessions
         WHERE id = ANY(${sessionIds}::uuid[])
-          AND (outline IS NULL OR outline_hash IS DISTINCT FROM transcript_hash)
+          AND outline_hash IS DISTINCT FROM transcript_hash
       `;
     } else {
       sessions = await this.sql<SessionForOutline[]>`
-        SELECT id, project_path, git_branch, raw_transcript, transcript_hash, outline, outline_hash
+        SELECT id, project_path, git_branch, raw_transcript, transcript_hash, outline, outline_hash, output_tokens
         FROM sessions.sessions
-        WHERE outline IS NULL OR outline_hash IS DISTINCT FROM transcript_hash
+        WHERE outline_hash IS DISTINCT FROM transcript_hash
         ORDER BY started_at DESC
         LIMIT 100
       `;
@@ -341,9 +342,13 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
         try {
           this.progress.currentSession = session.id;
 
-          const outline = await this.generateOutline(session);
+          // Skip API call for sessions with no assistant output
+          const outline =
+            session.output_tokens === '0'
+              ? null
+              : await this.generateOutline(session);
 
-          // Store the outline
+          // Store the outline (null for empty sessions)
           await this.sql`
             UPDATE sessions.sessions
             SET outline = ${outline},
@@ -352,7 +357,10 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
           `;
 
           this.progress.completed++;
-          this.log.debug({ sessionId: session.id }, 'Generated outline');
+          this.log.debug(
+            { sessionId: session.id, skipped: session.output_tokens === '0' },
+            outline ? 'Generated outline' : 'Skipped empty session'
+          );
         } catch (error) {
           this.progress.errors++;
           this.log.error(
@@ -397,15 +405,15 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
     let sessions: SessionForOutline[];
     if (sessionIds && sessionIds.length > 0) {
       sessions = await this.sql<SessionForOutline[]>`
-        SELECT id, project_path, git_branch, raw_transcript, transcript_hash, outline, outline_hash
+        SELECT id, project_path, git_branch, raw_transcript, transcript_hash, outline, outline_hash, output_tokens
         FROM sessions.sessions
         WHERE id = ANY(${sessionIds}::uuid[])
       `;
     } else {
       sessions = await this.sql<SessionForOutline[]>`
-        SELECT id, project_path, git_branch, raw_transcript, transcript_hash, outline, outline_hash
+        SELECT id, project_path, git_branch, raw_transcript, transcript_hash, outline, outline_hash, output_tokens
         FROM sessions.sessions
-        WHERE outline IS NULL OR outline_hash IS DISTINCT FROM transcript_hash
+        WHERE outline_hash IS DISTINCT FROM transcript_hash
         ORDER BY started_at DESC
         LIMIT 100
       `;
@@ -438,7 +446,11 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
         try {
           this.progress.currentSession = session.id;
 
-          const outline = await this.generateOutline(session);
+          // Skip API call for sessions with no assistant output
+          const outline =
+            session.output_tokens === '0'
+              ? null
+              : await this.generateOutline(session);
 
           await this.sql`
             UPDATE sessions.sessions

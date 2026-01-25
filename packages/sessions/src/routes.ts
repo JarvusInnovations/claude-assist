@@ -30,6 +30,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       project?: string;
       limit?: string;
       offset?: string;
+      include_empty?: string;
     };
   }>('/sessions', async (request) => {
     const {
@@ -40,7 +41,9 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       project,
       limit = '20',
       offset = '0',
+      include_empty,
     } = request.query;
+    const excludeEmpty = include_empty !== 'true';
 
     const daysNum = parseInt(days, 10) || 30;
     const limitNum = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
@@ -71,6 +74,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
         JOIN sessions.machines m ON s.machine_id = m.id
         WHERE s.started_at > NOW() - INTERVAL '1 day' * ${daysNum}
           AND s.search_vector @@ websearch_to_tsquery('english', ${search})
+          ${excludeEmpty ? fastify.sql`AND s.output_tokens > 0` : fastify.sql``}
           ${machine ? fastify.sql`AND m.machine_id = ${machine}` : fastify.sql``}
           ${project ? fastify.sql`AND s.project_path ILIKE ${'%' + project + '%'}` : fastify.sql``}
           ${tools ? fastify.sql`AND s.tools_used ?| ARRAY[${fastify.sql(tools.split(',').map(t => t.trim()))}]::text[]` : fastify.sql``}
@@ -97,6 +101,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
         FROM sessions.sessions s
         JOIN sessions.machines m ON s.machine_id = m.id
         WHERE s.started_at > NOW() - INTERVAL '1 day' * ${daysNum}
+          ${excludeEmpty ? fastify.sql`AND s.output_tokens > 0` : fastify.sql``}
           ${machine ? fastify.sql`AND m.machine_id = ${machine}` : fastify.sql``}
           ${project ? fastify.sql`AND s.project_path ILIKE ${'%' + project + '%'}` : fastify.sql``}
           ${tools ? fastify.sql`AND s.tools_used ?| ARRAY[${fastify.sql(tools.split(',').map(t => t.trim()))}]::text[]` : fastify.sql``}
