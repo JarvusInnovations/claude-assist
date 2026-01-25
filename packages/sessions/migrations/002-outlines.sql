@@ -6,7 +6,10 @@ ALTER TABLE sessions.sessions ADD COLUMN outline TEXT;
 ALTER TABLE sessions.sessions ADD COLUMN outline_hash VARCHAR(32);
 
 -- Index for finding sessions needing outline generation
-CREATE INDEX idx_sessions_outline_pending ON sessions.sessions ((outline IS NULL));
+-- Partial index covers: never generated (outline IS NULL) or stale (hash mismatch)
+CREATE INDEX idx_sessions_outline_pending
+  ON sessions.sessions (started_at DESC)
+  WHERE outline IS NULL OR outline_hash IS DISTINCT FROM transcript_hash;
 
 -- Update search trigger to include outline in Weight A
 -- This allows searching by AI-generated summary terms

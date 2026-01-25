@@ -132,7 +132,19 @@ export class OutlineService {
       }
     }
 
-    return output.join('\n');
+    const result = output.join('\n');
+
+    // Truncate to stay within Haiku's 200K token context
+    // Reserve ~2K tokens for response + prompt overhead, leaving ~198K for transcript
+    // At ~3.5 chars/token (conservative for code): 198K × 3.5 ≈ 693K chars
+    const MAX_TRANSCRIPT_CHARS = 680000;
+    if (result.length > MAX_TRANSCRIPT_CHARS) {
+      return (
+        result.slice(0, MAX_TRANSCRIPT_CHARS) + '\n[...transcript truncated]'
+      );
+    }
+
+    return result;
   }
 
   /**
@@ -284,6 +296,9 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
       return;
     }
 
+    // Mark as running immediately to prevent race conditions
+    this.progress.isRunning = true;
+
     // Find sessions needing outlines
     let sessions: SessionForOutline[];
     if (sessionIds && sessionIds.length > 0) {
@@ -305,6 +320,7 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
 
     if (sessions.length === 0) {
       this.log.info('No sessions need outline generation');
+      this.progress.isRunning = false;
       return;
     }
 
