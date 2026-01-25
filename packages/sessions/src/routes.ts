@@ -61,12 +61,9 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
           s.ended_at,
           s.project_path,
           s.git_branch,
-          s.user_messages,
           s.tools_used,
           s.files_touched,
           s.message_count,
-          s.input_tokens,
-          s.output_tokens,
           s.outline,
           m.machine_id,
           ts_rank(s.search_vector, websearch_to_tsquery('english', ${search})) as rank
@@ -90,12 +87,9 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
           s.ended_at,
           s.project_path,
           s.git_branch,
-          s.user_messages,
           s.tools_used,
           s.files_touched,
           s.message_count,
-          s.input_tokens,
-          s.output_tokens,
           s.outline,
           m.machine_id
         FROM sessions.sessions s
@@ -117,12 +111,9 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       project_path: s.project_path,
       git_branch: s.git_branch,
       outline: s.outline ?? null,
-      first_user_prompt: s.user_messages?.[0] ?? null,
       message_count: s.message_count,
       tools_used: s.tools_used,
       files_touched: s.files_touched,
-      input_tokens: s.input_tokens,
-      output_tokens: s.output_tokens,
       machine: s.machine_id,
     }));
   });
