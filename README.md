@@ -39,8 +39,8 @@ bunx @jarvus/claude-assist-sessions push -m laptop -s https://your-server:3000
 For contributors who want to develop locally with hot reload:
 
 ```bash
-# Install bun via asdf (uses .tool-versions)
-asdf install
+# Install bun via asdf (uses .tool-versions) or directly from bun.sh
+asdf install  # or: curl -fsSL https://bun.sh/install | bash
 
 # Install dependencies
 bun install
