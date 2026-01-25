@@ -23,6 +23,8 @@ const fastify = Fastify({
           }
         : undefined,
   },
+  // Allow large payloads for session transcript uploads (50MB)
+  bodyLimit: 50 * 1024 * 1024,
 });
 
 // Create postgres connection
