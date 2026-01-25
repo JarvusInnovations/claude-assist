@@ -17,24 +17,47 @@ After installation, the `/session-recall` skill becomes available. Use it when y
 
 ## Prerequisites
 
-- [Bun](https://bun.sh) v1.0+
-- Docker (for PostgreSQL)
+- Docker with Compose plugin
 
 ## Quick Start
 
 ```bash
-# Install dependencies
-bun install
-
-# Start PostgreSQL
 cd apps/server
-docker-compose up postgres -d
-
-# Start development server
-bun run dev
+docker compose up --build -d
 ```
 
 The API will be available at <http://localhost:3000>
+
+Sessions from `~/.claude/` on the host machine sync automatically. To sync from other machines:
+
+```bash
+bunx @jarvus/claude-assist-sessions push -m laptop -s https://your-server:3000
+```
+
+## Local Development
+
+For contributors who want to develop locally with hot reload:
+
+```bash
+# Install bun via asdf (uses .tool-versions)
+asdf install
+
+# Install dependencies
+bun install
+
+# Start PostgreSQL only
+cd apps/server
+docker compose up postgres -d
+
+# Start development server with watch mode
+bun run dev
+```
+
+**VS Code debugging:** Use the provided launch configurations in `.vscode/launch.json`:
+
+- "Debug Server" - runs with watch mode and debugger attached
+- "Debug Server (no watch)" - single run with debugger
+- "Attach to Bun" - attach to running bun process
 
 ## Project Structure
 
@@ -79,15 +102,16 @@ POST /scheduler/tasks/:name    # Trigger task manually
 ## Docker
 
 ```bash
-# Start PostgreSQL only
 cd apps/server
-docker-compose up postgres -d
 
 # Start full stack
-docker-compose up -d
+docker compose up --build -d
+
+# Start PostgreSQL only (for local development)
+docker compose up postgres -d
 
 # View logs
-docker-compose logs -f
+docker compose logs -f
 ```
 
 ## Environment Variables
