@@ -302,6 +302,8 @@ export class SyncService {
           search_text = ${searchText},
           message_count = ${parsed.messageCount},
           claude_version = ${parsed.claudeVersion},
+          models_used = ${this.sql.json(parsed.modelsUsed)},
+          model_tokens = ${this.sql.json(parsed.modelTokens)},
           synced_at = NOW()
         WHERE id = ${sessionId}::uuid AND machine_id = ${machineId}
       `;
@@ -316,7 +318,8 @@ export class SyncService {
         user_messages, tools_used, files_touched,
         input_tokens, output_tokens, cache_read_tokens,
         transcript_path, transcript_hash, raw_transcript,
-        search_text, message_count, claude_version
+        search_text, message_count, claude_version,
+        models_used, model_tokens
       ) VALUES (
         ${sessionId}::uuid,
         ${machineId},
@@ -335,7 +338,9 @@ export class SyncService {
         ${transcriptContent},
         ${searchText},
         ${parsed.messageCount},
-        ${parsed.claudeVersion}
+        ${parsed.claudeVersion},
+        ${this.sql.json(parsed.modelsUsed)},
+        ${this.sql.json(parsed.modelTokens)}
       )
     `;
 

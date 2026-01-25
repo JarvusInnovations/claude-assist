@@ -25,6 +25,8 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
     Querystring: {
       search?: string;
       days?: string;
+      since?: string;
+      until?: string;
       tools?: string;
       machine?: string;
       project?: string;
@@ -36,6 +38,8 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
     const {
       search,
       days = '30',
+      since,
+      until,
       tools,
       machine,
       project,
@@ -48,6 +52,11 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
     const daysNum = parseInt(days, 10) || 30;
     const limitNum = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
     const offsetNum = Math.max(parseInt(offset, 10) || 0, 0);
+
+    // Parse absolute date filters (ISO 8601)
+    const sinceDate = since ? new Date(since) : null;
+    const untilDate = until ? new Date(until) : null;
+    const useDateRange = sinceDate || untilDate;
 
     // Build dynamic query based on filters
     let sessions;
@@ -69,8 +78,14 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
           ts_rank(s.search_vector, websearch_to_tsquery('english', ${search})) as rank
         FROM sessions.sessions s
         JOIN sessions.machines m ON s.machine_id = m.id
-        WHERE s.started_at > NOW() - INTERVAL '1 day' * ${daysNum}
-          AND s.search_vector @@ websearch_to_tsquery('english', ${search})
+        WHERE s.search_vector @@ websearch_to_tsquery('english', ${search})
+          ${useDateRange
+            ? fastify.sql`
+              ${sinceDate ? fastify.sql`AND s.started_at >= ${sinceDate}` : fastify.sql``}
+              ${untilDate ? fastify.sql`AND s.started_at <= ${untilDate}` : fastify.sql``}
+            `
+            : fastify.sql`AND s.started_at > NOW() - INTERVAL '1 day' * ${daysNum}`
+          }
           ${excludeEmpty ? fastify.sql`AND s.output_tokens > 0` : fastify.sql``}
           ${machine ? fastify.sql`AND m.machine_id = ${machine}` : fastify.sql``}
           ${project ? fastify.sql`AND s.project_path ILIKE ${'%' + project + '%'}` : fastify.sql``}
@@ -94,7 +109,14 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
           m.machine_id
         FROM sessions.sessions s
         JOIN sessions.machines m ON s.machine_id = m.id
-        WHERE s.started_at > NOW() - INTERVAL '1 day' * ${daysNum}
+        WHERE 1=1
+          ${useDateRange
+            ? fastify.sql`
+              ${sinceDate ? fastify.sql`AND s.started_at >= ${sinceDate}` : fastify.sql``}
+              ${untilDate ? fastify.sql`AND s.started_at <= ${untilDate}` : fastify.sql``}
+            `
+            : fastify.sql`AND s.started_at > NOW() - INTERVAL '1 day' * ${daysNum}`
+          }
           ${excludeEmpty ? fastify.sql`AND s.output_tokens > 0` : fastify.sql``}
           ${machine ? fastify.sql`AND m.machine_id = ${machine}` : fastify.sql``}
           ${project ? fastify.sql`AND s.project_path ILIKE ${'%' + project + '%'}` : fastify.sql``}
@@ -157,6 +179,8 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       claude_version: session.claude_version,
       outline: session.outline,
       outline_hash: session.outline_hash,
+      models_used: session.models_used,
+      model_tokens: session.model_tokens,
     };
 
     if (withTranscript) {
@@ -229,10 +253,29 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       ORDER BY session_count DESC
     `;
 
+    // Top models (only from sessions with valid models_used arrays)
+    const topModels = await fastify.sql`
+      SELECT model, COUNT(*)::int as session_count,
+        COALESCE(SUM((s.model_tokens->model->>'input')::bigint), 0)::bigint as input_tokens,
+        COALESCE(SUM((s.model_tokens->model->>'output')::bigint), 0)::bigint as output_tokens
+      FROM sessions.sessions s
+      JOIN sessions.machines m ON s.machine_id = m.id,
+      LATERAL jsonb_array_elements_text(s.models_used) as model
+      WHERE s.started_at > NOW() - INTERVAL '1 day' * ${daysNum}
+        AND s.models_used IS NOT NULL
+        AND jsonb_typeof(s.models_used) = 'array'
+        AND jsonb_array_length(s.models_used) > 0
+        ${machine ? fastify.sql`AND m.machine_id = ${machine}` : fastify.sql``}
+      GROUP BY model
+      ORDER BY session_count DESC
+      LIMIT 10
+    `;
+
     return {
       period_days: daysNum,
       ...stats[0],
       top_tools: topTools,
+      top_models: topModels,
       sessions_per_machine: perMachine,
     };
   });
