@@ -218,7 +218,15 @@ export class SyncService {
       : parsed.endedAt;
 
     // Compute started_at: prefer parsed value, fall back to ended_at for historical sessions
-    const startedAt = parsed.startedAt ?? endedAt ?? new Date();
+    // Per lessons learned: derive missing started_at from ended_at, not new Date()
+    let startedAt = parsed.startedAt ?? endedAt;
+    if (!startedAt) {
+      this.log.warn(
+        { sessionId },
+        'Session has no valid timestamp - using current time as fallback'
+      );
+      startedAt = new Date();
+    }
 
     // Get project path: prefer signal cwd, fall back to parsed cwd from transcript
     const projectPath = signal?.cwd ?? parsed.cwd;
