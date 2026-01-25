@@ -75,6 +75,19 @@ export default createPlugin('sessions', async (fastify, options) => {
     },
   });
 
+  // Register hourly outline generation task (catch-all for any missed sessions)
+  if (outlineService) {
+    fastify.scheduler.register({
+      name: 'sessions:generate-outlines',
+      schedule: '0 * * * *', // Every hour at :00
+      runOnStartup: false,
+      handler: async () => {
+        fastify.log.info('Running scheduled outline generation');
+        outlineService.queueOutlineGeneration();
+      },
+    });
+  }
+
   fastify.log.info(
     'Sessions plugin loaded with local sync scheduled every 5 minutes'
   );

@@ -273,12 +273,24 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
     }
 
     const result = await syncService.processPush(payload);
+
+    // Queue outline generation for newly pushed sessions
+    if (outlineService && (result.sessionsIngested > 0 || result.sessionsUpdated > 0)) {
+      outlineService.queueOutlineGeneration();
+    }
+
     return result;
   });
 
   // POST /sessions/sync - Manually trigger local sync
   fastify.post('/sessions/sync', async () => {
     const result = await syncService.syncLocal();
+
+    // Queue outline generation for newly synced sessions
+    if (outlineService && (result.sessionsIngested > 0 || result.sessionsUpdated > 0)) {
+      outlineService.queueOutlineGeneration();
+    }
+
     return result;
   });
 
