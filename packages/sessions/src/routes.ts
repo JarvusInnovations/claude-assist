@@ -1,6 +1,11 @@
 import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import type { SyncService } from './sync.js';
-import type { PushPayload, SessionRecord, MachineRecord } from './types.js';
+import type {
+  PushPayload,
+  SessionRecord,
+  MachineRecord,
+  InventoryPayload,
+} from './types.js';
 
 export interface RoutesConfig {
   syncService: SyncService;
@@ -228,6 +233,27 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       sessions_per_machine: perMachine,
     };
   });
+
+  // POST /sessions/inventory - Phase 1: Check which sessions are needed (two-phase sync)
+  fastify.post<{ Body: InventoryPayload }>(
+    '/sessions/inventory',
+    async (request, reply) => {
+      const payload = request.body;
+
+      if (!payload?.machineId) {
+        reply.status(400);
+        return { error: 'machineId is required' };
+      }
+
+      if (!payload.inventory || !Array.isArray(payload.inventory)) {
+        reply.status(400);
+        return { error: 'inventory array is required' };
+      }
+
+      const result = await syncService.processInventory(payload);
+      return result;
+    }
+  );
 
   // POST /sessions/push - Receive sessions from satellite machines
   fastify.post<{ Body: PushPayload }>('/sessions/push', async (request, reply) => {

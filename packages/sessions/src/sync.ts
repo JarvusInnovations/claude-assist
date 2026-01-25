@@ -10,6 +10,8 @@ import type {
   PushPayload,
   SessionSignal,
   DiscoveredSession,
+  InventoryPayload,
+  InventoryResponse,
 } from './types.js';
 
 export interface SyncServiceConfig extends ScannerConfig {
@@ -161,6 +163,46 @@ export class SyncService {
     }
 
     return result;
+  }
+
+  /**
+   * Process inventory from a satellite machine and return needed session IDs
+   * This is Phase 1 of the two-phase sync protocol
+   */
+  async processInventory(payload: InventoryPayload): Promise<InventoryResponse> {
+    const machine = await this.ensureMachine(
+      payload.machineId,
+      payload.hostname ?? null,
+      false
+    );
+
+    const knownHashes = await this.getKnownHashes(machine.id);
+
+    const neededSessionIds: string[] = [];
+    let upToDateCount = 0;
+
+    for (const item of payload.inventory) {
+      if (knownHashes.has(item.transcriptHash)) {
+        upToDateCount++;
+      } else {
+        neededSessionIds.push(item.sessionId);
+      }
+    }
+
+    this.log.info(
+      {
+        machineId: payload.machineId,
+        total: payload.inventory.length,
+        needed: neededSessionIds.length,
+        upToDate: upToDateCount,
+      },
+      `Inventory processed: ${neededSessionIds.length} sessions needed, ${upToDateCount} up-to-date`
+    );
+
+    return {
+      neededSessionIds,
+      upToDateCount,
+    };
   }
 
   /**

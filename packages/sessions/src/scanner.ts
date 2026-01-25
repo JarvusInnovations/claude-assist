@@ -2,7 +2,11 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
-import type { SessionSignal, DiscoveredSession } from './types.js';
+import type {
+  SessionSignal,
+  DiscoveredSession,
+  SessionInventoryItem,
+} from './types.js';
 
 export interface ScannerConfig {
   claudeDir?: string;
@@ -274,10 +278,129 @@ export class SessionScanner {
   }
 
   /**
-   * Get all sessions for CLI push (doesn't filter by known hashes)
-   * Now scans projects directory for all sessions
+   * Get lightweight inventory of all sessions (computes hash without keeping transcript in memory)
+   * Returns session ID, hash, path, and optional signal - but NOT transcript content
    */
-  async getAllSessions(): Promise<DiscoveredSession[]> {
-    return this.discoverAllSessions(new Set());
+  async getSessionInventory(): Promise<SessionInventoryItem[]> {
+    const inventory: SessionInventoryItem[] = [];
+    const signalMap = await this.loadSignalMap();
+
+    let projectDirs: string[];
+    try {
+      projectDirs = await readdir(this.projectsDir);
+    } catch {
+      return inventory;
+    }
+
+    for (const projectDir of projectDirs) {
+      const projectPath = join(this.projectsDir, projectDir);
+      const projectStat = await stat(projectPath).catch(() => null);
+
+      if (!projectStat?.isDirectory()) {
+        continue;
+      }
+
+      let files: string[];
+      try {
+        files = await readdir(projectPath);
+      } catch {
+        continue;
+      }
+
+      for (const file of files) {
+        if (!file.endsWith('.jsonl')) {
+          continue;
+        }
+
+        const transcriptPath = join(projectPath, file);
+        const sessionId = file.replace('.jsonl', '');
+
+        // Skip non-UUID filenames (subagent files)
+        if (!this.isValidUuid(sessionId)) {
+          continue;
+        }
+
+        // Check file size
+        const transcriptStat = await stat(transcriptPath).catch(() => null);
+        if (!transcriptStat || transcriptStat.size < this.minFileSize) {
+          continue;
+        }
+
+        // Read and hash transcript (then discard content)
+        const transcriptContent = await readFile(transcriptPath, 'utf-8');
+        const transcriptHash = createHash('md5')
+          .update(transcriptContent)
+          .digest('hex');
+
+        inventory.push({
+          sessionId,
+          transcriptHash,
+          transcriptPath,
+          signal: signalMap.get(sessionId),
+        });
+      }
+    }
+
+    return inventory;
+  }
+
+  /**
+   * Load specific sessions by ID (for selective push after inventory check)
+   */
+  async getSessionsByIds(sessionIds: Set<string>): Promise<DiscoveredSession[]> {
+    const sessions: DiscoveredSession[] = [];
+    const signalMap = await this.loadSignalMap();
+
+    let projectDirs: string[];
+    try {
+      projectDirs = await readdir(this.projectsDir);
+    } catch {
+      return sessions;
+    }
+
+    for (const projectDir of projectDirs) {
+      const projectPath = join(this.projectsDir, projectDir);
+      const projectStat = await stat(projectPath).catch(() => null);
+
+      if (!projectStat?.isDirectory()) {
+        continue;
+      }
+
+      let files: string[];
+      try {
+        files = await readdir(projectPath);
+      } catch {
+        continue;
+      }
+
+      for (const file of files) {
+        if (!file.endsWith('.jsonl')) {
+          continue;
+        }
+
+        const sessionId = file.replace('.jsonl', '');
+
+        // Only load sessions in the requested set
+        if (!sessionIds.has(sessionId)) {
+          continue;
+        }
+
+        const transcriptPath = join(projectPath, file);
+        const transcriptContent = await readFile(transcriptPath, 'utf-8');
+        const transcriptHash = createHash('md5')
+          .update(transcriptContent)
+          .digest('hex');
+
+        sessions.push({
+          sessionId,
+          transcriptPath,
+          transcriptContent,
+          transcriptHash,
+          signal: signalMap.get(sessionId),
+        });
+      }
+    }
+
+    return sessions;
   }
 }
