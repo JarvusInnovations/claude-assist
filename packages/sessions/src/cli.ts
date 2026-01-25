@@ -47,15 +47,7 @@ export async function push(options: PushOptions): Promise<void> {
     return;
   }
 
-  if (dryRun) {
-    console.log('Dry run - would check inventory with server');
-    for (const item of inventory) {
-      log(`  ${item.sessionId} (hash: ${item.transcriptHash.slice(0, 8)}...)`);
-    }
-    return;
-  }
-
-  // Send inventory to server
+  // Send inventory to server (even in dry-run to verify connectivity)
   const inventoryPayload: InventoryPayload = {
     machineId,
     hostname: getHostname(),
@@ -82,6 +74,18 @@ export async function push(options: PushOptions): Promise<void> {
   console.log(
     `Server needs ${inventoryResult.neededSessionIds.length} sessions (${inventoryResult.upToDateCount} already up-to-date)`
   );
+
+  // Dry run: stop after inventory check (server connectivity verified)
+  if (dryRun) {
+    console.log('Dry run - skipping push phase');
+    if (inventoryResult.neededSessionIds.length > 0) {
+      log('Sessions that would be pushed:');
+      for (const sessionId of inventoryResult.neededSessionIds) {
+        log(`  ${sessionId}`);
+      }
+    }
+    return;
+  }
 
   // Phase 2: Send only needed sessions
   if (inventoryResult.neededSessionIds.length === 0) {
