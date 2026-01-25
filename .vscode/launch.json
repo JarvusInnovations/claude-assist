@@ -1,0 +1,36 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug Server",
+      "type": "bun",
+      "request": "launch",
+      "program": "${workspaceFolder}/apps/server/src/server.ts",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "NODE_ENV": "development"
+      },
+      "watchMode": true,
+      "stopOnEntry": false
+    },
+    {
+      "name": "Debug Server (no watch)",
+      "type": "bun",
+      "request": "launch",
+      "program": "${workspaceFolder}/apps/server/src/server.ts",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "NODE_ENV": "development"
+      },
+      "watchMode": false,
+      "stopOnEntry": false
+    },
+    {
+      "name": "Attach to Bun",
+      "type": "bun",
+      "request": "attach",
+      "url": "ws://localhost:6499/",
+      "stopOnEntry": false
+    }
+  ]
+}

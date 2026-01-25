@@ -12,10 +12,11 @@
       },
     },
     "apps/server": {
-      "name": "@claude-assist/server",
+      "name": "@jarvus/claude-assist-server",
       "version": "0.1.0",
       "dependencies": {
-        "@claude-assist/core": "workspace:*",
+        "@jarvus/claude-assist-core": "workspace:*",
+        "@jarvus/claude-assist-sessions": "workspace:*",
         "fastify": "^5.7.1",
         "postgres": "^3.4.8",
       },
@@ -29,7 +30,7 @@
       },
     },
     "packages/core": {
-      "name": "@claude-assist/core",
+      "name": "@jarvus/claude-assist-core",
       "version": "0.1.0",
       "dependencies": {
         "croner": "^9.1.0",
@@ -45,12 +46,25 @@
         "typescript": "^5",
       },
     },
+    "packages/sessions": {
+      "name": "@jarvus/claude-assist-sessions",
+      "version": "0.1.0",
+      "bin": {
+        "claude-assist-sessions": "./bin/push.ts",
+      },
+      "dependencies": {
+        "@jarvus/claude-assist-core": "workspace:*",
+        "fastify": "^5.7.1",
+        "fastify-plugin": "^5.1.0",
+        "postgres": "^3.4.8",
+        "typescript": "^5.9.3",
+      },
+      "devDependencies": {
+        "@types/node": "^25.0.10",
+      },
+    },
   },
   "packages": {
-    "@claude-assist/core": ["@claude-assist/core@workspace:packages/core"],
-
-    "@claude-assist/server": ["@claude-assist/server@workspace:apps/server"],
-
     "@fastify/ajv-compiler": ["@fastify/ajv-compiler@4.0.5", "", { "dependencies": { "ajv": "^8.12.0", "ajv-formats": "^3.0.1", "fast-uri": "^3.0.0" } }, "sha512-KoWKW+MhvfTRWL4qrhUwAAZoaChluo0m0vbiJlGMt2GXvL4LVPQEjt8kSpHI3IBq5Rez8fg+XeH3cneztq+C7A=="],
 
     "@fastify/error": ["@fastify/error@4.2.0", "", {}, "sha512-RSo3sVDXfHskiBZKBPRgnQTtIqpi/7zhJOEmAxCiBcM7d0uwdGdxLlsCaLzGs8v8NnxIRlfG0N51p5yFaOentQ=="],
@@ -62,6 +76,12 @@
     "@fastify/merge-json-schemas": ["@fastify/merge-json-schemas@0.2.1", "", { "dependencies": { "dequal": "^2.0.3" } }, "sha512-OA3KGBCy6KtIvLf8DINC5880o5iBlDX4SxzLQS8HorJAbqluzLRn80UXU0bxZn7UOFhFgpRJDasfwn9nG4FG4A=="],
 
     "@fastify/proxy-addr": ["@fastify/proxy-addr@5.1.0", "", { "dependencies": { "@fastify/forwarded": "^3.0.0", "ipaddr.js": "^2.1.0" } }, "sha512-INS+6gh91cLUjB+PVHfu1UqcB76Sqtpyp7bnL+FYojhjygvOPA9ctiD/JDKsyD9Xgu4hUhCSJBPig/w7duNajw=="],
+
+    "@jarvus/claude-assist-core": ["@jarvus/claude-assist-core@workspace:packages/core"],
+
+    "@jarvus/claude-assist-server": ["@jarvus/claude-assist-server@workspace:apps/server"],
+
+    "@jarvus/claude-assist-sessions": ["@jarvus/claude-assist-sessions@workspace:packages/sessions"],
 
     "@pinojs/redact": ["@pinojs/redact@0.4.0", "", {}, "sha512-k2ENnmBugE/rzQfEcdWHcCY+/FM3VLzH9cYEsbdsoqrvzAKRhUZeRNhAZvB8OitQJ1TBed3yqWtdjzS6wJKBwg=="],
 

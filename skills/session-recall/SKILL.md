@@ -5,7 +5,7 @@ description: Search past Claude sessions for context. Use when asked "where did 
 
 # Session Recall
 
-Search and retrieve context from past Claude Code sessions.
+Search and retrieve context from past Claude Code sessions across multiple machines.
 
 ## When to Use
 
@@ -13,13 +13,14 @@ Search and retrieve context from past Claude Code sessions.
 - User asks "what did we discuss about Y?"
 - User wants to find a previous conversation
 - You need context from earlier work
+- User asks about work done on a different machine
 
 ## Quick Start
 
 Search sessions by topic:
 
 ```bash
-curl "http://localhost:3000/sessions?search=RTD&days=14"
+curl "http://localhost:3000/sessions?search=RTD+proposal&days=14"
 ```
 
 ## Available Endpoints
@@ -27,25 +28,36 @@ curl "http://localhost:3000/sessions?search=RTD&days=14"
 ### Search Sessions
 
 ```bash
-GET /sessions?search=...&days=...&tools=...
+GET /sessions?search=...&days=...&tools=...&machine=...&project=...
 ```
 
 Parameters:
 
-- `search` - Full-text search query
+- `search` - Full-text search query (weighted: user prompts > tools/files > project)
 - `days` - Limit to sessions within N days (default: 30)
-- `tools` - Filter by tools used (comma-separated)
+- `tools` - Filter by tools used (comma-separated, e.g., `Edit,Bash`)
+- `machine` - Filter by machine ID (e.g., `localhost`, `laptop`)
+- `project` - Filter by project path (partial match)
+- `limit` - Max results (default: 20, max: 100)
+- `offset` - Pagination offset
 
 Example response:
 
 ```json
 [
   {
-    "id": "abc-123",
+    "id": "9c8a4c11-c051-4381-90cd-ef3f380a91c8",
     "started_at": "2025-01-20T10:00:00Z",
-    "user_messages": ["Help me with RTD proposal", "Add timeline section"],
-    "tools_used": ["Edit", "Read"],
-    "files_touched": ["/proposals/rtd.md"]
+    "ended_at": "2025-01-20T11:30:00Z",
+    "project_path": "/Users/chris/repos/myproject",
+    "git_branch": "feature/new-api",
+    "first_user_prompt": "Help me with RTD proposal",
+    "message_count": 45,
+    "tools_used": ["Edit", "Read", "Bash"],
+    "files_touched": ["/proposals/rtd.md"],
+    "input_tokens": 150000,
+    "output_tokens": 25000,
+    "machine": "localhost"
   }
 ]
 ```
@@ -60,22 +72,133 @@ Parameters:
 
 - `with_transcript` - Include full conversation transcript (default: false)
 
+Returns session metadata plus optionally the full transcript as parsed JSONL messages.
+
 ### Session Statistics
 
 ```bash
-GET /sessions/stats?days=30
+GET /sessions/stats?days=30&machine=laptop
 ```
 
-Returns summary of session activity over the specified period.
+Parameters:
+
+- `days` - Period to analyze (default: 30)
+- `machine` - Filter by machine ID
+
+Returns:
+
+```json
+{
+  "period_days": 30,
+  "total_sessions": 150,
+  "active_days": 25,
+  "avg_messages": 42,
+  "total_messages": 6300,
+  "total_input_tokens": 45000000,
+  "total_output_tokens": 7500000,
+  "unique_projects": 12,
+  "top_tools": [
+    { "tool": "Edit", "count": 450 },
+    { "tool": "Read", "count": 380 }
+  ],
+  "sessions_per_machine": [
+    { "machine_id": "localhost", "session_count": 120 },
+    { "machine_id": "laptop", "session_count": 30 }
+  ]
+}
+```
+
+### List Machines
+
+```bash
+GET /machines
+```
+
+Returns all registered machines with sync status:
+
+```json
+[
+  {
+    "machine_id": "localhost",
+    "hostname": "devbox",
+    "is_localhost": true,
+    "first_seen_at": "2025-01-15T10:00:00Z",
+    "last_sync_at": "2025-01-24T19:30:00Z",
+    "session_count": 150
+  }
+]
+```
+
+### Manual Sync (Localhost)
+
+```bash
+POST /sessions/sync
+```
+
+Triggers an immediate sync of local sessions. Returns sync results:
+
+```json
+{
+  "sessionsScanned": 10,
+  "sessionsIngested": 5,
+  "sessionsUpdated": 2,
+  "sessionsSkipped": 3,
+  "errors": []
+}
+```
+
+### Push from Satellite (API)
+
+```bash
+POST /sessions/push
+Content-Type: application/json
+
+{
+  "machineId": "laptop",
+  "hostname": "chris-macbook",
+  "sessions": [
+    {
+      "signal": { "session_id": "...", "transcript_path": "...", "cwd": "...", "ended_at": "..." },
+      "transcript": "... raw JSONL content ..."
+    }
+  ]
+}
+```
+
+## Multi-Machine Support
+
+### Localhost (Automatic)
+
+Sessions are automatically synced every 5 minutes from `~/.claude/` on the server machine. The server's machine is labeled `localhost`.
+
+### Satellite Machines (Manual Push)
+
+From any machine with Bun installed:
+
+```bash
+bunx @jarvus/claude-assist-sessions push --machine laptop --server https://my-server.com
+```
+
+Options:
+
+- `-m, --machine <id>` - Machine identifier (required, e.g., "laptop", "devbox")
+- `-s, --server <url>` - Server URL (default: <http://localhost:3000>)
+- `--claude-dir <path>` - Claude directory (default: ~/.claude)
+- `--dry-run` - Preview without pushing
+- `-v, --verbose` - Detailed output
 
 ## Usage Tips
 
-1. Start with a broad search, then narrow down
+1. Start with a broad search, then narrow by project or machine
 2. Use `days` parameter to focus on recent sessions
-3. Filter by `tools` to find sessions with specific activities
+3. Filter by `tools` to find sessions with specific activities (e.g., `tools=Edit,Bash`)
 4. Request transcript only when you need full context (it's large)
+5. Use machine filter when looking for work done on a specific device
 
-## Note
+## Architecture
 
-Session data is synced from `~/.claude/projects/` on the server.
-Sync runs automatically every 15 minutes.
+- Sessions stored in PostgreSQL with full-text search (weighted tsvector)
+- Host machine syncs automatically every 5 minutes
+- Satellite machines push manually via CLI
+- MD5 content hashing prevents duplicate ingestion
+- Raw transcripts are stored for complete archive (Claude prunes after ~1 month)
