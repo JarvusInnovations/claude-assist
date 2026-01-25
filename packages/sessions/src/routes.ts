@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import type { SyncService } from './sync.js';
+import type { OutlineService } from './outline.js';
 import type {
   PushPayload,
   SessionRecord,
@@ -9,6 +10,7 @@ import type {
 
 export interface RoutesConfig {
   syncService: SyncService;
+  outlineService: OutlineService | null;
 }
 
 /**
@@ -16,7 +18,7 @@ export interface RoutesConfig {
  */
 export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
   fastify,
-  { syncService }
+  { syncService, outlineService }
 ) => {
   // GET /sessions - Search sessions with full-text search and filters
   fastify.get<{
@@ -62,6 +64,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
           s.message_count,
           s.input_tokens,
           s.output_tokens,
+          s.outline,
           m.machine_id,
           ts_rank(s.search_vector, websearch_to_tsquery('english', ${search})) as rank
         FROM sessions.sessions s
@@ -89,6 +92,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
           s.message_count,
           s.input_tokens,
           s.output_tokens,
+          s.outline,
           m.machine_id
         FROM sessions.sessions s
         JOIN sessions.machines m ON s.machine_id = m.id
@@ -107,6 +111,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       ended_at: s.ended_at,
       project_path: s.project_path,
       git_branch: s.git_branch,
+      outline: s.outline ?? null,
       first_user_prompt: s.user_messages?.[0] ?? null,
       message_count: s.message_count,
       tools_used: s.tools_used,
@@ -154,6 +159,8 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       output_tokens: session.output_tokens,
       cache_read_tokens: session.cache_read_tokens,
       claude_version: session.claude_version,
+      outline: session.outline,
+      outline_hash: session.outline_hash,
     };
 
     if (withTranscript) {
@@ -294,4 +301,21 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
     `;
     return machines;
   });
+
+  // Outline generation endpoints (only if outlineService is available)
+  if (outlineService) {
+    // POST /sessions/outlines - Manually trigger outline generation
+    fastify.post<{
+      Body?: { sessionIds?: string[] };
+    }>('/sessions/outlines', async (request) => {
+      const sessionIds = request.body?.sessionIds;
+      const result = await outlineService.generateOutlinesSync(sessionIds);
+      return result;
+    });
+
+    // GET /sessions/outlines/progress - Check outline generation progress
+    fastify.get('/sessions/outlines/progress', async () => {
+      return outlineService.getProgress();
+    });
+  }
 };

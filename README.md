@@ -34,6 +34,16 @@ Sessions from `~/.claude/` on the host machine sync automatically. To sync from 
 bunx @jarvus/claude-assist-sessions push -m laptop -s https://your-server:3000
 ```
 
+## Environment Setup
+
+Copy the example environment file and configure:
+
+```bash
+cp apps/server/.env.example apps/server/.env
+```
+
+Edit `.env` to set your `ANTHROPIC_API_KEY` if you want AI-generated session outlines. Get your key at <https://console.anthropic.com/>
+
 ## Local Development
 
 For contributors who want to develop locally with hot reload:
@@ -123,6 +133,8 @@ docker compose logs -f
 | DATABASE_URL | postgres://claude:dev@localhost:5432/claude_assist | PostgreSQL connection |
 | LOG_LEVEL | info | Log level (debug, info, warn, error) |
 | NODE_ENV | development | Environment (development, production) |
+| ANTHROPIC_API_KEY | (none) | Enables AI-generated session outlines |
+| OUTLINE_CONCURRENCY | 5 | Parallel outline generation workers |
 
 ## Skills
 

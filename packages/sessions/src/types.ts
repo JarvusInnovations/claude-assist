@@ -166,6 +166,10 @@ export interface SessionRecord {
   message_count: number;
   claude_version: string | null;
   synced_at: Date;
+  /** AI-generated outline summarizing the session */
+  outline: string | null;
+  /** transcript_hash when outline was generated (for regeneration detection) */
+  outline_hash: string | null;
 }
 
 /**
