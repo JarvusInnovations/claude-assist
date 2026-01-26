@@ -5,7 +5,7 @@
 
 export const env = {
   // Server
-  PORT: parseInt(process.env.PORT || '3000', 10),
+  PORT: parseInt(process.env.PORT || '2529', 10),
   HOST: process.env.HOST || '0.0.0.0',
   NODE_ENV: process.env.NODE_ENV || 'development',
 
@@ -30,7 +30,7 @@ export const env = {
   GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET,
   GOOGLE_REDIRECT_URI:
     process.env.GOOGLE_REDIRECT_URI ||
-    'http://localhost:3000/google/auth/callback',
+    'http://localhost:2529/google/auth/callback',
 
   // Triage (optional - concurrency for AI triage)
   TRIAGE_CONCURRENCY: parseInt(process.env.TRIAGE_CONCURRENCY || '5', 10),

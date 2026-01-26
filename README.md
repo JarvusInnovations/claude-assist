@@ -137,8 +137,8 @@ services:
       - "<your-ip>:2528:5432"
   api:
     ports:
-      - "127.0.0.1:2529:3000"
-      - "<your-ip>:2529:3000"
+      - "127.0.0.1:2529:2529"
+      - "<your-ip>:2529:2529"
 ```
 
 Run `docker compose config` to verify the merged configuration.
@@ -147,7 +147,7 @@ Run `docker compose config` to verify the merged configuration.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| PORT | 3000 | Server port |
+| PORT | 2529 | Server port |
 | HOST | 0.0.0.0 | Server host |
 | DATABASE_URL | postgres://claude:dev@localhost:2528/claude_assist | PostgreSQL connection |
 | LOG_LEVEL | info | Log level (debug, info, warn, error) |

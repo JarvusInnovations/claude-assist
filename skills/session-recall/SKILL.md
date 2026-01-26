@@ -7,6 +7,8 @@ description: Search past Claude sessions for context. Use when asked "where did 
 
 Search and retrieve context from past Claude Code sessions across multiple machines.
 
+> **Note:** Replace `<claude-assist-server>` with the actual server URL (e.g., `http://localhost:2529`). If a request fails with connection refused, ask the user for the correct server endpoint.
+
 ## Important Behavior
 
 ### Default to Current Project
@@ -24,20 +26,12 @@ The `project=` parameter matches any substring of the project path, so use a **m
 
 This keeps queries concise while still filtering effectively.
 
-### Server Endpoint
-
-The session recall server may not be running on `localhost:2529`. If your first API request fails (connection refused, timeout, or 404):
-
-1. **Ask the user**: "The session recall server doesn't seem to be running at localhost:2529. Is it running on a different endpoint?"
-2. Use whatever endpoint the user provides for subsequent requests
-3. Common alternatives: different ports, remote servers, or Docker container URLs
-
 ## Quick Start
 
 Search sessions by topic (scoped to current project):
 
 ```bash
-curl "http://localhost:2529/sessions?search=RTD+proposal&days=14&project=myproject"
+curl "<claude-assist-server>/sessions?search=RTD+proposal&days=14&project=myproject"
 ```
 
 ## Available Endpoints

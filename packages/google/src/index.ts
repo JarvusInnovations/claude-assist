@@ -11,7 +11,7 @@
  * - GOOGLE_CLIENT_SECRET: OAuth client secret
  *
  * Optional environment variables:
- * - GOOGLE_REDIRECT_URI: OAuth redirect URI (default: http://localhost:3000/google/auth/callback)
+ * - GOOGLE_REDIRECT_URI: OAuth redirect URI (default: http://localhost:2529/google/auth/callback)
  * - TRIAGE_CONCURRENCY: Number of concurrent triage operations (default: 5)
  * - ANTHROPIC_API_KEY: Required for AI-powered triage
  */
@@ -37,7 +37,7 @@ export default createPlugin('google', async (fastify: FastifyInstance, _options:
   // Read configuration from environment variables
   const clientId = process.env.GOOGLE_CLIENT_ID;
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-  const redirectUri = process.env.GOOGLE_REDIRECT_URI || 'http://localhost:3000/google/auth/callback';
+  const redirectUri = process.env.GOOGLE_REDIRECT_URI || 'http://localhost:2529/google/auth/callback';
   const triageConcurrency = parseInt(process.env.TRIAGE_CONCURRENCY || '5', 10);
 
   if (!clientId || !clientSecret) {
