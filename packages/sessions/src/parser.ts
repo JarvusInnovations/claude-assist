@@ -89,10 +89,10 @@ export function parseTranscript(
           cacheReadTokens += usage.cache_read_input_tokens ?? 0;
 
           // Per-model tracking
-          if (model && modelTokens[model]) {
-            modelTokens[model].input += usage.input_tokens ?? 0;
-            modelTokens[model].output += usage.output_tokens ?? 0;
-            modelTokens[model].cacheRead += usage.cache_read_input_tokens ?? 0;
+          if (model) {
+            modelTokens[model]!.input += usage.input_tokens ?? 0;
+            modelTokens[model]!.output += usage.output_tokens ?? 0;
+            modelTokens[model]!.cacheRead += usage.cache_read_input_tokens ?? 0;
           }
         }
 

@@ -186,7 +186,7 @@ export interface SessionRecord {
   /** Models used in this session */
   models_used: string[];
   /** Per-model token breakdown */
-  model_tokens: Record<string, { input: number; output: number; cache_read: number }>;
+  model_tokens: Record<string, ModelTokens>;
 }
 
 /**

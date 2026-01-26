@@ -35,7 +35,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       offset?: string;
       include_empty?: string;
     };
-  }>('/sessions', async (request) => {
+  }>('/sessions', async (request, reply) => {
     const {
       search,
       days = '30',
@@ -58,6 +58,15 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
     // Parse absolute date filters (ISO 8601)
     const sinceDate = since ? new Date(since) : null;
     const untilDate = until ? new Date(until) : null;
+
+    // Validate date formats
+    if (sinceDate && isNaN(sinceDate.getTime())) {
+      return reply.status(400).send({ error: 'Invalid since date format' });
+    }
+    if (untilDate && isNaN(untilDate.getTime())) {
+      return reply.status(400).send({ error: 'Invalid until date format' });
+    }
+
     const useDateRange = sinceDate || untilDate;
     const foreverMode = forever === 'true';
 
@@ -264,7 +273,8 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
     const topModels = await fastify.sql`
       SELECT model, COUNT(*)::int as session_count,
         COALESCE(SUM((s.model_tokens->model->>'input')::bigint), 0)::bigint as input_tokens,
-        COALESCE(SUM((s.model_tokens->model->>'output')::bigint), 0)::bigint as output_tokens
+        COALESCE(SUM((s.model_tokens->model->>'output')::bigint), 0)::bigint as output_tokens,
+        COALESCE(SUM((s.model_tokens->model->>'cacheRead')::bigint), 0)::bigint as cache_read_tokens
       FROM sessions.sessions s
       JOIN sessions.machines m ON s.machine_id = m.id,
       LATERAL jsonb_array_elements_text(s.models_used) as model
