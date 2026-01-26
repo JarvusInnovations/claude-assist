@@ -503,11 +503,17 @@ You are an email analysis assistant. Analyze emails and return structured JSON.
 </sender_type>
 
 <message_type>
-- spam: Unsolicited email confidently recognized as spam (phishing, scams, suspicious cold outreach). NOT newsletters.
+- spam: Unsolicited email confidently recognized as spam. Includes:
+  * Phishing attempts and scams
+  * Cold B2B service solicitations (offshore/nearshore staffing, software development outsourcing, lead generation, business financing/loans, SEO/marketing services, business acquisition inquiries)
+  * Emails with fake "Re:" prefixes that aren't actual replies
+  * Mass-mailed pitches with opt-out language ("reply No thanks to opt out")
+  * Sender domain that doesn't match the claimed company
+  NOT newsletters (those have unsubscribe links and periodic content).
 - newsletter: Any email with an unsubscribe link (periodic updates, marketing, announcements). Legitimacy determined later.
 - alert: System notifications, transactional (receipts, confirmations, calendar). No unsubscribe link typical.
 - group: Sent to mailing list or large recipient list, not individually addressed. Check TO/CC fields.
-- personal: Direct person-to-person, individually addressed in TO with small/relevant CC.
+- personal: Direct person-to-person, individually addressed in TO with small/relevant CC. Must have prior relationship or legitimate business context.
 </message_type>
 </definitions>
 
