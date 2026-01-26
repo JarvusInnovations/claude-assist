@@ -195,7 +195,7 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
     // Sync and Triage
     // ==========================================
 
-    // POST /google/sync - Trigger email sync
+    // POST /google/sync - Trigger email sync (async, returns immediately)
     fastify.post<{
       Body?: { account?: string; full?: boolean };
     }>('/google/sync', async (request) => {
@@ -208,30 +208,47 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
           ${account ? fastify.sql`AND identifier = ${account}` : fastify.sql``}
       `;
 
-      const results: Record<string, unknown> = {};
+      if (accounts.length === 0) {
+        return { message: 'No accounts found to sync', started: [] };
+      }
+
+      // Check which accounts are already syncing
+      const alreadySyncing: string[] = [];
+      const starting: string[] = [];
 
       for (const acc of accounts) {
-        try {
-          const result = full
-            ? await syncService.syncFull(acc.id)
-            : await syncService.syncIncremental(acc.id);
-          results[acc.identifier] = result;
+        const status = syncService.getSyncStatus(acc.id);
+        if (status.syncing) {
+          alreadySyncing.push(acc.identifier);
+        } else {
+          starting.push(acc.identifier);
+          // Fire and forget - don't await
+          const syncPromise = full
+            ? syncService.syncFull(acc.id)
+            : syncService.syncIncremental(acc.id);
 
-          // Trigger triage if new emails
-          if (triageService && result.messagesIngested > 0) {
-            fastify.log.info(
-              { account: acc.identifier, newEmails: result.messagesIngested },
-              'Queuing triage for new emails'
-            );
-          }
-        } catch (error) {
-          results[acc.identifier] = {
-            error: error instanceof Error ? error.message : String(error),
-          };
+          syncPromise
+            .then((result) => {
+              fastify.log.info(
+                { account: acc.identifier, result },
+                'Sync complete'
+              );
+            })
+            .catch((error) => {
+              fastify.log.error(
+                { account: acc.identifier, error },
+                'Sync failed'
+              );
+            });
         }
       }
 
-      return results;
+      return {
+        message: `Sync started for ${starting.length} account(s). Check GET /google/accounts for progress.`,
+        started: starting,
+        alreadySyncing,
+        type: full ? 'full' : 'incremental',
+      };
     });
 
     // Triage endpoints (only if triageService available)
@@ -252,15 +269,15 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
         }
       );
 
-      // POST /google/triage - Triage pending emails
+      // POST /google/triage - Triage pending emails (async, returns immediately)
       fastify.post<{
         Body?: { account?: string; limit?: number };
       }>('/google/triage', async (request) => {
         const { account, limit = 50 } = request.body || {};
 
         // Get pending emails
-        const pending = await fastify.sql<{ id: number }[]>`
-          SELECT e.id FROM google.emails e
+        const pending = await fastify.sql<{ id: number; account_id: number }[]>`
+          SELECT e.id, e.account_id FROM google.emails e
           JOIN google.accounts a ON e.account_id = a.id
           WHERE e.workflow_status = 'new'
             ${account ? fastify.sql`AND a.identifier = ${account}` : fastify.sql``}
@@ -272,19 +289,39 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
           return { message: 'No pending emails to triage', count: 0 };
         }
 
-        const results = await triageService.triageBatch(
-          pending.map((e) => e.id)
+        // Check if any accounts are already triaging
+        const accountIds = [...new Set(pending.map((e) => e.account_id))];
+        const alreadyTriaging = accountIds.filter(
+          (id) => triageService.getTriageStatus(id).triaging
         );
 
-        const success = results.filter((r) => r.success).length;
-        const failed = results.filter((r) => !r.success).length;
+        if (alreadyTriaging.length === accountIds.length) {
+          return {
+            message: 'Triage already in progress for all accounts',
+            count: 0,
+            alreadyTriaging: alreadyTriaging.length,
+          };
+        }
+
+        // Fire and forget - don't await
+        triageService
+          .triageBatch(pending.map((e) => e.id))
+          .then((results) => {
+            const success = results.filter((r) => r.success).length;
+            const failed = results.filter((r) => !r.success).length;
+            fastify.log.info(
+              { count: pending.length, success, failed },
+              'Triage batch complete'
+            );
+          })
+          .catch((error) => {
+            fastify.log.error({ error }, 'Triage batch failed');
+          });
 
         return {
-          message: `Triaged ${success} emails, ${failed} failed`,
+          message: `Triage started for ${pending.length} email(s). Check GET /google/accounts for progress.`,
           count: pending.length,
-          success,
-          failed,
-          results,
+          accountIds,
         };
       });
 
