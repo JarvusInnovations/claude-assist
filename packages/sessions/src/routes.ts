@@ -104,7 +104,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
           ${excludeEmpty ? fastify.sql`AND s.output_tokens > 0` : fastify.sql``}
           ${machine ? fastify.sql`AND m.machine_id = ${machine}` : fastify.sql``}
           ${project ? fastify.sql`AND s.project_path ILIKE ${'%' + project + '%'}` : fastify.sql``}
-          ${tools ? fastify.sql`AND s.tools_used ?| ARRAY[${fastify.sql(tools.split(',').map(t => t.trim()))}]::text[]` : fastify.sql``}
+          ${tools ? fastify.sql`AND s.tools_used ?| ${tools.split(',').map(t => t.trim())}` : fastify.sql``}
         ORDER BY rank DESC, s.started_at DESC
         LIMIT ${limitNum} OFFSET ${offsetNum}
       `;
@@ -137,7 +137,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
           ${excludeEmpty ? fastify.sql`AND s.output_tokens > 0` : fastify.sql``}
           ${machine ? fastify.sql`AND m.machine_id = ${machine}` : fastify.sql``}
           ${project ? fastify.sql`AND s.project_path ILIKE ${'%' + project + '%'}` : fastify.sql``}
-          ${tools ? fastify.sql`AND s.tools_used ?| ARRAY[${fastify.sql(tools.split(',').map(t => t.trim()))}]::text[]` : fastify.sql``}
+          ${tools ? fastify.sql`AND s.tools_used ?| ${tools.split(',').map(t => t.trim())}` : fastify.sql``}
         ORDER BY s.started_at DESC
         LIMIT ${limitNum} OFFSET ${offsetNum}
       `;

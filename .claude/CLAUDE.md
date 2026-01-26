@@ -85,14 +85,14 @@ docker-compose up -d             # Full stack
 
 ### PostgreSQL with postgres.js
 
-**JSONB array containment** - use explicit array syntax:
+**JSONB array containment** - pass array directly:
 
 ```typescript
-// Correct - explicit ARRAY[]::text[] cast
-fastify.sql`AND tools_used ?| ARRAY[${fastify.sql(toolsArray)}]::text[]`
-
-// Wrong - may not serialize correctly
+// Correct - pass array directly, postgres.js handles parameterization
 fastify.sql`AND tools_used ?| ${toolsArray}`
+
+// Wrong - nested fastify.sql() treats values as identifiers (column names)
+fastify.sql`AND tools_used ?| ARRAY[${fastify.sql(toolsArray)}]::text[]`
 ```
 
 **Array indexing** - use `!` assertion after length check:
