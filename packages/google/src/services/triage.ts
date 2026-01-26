@@ -458,7 +458,8 @@ export class TriageService {
     // Turn 2: Newsletter unsubscribe link refinement
     if (
       analysis.message_type === 'newsletter' &&
-      !analysis.unsubscribe_link &&
+      !analysis.unsubscribe_link?.startsWith('http://') &&
+      !analysis.unsubscribe_link?.startsWith('https://') &&
       email.body_html
     ) {
       this.log.info(
@@ -467,8 +468,9 @@ export class TriageService {
       );
       analysis = await conversation.sendMessage(
         `<refinement>
-The email was classified as a newsletter but no unsubscribe link was found in the text body.
-Please examine the HTML body below and extract the unsubscribe URL if present.
+The email was classified as a newsletter but no valid unsubscribe URL was found.
+Please examine the HTML body below and extract the actual unsubscribe URL (the href attribute starting with http:// or https://).
+Set unsubscribe_link to the full URL string, not descriptive text.
 Return your updated complete analysis.
 
 <html_body>
@@ -515,7 +517,7 @@ You are an email analysis assistant. Analyze emails and return structured JSON.
 3. Identify any action items implied or explicitly requested of the recipient
 4. Classify sender_type based on whether a human composed the message
 5. Classify message_type based on content and sender patterns
-6. Extract unsubscribe link if present (look for "unsubscribe" URLs in body/headers) - presence indicates newsletter
+6. Extract unsubscribe link ONLY if you find an actual URL (must start with http:// or https://). If you see mention of unsubscribing but cannot find the URL in the text body, leave unsubscribe_link as null - a second analysis turn with full HTML content will be attempted.
 7. Write a brief rationale explaining your classification
 </instructions>
 
