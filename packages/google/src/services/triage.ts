@@ -683,7 +683,7 @@ ${email.body_text || email.snippet || '(empty)'}
   ): Promise<TriageResult> {
     await this.sql`
       UPDATE google.emails SET
-        analysis = ${JSON.stringify(analysis)}::jsonb,
+        analysis = ${analysis as any},
         triage_confidence = 0.8,
         rule_matched_id = ${ruleMatchedId ?? null},
         workflow_status = 'triaged',

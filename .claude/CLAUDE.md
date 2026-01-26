@@ -110,6 +110,28 @@ if (rows.length > 0) {
 const tokens = parseInt(row.output_tokens, 10);
 ```
 
+**JSONB writes** - pass objects directly, never use JSON.stringify:
+
+```typescript
+// Correct - postgres.js auto-serializes objects to JSONB
+sql`UPDATE table SET data = ${myObject}`
+
+// Wrong - double-serializes, stores escaped JSON string
+sql`UPDATE table SET data = ${JSON.stringify(myObject)}::jsonb`
+```
+
+**JSONB reads** - postgres.js may return as string, parse if needed:
+
+```typescript
+function parseJsonField<T>(value: T | string | null): T | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string') {
+    try { return JSON.parse(value) as T; } catch { return null; }
+  }
+  return value as T;
+}
+```
+
 ### Optional Services
 
 Services requiring external API keys check env and gracefully degrade:

@@ -18,6 +18,21 @@ import type {
   MessageType,
 } from '../types.js';
 
+/**
+ * Parse a JSONB field that may come back as a string from postgres.js
+ */
+function parseJsonField<T>(value: T | string | null): T | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value) as T;
+    } catch {
+      return null;
+    }
+  }
+  return value as T;
+}
+
 // Ensure module augmentation is applied
 declare module 'fastify' {
   interface FastifyInstance {
@@ -86,7 +101,12 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
         LIMIT ${limitNum} OFFSET ${offsetNum}
       `;
 
-      return emails;
+      // Parse JSONB fields that come back as strings
+      return emails.map((email) => ({
+        ...email,
+        analysis: parseJsonField(email.analysis),
+        extractions: parseJsonField(email.extractions),
+      }));
     });
 
     // GET /google/emails/:id - Get single email with full details
@@ -106,7 +126,12 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
           return reply.status(404).send({ error: 'Email not found' });
         }
 
-        return email;
+        // Parse JSONB fields
+        return {
+          ...email,
+          analysis: parseJsonField(email.analysis),
+          extractions: parseJsonField(email.extractions),
+        };
       }
     );
 
@@ -365,7 +390,12 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
         return reply.status(404).send({ error: 'Email not found' });
       }
 
-      return email;
+      // Parse JSONB fields
+      return {
+        ...email,
+        analysis: parseJsonField(email.analysis),
+        extractions: parseJsonField(email.extractions),
+      };
     });
 
     // POST /google/emails/:id/execute - Execute planned actions
