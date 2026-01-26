@@ -73,7 +73,9 @@ export class GmailSyncService {
       // Add start date filter if configured
       if (settings?.sync_start_date) {
         // Gmail uses YYYY/MM/DD format for after:
-        const dateStr = settings.sync_start_date.replace(/-/g, '/');
+        // Handle both Date objects (from postgres.js) and strings
+        const date = new Date(settings.sync_start_date as unknown as string | Date);
+        const dateStr = date.toISOString().split('T')[0]!.replace(/-/g, '/');
         query += ` after:${dateStr}`;
       }
 
