@@ -76,4 +76,14 @@ curl -X POST http://localhost:3000/google/accounts/<id>/aliases \
 
 ### 8. Complete
 
-Summarize the configured account and ask if they want to trigger an initial sync.
+Summarize the configured account and ask: "Would you like me to trigger an initial sync now?"
+
+If yes, trigger a full sync:
+
+```bash
+curl -X POST http://localhost:3000/google/sync \
+  -H "Content-Type: application/json" \
+  -d '{"account": "<identifier>", "full": true}'
+```
+
+This will fetch untriaged inbox emails and queue them for triage.
