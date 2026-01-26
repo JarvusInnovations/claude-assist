@@ -70,17 +70,8 @@ export interface EmailRecord {
   body_html: string | null;
   has_attachments: boolean;
 
-  // Analysis
-  email_type: EmailType | null;
-  domain: EmailDomain | null;
-  contact_file: string | null;
-  thread_context: ThreadContext | null;
-  overview: string | null;
-  potential_action_items: ActionItem[] | null;
-  potential_extractions: string[] | null;
-  digest_section: DigestSection | null;
-  interesting: boolean | null;
-  analysis_notes: string | null;
+  // Consolidated AI Analysis
+  analysis: EmailAnalysis | null;
 
   // Plan
   planned_labels: string[] | null;
@@ -136,16 +127,6 @@ export type WorkflowStatus =
   | 'triaged'
   | 'reviewed'
   | 'executed';
-
-export interface ThreadContext {
-  parent_labels?: string[];
-  parent_summary?: string;
-}
-
-export interface ActionItem {
-  type: string;
-  description: string;
-}
 
 export interface Extraction {
   type: ExtractionType;
@@ -238,17 +219,27 @@ export interface TriageResult {
   error?: string;
 }
 
+// ============================================
+// New Email Analysis Schema (Phase 1: Message-only analysis)
+// ============================================
+
+export type SenderType = 'automated' | 'human';
+export type MessageType = 'spam' | 'newsletter' | 'alert' | 'group' | 'personal';
+
+/**
+ * Consolidated AI analysis output.
+ * Extracts only what can be reliably determined from message content alone.
+ * Domain-specific classification happens in later phases.
+ */
 export interface EmailAnalysis {
-  email_type: EmailType;
-  domain: EmailDomain;
-  overview: string;
-  potential_action_items: ActionItem[];
-  potential_extractions: string[];
-  digest_section?: DigestSection;
-  interesting?: boolean;
-  planned_labels: string[];
-  gmail_action: GmailAction;
-  extractions: Extraction[];
+  overview: string;                   // 1-2 sentence summary
+  mentioned_people: string[];         // Names of people mentioned
+  mentioned_organizations: string[];  // Names of organizations mentioned
+  potential_action_items: string[];   // Plain text action items
+  sender_type: SenderType;            // automated or human
+  message_type: MessageType;          // spam, newsletter, alert, group, personal
+  unsubscribe_link: string | null;    // Extracted unsubscribe URL if present
+  rationale: string;                  // Explanation of classification
 }
 
 // ============================================
@@ -308,8 +299,7 @@ export interface CreateTopicPayload {
 export interface EmailQueryParams {
   account?: string;
   workflow_status?: WorkflowStatus;
-  domain?: EmailDomain;
-  digest_section?: DigestSection;
+  message_type?: MessageType;
   search?: string;
   days?: number;
   limit?: number;

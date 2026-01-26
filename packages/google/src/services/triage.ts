@@ -19,13 +19,19 @@ import type {
   UserAlias,
   TriageResult,
   EmailAnalysis,
-  EmailType,
-  EmailDomain,
   GmailAction,
-  DigestSection,
-  ActionItem,
-  Extraction,
 } from '../types.js';
+
+/**
+ * Error thrown when JSON parsing fails.
+ * Includes the raw text for retry feedback.
+ */
+class JsonParseError extends Error {
+  constructor(message: string, public rawText: string) {
+    super(message);
+    this.name = 'JsonParseError';
+  }
+}
 
 // Settings fields from GoogleAccount used for triage
 type AccountSettings = Pick<
@@ -174,7 +180,7 @@ export class TriageService {
       // Step 3: Check thread context
       const threadContext = await this.getThreadContext(email);
 
-      // Step 4: Multi-turn Haiku analysis with dynamic prompt
+      // Step 4: Haiku analysis with XML-structured prompts and retry
       const analysis = await this.runHaikuAnalysis(email, {
         ruleMatch,
         threadContext,
@@ -182,13 +188,7 @@ export class TriageService {
         aliases,
       });
 
-      // Step 5: Topics of Interest scoring (for RFPs/newsletters)
-      if (ruleMatch?.assess_against_topics) {
-        const topics = await this.getTopicsOfInterest(email.account_id);
-        analysis.interesting = this.scoreAgainstTopics(email, analysis, topics);
-      }
-
-      // Step 6: Apply analysis to database
+      // Step 5: Apply analysis to database
       return this.applyTriageResult(emailId, analysis, ruleMatch?.id);
     } catch (error) {
       const errorMessage =
@@ -395,12 +395,12 @@ export class TriageService {
 
     return {
       parentLabels: parent.planned_labels ?? undefined,
-      parentSummary: parent.overview ?? undefined,
+      parentSummary: parent.analysis?.overview ?? undefined,
     };
   }
 
   /**
-   * Run multi-turn Haiku analysis
+   * Run Haiku analysis with automatic retry on JSON parse failures
    */
   private async runHaikuAnalysis(
     email: EmailRecord,
@@ -414,166 +414,207 @@ export class TriageService {
     const systemPrompt = this.buildSystemPrompt(context.settings, context.aliases);
     const userMessage = this.buildEmailPrompt(email, context);
 
-    const response = await this.client.messages.create({
-      model: this.model,
-      max_tokens: this.maxTokens,
-      system: systemPrompt,
-      messages: [
-        {
-          role: 'user',
-          content: userMessage,
-        },
-      ],
-    });
+    // Build initial messages array
+    const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
+      { role: 'user', content: userMessage },
+    ];
 
-    // Extract text response
-    const textContent = response.content.find((c) => c.type === 'text');
-    if (!textContent || textContent.type !== 'text') {
-      throw new Error('No text response from AI');
-    }
+    const maxRetries = 1;
+    let lastError: Error | null = null;
 
-    // Parse JSON from response
-    const analysis = this.parseAnalysisResponse(textContent.text);
-    return analysis;
-  }
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const response = await this.client.messages.create({
+          model: this.model,
+          max_tokens: this.maxTokens,
+          system: systemPrompt,
+          messages,
+        });
 
-  /**
-   * Build dynamic system prompt from database config
-   */
-  private buildSystemPrompt(
-    settings: AccountSettings | null,
-    aliases: UserAlias[]
-  ): string {
-    const ownerAliases = aliases.filter((a) => a.is_owner).map((a) => a.alias);
-    const otherAliases = aliases.filter((a) => !a.is_owner);
+        // Extract text response
+        const textContent = response.content.find((c) => c.type === 'text');
+        if (!textContent || textContent.type !== 'text') {
+          throw new Error('No text response from AI');
+        }
 
-    let aliasRules = '';
-    if (ownerAliases.length > 0) {
-      aliasRules = `
-NAME DISAMBIGUATION (from account configuration):
-- These names refer to the account owner: ${ownerAliases.map((a) => `"${a}"`).join(', ')}`;
+        // Parse JSON from XML-tagged response
+        return this.parseAnalysisFromXml(textContent.text);
+      } catch (error) {
+        lastError = error as Error;
 
-      if (otherAliases.length > 0) {
-        aliasRules += `
-- These names refer to OTHER people (NOT the account owner):`;
-        for (const alias of otherAliases) {
-          aliasRules += `\n  - "${alias.alias}" = ${alias.refers_to}`;
+        // If it's a JSON parse error and we have retries left, add feedback for correction
+        if (attempt < maxRetries && error instanceof JsonParseError) {
+          this.log.warn(
+            { emailId: email.id, attempt, error: error.message },
+            'JSON parse failed, retrying with error feedback'
+          );
+
+          // Add the failed response and error feedback for the next attempt
+          messages.push(
+            { role: 'assistant', content: error.rawText },
+            {
+              role: 'user',
+              content: `<error>JSON parse failed: ${error.message}</error>
+
+Please fix the JSON syntax and return ONLY the corrected JSON inside <analysis> tags.`,
+            }
+          );
         }
       }
     }
 
-    return `You are an email triage assistant. Analyze emails and produce structured JSON analysis.
-
-COMMITMENT EXTRACTION RULES (CRITICAL):
-- Only extract commitments FOR the account owner (the email recipient)
-- Check TO field: TO=owner's commitments, CC=FYI only, TO others=not theirs
-${aliasRules}
-- Must include quoted_text from the email showing the commitment
-- When uncertain, don't extract - better to mark for review
-
-${settings?.triage_system_instructions || ''}
-
-ANALYSIS STRUCTURE (respond with ONLY valid JSON):
-{
-  "email_type": "personal" | "automated",
-  "domain": "client" | "finance" | "transit" | "infrastructure" | "opportunity" | "project" | "internal" | "marketing",
-  "overview": "2-4 sentence summary",
-  "potential_action_items": [{"type": "commitment" | "backlog" | "follow-up", "description": "..."}],
-  "potential_extractions": ["commitment", "backlog", "contact_update"],
-  "digest_section": "calendar" | "financial" | "opportunities" | "newsletters" | null,
-  "planned_labels": ["d/Domain", "s/Type", "p/Priority", "TODO/Action"],
-  "gmail_action": "leave" | "archive" | "spam",
-  "extractions": [{
-    "type": "commitment",
-    "description": "...",
-    "due_date": "YYYY-MM-DD or null",
-    "due_date_note": "...",
-    "priority": "high" | "medium" | "low",
-    "quoted_text": "exact text from email",
-    "sender": "who assigned this"
-  }]
-}
-
-LABEL CONVENTIONS:
-- d/ = domain (Client, Finance, Transit, Infrastructure, Opportunity, Project, Internal, Marketing)
-- s/ = source (Personal, Automated)
-- p/ = priority (High, Normal, Low)
-- TODO/ = action needed (Respond, Review, Follow-up, Pay)
-
-GMAIL ACTION GUIDE:
-- "leave": Requires attention or response from owner
-- "archive": Routine, informational, or handled
-- "spam": Unwanted, unsubscribe-worthy`;
+    // All retries exhausted
+    throw lastError;
   }
 
   /**
-   * Build the email content prompt
+   * Build dynamic system prompt with XML tags for structured output
+   */
+  private buildSystemPrompt(
+    _settings: AccountSettings | null,
+    _aliases: UserAlias[]
+  ): string {
+    return `<role>
+You are an email analysis assistant. Analyze emails and return structured JSON.
+</role>
+
+<definitions>
+<sender_type>
+- automated: System-generated, no human composed (receipts, alerts, notifications, auto-responders)
+- human: Human composed, regardless of sending tool (CRM, ticketing system, etc.)
+</sender_type>
+
+<message_type>
+- spam: Unsolicited email confidently recognized as spam (phishing, scams, suspicious cold outreach). NOT newsletters.
+- newsletter: Any email with an unsubscribe link (periodic updates, marketing, announcements). Legitimacy determined later.
+- alert: System notifications, transactional (receipts, confirmations, calendar). No unsubscribe link typical.
+- group: Sent to mailing list or large recipient list, not individually addressed. Check TO/CC fields.
+- personal: Direct person-to-person, individually addressed in TO with small/relevant CC.
+</message_type>
+</definitions>
+
+<instructions>
+1. Read the email metadata and body carefully
+2. Extract mentioned people and organizations by name
+3. Identify any action items implied or explicitly requested of the recipient
+4. Classify sender_type based on whether a human composed the message
+5. Classify message_type based on content and sender patterns
+6. Extract unsubscribe link if present (look for "unsubscribe" URLs in body/headers) - presence indicates newsletter
+7. Write a brief rationale explaining your classification
+</instructions>
+
+<response_format>
+Return ONLY a JSON object inside <analysis> tags. No markdown, no explanation outside the tags.
+
+<analysis>
+{
+  "overview": "1-2 sentence overview of message contents",
+  "mentioned_people": ["Name 1", "Name 2"],
+  "mentioned_organizations": ["Org 1"],
+  "potential_action_items": ["Action 1", "Action 2"],
+  "sender_type": "automated|human",
+  "message_type": "spam|newsletter|alert|group|personal",
+  "unsubscribe_link": "https://..." or null,
+  "rationale": "Brief explanation of classification"
+}
+</analysis>
+</response_format>`;
+  }
+
+  /**
+   * Build the email content prompt with XML structure
    */
   private buildEmailPrompt(
     email: EmailRecord,
-    context: {
+    _context: {
       ruleMatch: TriageRule | null;
       threadContext: { parentLabels?: string[]; parentSummary?: string } | null;
     }
   ): string {
-    let prompt = `Analyze this email and provide JSON analysis:
+    // Build from field with name if available
+    const fromField = email.from_name
+      ? `${email.from_name} <${email.from_address}>`
+      : email.from_address || 'unknown';
 
-FROM: ${email.from_name ? `${email.from_name} <${email.from_address}>` : email.from_address}
-TO: ${email.to_addresses?.join(', ') || 'unknown'}
-CC: ${email.cc_addresses?.join(', ') || 'none'}
-DATE: ${email.date?.toISOString() || 'unknown'}
-SUBJECT: ${email.subject || '(no subject)'}
-
-BODY:
-${email.body_text || email.snippet || '(empty)'}`;
-
-    if (context.threadContext) {
-      prompt += `
-
-THREAD CONTEXT:
-- Previous labels: ${context.threadContext.parentLabels?.join(', ') || 'none'}
-- Previous summary: ${context.threadContext.parentSummary || 'none'}`;
-    }
-
-    if (context.ruleMatch) {
-      prompt += `
-
-RULE HINT: This email matched rule "${context.ruleMatch.name}"
-- Suggested digest section: ${context.ruleMatch.digest_section || 'none'}
-- Suggested domain: ${context.ruleMatch.assigned_domain || 'analyze'}`;
-    }
-
-    return prompt;
+    return `<email>
+<from>${fromField}</from>
+<to>${email.to_addresses?.join(', ') || 'unknown'}</to>
+<cc>${email.cc_addresses?.join(', ') || ''}</cc>
+<bcc></bcc>
+<date>${email.date?.toISOString() || 'unknown'}</date>
+<subject>${email.subject || '(no subject)'}</subject>
+<body>
+${email.body_text || email.snippet || '(empty)'}
+</body>
+</email>`;
   }
 
   /**
-   * Parse analysis JSON from AI response
+   * Parse analysis JSON from XML-tagged AI response
    */
-  private parseAnalysisResponse(text: string): EmailAnalysis {
-    // Extract JSON from markdown code block if present
-    const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-    const jsonStr = jsonMatch ? jsonMatch[1]! : text;
+  private parseAnalysisFromXml(text: string): EmailAnalysis {
+    // Extract content between <analysis> tags
+    const match = text.match(/<analysis>\s*([\s\S]*?)\s*<\/analysis>/);
+
+    if (!match) {
+      throw new JsonParseError(
+        'No <analysis> tags found in response',
+        text
+      );
+    }
+
+    const jsonStr = match[1]!.trim();
 
     try {
-      const parsed = JSON.parse(jsonStr.trim());
-
-      return {
-        email_type: parsed.email_type || 'personal',
-        domain: parsed.domain || 'internal',
-        overview: parsed.overview || '',
-        potential_action_items: parsed.potential_action_items || [],
-        potential_extractions: parsed.potential_extractions || [],
-        digest_section: parsed.digest_section || undefined,
-        interesting: parsed.interesting,
-        planned_labels: parsed.planned_labels || [],
-        gmail_action: parsed.gmail_action || 'leave',
-        extractions: parsed.extractions || [],
-      };
+      const parsed = JSON.parse(jsonStr);
+      return this.validateAnalysis(parsed);
     } catch (error) {
-      this.log.warn({ text, error }, 'Failed to parse AI response as JSON');
-      // Re-throw to let triageEmail record the error properly
-      throw new Error(`Failed to parse AI response: ${error instanceof Error ? error.message : String(error)}`);
+      throw new JsonParseError(
+        `JSON parse error: ${error instanceof Error ? error.message : String(error)}`,
+        text
+      );
     }
+  }
+
+  /**
+   * Validate and normalize the parsed analysis object
+   */
+  private validateAnalysis(parsed: Record<string, unknown>): EmailAnalysis {
+    // Validate sender_type
+    const senderType = parsed.sender_type;
+    if (senderType !== 'automated' && senderType !== 'human') {
+      throw new JsonParseError(
+        `Invalid sender_type: ${senderType}. Must be 'automated' or 'human'.`,
+        JSON.stringify(parsed)
+      );
+    }
+
+    // Validate message_type
+    const messageType = parsed.message_type;
+    const validMessageTypes = ['spam', 'newsletter', 'alert', 'group', 'personal'];
+    if (!validMessageTypes.includes(messageType as string)) {
+      throw new JsonParseError(
+        `Invalid message_type: ${messageType}. Must be one of: ${validMessageTypes.join(', ')}`,
+        JSON.stringify(parsed)
+      );
+    }
+
+    return {
+      overview: typeof parsed.overview === 'string' ? parsed.overview : '',
+      mentioned_people: Array.isArray(parsed.mentioned_people)
+        ? parsed.mentioned_people.filter((p): p is string => typeof p === 'string')
+        : [],
+      mentioned_organizations: Array.isArray(parsed.mentioned_organizations)
+        ? parsed.mentioned_organizations.filter((o): o is string => typeof o === 'string')
+        : [],
+      potential_action_items: Array.isArray(parsed.potential_action_items)
+        ? parsed.potential_action_items.filter((a): a is string => typeof a === 'string')
+        : [],
+      sender_type: senderType as 'automated' | 'human',
+      message_type: messageType as 'spam' | 'newsletter' | 'alert' | 'group' | 'personal',
+      unsubscribe_link: typeof parsed.unsubscribe_link === 'string' ? parsed.unsubscribe_link : null,
+      rationale: typeof parsed.rationale === 'string' ? parsed.rationale : '',
+    };
   }
 
   /**
@@ -633,7 +674,7 @@ RULE HINT: This email matched rule "${context.ruleMatch.name}"
   }
 
   /**
-   * Apply triage analysis to database
+   * Apply triage analysis to database (single JSONB column)
    */
   private async applyTriageResult(
     emailId: number,
@@ -642,16 +683,7 @@ RULE HINT: This email matched rule "${context.ruleMatch.name}"
   ): Promise<TriageResult> {
     await this.sql`
       UPDATE google.emails SET
-        email_type = ${analysis.email_type},
-        domain = ${analysis.domain},
-        overview = ${analysis.overview},
-        potential_action_items = ${JSON.stringify(analysis.potential_action_items)},
-        potential_extractions = ${analysis.potential_extractions},
-        digest_section = ${analysis.digest_section ?? null},
-        interesting = ${analysis.interesting ?? null},
-        planned_labels = ${analysis.planned_labels},
-        gmail_action = ${analysis.gmail_action},
-        extractions = ${JSON.stringify(analysis.extractions)},
+        analysis = ${JSON.stringify(analysis)}::jsonb,
         triage_confidence = 0.8,
         rule_matched_id = ${ruleMatchedId ?? null},
         workflow_status = 'triaged',
@@ -661,7 +693,10 @@ RULE HINT: This email matched rule "${context.ruleMatch.name}"
       WHERE id = ${emailId}
     `;
 
-    this.log.info({ emailId, analysis: analysis.overview }, 'AI triage complete');
+    this.log.info(
+      { emailId, overview: analysis.overview, messageType: analysis.message_type },
+      'AI triage complete'
+    );
 
     return {
       emailId,

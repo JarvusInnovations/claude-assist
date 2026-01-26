@@ -38,17 +38,8 @@ CREATE TABLE google.emails (
     body_html TEXT,
     has_attachments BOOLEAN DEFAULT false,
 
-    -- Analysis (from Haiku triage)
-    email_type VARCHAR(20),      -- 'personal' | 'automated'
-    domain VARCHAR(20),          -- 'client' | 'finance' | 'transit' | ...
-    contact_file TEXT,           -- Soft link to knowledge base contact
-    thread_context JSONB,        -- { parent_labels: [], parent_summary: "" }
-    overview TEXT,               -- 2-4 sentence summary
-    potential_action_items JSONB, -- [{type: "commitment", description: "desc"}, ...]
-    potential_extractions TEXT[], -- ['commitment', 'backlog', 'contact_update']
-    digest_section VARCHAR(20),  -- 'calendar' | 'financial' | 'opportunities' | 'newsletters'
-    interesting BOOLEAN,         -- RFP/newsletter relevance (null if not applicable)
-    analysis_notes TEXT,         -- Contextual observations
+    -- Consolidated AI Analysis (Phase 1: message-only extraction)
+    analysis JSONB,              -- {overview, mentioned_people, mentioned_organizations, potential_action_items, sender_type, message_type, unsubscribe_link, rationale}
 
     -- Plan (editable during review)
     planned_labels TEXT[],       -- ['d/Client', 's/Personal', 'p/High', 'TODO/Respond']
@@ -83,24 +74,22 @@ CREATE TABLE google.emails (
 CREATE INDEX idx_emails_account ON google.emails(account_id);
 CREATE INDEX idx_emails_date ON google.emails(date DESC);
 CREATE INDEX idx_emails_workflow ON google.emails(workflow_status);
-CREATE INDEX idx_emails_domain ON google.emails(domain);
 CREATE INDEX idx_emails_thread ON google.emails(thread_id);
-CREATE INDEX idx_emails_digest ON google.emails(digest_section) WHERE digest_section IS NOT NULL;
-CREATE INDEX idx_emails_interesting ON google.emails(interesting) WHERE interesting = true;
+CREATE INDEX idx_emails_analysis ON google.emails USING GIN(analysis);
 CREATE INDEX idx_emails_search ON google.emails USING GIN(search_vector);
 CREATE INDEX idx_emails_discovered ON google.emails(account_id) WHERE workflow_status = 'discovered';
 CREATE INDEX idx_emails_errors ON google.emails(account_id, last_error_at DESC) WHERE last_error IS NOT NULL;
 
--- Search trigger (weighted: subject/overview high, from/snippet medium, body low)
+-- Search trigger (weighted: subject high, from/snippet medium, body/analysis low)
 CREATE OR REPLACE FUNCTION google.update_email_search_vector()
 RETURNS TRIGGER AS $$
 BEGIN
   NEW.search_vector :=
     setweight(to_tsvector('english', COALESCE(NEW.subject, '')), 'A') ||
-    setweight(to_tsvector('english', COALESCE(NEW.overview, '')), 'A') ||
     setweight(to_tsvector('english', COALESCE(NEW.from_name, '')), 'B') ||
     setweight(to_tsvector('english', COALESCE(NEW.snippet, '')), 'B') ||
-    setweight(to_tsvector('english', COALESCE(NEW.body_text, '')), 'C');
+    setweight(to_tsvector('english', COALESCE(NEW.body_text, '')), 'C') ||
+    setweight(to_tsvector('english', COALESCE(NEW.analysis->>'overview', '')), 'B');
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
