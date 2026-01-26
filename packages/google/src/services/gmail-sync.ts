@@ -500,6 +500,9 @@ export class GmailSyncService {
           const email = await this.fetchMessage(gmail, row.message_id);
           await this.updateWithFullContent(row.id, email);
           fetched++;
+          // Update status in real-time
+          const status = this.activeSyncs.get(accountId);
+          if (status) status.fetched = fetched;
         } catch (error) {
           // Handle deleted messages gracefully
           if (
