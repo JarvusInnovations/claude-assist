@@ -303,7 +303,6 @@ export class SyncService {
           message_count = ${parsed.messageCount},
           claude_version = ${parsed.claudeVersion},
           models_used = ${this.sql.json(parsed.modelsUsed)},
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           model_tokens = ${this.sql.json(parsed.modelTokens as any)},
           synced_at = NOW()
         WHERE id = ${sessionId}::uuid AND machine_id = ${machineId}
@@ -341,7 +340,6 @@ export class SyncService {
         ${parsed.messageCount},
         ${parsed.claudeVersion},
         ${this.sql.json(parsed.modelsUsed)},
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         ${this.sql.json(parsed.modelTokens as any)}
       )
     `;
