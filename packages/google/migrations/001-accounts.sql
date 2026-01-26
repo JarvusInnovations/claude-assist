@@ -10,17 +10,19 @@ CREATE TABLE google.accounts (
     email VARCHAR(255) NOT NULL,
     display_name TEXT,
     oauth_credentials JSONB,  -- { access_token, refresh_token, token_type, expiry_date, scope }
-    history_id VARCHAR(50),   -- Gmail sync cursor for incremental sync
     is_primary BOOLEAN DEFAULT false,
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    last_sync_at TIMESTAMPTZ,
+    settings_updated_at TIMESTAMPTZ DEFAULT NOW(),
 
-    -- Account settings (merged from account_settings table)
-    triage_system_instructions TEXT,  -- Account-specific extraction rules for Haiku triage
-    label_prefix_tracking VARCHAR(20) DEFAULT 'AI',  -- AI/Triaged, etc.
-    label_prefix_todo VARCHAR(20) DEFAULT 'TODO',      -- TODO/Respond, etc.
-    sync_start_date DATE,             -- Only sync emails from this date forward
-    settings_updated_at TIMESTAMPTZ DEFAULT NOW()
+    -- Email sync settings
+    email_history_id VARCHAR(50),     -- Gmail sync cursor for incremental sync
+    email_last_sync_at TIMESTAMPTZ,
+    email_sync_start_date DATE,       -- Only sync emails from this date forward
+
+    -- Email triage settings
+    email_triage_instructions TEXT,   -- Account-specific rules for Haiku triage
+    email_label_prefix VARCHAR(20) DEFAULT 'AI',        -- AI/Triaged, etc.
+    email_label_prefix_todo VARCHAR(20) DEFAULT 'TODO'  -- TODO/Respond, etc.
 );
 
 -- User aliases for name disambiguation in commitment extraction

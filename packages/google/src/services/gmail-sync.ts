@@ -16,7 +16,7 @@ import type { GoogleAccount, SyncResult } from '../types.js';
 // Settings fields from GoogleAccount used for sync
 type AccountSettings = Pick<
   GoogleAccount,
-  'label_prefix_tracking' | 'sync_start_date'
+  'email_label_prefix' | 'email_sync_start_date'
 >;
 
 interface ParsedEmail {
@@ -138,7 +138,7 @@ export class GmailSyncService {
   private async doSyncFull(accountId: number): Promise<SyncResult> {
     const gmail = await this.authService.getGmailClient(accountId);
     const settings = await this.getAccountSettings(accountId);
-    const labelPrefix = settings?.label_prefix_tracking ?? 'AI';
+    const labelPrefix = settings?.email_label_prefix ?? 'AI';
 
     const result: SyncResult = {
       messagesScanned: 0,
@@ -153,10 +153,10 @@ export class GmailSyncService {
       let query = `in:inbox -label:${labelPrefix}/Triaged`;
 
       // Add start date filter if configured
-      if (settings?.sync_start_date) {
+      if (settings?.email_sync_start_date) {
         // Gmail uses YYYY/MM/DD format for after:
         // Handle both Date objects (from postgres.js) and strings
-        const date = new Date(settings.sync_start_date as unknown as string | Date);
+        const date = new Date(settings.email_sync_start_date as unknown as string | Date);
         const dateStr = date.toISOString().split('T')[0]!.replace(/-/g, '/');
         query += ` after:${dateStr}`;
       }
@@ -206,7 +206,7 @@ export class GmailSyncService {
 
       await this.sql`
         UPDATE google.accounts
-        SET last_sync_at = NOW(), history_id = ${historyId ?? null}
+        SET email_last_sync_at = NOW(), email_history_id = ${historyId ?? null}
         WHERE id = ${accountId}
       `;
     } catch (error) {
@@ -236,13 +236,13 @@ export class GmailSyncService {
       };
     }
 
-    const [account] = await this.sql<{ history_id: string | null }[]>`
-      SELECT history_id FROM google.accounts WHERE id = ${accountId}
+    const [account] = await this.sql<{ email_history_id: string | null }[]>`
+      SELECT email_history_id FROM google.accounts WHERE id = ${accountId}
     `;
 
-    // Fall back to full sync if no history_id
-    if (!account?.history_id) {
-      this.log.info({ accountId }, 'No history_id, falling back to full sync');
+    // Fall back to full sync if no email_history_id
+    if (!account?.email_history_id) {
+      this.log.info({ accountId }, 'No email_history_id, falling back to full sync');
       return this.syncFull(accountId);
     }
 
@@ -255,7 +255,7 @@ export class GmailSyncService {
     });
 
     try {
-      return await this.doSyncIncremental(accountId, account.history_id);
+      return await this.doSyncIncremental(accountId, account.email_history_id);
     } finally {
       this.activeSyncs.delete(accountId);
     }
@@ -320,13 +320,13 @@ export class GmailSyncService {
         }
       }
 
-      // Update history_id
+      // Update email_history_id
       const profile = await gmail.users.getProfile({ userId: 'me' });
       const newHistoryId = profile.data.historyId;
 
       await this.sql`
         UPDATE google.accounts
-        SET last_sync_at = NOW(), history_id = ${newHistoryId ?? null}
+        SET email_last_sync_at = NOW(), email_history_id = ${newHistoryId ?? null}
         WHERE id = ${accountId}
       `;
     } catch (error) {
@@ -866,7 +866,7 @@ export class GmailSyncService {
     accountId: number
   ): Promise<AccountSettings | null> {
     const [account] = await this.sql<AccountSettings[]>`
-      SELECT label_prefix_tracking, sync_start_date
+      SELECT email_label_prefix, email_sync_start_date
       FROM google.accounts WHERE id = ${accountId}
     `;
     return account ?? null;

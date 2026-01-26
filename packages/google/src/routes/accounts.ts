@@ -45,8 +45,8 @@ export const registerAccountRoutes: FastifyPluginAsync<AccountRoutesConfig> =
     fastify.get('/google/accounts', async () => {
       const accounts = await fastify.sql<GoogleAccount[]>`
         SELECT id, identifier, email, display_name, is_primary,
-               history_id IS NOT NULL as has_credentials,
-               created_at, last_sync_at
+               email_history_id IS NOT NULL as has_credentials,
+               created_at, email_last_sync_at
         FROM google.accounts
         ORDER BY is_primary DESC, created_at ASC
       `;
@@ -128,9 +128,9 @@ export const registerAccountRoutes: FastifyPluginAsync<AccountRoutesConfig> =
         const [account] = await fastify.sql<GoogleAccount[]>`
           SELECT id, identifier, email, display_name, is_primary,
                  oauth_credentials IS NOT NULL as has_credentials,
-                 history_id, created_at, last_sync_at,
-                 triage_system_instructions, label_prefix_tracking,
-                 label_prefix_todo, sync_start_date, settings_updated_at
+                 email_history_id, created_at, email_last_sync_at,
+                 email_triage_instructions, email_label_prefix,
+                 email_label_prefix_todo, email_sync_start_date, settings_updated_at
           FROM google.accounts
           WHERE id = ${accountId}
         `;
@@ -157,22 +157,22 @@ export const registerAccountRoutes: FastifyPluginAsync<AccountRoutesConfig> =
 
         // Handle fields that can be explicitly set to null
         const triageInstructionsClause =
-          'triage_system_instructions' in updates
-            ? fastify.sql`triage_system_instructions = ${updates.triage_system_instructions ?? null}`
-            : fastify.sql`triage_system_instructions = triage_system_instructions`;
+          'email_triage_instructions' in updates
+            ? fastify.sql`email_triage_instructions = ${updates.email_triage_instructions ?? null}`
+            : fastify.sql`email_triage_instructions = email_triage_instructions`;
 
         const syncStartDateClause =
-          'sync_start_date' in updates
-            ? fastify.sql`sync_start_date = ${updates.sync_start_date ?? null}`
-            : fastify.sql`sync_start_date = sync_start_date`;
+          'email_sync_start_date' in updates
+            ? fastify.sql`email_sync_start_date = ${updates.email_sync_start_date ?? null}`
+            : fastify.sql`email_sync_start_date = email_sync_start_date`;
 
         const [account] = await fastify.sql<GoogleAccount[]>`
           UPDATE google.accounts SET
             display_name = COALESCE(${updates.display_name ?? null}, display_name),
             is_primary = COALESCE(${updates.is_primary ?? null}, is_primary),
             ${triageInstructionsClause},
-            label_prefix_tracking = COALESCE(${updates.label_prefix_tracking ?? null}, label_prefix_tracking),
-            label_prefix_todo = COALESCE(${updates.label_prefix_todo ?? null}, label_prefix_todo),
+            email_label_prefix = COALESCE(${updates.email_label_prefix ?? null}, email_label_prefix),
+            email_label_prefix_todo = COALESCE(${updates.email_label_prefix_todo ?? null}, email_label_prefix_todo),
             ${syncStartDateClause},
             settings_updated_at = NOW()
           WHERE id = ${accountId}

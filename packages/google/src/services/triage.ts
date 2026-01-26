@@ -184,7 +184,7 @@ Please fix the JSON syntax and return the corrected analysis inside <analysis> t
 // Settings fields from GoogleAccount used for triage
 type AccountSettings = Pick<
   GoogleAccount,
-  'triage_system_instructions' | 'label_prefix_tracking' | 'label_prefix_todo' | 'sync_start_date'
+  'email_triage_instructions' | 'email_label_prefix' | 'email_label_prefix_todo' | 'email_sync_start_date'
 >;
 
 export interface TriageServiceConfig {
@@ -387,8 +387,8 @@ export class TriageService {
     accountId: number
   ): Promise<AccountSettings | null> {
     const [account] = await this.sql<AccountSettings[]>`
-      SELECT triage_system_instructions, label_prefix_tracking,
-             label_prefix_todo, sync_start_date
+      SELECT email_triage_instructions, email_label_prefix,
+             email_label_prefix_todo, email_sync_start_date
       FROM google.accounts WHERE id = ${accountId}
     `;
     return account ?? null;

@@ -53,20 +53,20 @@ Confirm `has_credentials: true`. If false, offer to generate a new auth URL via 
 
 Ask the user:
 
-- **sync_start_date**: "From what date should I sync emails? (YYYY-MM-DD format, or leave blank to sync all)"
-- **label_prefix_tracking**: "What prefix for Gmail labels? (default: AI)"
+- **email_sync_start_date**: "From what date should I sync emails? (YYYY-MM-DD format, or leave blank to sync all)"
+- **email_label_prefix**: "What prefix for Gmail labels? (default: AI)"
 
 Apply settings:
 
 ```bash
 curl -X PATCH <claude-assist-server>/google/accounts/<id> \
   -H "Content-Type: application/json" \
-  -d '{"sync_start_date": "<date>", "label_prefix_tracking": "<prefix>"}'
+  -d '{"email_sync_start_date": "<date>", "email_label_prefix": "<prefix>"}'
 ```
 
 #### Triage System Instructions
 
-The `triage_system_instructions` field lets you customize the AI triage behavior with account-specific rules. This plain text gets injected directly into Haiku's system prompt during email analysis.
+The `email_triage_instructions` field lets you customize the AI triage behavior with account-specific rules. This plain text gets injected directly into Haiku's system prompt during email analysis.
 
 **When to use:**
 
@@ -80,7 +80,7 @@ The `triage_system_instructions` field lets you customize the AI triage behavior
 curl -X PATCH <claude-assist-server>/google/accounts/<id> \
   -H "Content-Type: application/json" \
   -d '{
-    "triage_system_instructions": "NAME DISAMBIGUATION:\n- \"Christopher\" in emails refers to teammate Christopher Yamas, NOT the account owner\n- The account owner goes by \"Chris\" or \"Chris Alfano\" only"
+    "email_triage_instructions": "NAME DISAMBIGUATION:\n- \"Christopher\" in emails refers to teammate Christopher Yamas, NOT the account owner\n- The account owner goes by \"Chris\" or \"Chris Alfano\" only"
   }'
 ```
 
@@ -96,7 +96,7 @@ curl -X PATCH <claude-assist-server>/google/accounts/<id> \
 
 Ask the user what names refer to them (for commitment extraction). Only add names the user actually uses - don't assume variations.
 
-**Important**: Names that refer to other people (teammates, etc.) should NOT be added as aliases. Instead, document these in `triage_system_instructions` for disambiguation.
+**Important**: Names that refer to other people (teammates, etc.) should NOT be added as aliases. Instead, document these in `email_triage_instructions` for disambiguation.
 
 For each alias:
 

@@ -179,7 +179,7 @@ export class GmailAuthService {
 
     await this.sql`
       UPDATE google.accounts
-      SET oauth_credentials = NULL, history_id = NULL
+      SET oauth_credentials = NULL, email_history_id = NULL
       WHERE id = ${accountId}
     `;
 
