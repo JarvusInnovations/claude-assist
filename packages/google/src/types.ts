@@ -128,8 +128,10 @@ export type DigestSection =
 
 export type GmailAction = 'leave' | 'archive' | 'spam';
 
+// WorkflowStatus enum - must stay in sync with google.workflow_status PostgreSQL enum
 export type WorkflowStatus =
-  | 'new'
+  | 'discovered' // Listed from Gmail but not yet fetched
+  | 'new' // Fetched and ready for triage
   | 'triaged'
   | 'reviewed'
   | 'executed'

@@ -117,35 +117,32 @@ export class GmailSyncService {
         query += ` after:${dateStr}`;
       }
 
-      // List all messages
-      const messageIds = await this.listAllMessages(gmail, query);
-      result.messagesScanned = messageIds.length;
+      // PHASE 1: Discover all message IDs (batch insert as 'discovered')
+      const { discovered, skipped } = await this.discoverMessages(
+        accountId,
+        gmail,
+        query
+      );
+      result.messagesScanned = discovered + skipped;
+      result.messagesSkipped = skipped;
 
       this.log.info(
-        { accountId, count: messageIds.length, query },
-        'Found messages to sync'
+        { accountId, discovered, skipped, query },
+        'Phase 1 complete: Messages discovered'
       );
 
-      // Fetch and store each message
-      for (const messageId of messageIds) {
-        try {
-          const email = await this.fetchMessage(gmail, messageId);
-          const stored = await this.storeEmail(accountId, email);
+      // PHASE 2: Fetch full content for discovered messages
+      const { fetched, errors } = await this.fetchDiscoveredMessages(
+        accountId,
+        gmail
+      );
+      result.messagesIngested = fetched;
+      result.errors = errors;
 
-          if (stored === 'new') {
-            result.messagesIngested++;
-          } else if (stored === 'updated') {
-            result.messagesUpdated++;
-          } else {
-            result.messagesSkipped++;
-          }
-        } catch (error) {
-          const errorMessage =
-            error instanceof Error ? error.message : String(error);
-          result.errors.push(`Message ${messageId}: ${errorMessage}`);
-          this.log.error({ messageId, error }, 'Failed to sync message');
-        }
-      }
+      this.log.info(
+        { accountId, fetched, errors: errors.length },
+        'Phase 2 complete: Messages fetched'
+      );
 
       // Update last sync timestamp and get latest historyId
       const profile = await gmail.users.getProfile({ userId: 'me' });
@@ -202,11 +199,7 @@ export class GmailSyncService {
 
     try {
       // Get history since last sync
-      const changedMessageIds = await this.getHistoryChanges(
-        gmail,
-        historyId
-      );
-
+      const changedMessageIds = await this.getHistoryChanges(gmail, historyId);
       result.messagesScanned = changedMessageIds.length;
 
       this.log.info(
@@ -214,32 +207,26 @@ export class GmailSyncService {
         'Found changed messages'
       );
 
-      // Fetch and store each changed message
-      for (const messageId of changedMessageIds) {
-        try {
-          const email = await this.fetchMessage(gmail, messageId);
-          const stored = await this.storeEmail(accountId, email);
+      if (changedMessageIds.length > 0) {
+        // Process changes - handles both new messages and label updates
+        const changes = await this.processIncrementalChanges(
+          accountId,
+          gmail,
+          changedMessageIds
+        );
 
-          if (stored === 'new') {
-            result.messagesIngested++;
-          } else if (stored === 'updated') {
-            result.messagesUpdated++;
-          } else {
-            result.messagesSkipped++;
-          }
-        } catch (error) {
-          // Message might have been deleted
-          if (
-            error instanceof Error &&
-            error.message.includes('Requested entity was not found')
-          ) {
-            result.messagesSkipped++;
-            continue;
-          }
-          const errorMessage =
-            error instanceof Error ? error.message : String(error);
-          result.errors.push(`Message ${messageId}: ${errorMessage}`);
-        }
+        result.messagesIngested = changes.ingested;
+        result.messagesUpdated = changes.updated;
+        result.messagesSkipped = changes.skipped;
+        result.errors = changes.errors;
+
+        // Fetch full content for any newly discovered messages
+        const { fetched, errors } = await this.fetchDiscoveredMessages(
+          accountId,
+          gmail
+        );
+        result.messagesIngested += fetched;
+        result.errors.push(...errors);
       }
 
       // Update history_id
@@ -272,7 +259,235 @@ export class GmailSyncService {
   }
 
   /**
-   * List all message IDs matching a query
+   * Phase 1: Discover all message IDs and batch-insert as 'discovered'
+   * Pages through Gmail list results and writes to DB immediately
+   */
+  private async discoverMessages(
+    accountId: number,
+    gmail: gmail_v1.Gmail,
+    query: string
+  ): Promise<{ discovered: number; skipped: number }> {
+    let discovered = 0;
+    let skipped = 0;
+    let pageToken: string | undefined;
+
+    do {
+      const response = await gmail.users.messages.list({
+        userId: 'me',
+        q: query,
+        pageToken,
+        maxResults: 500,
+      });
+
+      const messages = response.data.messages || [];
+      if (messages.length > 0) {
+        // Batch upsert - ON CONFLICT DO NOTHING for idempotency
+        const result = await this.batchUpsertDiscovered(accountId, messages);
+        discovered += result.inserted;
+        skipped += result.skipped;
+      }
+
+      pageToken = response.data.nextPageToken ?? undefined;
+    } while (pageToken);
+
+    return { discovered, skipped };
+  }
+
+  /**
+   * Batch insert discovered message IDs with ON CONFLICT DO NOTHING
+   * This is idempotent - re-running won't duplicate or overwrite existing data
+   */
+  private async batchUpsertDiscovered(
+    accountId: number,
+    messages: Array<{ id?: string | null; threadId?: string | null }>
+  ): Promise<{ inserted: number; skipped: number }> {
+    if (messages.length === 0) {
+      return { inserted: 0, skipped: 0 };
+    }
+
+    // Filter out any messages without IDs
+    const validMessages = messages.filter(
+      (m): m is { id: string; threadId?: string | null } => !!m.id
+    );
+
+    if (validMessages.length === 0) {
+      return { inserted: 0, skipped: 0 };
+    }
+
+    const result = await this.sql`
+      INSERT INTO google.emails (account_id, message_id, thread_id, workflow_status)
+      SELECT * FROM UNNEST(
+        ${this.sql.array(validMessages.map(() => accountId))}::integer[],
+        ${this.sql.array(validMessages.map((m) => m.id))}::text[],
+        ${this.sql.array(validMessages.map((m) => m.threadId ?? null))}::text[],
+        ${this.sql.array(validMessages.map(() => 'discovered'))}::google.workflow_status[]
+      )
+      ON CONFLICT (account_id, message_id) DO NOTHING
+      RETURNING id
+    `;
+
+    const inserted = result.length;
+    const skipped = validMessages.length - inserted;
+
+    return { inserted, skipped };
+  }
+
+  /**
+   * Process incremental changes - handles both new messages and label updates
+   */
+  private async processIncrementalChanges(
+    accountId: number,
+    gmail: gmail_v1.Gmail,
+    messageIds: string[]
+  ): Promise<{
+    ingested: number;
+    updated: number;
+    skipped: number;
+    errors: string[];
+  }> {
+    let ingested = 0;
+    let updated = 0;
+    let skipped = 0;
+    const errors: string[] = [];
+
+    for (const messageId of messageIds) {
+      // Check if message exists and its current state
+      const [existing] = await this.sql<
+        { id: number; workflow_status: string; gmail_labels: string[] }[]
+      >`
+        SELECT id, workflow_status, gmail_labels FROM google.emails
+        WHERE account_id = ${accountId} AND message_id = ${messageId}
+      `;
+
+      if (existing && existing.workflow_status !== 'discovered') {
+        // Existing message - fetch to check for label changes
+        try {
+          const email = await this.fetchMessage(gmail, messageId);
+          const existingLabels: string[] = Array.isArray(existing.gmail_labels)
+            ? existing.gmail_labels
+            : [];
+          const labelsChanged =
+            JSON.stringify([...existingLabels].sort()) !==
+            JSON.stringify([...email.gmailLabels].sort());
+
+          if (labelsChanged) {
+            await this.sql`
+              UPDATE google.emails SET gmail_labels = ${this.sql.json(email.gmailLabels)}
+              WHERE id = ${existing.id}
+            `;
+            updated++;
+          } else {
+            skipped++;
+          }
+        } catch (error) {
+          if (
+            error instanceof Error &&
+            error.message.includes('Requested entity was not found')
+          ) {
+            skipped++;
+          } else {
+            const errorMessage =
+              error instanceof Error ? error.message : String(error);
+            errors.push(`Message ${messageId}: ${errorMessage}`);
+          }
+        }
+      } else if (!existing) {
+        // New message - insert as discovered, will be fetched in phase 2
+        await this.sql`
+          INSERT INTO google.emails (account_id, message_id, workflow_status)
+          VALUES (${accountId}, ${messageId}, 'discovered')
+        `;
+        ingested++;
+      }
+      // If existing with 'discovered' status, it will be picked up in phase 2
+    }
+
+    return { ingested, updated, skipped, errors };
+  }
+
+  /**
+   * Phase 2: Fetch full content for messages in 'discovered' status
+   */
+  private async fetchDiscoveredMessages(
+    accountId: number,
+    gmail: gmail_v1.Gmail,
+    batchSize: number = 50
+  ): Promise<{ fetched: number; errors: string[] }> {
+    let fetched = 0;
+    const errors: string[] = [];
+
+    while (true) {
+      // Get next batch of discovered messages
+      const discovered = await this.sql<{ id: number; message_id: string }[]>`
+        SELECT id, message_id FROM google.emails
+        WHERE account_id = ${accountId} AND workflow_status = 'discovered'
+        ORDER BY id
+        LIMIT ${batchSize}
+      `;
+
+      if (discovered.length === 0) {
+        break; // All done
+      }
+
+      // Fetch and update each message
+      for (const row of discovered) {
+        try {
+          const email = await this.fetchMessage(gmail, row.message_id);
+          await this.updateWithFullContent(row.id, email);
+          fetched++;
+        } catch (error) {
+          // Handle deleted messages gracefully
+          if (
+            error instanceof Error &&
+            error.message.includes('Requested entity was not found')
+          ) {
+            // Message was deleted - remove the discovered record
+            await this.sql`DELETE FROM google.emails WHERE id = ${row.id}`;
+            continue;
+          }
+
+          const errorMessage =
+            error instanceof Error ? error.message : String(error);
+          errors.push(`Message ${row.message_id}: ${errorMessage}`);
+          this.log.error(
+            { messageId: row.message_id, error },
+            'Failed to fetch message'
+          );
+        }
+      }
+    }
+
+    return { fetched, errors };
+  }
+
+  /**
+   * Update a discovered message with full content and transition to 'new'
+   */
+  private async updateWithFullContent(
+    emailId: number,
+    email: ParsedEmail
+  ): Promise<void> {
+    await this.sql`
+      UPDATE google.emails SET
+        date = ${email.date},
+        from_address = ${email.fromAddress},
+        from_name = ${email.fromName},
+        to_addresses = ${email.toAddresses},
+        cc_addresses = ${email.ccAddresses},
+        subject = ${email.subject},
+        snippet = ${email.snippet},
+        gmail_labels = ${this.sql.json(email.gmailLabels)},
+        body_text = ${email.bodyText},
+        body_html = ${email.bodyHtml},
+        has_attachments = ${email.hasAttachments},
+        workflow_status = 'new',
+        synced_at = NOW()
+      WHERE id = ${emailId}
+    `;
+  }
+
+  /**
+   * List all message IDs matching a query (legacy method, kept for reference)
    */
   private async listAllMessages(
     gmail: gmail_v1.Gmail,

@@ -1,6 +1,16 @@
 -- Google Module: Email Storage and Triage State
 -- Stores synced emails with full analysis structure
 
+-- Workflow status enum for email processing states
+CREATE TYPE google.workflow_status AS ENUM (
+    'discovered',  -- Listed from Gmail but not yet fetched
+    'new',         -- Fetched and ready for triage
+    'triaged',     -- AI analysis complete
+    'reviewed',    -- Human review complete
+    'executed',    -- Actions applied
+    'failed'       -- Processing error
+);
+
 CREATE TABLE google.emails (
     id SERIAL PRIMARY KEY,
     account_id INTEGER REFERENCES google.accounts(id) ON DELETE CASCADE,
@@ -44,7 +54,7 @@ CREATE TABLE google.emails (
     rule_matched_id INTEGER,     -- FK to triage_rules if rule matched
 
     -- Workflow State Machine
-    workflow_status VARCHAR(20) DEFAULT 'new',  -- new, triaged, reviewed, executed, failed
+    workflow_status google.workflow_status DEFAULT 'new',
     triaged_at TIMESTAMPTZ,
     reviewed_at TIMESTAMPTZ,
     executed_at TIMESTAMPTZ,
@@ -74,6 +84,7 @@ CREATE INDEX idx_emails_thread ON google.emails(thread_id);
 CREATE INDEX idx_emails_digest ON google.emails(digest_section) WHERE digest_section IS NOT NULL;
 CREATE INDEX idx_emails_interesting ON google.emails(interesting) WHERE interesting = true;
 CREATE INDEX idx_emails_search ON google.emails USING GIN(search_vector);
+CREATE INDEX idx_emails_discovered ON google.emails(account_id) WHERE workflow_status = 'discovered';
 
 -- Search trigger (weighted: subject/overview high, from/snippet medium, body low)
 CREATE OR REPLACE FUNCTION google.update_email_search_vector()
