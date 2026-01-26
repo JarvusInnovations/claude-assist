@@ -7,6 +7,7 @@ import type {
   MachineRecord,
   InventoryPayload,
 } from './types.js';
+import { serializeTranscript } from './transcript.js';
 
 export interface RoutesConfig {
   syncService: SyncService;
@@ -159,10 +160,10 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
   // GET /sessions/:id - Get session details
   fastify.get<{
     Params: { id: string };
-    Querystring: { with_transcript?: string };
+    Querystring: { with_raw_messages?: string };
   }>('/sessions/:id', async (request, reply) => {
     const { id } = request.params;
-    const withTranscript = request.query.with_transcript === 'true';
+    const withRawMessages = request.query.with_raw_messages === 'true';
 
     const sessions = await fastify.sql<(SessionRecord & { machine_name: string })[]>`
       SELECT s.*, m.machine_id as machine_name
@@ -199,7 +200,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       model_tokens: session.model_tokens,
     };
 
-    if (withTranscript) {
+    if (withRawMessages) {
       // Parse the raw_transcript JSONL into messages
       const messages = session.raw_transcript
         .trim()
@@ -214,10 +215,35 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
         })
         .filter(Boolean);
 
-      result.transcript = messages;
+      result.raw_messages = messages;
     }
 
     return result;
+  });
+
+  // GET /sessions/:id/transcript - Get session transcript in compact format
+  // Returns token-efficient text format (same as used for outline generation)
+  fastify.get<{
+    Params: { id: string };
+  }>('/sessions/:id/transcript', async (request, reply) => {
+    const { id } = request.params;
+
+    const sessions = await fastify.sql<{ raw_transcript: string }[]>`
+      SELECT raw_transcript
+      FROM sessions.sessions
+      WHERE id = ${id}::uuid
+    `;
+
+    if (sessions.length === 0) {
+      reply.status(404);
+      return { error: 'Session not found' };
+    }
+
+    const session = sessions[0]!;
+    const transcript = serializeTranscript(session.raw_transcript);
+
+    reply.type('text/plain');
+    return transcript;
   });
 
   // GET /sessions/stats - Session statistics

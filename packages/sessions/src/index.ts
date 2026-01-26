@@ -99,3 +99,4 @@ export { SyncService } from './sync.js';
 export { OutlineService } from './outline.js';
 export { SessionScanner } from './scanner.js';
 export { parseTranscript } from './parser.js';
+export { serializeTranscript } from './transcript.js';
