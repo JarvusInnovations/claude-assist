@@ -40,6 +40,13 @@ export interface TriageServiceConfig {
   concurrency?: number;
 }
 
+export interface TriageStatus {
+  triaging: boolean;
+  startedAt: Date | null;
+  emailCount: number | null;     // How many emails in this batch
+  processedCount: number | null; // How many completed so far
+}
+
 export class TriageService {
   private sql: postgres.Sql;
   private log: FastifyBaseLogger;
@@ -47,6 +54,7 @@ export class TriageService {
   private limit: ReturnType<typeof pLimit>;
   private model: string;
   private maxTokens: number;
+  private activeTriages = new Map<number, { startedAt: Date; total: number; processed: number }>();
 
   constructor(
     sql: postgres.Sql,
@@ -64,13 +72,83 @@ export class TriageService {
   }
 
   /**
+   * Get triage status for an account
+   */
+  getTriageStatus(accountId: number): TriageStatus {
+    const active = this.activeTriages.get(accountId);
+    return active
+      ? { triaging: true, startedAt: active.startedAt, emailCount: active.total, processedCount: active.processed }
+      : { triaging: false, startedAt: null, emailCount: null, processedCount: null };
+  }
+
+  /**
+   * Get triage status for all accounts
+   */
+  getAllTriageStatuses(): Map<number, TriageStatus> {
+    const result = new Map<number, TriageStatus>();
+    for (const [accountId, status] of this.activeTriages) {
+      result.set(accountId, {
+        triaging: true,
+        startedAt: status.startedAt,
+        emailCount: status.total,
+        processedCount: status.processed,
+      });
+    }
+    return result;
+  }
+
+  /**
    * Triage a batch of emails concurrently
    */
   async triageBatch(emailIds: number[]): Promise<TriageResult[]> {
-    const results = await Promise.all(
-      emailIds.map((id) => this.limit(() => this.triageEmail(id)))
-    );
-    return results;
+    if (emailIds.length === 0) {
+      return [];
+    }
+
+    // Get account IDs for the emails
+    const emails = await this.sql<{ id: number; account_id: number }[]>`
+      SELECT id, account_id FROM google.emails WHERE id = ANY(${emailIds})
+    `;
+
+    // Group by account and initialize tracking
+    const byAccount = new Map<number, number[]>();
+    for (const email of emails) {
+      const ids = byAccount.get(email.account_id) || [];
+      ids.push(email.id);
+      byAccount.set(email.account_id, ids);
+    }
+
+    // Initialize status for each account
+    for (const [accountId, ids] of byAccount) {
+      this.activeTriages.set(accountId, {
+        startedAt: new Date(),
+        total: ids.length,
+        processed: 0,
+      });
+    }
+
+    try {
+      const results = await Promise.all(
+        emailIds.map((id) =>
+          this.limit(async () => {
+            const result = await this.triageEmail(id);
+            // Increment processed count
+            const email = emails.find((e) => e.id === id);
+            if (email) {
+              const status = this.activeTriages.get(email.account_id);
+              if (status) status.processed++;
+            }
+            return result;
+          })
+        )
+      );
+      return results;
+    } finally {
+      // Clean up tracking for all accounts in this batch
+      for (const accountId of byAccount.keys()) {
+        this.activeTriages.delete(accountId);
+      }
+    }
   }
 
   /**

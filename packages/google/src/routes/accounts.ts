@@ -12,6 +12,7 @@ import type postgres from 'postgres';
 import type { Scheduler } from '@jarvus/claude-assist-core';
 import type { GmailAuthService } from '../services/gmail-auth.js';
 import type { GmailSyncService } from '../services/gmail-sync.js';
+import type { TriageService } from '../services/triage.js';
 import type {
   GoogleAccount,
   UserAlias,
@@ -31,10 +32,11 @@ declare module 'fastify' {
 export interface AccountRoutesConfig {
   authService: GmailAuthService;
   syncService: GmailSyncService;
+  triageService: TriageService | null;
 }
 
 export const registerAccountRoutes: FastifyPluginAsync<AccountRoutesConfig> =
-  async (fastify, { authService, syncService }) => {
+  async (fastify, { authService, syncService, triageService }) => {
     // ==========================================
     // Account Management
     // ==========================================
@@ -49,10 +51,12 @@ export const registerAccountRoutes: FastifyPluginAsync<AccountRoutesConfig> =
         ORDER BY is_primary DESC, created_at ASC
       `;
 
-      // Add sync status to each account
+      // Add sync and triage status to each account
+      const defaultTriageStatus = { triaging: false, startedAt: null, emailCount: null, processedCount: null };
       return accounts.map((account) => ({
         ...account,
         sync_status: syncService.getSyncStatus(account.id),
+        triage_status: triageService?.getTriageStatus(account.id) ?? defaultTriageStatus,
       }));
     });
 
@@ -135,9 +139,11 @@ export const registerAccountRoutes: FastifyPluginAsync<AccountRoutesConfig> =
           return reply.status(404).send({ error: 'Account not found' });
         }
 
+        const defaultTriageStatus = { triaging: false, startedAt: null, emailCount: null, processedCount: null };
         return {
           ...account,
           sync_status: syncService.getSyncStatus(accountId),
+          triage_status: triageService?.getTriageStatus(accountId) ?? defaultTriageStatus,
         };
       }
     );

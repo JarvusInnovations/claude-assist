@@ -74,7 +74,7 @@ export default createPlugin('google', async (fastify: FastifyInstance, _options:
   }
 
   // Register routes
-  await fastify.register(registerAccountRoutes, { authService, syncService });
+  await fastify.register(registerAccountRoutes, { authService, syncService, triageService });
   await fastify.register(registerEmailRoutes, { syncService, triageService });
   await fastify.register(registerRuleRoutes);
 
@@ -164,4 +164,4 @@ export default createPlugin('google', async (fastify: FastifyInstance, _options:
 export * from './types.js';
 export { GmailAuthService } from './services/gmail-auth.js';
 export { GmailSyncService, type SyncStatus } from './services/gmail-sync.js';
-export { TriageService } from './services/triage.js';
+export { TriageService, type TriageStatus } from './services/triage.js';
