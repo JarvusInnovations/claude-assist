@@ -183,7 +183,7 @@ export class GmailSyncService {
       );
 
       // PHASE 2: Fetch full content for discovered messages
-      const { fetched, errors } = await this.fetchDiscoveredMessages(
+      const { fetched, excludedBeforeSyncStart: _, errors } = await this.fetchDiscoveredMessages(
         accountId,
         gmail
       );
@@ -307,7 +307,7 @@ export class GmailSyncService {
         }
 
         // Fetch full content for any newly discovered messages
-        const { fetched, errors } = await this.fetchDiscoveredMessages(
+        const { fetched, excludedBeforeSyncStart: __, errors } = await this.fetchDiscoveredMessages(
           accountId,
           gmail
         );
@@ -503,9 +503,17 @@ export class GmailSyncService {
     accountId: number,
     gmail: gmail_v1.Gmail,
     batchSize: number = 50
-  ): Promise<{ fetched: number; errors: string[] }> {
+  ): Promise<{ fetched: number; excludedBeforeSyncStart: number; errors: string[] }> {
     let fetched = 0;
+    let excludedBeforeSyncStart = 0;
     const errors: string[] = [];
+
+    // Get account settings for sync_start_date filtering
+    const settings = await this.getAccountSettings(accountId);
+    const syncStartDate = settings?.email_sync_start_date
+      ? new Date(settings.email_sync_start_date as unknown as string | Date)
+      : null;
+    const syncStartMs = syncStartDate?.getTime() ?? null;
 
     while (true) {
       // Get next batch of discovered messages
@@ -524,6 +532,14 @@ export class GmailSyncService {
       for (const row of discovered) {
         try {
           const email = await this.fetchMessage(gmail, row.message_id);
+
+          // Filter: exclude emails before sync_start_date
+          if (syncStartMs && email.date && email.date.getTime() < syncStartMs) {
+            await this.sql`DELETE FROM google.emails WHERE id = ${row.id}`;
+            excludedBeforeSyncStart++;
+            continue;
+          }
+
           await this.updateWithFullContent(row.id, email);
           fetched++;
           // Update status in real-time
@@ -551,7 +567,14 @@ export class GmailSyncService {
       }
     }
 
-    return { fetched, errors };
+    if (excludedBeforeSyncStart > 0) {
+      this.log.info(
+        { accountId, excludedBeforeSyncStart },
+        'Excluded emails before sync_start_date'
+      );
+    }
+
+    return { fetched, excludedBeforeSyncStart, errors };
   }
 
   /**
