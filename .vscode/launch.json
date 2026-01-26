@@ -6,7 +6,7 @@
       "type": "bun",
       "request": "launch",
       "program": "${workspaceFolder}/apps/server/src/server.ts",
-      "cwd": "${workspaceFolder}",
+      "cwd": "${workspaceFolder}/apps/server",
       "env": {
         "NODE_ENV": "development"
       },
@@ -18,7 +18,7 @@
       "type": "bun",
       "request": "launch",
       "program": "${workspaceFolder}/apps/server/src/server.ts",
-      "cwd": "${workspaceFolder}",
+      "cwd": "${workspaceFolder}/apps/server",
       "env": {
         "NODE_ENV": "development"
       },
