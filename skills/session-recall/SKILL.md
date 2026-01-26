@@ -60,11 +60,16 @@ Parameters:
 
 - `search` - Full-text search query (weighted: user prompts + outlines > tools/files > project)
 - `days` - Limit to sessions within N days (default: 30)
+- `since` - Absolute start date (ISO 8601, e.g., `2025-01-01T00:00:00Z`). Overrides `days` when set
+- `until` - Absolute end date (ISO 8601). Can combine with `since` or use alone with `days`
+- `forever` - Set to `true` to search all sessions with no date limit. Use when the user's query indicates they want an absolute answer regardless of recency (e.g., "have we ever...", "did I ever...")
 - `tools` - Filter by tools used (comma-separated, e.g., `Edit,Bash`)
 - `machine` - Filter by machine ID (e.g., `localhost`, `laptop`)
 - `project` - Filter by project path (partial match)
 - `limit` - Max results (default: 20, max: 100)
 - `offset` - Pagination offset
+
+**Date filtering:** By default, searches are limited to the last 30 days. Use `days` for relative filtering, `since`/`until` for absolute date ranges, or `forever=true` to search all time. When `since` or `until` is provided, they take precedence over `days`. `forever=true` disables all date filtering.
 
 Example response:
 
@@ -102,6 +107,22 @@ Parameters:
 
 Returns session metadata plus optionally the full transcript as parsed JSONL messages.
 
+Response includes:
+
+- Basic metadata: `id`, `machine`, `project_path`, `git_branch`, `started_at`, `ended_at`
+- Activity: `user_messages`, `tools_used`, `files_touched`, `message_count`
+- Token usage: `input_tokens`, `output_tokens`, `cache_read_tokens`
+- Model tracking: `models_used` (array of model IDs), `model_tokens` (per-model breakdown)
+- Content: `outline`, `outline_hash`, `claude_version`
+
+Example `model_tokens` structure:
+
+```json
+{
+  "claude-sonnet-4-20250514": { "input": 150000, "output": 25000 }
+}
+```
+
 ### Session Statistics
 
 ```bash
@@ -128,6 +149,9 @@ Returns:
   "top_tools": [
     { "tool": "Edit", "count": 450 },
     { "tool": "Read", "count": 380 }
+  ],
+  "top_models": [
+    { "model": "claude-sonnet-4-20250514", "session_count": 120, "input_tokens": 30000000, "output_tokens": 5000000 }
   ],
   "sessions_per_machine": [
     { "machine_id": "localhost", "session_count": 120 },

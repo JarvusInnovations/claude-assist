@@ -72,6 +72,15 @@ export interface TranscriptMessage {
 }
 
 /**
+ * Per-model token breakdown
+ */
+export interface ModelTokens {
+  input: number;
+  output: number;
+  cacheRead: number;
+}
+
+/**
  * Parsed session data extracted from transcript
  */
 export interface ParsedSession {
@@ -91,6 +100,10 @@ export interface ParsedSession {
   cwd: string | null;
   /** Number of JSONL lines that failed to parse */
   parseErrors: number;
+  /** Models used in this session */
+  modelsUsed: string[];
+  /** Per-model token breakdown */
+  modelTokens: Record<string, ModelTokens>;
 }
 
 /**
@@ -170,6 +183,10 @@ export interface SessionRecord {
   outline: string | null;
   /** transcript_hash when outline was generated (for regeneration detection) */
   outline_hash: string | null;
+  /** Models used in this session */
+  models_used: string[];
+  /** Per-model token breakdown */
+  model_tokens: Record<string, ModelTokens>;
 }
 
 /**

@@ -3,6 +3,7 @@ import type {
   ParsedSession,
   ContentBlock,
   ToolUseBlock,
+  ModelTokens,
 } from './types.js';
 
 /**
@@ -18,6 +19,8 @@ export function parseTranscript(
   const userMessages: string[] = [];
   const toolsUsed = new Set<string>();
   const filesTouched = new Set<string>();
+  const modelsUsed = new Set<string>();
+  const modelTokens: Record<string, ModelTokens> = {};
 
   let inputTokens = 0;
   let outputTokens = 0;
@@ -69,11 +72,28 @@ export function parseTranscript(
 
       // Extract tools and files from assistant messages
       if (msg.type === 'assistant' && msg.message) {
-        // Track token usage
+        // Track model usage
+        const model = msg.message.model;
+        if (model) {
+          modelsUsed.add(model);
+          if (!modelTokens[model]) {
+            modelTokens[model] = { input: 0, output: 0, cacheRead: 0 };
+          }
+        }
+
+        // Track token usage (aggregate and per-model)
         if (msg.message.usage) {
-          inputTokens += msg.message.usage.input_tokens ?? 0;
-          outputTokens += msg.message.usage.output_tokens ?? 0;
-          cacheReadTokens += msg.message.usage.cache_read_input_tokens ?? 0;
+          const usage = msg.message.usage;
+          inputTokens += usage.input_tokens ?? 0;
+          outputTokens += usage.output_tokens ?? 0;
+          cacheReadTokens += usage.cache_read_input_tokens ?? 0;
+
+          // Per-model tracking
+          if (model) {
+            modelTokens[model]!.input += usage.input_tokens ?? 0;
+            modelTokens[model]!.output += usage.output_tokens ?? 0;
+            modelTokens[model]!.cacheRead += usage.cache_read_input_tokens ?? 0;
+          }
         }
 
         // Extract tool uses
@@ -110,6 +130,8 @@ export function parseTranscript(
     claudeVersion,
     cwd,
     parseErrors,
+    modelsUsed: [...modelsUsed],
+    modelTokens,
   };
 }
 
