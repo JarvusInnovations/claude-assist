@@ -74,9 +74,10 @@ export class GmailAuthService {
     };
 
     // Store credentials in database (pass object directly for JSONB)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const [account] = await this.sql<GoogleAccount[]>`
       UPDATE google.accounts
-      SET oauth_credentials = ${this.sql.json(credentials)}
+      SET oauth_credentials = ${this.sql.json(credentials as any)}
       WHERE id = ${accountId}
       RETURNING *
     `;
@@ -146,9 +147,10 @@ export class GmailAuthService {
       scope: credentials.scope,
     };
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await this.sql`
       UPDATE google.accounts
-      SET oauth_credentials = ${this.sql.json(updatedCredentials)}
+      SET oauth_credentials = ${this.sql.json(updatedCredentials as any)}
       WHERE id = ${accountId}
     `;
 

@@ -3,7 +3,8 @@
  *
  * Endpoints for Google account management:
  * - OAuth flow (create account → auth URL → callback)
- * - Account settings and user aliases
+ * - Account CRUD with settings fields included
+ * - User aliases for name disambiguation
  */
 
 import type { FastifyPluginAsync } from 'fastify';
@@ -12,10 +13,9 @@ import type { Scheduler } from '@jarvus/claude-assist-core';
 import type { GmailAuthService } from '../services/gmail-auth.js';
 import type {
   GoogleAccount,
-  AccountSettings,
   UserAlias,
   CreateAccountPayload,
-  UpdateSettingsPayload,
+  UpdateAccountPayload,
   CreateAliasPayload,
 } from '../types.js';
 
@@ -66,12 +66,6 @@ export const registerAccountRoutes: FastifyPluginAsync<AccountRoutesConfig> =
           return reply.status(500).send({ error: 'Failed to create account' });
         }
 
-        // Create default settings
-        await fastify.sql`
-          INSERT INTO google.account_settings (account_id)
-          VALUES (${account.id})
-        `;
-
         // Generate auth URL
         const authUrl = authService.generateAuthUrl(account.id);
 
@@ -114,7 +108,7 @@ export const registerAccountRoutes: FastifyPluginAsync<AccountRoutesConfig> =
       }
     });
 
-    // GET /google/accounts/:id - Get account details
+    // GET /google/accounts/:id - Get account details including settings
     fastify.get<{ Params: { id: string } }>(
       '/google/accounts/:id',
       async (request, reply) => {
@@ -123,9 +117,50 @@ export const registerAccountRoutes: FastifyPluginAsync<AccountRoutesConfig> =
         const [account] = await fastify.sql<GoogleAccount[]>`
           SELECT id, identifier, email, display_name, is_primary,
                  oauth_credentials IS NOT NULL as has_credentials,
-                 history_id, created_at, last_sync_at
+                 history_id, created_at, last_sync_at,
+                 triage_system_instructions, label_prefix_tracking,
+                 label_prefix_todo, sync_start_date, settings_updated_at
           FROM google.accounts
           WHERE id = ${accountId}
+        `;
+
+        if (!account) {
+          return reply.status(404).send({ error: 'Account not found' });
+        }
+
+        return account;
+      }
+    );
+
+    // PATCH /google/accounts/:id - Update account including settings
+    fastify.patch<{ Params: { id: string }; Body: UpdateAccountPayload }>(
+      '/google/accounts/:id',
+      async (request, reply) => {
+        const accountId = parseInt(request.params.id, 10);
+        const updates = request.body;
+
+        // Handle fields that can be explicitly set to null
+        const triageInstructionsClause =
+          'triage_system_instructions' in updates
+            ? fastify.sql`triage_system_instructions = ${updates.triage_system_instructions ?? null}`
+            : fastify.sql`triage_system_instructions = triage_system_instructions`;
+
+        const syncStartDateClause =
+          'sync_start_date' in updates
+            ? fastify.sql`sync_start_date = ${updates.sync_start_date ?? null}`
+            : fastify.sql`sync_start_date = sync_start_date`;
+
+        const [account] = await fastify.sql<GoogleAccount[]>`
+          UPDATE google.accounts SET
+            display_name = COALESCE(${updates.display_name ?? null}, display_name),
+            is_primary = COALESCE(${updates.is_primary ?? null}, is_primary),
+            ${triageInstructionsClause},
+            label_prefix_tracking = COALESCE(${updates.label_prefix_tracking ?? null}, label_prefix_tracking),
+            label_prefix_todo = COALESCE(${updates.label_prefix_todo ?? null}, label_prefix_todo),
+            ${syncStartDateClause},
+            settings_updated_at = NOW()
+          WHERE id = ${accountId}
+          RETURNING *
         `;
 
         if (!account) {
@@ -174,53 +209,6 @@ export const registerAccountRoutes: FastifyPluginAsync<AccountRoutesConfig> =
 
         const authUrl = authService.generateAuthUrl(accountId);
         return { authUrl };
-      }
-    );
-
-    // ==========================================
-    // Account Settings
-    // ==========================================
-
-    // GET /google/accounts/:id/settings - Get account settings
-    fastify.get<{ Params: { id: string } }>(
-      '/google/accounts/:id/settings',
-      async (request, reply) => {
-        const accountId = parseInt(request.params.id, 10);
-
-        const [settings] = await fastify.sql<AccountSettings[]>`
-          SELECT * FROM google.account_settings WHERE account_id = ${accountId}
-        `;
-
-        if (!settings) {
-          return reply.status(404).send({ error: 'Settings not found' });
-        }
-
-        return settings;
-      }
-    );
-
-    // PUT /google/accounts/:id/settings - Update account settings
-    fastify.put<{ Params: { id: string }; Body: UpdateSettingsPayload }>(
-      '/google/accounts/:id/settings',
-      async (request, reply) => {
-        const accountId = parseInt(request.params.id, 10);
-        const updates = request.body;
-
-        const [settings] = await fastify.sql<AccountSettings[]>`
-          UPDATE google.account_settings SET
-            triage_system_instructions = COALESCE(${updates.triage_system_instructions ?? null}, triage_system_instructions),
-            label_prefix_tracking = COALESCE(${updates.label_prefix_tracking ?? null}, label_prefix_tracking),
-            label_prefix_todo = COALESCE(${updates.label_prefix_todo ?? null}, label_prefix_todo),
-            sync_days_back = COALESCE(${updates.sync_days_back ?? null}, sync_days_back)
-          WHERE account_id = ${accountId}
-          RETURNING *
-        `;
-
-        if (!settings) {
-          return reply.status(404).send({ error: 'Settings not found' });
-        }
-
-        return settings;
       }
     );
 

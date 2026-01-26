@@ -73,8 +73,3 @@ $$ LANGUAGE plpgsql;
 CREATE TRIGGER rules_updated_trigger
   BEFORE UPDATE ON google.triage_rules
   FOR EACH ROW EXECUTE FUNCTION google.update_rule_updated_at();
-
--- Updated_at trigger for account settings
-CREATE TRIGGER settings_updated_trigger
-  BEFORE UPDATE ON google.account_settings
-  FOR EACH ROW EXECUTE FUNCTION google.update_rule_updated_at();

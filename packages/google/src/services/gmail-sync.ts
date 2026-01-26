@@ -11,7 +11,13 @@ import type { gmail_v1 } from 'googleapis';
 import type postgres from 'postgres';
 import type { FastifyBaseLogger } from 'fastify';
 import type { GmailAuthService } from './gmail-auth.js';
-import type { AccountSettings, SyncResult } from '../types.js';
+import type { GoogleAccount, SyncResult } from '../types.js';
+
+// Settings fields from GoogleAccount used for sync
+type AccountSettings = Pick<
+  GoogleAccount,
+  'label_prefix_tracking' | 'sync_start_date'
+>;
 
 interface ParsedEmail {
   messageId: string;
@@ -45,12 +51,12 @@ export class GmailSyncService {
   }
 
   /**
-   * Full sync: Fetch all emails from the last N days
+   * Full sync: Fetch untriaged inbox emails
    */
   async syncFull(accountId: number): Promise<SyncResult> {
     const gmail = await this.authService.getGmailClient(accountId);
     const settings = await this.getAccountSettings(accountId);
-    const daysBack = settings?.sync_days_back ?? 7;
+    const labelPrefix = settings?.label_prefix_tracking ?? 'AI';
 
     const result: SyncResult = {
       messagesScanned: 0,
@@ -61,10 +67,15 @@ export class GmailSyncService {
     };
 
     try {
-      // Calculate date for query
-      const since = new Date();
-      since.setDate(since.getDate() - daysBack);
-      const query = `newer_than:${daysBack}d`;
+      // Build query: inbox emails not yet triaged
+      let query = `in:inbox -label:${labelPrefix}/Triaged`;
+
+      // Add start date filter if configured
+      if (settings?.sync_start_date) {
+        // Gmail uses YYYY/MM/DD format for after:
+        const dateStr = settings.sync_start_date.replace(/-/g, '/');
+        query += ` after:${dateStr}`;
+      }
 
       // List all messages
       const messageIds = await this.listAllMessages(gmail, query);
@@ -444,15 +455,22 @@ export class GmailSyncService {
     `;
 
     if (existing) {
+      // Parse existing labels (may be string from older data or array from JSONB)
+      const existingLabels: string[] = Array.isArray(existing.gmail_labels)
+        ? existing.gmail_labels
+        : typeof existing.gmail_labels === 'string'
+          ? JSON.parse(existing.gmail_labels)
+          : [];
+
       // Check if labels changed (only update labels, not content)
       const labelsChanged =
-        JSON.stringify(existing.gmail_labels?.sort()) !==
-        JSON.stringify(email.gmailLabels.sort());
+        JSON.stringify([...existingLabels].sort()) !==
+        JSON.stringify([...email.gmailLabels].sort());
 
       if (labelsChanged) {
         await this.sql`
           UPDATE google.emails
-          SET gmail_labels = ${JSON.stringify(email.gmailLabels)}
+          SET gmail_labels = ${this.sql.json(email.gmailLabels)}
           WHERE id = ${existing.id}
         `;
         return 'updated';
@@ -473,7 +491,7 @@ export class GmailSyncService {
         ${accountId}, ${email.messageId}, ${email.threadId}, ${email.date},
         ${email.fromAddress}, ${email.fromName},
         ${email.toAddresses}, ${email.ccAddresses},
-        ${email.subject}, ${email.snippet}, ${JSON.stringify(email.gmailLabels)},
+        ${email.subject}, ${email.snippet}, ${this.sql.json(email.gmailLabels)},
         ${email.bodyText}, ${email.bodyHtml}, ${email.hasAttachments},
         'new'
       )
@@ -483,14 +501,15 @@ export class GmailSyncService {
   }
 
   /**
-   * Get account settings
+   * Get account settings from accounts table
    */
   private async getAccountSettings(
     accountId: number
   ): Promise<AccountSettings | null> {
-    const [settings] = await this.sql<AccountSettings[]>`
-      SELECT * FROM google.account_settings WHERE account_id = ${accountId}
+    const [account] = await this.sql<AccountSettings[]>`
+      SELECT label_prefix_tracking, sync_start_date
+      FROM google.accounts WHERE id = ${accountId}
     `;
-    return settings ?? null;
+    return account ?? null;
   }
 }

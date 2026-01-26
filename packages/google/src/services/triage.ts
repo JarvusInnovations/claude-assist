@@ -15,7 +15,7 @@ import type {
   EmailRecord,
   TriageRule,
   TopicOfInterest,
-  AccountSettings,
+  GoogleAccount,
   UserAlias,
   TriageResult,
   EmailAnalysis,
@@ -26,6 +26,12 @@ import type {
   ActionItem,
   Extraction,
 } from '../types.js';
+
+// Settings fields from GoogleAccount used for triage
+type AccountSettings = Pick<
+  GoogleAccount,
+  'triage_system_instructions' | 'label_prefix_tracking' | 'label_prefix_todo' | 'sync_start_date'
+>;
 
 export interface TriageServiceConfig {
   apiKey?: string;
@@ -264,15 +270,17 @@ export class TriageService {
   }
 
   /**
-   * Get account settings
+   * Get account settings from accounts table
    */
   private async getAccountSettings(
     accountId: number
   ): Promise<AccountSettings | null> {
-    const [settings] = await this.sql<AccountSettings[]>`
-      SELECT * FROM google.account_settings WHERE account_id = ${accountId}
+    const [account] = await this.sql<AccountSettings[]>`
+      SELECT triage_system_instructions, label_prefix_tracking,
+             label_prefix_todo, sync_start_date
+      FROM google.accounts WHERE id = ${accountId}
     `;
-    return settings ?? null;
+    return account ?? null;
   }
 
   /**

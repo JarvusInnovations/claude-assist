@@ -17,6 +17,13 @@ export interface GoogleAccount {
   is_primary: boolean;
   created_at: Date;
   last_sync_at: Date | null;
+
+  // Settings (merged from account_settings)
+  triage_system_instructions: string | null;
+  label_prefix_tracking: string;
+  label_prefix_todo: string;
+  sync_start_date: string | null; // ISO date string (YYYY-MM-DD)
+  settings_updated_at: Date;
 }
 
 export interface OAuthCredentials {
@@ -37,16 +44,6 @@ export interface UserAlias {
   created_at: Date;
 }
 
-export interface AccountSettings {
-  id: number;
-  account_id: number;
-  triage_system_instructions: string | null;
-  label_prefix_tracking: string;
-  label_prefix_todo: string;
-  sync_days_back: number;
-  created_at: Date;
-  updated_at: Date;
-}
 
 // ============================================
 // Email Records
@@ -262,11 +259,13 @@ export interface CreateAccountPayload {
   display_name?: string;
 }
 
-export interface UpdateSettingsPayload {
-  triage_system_instructions?: string;
+export interface UpdateAccountPayload {
+  display_name?: string;
+  is_primary?: boolean;
+  triage_system_instructions?: string | null;
   label_prefix_tracking?: string;
   label_prefix_todo?: string;
-  sync_days_back?: number;
+  sync_start_date?: string | null; // ISO date string (YYYY-MM-DD) or null
 }
 
 export interface CreateAliasPayload {

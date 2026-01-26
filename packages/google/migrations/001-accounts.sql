@@ -3,7 +3,7 @@
 
 CREATE SCHEMA IF NOT EXISTS google;
 
--- Google accounts with OAuth tokens
+-- Google accounts with OAuth tokens and settings
 CREATE TABLE google.accounts (
     id SERIAL PRIMARY KEY,
     identifier VARCHAR(50) UNIQUE NOT NULL,  -- 'personal', 'work'
@@ -13,7 +13,14 @@ CREATE TABLE google.accounts (
     history_id VARCHAR(50),   -- Gmail sync cursor for incremental sync
     is_primary BOOLEAN DEFAULT false,
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    last_sync_at TIMESTAMPTZ
+    last_sync_at TIMESTAMPTZ,
+
+    -- Account settings (merged from account_settings table)
+    triage_system_instructions TEXT,  -- Account-specific extraction rules for Haiku triage
+    label_prefix_tracking VARCHAR(20) DEFAULT 'AI',  -- AI/Triaged, etc.
+    label_prefix_todo VARCHAR(20) DEFAULT 'TODO',      -- TODO/Respond, etc.
+    sync_start_date DATE,             -- Only sync emails from this date forward
+    settings_updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- User aliases for name disambiguation in commitment extraction
@@ -29,26 +36,6 @@ CREATE TABLE google.user_aliases (
     UNIQUE(account_id, alias)
 );
 
--- Per-account triage configuration
-CREATE TABLE google.account_settings (
-    id SERIAL PRIMARY KEY,
-    account_id INTEGER REFERENCES google.accounts(id) ON DELETE CASCADE UNIQUE,
-
-    -- System prompt customization (injected into Haiku triage)
-    triage_system_instructions TEXT,  -- Account-specific extraction rules
-
-    -- Label prefixes (can be customized per account)
-    label_prefix_tracking VARCHAR(20) DEFAULT 'HARI',  -- HARI/Triaged, etc.
-    label_prefix_todo VARCHAR(20) DEFAULT 'TODO',      -- TODO/Respond, etc.
-
-    -- Sync settings
-    sync_days_back INTEGER DEFAULT 7,
-
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
 -- Indexes
 CREATE INDEX idx_aliases_account ON google.user_aliases(account_id);
-CREATE INDEX idx_settings_account ON google.account_settings(account_id);
 CREATE INDEX idx_accounts_email ON google.accounts(email);
