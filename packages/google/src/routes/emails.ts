@@ -1,10 +1,9 @@
 /**
  * Email Routes
  *
- * Endpoints for email queries, triage, and execution:
+ * Endpoints for email queries and triage:
  * - Search and filter emails
  * - Trigger sync and triage
- * - Execute planned actions
  */
 
 import type { FastifyPluginAsync } from 'fastify';
@@ -85,9 +84,7 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
           e.date, e.from_address, e.from_name, e.to_addresses, e.cc_addresses,
           e.subject, e.snippet, e.gmail_labels,
           e.analysis,
-          e.planned_labels, e.gmail_action, e.extractions,
-          e.triage_confidence, e.workflow_status,
-          e.triaged_at, e.reviewed_at, e.executed_at,
+          e.workflow_status, e.triaged_at,
           a.identifier as account_identifier,
           a.email as account_email
         FROM google.emails e
@@ -105,7 +102,6 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
       return emails.map((email) => ({
         ...email,
         analysis: parseJsonField(email.analysis),
-        extractions: parseJsonField(email.extractions),
       }));
     });
 
@@ -130,7 +126,6 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
         return {
           ...email,
           analysis: parseJsonField(email.analysis),
-          extractions: parseJsonField(email.extractions),
         };
       }
     );
@@ -310,166 +305,26 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
       // GET /google/triage/progress - Triage progress
       fastify.get('/google/triage/progress', async () => {
         const [stats] = await fastify.sql<{
+          discovered: string;
           new: string;
           triaged: string;
-          reviewed: string;
-          executed: string;
           with_errors: string;
         }[]>`
           SELECT
+            COUNT(*) FILTER (WHERE workflow_status = 'discovered') as discovered,
             COUNT(*) FILTER (WHERE workflow_status = 'new') as new,
             COUNT(*) FILTER (WHERE workflow_status = 'triaged') as triaged,
-            COUNT(*) FILTER (WHERE workflow_status = 'reviewed') as reviewed,
-            COUNT(*) FILTER (WHERE workflow_status = 'executed') as executed,
             COUNT(*) FILTER (WHERE last_error IS NOT NULL) as with_errors
           FROM google.emails
           WHERE date > NOW() - INTERVAL '7 days'
         `;
 
         return {
+          discovered: parseInt(stats?.discovered || '0', 10),
           new: parseInt(stats?.new || '0', 10),
           triaged: parseInt(stats?.triaged || '0', 10),
-          reviewed: parseInt(stats?.reviewed || '0', 10),
-          executed: parseInt(stats?.executed || '0', 10),
           with_errors: parseInt(stats?.with_errors || '0', 10),
         };
       });
     }
-
-    // ==========================================
-    // Review and Execute
-    // ==========================================
-
-    // PATCH /google/emails/:id - Update email plan (during review)
-    fastify.patch<{
-      Params: { id: string };
-      Body: {
-        planned_labels?: string[];
-        gmail_action?: string;
-        extractions?: unknown[];
-      };
-    }>('/google/emails/:id', async (request, reply) => {
-      const emailId = parseInt(request.params.id, 10);
-      const { planned_labels, gmail_action, extractions } = request.body;
-
-      const [email] = await fastify.sql<EmailRecord[]>`
-        UPDATE google.emails SET
-          planned_labels = COALESCE(${planned_labels ?? null}, planned_labels),
-          gmail_action = COALESCE(${gmail_action ?? null}, gmail_action),
-          extractions = COALESCE(${extractions ? JSON.stringify(extractions) : null}, extractions),
-          workflow_status = 'reviewed',
-          reviewed_at = NOW()
-        WHERE id = ${emailId}
-        RETURNING *
-      `;
-
-      if (!email) {
-        return reply.status(404).send({ error: 'Email not found' });
-      }
-
-      // Parse JSONB fields
-      return {
-        ...email,
-        analysis: parseJsonField(email.analysis),
-        extractions: parseJsonField(email.extractions),
-      };
-    });
-
-    // POST /google/emails/:id/execute - Execute planned actions
-    fastify.post<{
-      Params: { id: string };
-      Body?: {
-        apply_labels?: boolean;
-        apply_gmail_action?: boolean;
-        extraction_notes?: string[];
-      };
-    }>('/google/emails/:id/execute', async (request, reply) => {
-      const emailId = parseInt(request.params.id, 10);
-      const {
-        apply_labels = true,
-        apply_gmail_action = true,
-        extraction_notes,
-      } = request.body || {};
-
-      const [email] = await fastify.sql<EmailRecord[]>`
-        SELECT * FROM google.emails WHERE id = ${emailId}
-      `;
-
-      if (!email) {
-        return reply.status(404).send({ error: 'Email not found' });
-      }
-
-      // For now, just mark as executed and record what was planned
-      // Actual Gmail API calls would go here
-      const appliedLabels = apply_labels ? email.planned_labels : null;
-      const appliedAction = apply_gmail_action ? email.gmail_action : null;
-
-      await fastify.sql`
-        UPDATE google.emails SET
-          applied_labels = ${appliedLabels ?? null},
-          applied_gmail_action = ${appliedAction ?? null},
-          applied_extractions = ${extraction_notes ?? null},
-          workflow_status = 'executed',
-          executed_at = NOW()
-        WHERE id = ${emailId}
-      `;
-
-      // TODO: Actually apply labels and actions via Gmail API
-
-      return {
-        success: true,
-        applied: {
-          labels: appliedLabels,
-          gmail_action: appliedAction,
-          extractions: extraction_notes,
-        },
-      };
-    });
-
-    // POST /google/emails/batch-execute - Execute multiple emails
-    fastify.post<{
-      Body: {
-        email_ids: number[];
-        apply_labels?: boolean;
-        apply_gmail_action?: boolean;
-      };
-    }>('/google/emails/batch-execute', async (request) => {
-      const { email_ids, apply_labels = true, apply_gmail_action = true } =
-        request.body;
-
-      let success = 0;
-      let failed = 0;
-
-      for (const emailId of email_ids) {
-        try {
-          const [email] = await fastify.sql<EmailRecord[]>`
-            SELECT * FROM google.emails WHERE id = ${emailId}
-          `;
-
-          if (!email) {
-            failed++;
-            continue;
-          }
-
-          const appliedLabels = apply_labels ? email.planned_labels : null;
-          const appliedAction = apply_gmail_action ? email.gmail_action : null;
-
-          await fastify.sql`
-            UPDATE google.emails SET
-              applied_labels = ${appliedLabels ?? null},
-              applied_gmail_action = ${appliedAction ?? null},
-              workflow_status = 'executed',
-              executed_at = NOW()
-            WHERE id = ${emailId}
-          `;
-
-          success++;
-        } catch (error) {
-          fastify.log.error({ emailId, error }, 'Batch execute failed');
-          failed++;
-        }
-      }
-
-      return { success, failed };
-    });
   };

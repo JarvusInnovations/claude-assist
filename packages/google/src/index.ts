@@ -5,7 +5,6 @@
  * - OAuth account management
  * - Email sync with full body fetching
  * - AI-powered triage using multi-turn Haiku
- * - Database-driven rules and topics
  *
  * Required environment variables:
  * - GOOGLE_CLIENT_ID: OAuth client ID
@@ -25,7 +24,6 @@ import { GmailSyncService } from './services/gmail-sync.js';
 import { TriageService } from './services/triage.js';
 import { registerAccountRoutes } from './routes/accounts.js';
 import { registerEmailRoutes } from './routes/emails.js';
-import { registerRuleRoutes } from './routes/rules.js';
 
 // Module augmentation for fastify decorators
 declare module 'fastify' {
@@ -76,7 +74,6 @@ export default createPlugin('google', async (fastify: FastifyInstance, _options:
   // Register routes
   await fastify.register(registerAccountRoutes, { authService, syncService, triageService });
   await fastify.register(registerEmailRoutes, { syncService, triageService });
-  await fastify.register(registerRuleRoutes);
 
   // Register scheduled tasks
   fastify.scheduler.register({

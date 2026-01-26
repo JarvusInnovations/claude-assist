@@ -1,14 +1,12 @@
 -- Google Module: Email Storage and Triage State
--- Stores synced emails with full analysis structure
+-- Stores synced emails with AI analysis
 
 -- Workflow status enum for email processing states
 -- Note: Errors are tracked separately via last_error/last_error_at columns
 CREATE TYPE google.workflow_status AS ENUM (
     'discovered',  -- Listed from Gmail but not yet fetched
     'new',         -- Fetched and ready for triage
-    'triaged',     -- AI analysis complete
-    'reviewed',    -- Human review complete
-    'executed'     -- Actions applied
+    'triaged'      -- AI analysis complete
 );
 
 CREATE TABLE google.emails (
@@ -20,8 +18,6 @@ CREATE TABLE google.emails (
     -- Workflow State Machine
     workflow_status google.workflow_status DEFAULT 'new',
     triaged_at TIMESTAMPTZ,
-    reviewed_at TIMESTAMPTZ,
-    executed_at TIMESTAMPTZ,
 
     -- Gmail Metadata
     date TIMESTAMPTZ,
@@ -38,27 +34,12 @@ CREATE TABLE google.emails (
     body_html TEXT,
     has_attachments BOOLEAN DEFAULT false,
 
-    -- Consolidated AI Analysis (Phase 1: message-only extraction)
+    -- Consolidated AI Analysis
     analysis JSONB,              -- {overview, mentioned_people, mentioned_organizations, potential_action_items, sender_type, message_type, unsubscribe_link, rationale}
-
-    -- Plan (editable during review)
-    planned_labels TEXT[],       -- ['d/Client', 's/Personal', 'p/High', 'TODO/Respond']
-    gmail_action VARCHAR(20),    -- 'leave' | 'archive' | 'spam'
-    extractions JSONB,           -- Rich extraction objects
-
-    -- Triage Confidence
-    triage_confidence FLOAT,     -- 0-1 confidence score
-    rule_matched_id INTEGER,     -- FK to triage_rules if rule matched
 
     -- Error Tracking (separate from workflow status to preserve state on failure)
     last_error TEXT,             -- Error message from last failed operation
     last_error_at TIMESTAMPTZ,   -- When the error occurred
-
-    -- Execution Results
-    applied_labels TEXT[],
-    applied_gmail_action VARCHAR(20),
-    applied_extractions TEXT[],  -- Descriptions of completed extractions
-    execution_notes TEXT,
 
     -- Full-text search
     search_vector TSVECTOR,

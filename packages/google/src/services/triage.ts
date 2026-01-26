@@ -2,9 +2,8 @@
  * Triage Service
  *
  * AI-powered email triage using multi-turn Haiku conversations:
- * - Database-driven rules for pattern matching
  * - Dynamic prompts from account settings and aliases
- * - Topics of Interest scoring for RFPs and newsletters
+ * - Newsletter refinement for unsubscribe link extraction
  */
 
 import Anthropic from '@anthropic-ai/sdk';
@@ -13,13 +12,10 @@ import type postgres from 'postgres';
 import type { FastifyBaseLogger } from 'fastify';
 import type {
   EmailRecord,
-  TriageRule,
-  TopicOfInterest,
   GoogleAccount,
   UserAlias,
   TriageResult,
   EmailAnalysis,
-  GmailAction,
 } from '../types.js';
 
 /**
@@ -340,29 +336,22 @@ export class TriageService {
         return { emailId, success: false, error: 'Email not found' };
       }
 
-      // Step 1: Check database rules
-      const ruleMatch = await this.matchRules(email);
-      if (ruleMatch?.skip_ai_triage) {
-        return this.applyRuleResult(emailId, ruleMatch);
-      }
-
-      // Step 2: Load account settings for dynamic prompt
+      // Load account settings for dynamic prompt
       const settings = await this.getAccountSettings(email.account_id);
       const aliases = await this.getUserAliases(email.account_id);
 
-      // Step 3: Check thread context
+      // Check thread context
       const threadContext = await this.getThreadContext(email);
 
-      // Step 4: Haiku analysis with XML-structured prompts and retry
+      // Haiku analysis with XML-structured prompts and retry
       const analysis = await this.runHaikuAnalysis(email, {
-        ruleMatch,
         threadContext,
         settings,
         aliases,
       });
 
-      // Step 5: Apply analysis to database
-      return this.applyTriageResult(emailId, analysis, ruleMatch?.id);
+      // Apply analysis to database
+      return this.applyTriageResult(emailId, analysis);
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
@@ -389,137 +378,6 @@ export class TriageService {
       SELECT * FROM google.emails WHERE id = ${emailId}
     `;
     return email ?? null;
-  }
-
-  /**
-   * Match email against triage rules
-   */
-  private async matchRules(email: EmailRecord): Promise<TriageRule | null> {
-    const rules = await this.sql<TriageRule[]>`
-      SELECT * FROM google.triage_rules
-      WHERE account_id = ${email.account_id} AND enabled = true
-      ORDER BY priority DESC
-    `;
-
-    for (const rule of rules) {
-      if (this.ruleMatches(email, rule)) {
-        return rule;
-      }
-    }
-
-    return null;
-  }
-
-  /**
-   * Check if a rule matches an email
-   */
-  private ruleMatches(email: EmailRecord, rule: TriageRule): boolean {
-    // Check from patterns
-    if (rule.from_patterns && rule.from_patterns.length > 0) {
-      const fromAddress = email.from_address?.toLowerCase() ?? '';
-      const matches = rule.from_patterns.some((pattern) =>
-        this.matchPattern(fromAddress, pattern.toLowerCase())
-      );
-      if (!matches) return false;
-    }
-
-    // Check subject contains
-    if (rule.subject_contains && rule.subject_contains.length > 0) {
-      const subject = email.subject?.toLowerCase() ?? '';
-      const matches = rule.subject_contains.some((keyword) =>
-        subject.includes(keyword.toLowerCase())
-      );
-      if (!matches) return false;
-    }
-
-    // Check body contains
-    if (rule.body_contains && rule.body_contains.length > 0) {
-      const body = email.body_text?.toLowerCase() ?? '';
-      const matches = rule.body_contains.some((keyword) =>
-        body.includes(keyword.toLowerCase())
-      );
-      if (!matches) return false;
-    }
-
-    // Check body NOT contains
-    if (rule.body_not_contains && rule.body_not_contains.length > 0) {
-      const body = email.body_text?.toLowerCase() ?? '';
-      const hasExcluded = rule.body_not_contains.some((keyword) =>
-        body.includes(keyword.toLowerCase())
-      );
-      if (hasExcluded) return false;
-    }
-
-    return true;
-  }
-
-  /**
-   * Match a value against a pattern with wildcards
-   */
-  private matchPattern(value: string, pattern: string): boolean {
-    // Convert glob pattern to regex
-    const regex = new RegExp(
-      '^' +
-        pattern
-          .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-          .replace(/\*/g, '.*')
-          .replace(/\?/g, '.') +
-        '$'
-    );
-    return regex.test(value);
-  }
-
-  /**
-   * Apply a rule-based result (skip AI triage)
-   */
-  private async applyRuleResult(
-    emailId: number,
-    rule: TriageRule
-  ): Promise<TriageResult> {
-    const plannedLabels: string[] = [];
-
-    if (rule.assigned_domain) {
-      plannedLabels.push(`d/${this.capitalizeFirst(rule.assigned_domain)}`);
-    }
-    if (rule.assigned_type) {
-      plannedLabels.push(
-        `s/${rule.assigned_type === 'personal' ? 'Personal' : 'Automated'}`
-      );
-    }
-    if (rule.priority_level) {
-      plannedLabels.push(`p/${this.capitalizeFirst(rule.priority_level)}`);
-    }
-
-    const gmailAction: GmailAction =
-      rule.gmail_action ?? (rule.action === 'spam' ? 'spam' : 'archive');
-
-    await this.sql`
-      UPDATE google.emails SET
-        email_type = ${rule.assigned_type ?? null},
-        domain = ${rule.assigned_domain ?? null},
-        digest_section = ${rule.digest_section ?? null},
-        planned_labels = ${plannedLabels},
-        gmail_action = ${gmailAction},
-        triage_confidence = 1.0,
-        rule_matched_id = ${rule.id},
-        workflow_status = 'triaged',
-        triaged_at = NOW(),
-        last_error = NULL,
-        last_error_at = NULL
-      WHERE id = ${emailId}
-    `;
-
-    this.log.info(
-      { emailId, ruleId: rule.rule_id },
-      'Applied rule-based triage'
-    );
-
-    return {
-      emailId,
-      success: true,
-      ruleMatched: rule.rule_id,
-      confidence: 1.0,
-    };
   }
 
   /**
@@ -550,16 +408,16 @@ export class TriageService {
    */
   private async getThreadContext(
     email: EmailRecord
-  ): Promise<{ parentLabels?: string[]; parentSummary?: string } | null> {
+  ): Promise<{ parentSummary?: string } | null> {
     if (!email.thread_id) return null;
 
     // Get the most recent parent email in the thread
-    const [parent] = await this.sql<EmailRecord[]>`
-      SELECT planned_labels, overview FROM google.emails
+    const [parent] = await this.sql<{ overview: string | null }[]>`
+      SELECT analysis->>'overview' as overview FROM google.emails
       WHERE account_id = ${email.account_id}
         AND thread_id = ${email.thread_id}
         AND id != ${email.id}
-        AND workflow_status IN ('triaged', 'reviewed', 'executed')
+        AND workflow_status = 'triaged'
       ORDER BY date DESC
       LIMIT 1
     `;
@@ -567,8 +425,7 @@ export class TriageService {
     if (!parent) return null;
 
     return {
-      parentLabels: parent.planned_labels ?? undefined,
-      parentSummary: parent.analysis?.overview ?? undefined,
+      parentSummary: parent.overview ?? undefined,
     };
   }
 
@@ -579,8 +436,7 @@ export class TriageService {
   private async runHaikuAnalysis(
     email: EmailRecord,
     context: {
-      ruleMatch: TriageRule | null;
-      threadContext: { parentLabels?: string[]; parentSummary?: string } | null;
+      threadContext: { parentSummary?: string } | null;
       settings: AccountSettings | null;
       aliases: UserAlias[];
     }
@@ -596,7 +452,7 @@ export class TriageService {
 
     // Turn 1: Initial analysis (JSON retry handled internally)
     let analysis = await conversation.sendMessage(
-      this.buildEmailPrompt(email, context)
+      this.buildEmailPrompt(email)
     );
 
     // Turn 2: Newsletter unsubscribe link refinement
@@ -684,13 +540,7 @@ Return ONLY a JSON object inside <analysis> tags. No markdown, no explanation ou
   /**
    * Build the email content prompt with XML structure
    */
-  private buildEmailPrompt(
-    email: EmailRecord,
-    _context: {
-      ruleMatch: TriageRule | null;
-      threadContext: { parentLabels?: string[]; parentSummary?: string } | null;
-    }
-  ): string {
+  private buildEmailPrompt(email: EmailRecord): string {
     // Build from field with name if available
     const fromField = email.from_name
       ? `${email.from_name} <${email.from_address}>`
@@ -709,76 +559,16 @@ ${email.body_text || email.snippet || '(empty)'}
 </email>`;
   }
 
-
-  /**
-   * Get topics of interest for an account
-   */
-  private async getTopicsOfInterest(
-    accountId: number
-  ): Promise<TopicOfInterest[]> {
-    return this.sql<TopicOfInterest[]>`
-      SELECT * FROM google.topics_of_interest
-      WHERE account_id = ${accountId} AND enabled = true
-    `;
-  }
-
-  /**
-   * Score email against topics of interest
-   */
-  private scoreAgainstTopics(
-    email: EmailRecord,
-    analysis: EmailAnalysis,
-    topics: TopicOfInterest[]
-  ): boolean {
-    const content = [
-      email.subject || '',
-      email.body_text || '',
-      analysis.overview || '',
-    ]
-      .join(' ')
-      .toLowerCase();
-
-    let score = 0;
-    let hasExclude = false;
-
-    for (const topic of topics) {
-      const value = topic.value.toLowerCase();
-
-      if (topic.topic_type === 'exclude') {
-        if (content.includes(value)) {
-          hasExclude = true;
-        }
-      } else if (topic.topic_type === 'keyword') {
-        if (content.includes(value)) {
-          score++;
-        }
-      } else if (topic.topic_type === 'domain') {
-        if (content.includes(value)) {
-          score += 2; // Domain matches are weighted higher
-        }
-      }
-    }
-
-    // Exclude keywords trump positive matches
-    if (hasExclude) return false;
-
-    // Require at least 2 keyword matches or 1 domain match
-    return score >= 2;
-  }
-
   /**
    * Apply triage analysis to database (single JSONB column)
    */
   private async applyTriageResult(
     emailId: number,
-    analysis: EmailAnalysis,
-    ruleMatchedId?: number
+    analysis: EmailAnalysis
   ): Promise<TriageResult> {
     await this.sql`
       UPDATE google.emails SET
         analysis = ${analysis as any},
-        triage_confidence = 0.8,
-        rule_matched_id = ${ruleMatchedId ?? null},
         workflow_status = 'triaged',
         triaged_at = NOW(),
         last_error = NULL,
@@ -795,14 +585,6 @@ ${email.body_text || email.snippet || '(empty)'}
       emailId,
       success: true,
       analysis,
-      confidence: 0.8,
     };
-  }
-
-  /**
-   * Capitalize first letter
-   */
-  private capitalizeFirst(str: string): string {
-    return str.charAt(0).toUpperCase() + str.slice(1);
   }
 }
