@@ -90,6 +90,9 @@ docker-compose up -d             # Full stack
 ```typescript
 // Correct - explicit ARRAY[]::text[] cast
 fastify.sql`AND tools_used ?| ARRAY[${fastify.sql(toolsArray)}]::text[]`
+
+// Wrong - may not serialize correctly
+fastify.sql`AND tools_used ?| ${toolsArray}`
 ```
 
 **Array indexing** - use `!` assertion after length check:
@@ -130,3 +133,16 @@ Two-phase protocol for syncing large datasets:
 2. **Transfer phase**: Server responds with needed items, client sends only those
 
 MD5 hash-based change detection prevents duplicate processing.
+
+### Scheduled Tasks
+
+Register recurring tasks in plugin setup:
+
+```typescript
+fastify.scheduler.register({
+  name: 'module:task-name',
+  schedule: '*/5 * * * *',  // Cron expression
+  runOnStartup: true,
+  handler: async () => { /* ... */ },
+});
+```
