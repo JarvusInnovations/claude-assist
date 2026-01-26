@@ -55,8 +55,8 @@ export const registerAccountRoutes: FastifyPluginAsync<AccountRoutesConfig> =
       const defaultTriageStatus = { triaging: false, startedAt: null, emailCount: null, processedCount: null };
       return accounts.map((account) => ({
         ...account,
-        sync_status: syncService.getSyncStatus(account.id),
-        triage_status: triageService?.getTriageStatus(account.id) ?? defaultTriageStatus,
+        email_sync_status: syncService.getSyncStatus(account.id),
+        email_triage_status: triageService?.getTriageStatus(account.id) ?? defaultTriageStatus,
       }));
     });
 
@@ -142,8 +142,8 @@ export const registerAccountRoutes: FastifyPluginAsync<AccountRoutesConfig> =
         const defaultTriageStatus = { triaging: false, startedAt: null, emailCount: null, processedCount: null };
         return {
           ...account,
-          sync_status: syncService.getSyncStatus(accountId),
-          triage_status: triageService?.getTriageStatus(accountId) ?? defaultTriageStatus,
+          email_sync_status: syncService.getSyncStatus(accountId),
+          email_triage_status: triageService?.getTriageStatus(accountId) ?? defaultTriageStatus,
         };
       }
     );

@@ -74,7 +74,7 @@ The AI triage uses a conversational approach:
 curl <claude-assist-server>/google/accounts
 ```
 
-Returns accounts with `sync_status` and `triage_status` showing real-time progress.
+Returns accounts with `email_sync_status` and `email_triage_status` showing real-time progress.
 
 ### Sync Operations
 
