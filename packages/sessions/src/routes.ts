@@ -27,6 +27,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       days?: string;
       since?: string;
       until?: string;
+      forever?: string;
       tools?: string;
       machine?: string;
       project?: string;
@@ -40,6 +41,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       days = '30',
       since,
       until,
+      forever,
       tools,
       machine,
       project,
@@ -57,6 +59,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
     const sinceDate = since ? new Date(since) : null;
     const untilDate = until ? new Date(until) : null;
     const useDateRange = sinceDate || untilDate;
+    const foreverMode = forever === 'true';
 
     // Build dynamic query based on filters
     let sessions;
@@ -79,12 +82,14 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
         FROM sessions.sessions s
         JOIN sessions.machines m ON s.machine_id = m.id
         WHERE s.search_vector @@ websearch_to_tsquery('english', ${search})
-          ${useDateRange
-            ? fastify.sql`
-              ${sinceDate ? fastify.sql`AND s.started_at >= ${sinceDate}` : fastify.sql``}
-              ${untilDate ? fastify.sql`AND s.started_at <= ${untilDate}` : fastify.sql``}
-            `
-            : fastify.sql`AND s.started_at > NOW() - INTERVAL '1 day' * ${daysNum}`
+          ${foreverMode
+            ? fastify.sql``
+            : useDateRange
+              ? fastify.sql`
+                ${sinceDate ? fastify.sql`AND s.started_at >= ${sinceDate}` : fastify.sql``}
+                ${untilDate ? fastify.sql`AND s.started_at <= ${untilDate}` : fastify.sql``}
+              `
+              : fastify.sql`AND s.started_at > NOW() - INTERVAL '1 day' * ${daysNum}`
           }
           ${excludeEmpty ? fastify.sql`AND s.output_tokens > 0` : fastify.sql``}
           ${machine ? fastify.sql`AND m.machine_id = ${machine}` : fastify.sql``}
@@ -110,12 +115,14 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
         FROM sessions.sessions s
         JOIN sessions.machines m ON s.machine_id = m.id
         WHERE 1=1
-          ${useDateRange
-            ? fastify.sql`
-              ${sinceDate ? fastify.sql`AND s.started_at >= ${sinceDate}` : fastify.sql``}
-              ${untilDate ? fastify.sql`AND s.started_at <= ${untilDate}` : fastify.sql``}
-            `
-            : fastify.sql`AND s.started_at > NOW() - INTERVAL '1 day' * ${daysNum}`
+          ${foreverMode
+            ? fastify.sql``
+            : useDateRange
+              ? fastify.sql`
+                ${sinceDate ? fastify.sql`AND s.started_at >= ${sinceDate}` : fastify.sql``}
+                ${untilDate ? fastify.sql`AND s.started_at <= ${untilDate}` : fastify.sql``}
+              `
+              : fastify.sql`AND s.started_at > NOW() - INTERVAL '1 day' * ${daysNum}`
           }
           ${excludeEmpty ? fastify.sql`AND s.output_tokens > 0` : fastify.sql``}
           ${machine ? fastify.sql`AND m.machine_id = ${machine}` : fastify.sql``}

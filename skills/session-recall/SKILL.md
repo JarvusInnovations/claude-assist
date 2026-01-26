@@ -62,13 +62,14 @@ Parameters:
 - `days` - Limit to sessions within N days (default: 30)
 - `since` - Absolute start date (ISO 8601, e.g., `2025-01-01T00:00:00Z`). Overrides `days` when set
 - `until` - Absolute end date (ISO 8601). Can combine with `since` or use alone with `days`
+- `forever` - Set to `true` to search all sessions with no date limit. Use when the user's query indicates they want an absolute answer regardless of recency (e.g., "have we ever...", "did I ever...")
 - `tools` - Filter by tools used (comma-separated, e.g., `Edit,Bash`)
 - `machine` - Filter by machine ID (e.g., `localhost`, `laptop`)
 - `project` - Filter by project path (partial match)
 - `limit` - Max results (default: 20, max: 100)
 - `offset` - Pagination offset
 
-**Date filtering:** Use `days` for relative filtering (last N days) or `since`/`until` for absolute date ranges. When `since` or `until` is provided, they take precedence over `days`.
+**Date filtering:** By default, searches are limited to the last 30 days. Use `days` for relative filtering, `since`/`until` for absolute date ranges, or `forever=true` to search all time. When `since` or `until` is provided, they take precedence over `days`. `forever=true` disables all date filtering.
 
 Example response:
 
