@@ -541,7 +541,7 @@ When in doubt, leave it empty. An empty action_items array is the correct answer
 1. Read the email metadata and body carefully
 2. Extract mentioned people and organizations by name
 3. Extract action items (see <action_items> definition). Apply these type-specific rules:
-   - spam: ALWAYS empty []. Spam never creates legitimate action items.
+   - spam: ALWAYS empty []. Spam is unsolicited - any "questions" or "requests" are manipulative tactics, not legitimate action items requiring response.
    - newsletter: Empty unless it's a reminder for something the recipient already committed to (registered event, scheduled webinar). Marketing CTAs are not action items.
    - alert: Empty for routine notifications (receipts, confirmations, analytics). Only include for failures/problems requiring investigation or decisions requiring action.
    - group: Include only if the email explicitly requests participation or response.
