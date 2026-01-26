@@ -11,6 +11,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import type postgres from 'postgres';
 import type { Scheduler } from '@jarvus/claude-assist-core';
 import type { GmailAuthService } from '../services/gmail-auth.js';
+import type { GmailSyncService } from '../services/gmail-sync.js';
 import type {
   GoogleAccount,
   UserAlias,
@@ -29,10 +30,11 @@ declare module 'fastify' {
 
 export interface AccountRoutesConfig {
   authService: GmailAuthService;
+  syncService: GmailSyncService;
 }
 
 export const registerAccountRoutes: FastifyPluginAsync<AccountRoutesConfig> =
-  async (fastify, { authService }) => {
+  async (fastify, { authService, syncService }) => {
     // ==========================================
     // Account Management
     // ==========================================
@@ -46,7 +48,12 @@ export const registerAccountRoutes: FastifyPluginAsync<AccountRoutesConfig> =
         FROM google.accounts
         ORDER BY is_primary DESC, created_at ASC
       `;
-      return accounts;
+
+      // Add sync status to each account
+      return accounts.map((account) => ({
+        ...account,
+        sync_status: syncService.getSyncStatus(account.id),
+      }));
     });
 
     // POST /google/accounts - Create account and get auth URL
@@ -128,7 +135,10 @@ export const registerAccountRoutes: FastifyPluginAsync<AccountRoutesConfig> =
           return reply.status(404).send({ error: 'Account not found' });
         }
 
-        return account;
+        return {
+          ...account,
+          sync_status: syncService.getSyncStatus(accountId),
+        };
       }
     );
 

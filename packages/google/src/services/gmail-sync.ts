@@ -35,10 +35,17 @@ interface ParsedEmail {
   hasAttachments: boolean;
 }
 
+export interface SyncStatus {
+  syncing: boolean;
+  startedAt: Date | null;
+  type: 'full' | 'incremental' | null;
+}
+
 export class GmailSyncService {
   private sql: postgres.Sql;
   private log: FastifyBaseLogger;
   private authService: GmailAuthService;
+  private activeSyncs = new Map<number, { startedAt: Date; type: 'full' | 'incremental' }>();
 
   constructor(
     sql: postgres.Sql,
@@ -51,9 +58,40 @@ export class GmailSyncService {
   }
 
   /**
+   * Get sync status for an account
+   */
+  getSyncStatus(accountId: number): SyncStatus {
+    const active = this.activeSyncs.get(accountId);
+    return active
+      ? { syncing: true, startedAt: active.startedAt, type: active.type }
+      : { syncing: false, startedAt: null, type: null };
+  }
+
+  /**
+   * Get sync status for all accounts
+   */
+  getAllSyncStatuses(): Map<number, SyncStatus> {
+    const result = new Map<number, SyncStatus>();
+    for (const [accountId, status] of this.activeSyncs) {
+      result.set(accountId, { syncing: true, startedAt: status.startedAt, type: status.type });
+    }
+    return result;
+  }
+
+  /**
    * Full sync: Fetch untriaged inbox emails
    */
   async syncFull(accountId: number): Promise<SyncResult> {
+    this.activeSyncs.set(accountId, { startedAt: new Date(), type: 'full' });
+
+    try {
+      return await this.doSyncFull(accountId);
+    } finally {
+      this.activeSyncs.delete(accountId);
+    }
+  }
+
+  private async doSyncFull(accountId: number): Promise<SyncResult> {
     const gmail = await this.authService.getGmailClient(accountId);
     const settings = await this.getAccountSettings(accountId);
     const labelPrefix = settings?.label_prefix_tracking ?? 'AI';
@@ -142,6 +180,16 @@ export class GmailSyncService {
       return this.syncFull(accountId);
     }
 
+    this.activeSyncs.set(accountId, { startedAt: new Date(), type: 'incremental' });
+
+    try {
+      return await this.doSyncIncremental(accountId, account.history_id);
+    } finally {
+      this.activeSyncs.delete(accountId);
+    }
+  }
+
+  private async doSyncIncremental(accountId: number, historyId: string): Promise<SyncResult> {
     const gmail = await this.authService.getGmailClient(accountId);
 
     const result: SyncResult = {
@@ -156,7 +204,7 @@ export class GmailSyncService {
       // Get history since last sync
       const changedMessageIds = await this.getHistoryChanges(
         gmail,
-        account.history_id
+        historyId
       );
 
       result.messagesScanned = changedMessageIds.length;
@@ -196,11 +244,11 @@ export class GmailSyncService {
 
       // Update history_id
       const profile = await gmail.users.getProfile({ userId: 'me' });
-      const historyId = profile.data.historyId;
+      const newHistoryId = profile.data.historyId;
 
       await this.sql`
         UPDATE google.accounts
-        SET last_sync_at = NOW(), history_id = ${historyId ?? null}
+        SET last_sync_at = NOW(), history_id = ${newHistoryId ?? null}
         WHERE id = ${accountId}
       `;
     } catch (error) {
