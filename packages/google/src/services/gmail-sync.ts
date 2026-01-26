@@ -105,8 +105,21 @@ export class GmailSyncService {
 
   /**
    * Full sync: Fetch untriaged inbox emails
+   * Skips if sync already in progress for this account
    */
   async syncFull(accountId: number): Promise<SyncResult> {
+    // Skip if sync already in progress for this account
+    if (this.activeSyncs.has(accountId)) {
+      this.log.info({ accountId }, 'Skipping full sync - already in progress');
+      return {
+        messagesScanned: 0,
+        messagesIngested: 0,
+        messagesUpdated: 0,
+        messagesSkipped: 0,
+        errors: ['Sync already in progress'],
+      };
+    }
+
     this.activeSyncs.set(accountId, {
       startedAt: new Date(),
       type: 'full',
@@ -208,8 +221,21 @@ export class GmailSyncService {
 
   /**
    * Incremental sync: Use historyId for delta updates
+   * Skips if sync already in progress for this account
    */
   async syncIncremental(accountId: number): Promise<SyncResult> {
+    // Skip if sync already in progress for this account
+    if (this.activeSyncs.has(accountId)) {
+      this.log.info({ accountId }, 'Skipping incremental sync - already in progress');
+      return {
+        messagesScanned: 0,
+        messagesIngested: 0,
+        messagesUpdated: 0,
+        messagesSkipped: 0,
+        errors: ['Sync already in progress'],
+      };
+    }
+
     const [account] = await this.sql<{ history_id: string | null }[]>`
       SELECT history_id FROM google.accounts WHERE id = ${accountId}
     `;

@@ -257,6 +257,7 @@ export class TriageService {
 
   /**
    * Triage a batch of emails concurrently
+   * Skips accounts that are already triaging
    */
   async triageBatch(emailIds: number[]): Promise<TriageResult[]> {
     if (emailIds.length === 0) {
@@ -268,7 +269,7 @@ export class TriageService {
       SELECT id, account_id FROM google.emails WHERE id = ANY(${emailIds})
     `;
 
-    // Group by account and initialize tracking
+    // Group by account
     const byAccount = new Map<number, number[]>();
     for (const email of emails) {
       const ids = byAccount.get(email.account_id) || [];
@@ -276,8 +277,28 @@ export class TriageService {
       byAccount.set(email.account_id, ids);
     }
 
-    // Initialize status for each account
-    for (const [accountId, ids] of byAccount) {
+    // Skip accounts that are already triaging
+    const accountsToProcess: number[] = [];
+    for (const accountId of byAccount.keys()) {
+      if (this.activeTriages.has(accountId)) {
+        this.log.info({ accountId }, 'Skipping account - triage already in progress');
+      } else {
+        accountsToProcess.push(accountId);
+      }
+    }
+
+    if (accountsToProcess.length === 0) {
+      this.log.info('All accounts already triaging - skipping batch');
+      return [];
+    }
+
+    // Filter to only emails from accounts we're processing
+    const emailsToProcess = emails.filter((e) => accountsToProcess.includes(e.account_id));
+    const emailIdsToProcess = emailsToProcess.map((e) => e.id);
+
+    // Initialize status for accounts we're processing
+    for (const accountId of accountsToProcess) {
+      const ids = byAccount.get(accountId)!;
       this.activeTriages.set(accountId, {
         startedAt: new Date(),
         total: ids.length,
@@ -287,11 +308,11 @@ export class TriageService {
 
     try {
       const results = await Promise.all(
-        emailIds.map((id) =>
+        emailIdsToProcess.map((id) =>
           this.limit(async () => {
             const result = await this.triageEmail(id);
             // Increment processed count
-            const email = emails.find((e) => e.id === id);
+            const email = emailsToProcess.find((e) => e.id === id);
             if (email) {
               const status = this.activeTriages.get(email.account_id);
               if (status) status.processed++;
@@ -302,8 +323,8 @@ export class TriageService {
       );
       return results;
     } finally {
-      // Clean up tracking for all accounts in this batch
-      for (const accountId of byAccount.keys()) {
+      // Clean up tracking for accounts we processed
+      for (const accountId of accountsToProcess) {
         this.activeTriages.delete(accountId);
       }
     }

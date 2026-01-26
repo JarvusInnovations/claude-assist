@@ -116,7 +116,6 @@ export default createPlugin('google', async (fastify: FastifyInstance, _options:
           SELECT id FROM google.emails
           WHERE workflow_status = 'new'
           ORDER BY date DESC
-          LIMIT 50
         `;
 
         if (pending.length > 0) {

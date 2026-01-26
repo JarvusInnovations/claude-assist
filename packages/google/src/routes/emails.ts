@@ -217,41 +217,30 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
         return { message: 'No accounts found to sync', started: [] };
       }
 
-      // Check which accounts are already syncing
-      const alreadySyncing: string[] = [];
-      const starting: string[] = [];
-
+      // Fire and forget for all accounts (service handles duplicate prevention)
       for (const acc of accounts) {
-        const status = syncService.getSyncStatus(acc.id);
-        if (status.syncing) {
-          alreadySyncing.push(acc.identifier);
-        } else {
-          starting.push(acc.identifier);
-          // Fire and forget - don't await
-          const syncPromise = full
-            ? syncService.syncFull(acc.id)
-            : syncService.syncIncremental(acc.id);
+        const syncPromise = full
+          ? syncService.syncFull(acc.id)
+          : syncService.syncIncremental(acc.id);
 
-          syncPromise
-            .then((result) => {
-              fastify.log.info(
-                { account: acc.identifier, result },
-                'Sync complete'
-              );
-            })
-            .catch((error) => {
-              fastify.log.error(
-                { account: acc.identifier, error },
-                'Sync failed'
-              );
-            });
-        }
+        syncPromise
+          .then((result) => {
+            fastify.log.info(
+              { account: acc.identifier, result },
+              'Sync complete'
+            );
+          })
+          .catch((error) => {
+            fastify.log.error(
+              { account: acc.identifier, error },
+              'Sync failed'
+            );
+          });
       }
 
       return {
-        message: `Sync started for ${starting.length} account(s). Check GET /google/accounts for progress.`,
-        started: starting,
-        alreadySyncing,
+        message: `Sync requested for ${accounts.length} account(s). Check GET /google/accounts for progress.`,
+        accounts: accounts.map((a) => a.identifier),
         type: full ? 'full' : 'incremental',
       };
     });
@@ -278,7 +267,7 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
       fastify.post<{
         Body?: { account?: string; limit?: number };
       }>('/google/triage', async (request) => {
-        const { account, limit = 50 } = request.body || {};
+        const { account, limit } = request.body || {};
 
         // Get pending emails
         const pending = await fastify.sql<{ id: number; account_id: number }[]>`
@@ -287,28 +276,16 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
           WHERE e.workflow_status = 'new'
             ${account ? fastify.sql`AND a.identifier = ${account}` : fastify.sql``}
           ORDER BY e.date DESC
-          LIMIT ${limit}
+          ${limit ? fastify.sql`LIMIT ${limit}` : fastify.sql``}
         `;
 
         if (pending.length === 0) {
           return { message: 'No pending emails to triage', count: 0 };
         }
 
-        // Check if any accounts are already triaging
         const accountIds = [...new Set(pending.map((e) => e.account_id))];
-        const alreadyTriaging = accountIds.filter(
-          (id) => triageService.getTriageStatus(id).triaging
-        );
 
-        if (alreadyTriaging.length === accountIds.length) {
-          return {
-            message: 'Triage already in progress for all accounts',
-            count: 0,
-            alreadyTriaging: alreadyTriaging.length,
-          };
-        }
-
-        // Fire and forget - don't await
+        // Fire and forget - don't await (service handles duplicate prevention)
         triageService
           .triageBatch(pending.map((e) => e.id))
           .then((results) => {
