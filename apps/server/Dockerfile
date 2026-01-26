@@ -8,10 +8,12 @@ FROM base AS build
 COPY package.json bun.lock tsconfig.json ./
 COPY packages/core packages/core
 COPY packages/sessions packages/sessions
+COPY packages/google packages/google
 COPY apps/server apps/server
 RUN bun install --frozen-lockfile
 RUN cd packages/core && bun run build
 RUN cd packages/sessions && bun run build
+RUN cd packages/google && bun run build
 
 # Production image
 FROM base AS runner
