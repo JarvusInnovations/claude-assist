@@ -17,6 +17,12 @@ CREATE TABLE google.emails (
     message_id VARCHAR(50) NOT NULL,
     thread_id VARCHAR(50),
 
+    -- Workflow State Machine
+    workflow_status google.workflow_status DEFAULT 'new',
+    triaged_at TIMESTAMPTZ,
+    reviewed_at TIMESTAMPTZ,
+    executed_at TIMESTAMPTZ,
+
     -- Gmail Metadata
     date TIMESTAMPTZ,
     from_address TEXT,
@@ -52,12 +58,6 @@ CREATE TABLE google.emails (
     -- Triage Confidence
     triage_confidence FLOAT,     -- 0-1 confidence score
     rule_matched_id INTEGER,     -- FK to triage_rules if rule matched
-
-    -- Workflow State Machine
-    workflow_status google.workflow_status DEFAULT 'new',
-    triaged_at TIMESTAMPTZ,
-    reviewed_at TIMESTAMPTZ,
-    executed_at TIMESTAMPTZ,
 
     -- Error Tracking (separate from workflow status to preserve state on failure)
     last_error TEXT,             -- Error message from last failed operation
