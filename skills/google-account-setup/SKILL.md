@@ -62,9 +62,39 @@ curl -X PATCH http://localhost:3000/google/accounts/<id> \
   -d '{"sync_start_date": "<date>", "label_prefix_tracking": "<prefix>"}'
 ```
 
+#### Triage System Instructions
+
+The `triage_system_instructions` field lets you customize the AI triage behavior with account-specific rules. This plain text gets injected directly into Haiku's system prompt during email analysis.
+
+**When to use:**
+
+- **Name disambiguation**: When names in emails could be confused with the account owner
+- **Custom extraction rules**: Account-specific patterns for commitments, action items, etc.
+- **Context about roles/relationships**: Help the AI understand the user's work context
+
+**Example - Name disambiguation:**
+
+```bash
+curl -X PATCH http://localhost:3000/google/accounts/<id> \
+  -H "Content-Type: application/json" \
+  -d '{
+    "triage_system_instructions": "NAME DISAMBIGUATION:\n- \"Christopher\" in emails refers to teammate Christopher Yamas, NOT the account owner\n- The account owner goes by \"Chris\" or \"Chris Alfano\" only"
+  }'
+```
+
+**Developing triage instructions:**
+
+1. Start with common confusion points (similar names, nicknames)
+2. Add context about the user's role and typical email interactions
+3. Include any domain-specific terminology or patterns
+4. Test by running triage on sample emails and reviewing results
+5. Iterate based on extraction accuracy
+
 ### 7. Add Name Aliases
 
-Ask the user what names refer to them (for commitment extraction). Examples: "Chris", "Chris Alfano", "Christopher".
+Ask the user what names refer to them (for commitment extraction). Only add names the user actually uses - don't assume variations.
+
+**Important**: Names that refer to other people (teammates, etc.) should NOT be added as aliases. Instead, document these in `triage_system_instructions` for disambiguation.
 
 For each alias:
 
