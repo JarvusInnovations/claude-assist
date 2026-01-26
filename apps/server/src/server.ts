@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import postgres from 'postgres';
 import { createScheduler } from '@jarvus/claude-assist-core';
 import sessionsPlugin from '@jarvus/claude-assist-sessions';
+import googlePlugin from '@jarvus/claude-assist-google';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { env } from './env.js';
@@ -34,10 +35,30 @@ const sql = postgres(env.DATABASE_URL);
 fastify.decorate('sql', sql);
 fastify.decorate('scheduler', createScheduler(fastify));
 
-// Register plugins
-await fastify.register(sessionsPlugin, {
-  migrationsDir: join(__dirname, '../../../packages/sessions/migrations'),
-});
+// Register plugins conditionally based on environment
+if (env.ENABLE_SESSIONS !== 'false') {
+  fastify.log.info('Sessions module enabled');
+  await fastify.register(sessionsPlugin, {
+    migrationsDir: join(__dirname, '../../../packages/sessions/migrations'),
+  });
+} else {
+  fastify.log.info('Sessions module disabled');
+}
+
+if (env.ENABLE_GOOGLE !== 'false') {
+  if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) {
+    fastify.log.warn(
+      'Google module enabled but GOOGLE_CLIENT_ID/SECRET not set - skipping'
+    );
+  } else {
+    fastify.log.info('Google module enabled');
+    await fastify.register(googlePlugin, {
+      migrationsDir: join(__dirname, '../../../packages/google/migrations'),
+    });
+  }
+} else {
+  fastify.log.info('Google module disabled');
+}
 
 // Health check endpoint
 fastify.get('/health', async () => {

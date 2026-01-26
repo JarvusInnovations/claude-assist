@@ -56,6 +56,22 @@ export default createPlugin('mymodule', async (fastify, options) => {
 
 Skills use official Claude SKILL.md format with YAML frontmatter. See `skills/*/SKILL.md` for examples.
 
+## Skill Development
+
+When creating or modifying skills, activate the `skill-creator` skill first for guidance on skill structure, frontmatter, and best practices.
+
+### Server URL Placeholder
+
+Skills that make API calls to the claude-assist server use `<claude-assist-server>` as a placeholder in curl examples:
+
+```bash
+curl <claude-assist-server>/google/emails
+```
+
+**Always include this note** in skills that use the placeholder:
+
+> **Note:** Replace `<claude-assist-server>` with the actual server URL (e.g., `http://localhost:3000`). If a request fails with connection refused, ask the user for the correct server endpoint.
+
 ## Commits
 
 Use conventional commits with scope:
@@ -108,6 +124,28 @@ if (rows.length > 0) {
 ```typescript
 // Parse explicitly to avoid precision loss
 const tokens = parseInt(row.output_tokens, 10);
+```
+
+**JSONB writes** - pass objects directly, never use JSON.stringify:
+
+```typescript
+// Correct - postgres.js auto-serializes objects to JSONB
+sql`UPDATE table SET data = ${myObject}`
+
+// Wrong - double-serializes, stores escaped JSON string
+sql`UPDATE table SET data = ${JSON.stringify(myObject)}::jsonb`
+```
+
+**JSONB reads** - postgres.js may return as string, parse if needed:
+
+```typescript
+function parseJsonField<T>(value: T | string | null): T | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string') {
+    try { return JSON.parse(value) as T; } catch { return null; }
+  }
+  return value as T;
+}
 ```
 
 ### Optional Services

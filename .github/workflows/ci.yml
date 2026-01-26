@@ -37,6 +37,9 @@ jobs:
       - name: Build sessions
         run: bun run --filter @jarvus/claude-assist-sessions build
 
+      - name: Build google
+        run: bun run --filter @jarvus/claude-assist-google build
+
       - name: Build server
         run: bun run --filter @jarvus/claude-assist-server build
 
