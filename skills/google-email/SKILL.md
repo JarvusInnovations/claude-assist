@@ -11,7 +11,7 @@ Manage Gmail sync, AI-powered triage, and email analysis workflows.
 
 Use the `google-account-setup` skill to configure Gmail accounts before using these workflows. Accounts must have OAuth credentials (`has_credentials: true`) for sync and triage to work.
 
-> **Note:** Replace `<claude-assist-server>` with the actual server URL (e.g., `http://localhost:3000`). If a request fails with connection refused, ask the user for the correct server endpoint.
+> **Note:** Replace `<claude-assist-server>` with the actual server URL (e.g., `http://localhost:2529`). If a request fails with connection refused, ask the user for the correct server endpoint.
 
 ## Workflow States
 

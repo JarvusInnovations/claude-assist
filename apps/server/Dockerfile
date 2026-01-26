@@ -26,6 +26,6 @@ COPY --from=build /app/apps/server ./apps/server
 
 WORKDIR /app/apps/server
 
-EXPOSE 3000
+EXPOSE 2529
 
 CMD ["bun", "src/server.ts"]

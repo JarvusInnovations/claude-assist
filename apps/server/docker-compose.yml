@@ -21,10 +21,10 @@ services:
       dockerfile: apps/server/Dockerfile
     env_file: .env
     ports:
-      - "127.0.0.1:2529:3000"
+      - "127.0.0.1:2529:2529"
     environment:
       DATABASE_URL: postgres://claude:dev@postgres:5432/claude_assist
-      PORT: 3000
+      PORT: 2529
       HOST: 0.0.0.0
       NODE_ENV: production
       SESSIONS_ORIGINAL_CLAUDE_DIR: ${HOME}/.claude

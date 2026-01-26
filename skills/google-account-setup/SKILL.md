@@ -7,7 +7,7 @@ description: Set up Google Gmail accounts for email sync and triage. Use when us
 
 Interactive workflow to set up a Gmail account for sync and triage.
 
-> **Note:** Replace `<claude-assist-server>` with the actual server URL (e.g., `http://localhost:3000`). If a request fails with connection refused, ask the user for the correct server endpoint.
+> **Note:** Replace `<claude-assist-server>` with the actual server URL (e.g., `http://localhost:2529`). If a request fails with connection refused, ask the user for the correct server endpoint.
 
 ## Workflow
 
