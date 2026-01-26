@@ -87,17 +87,54 @@ Example response:
 
 **Note:** The `outline` field contains an AI-generated summary of the session (if available). Falls back to `first_user_prompt` if outline hasn't been generated yet.
 
+### Get Session Transcript (Preferred)
+
+```bash
+GET /sessions/:id/transcript
+```
+
+Returns a **compact, token-efficient text format** of the session—the same format used for AI outline generation. This is the **recommended way to read full session content**.
+
+Format:
+
+- `[U] <text>` - Full user messages
+- `[A] <snippet>` - Assistant responses (truncated to ~280 chars)
+- `[T] <tool_name> <target>` - Tool calls with file paths, commands, etc.
+
+Example response:
+
+```
+[U] Help me refactor the auth module
+[A] I'll help refactor the auth module. Let me examine the current implementation...
+[T] Read /src/auth/index.ts
+[T] Read /src/auth/middleware.ts
+[A] I can see the auth module has several issues. Here's my refactoring plan...
+[T] Edit /src/auth/index.ts
+```
+
+**Use this endpoint when:**
+
+- Reading a full session's conversation flow
+- Understanding what happened in a session
+- Copying session context for continuation
+
+**Use `?with_raw_messages=true` only when:**
+
+- You need exact tool inputs/outputs
+- You need token usage per message
+- You need raw content blocks (thinking, tool results)
+
 ### Get Session Details
 
 ```bash
-GET /sessions/:id?with_transcript=true
+GET /sessions/:id?with_raw_messages=true
 ```
 
 Parameters:
 
-- `with_transcript` - Include full conversation transcript (default: false)
+- `with_raw_messages` - Include full conversation as parsed JSONL message objects (default: false). **Warning: This can be very large.**
 
-Returns session metadata plus optionally the full transcript as parsed JSONL messages.
+Returns session metadata plus optionally the full `raw_messages` array (parsed JSONL messages).
 
 Response includes:
 
@@ -281,8 +318,9 @@ Options:
 1. Start with a broad search, then narrow by project or machine
 2. Use `days` parameter to focus on recent sessions
 3. Filter by `tools` to find sessions with specific activities (e.g., `tools=Edit,Bash`)
-4. Request transcript only when you need full context (it's large)
-5. Use machine filter when looking for work done on a specific device
+4. **Prefer `/sessions/:id/transcript`** for reading session content—it's compact and token-efficient
+5. Only use `?with_raw_messages=true` when you need exact tool inputs/outputs or token usage
+6. Use machine filter when looking for work done on a specific device
 
 ## Architecture
 

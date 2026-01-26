@@ -62,8 +62,11 @@ curl "http://localhost:2529/sessions?search=bug&days=14&tools=Edit"
 # Metadata only
 curl "http://localhost:2529/sessions/<uuid>"
 
-# Include full transcript
-curl "http://localhost:2529/sessions/<uuid>?with_transcript=true"
+# Get compact transcript (token-efficient format)
+curl "http://localhost:2529/sessions/<uuid>/transcript"
+
+# Include full raw messages (large, use sparingly)
+curl "http://localhost:2529/sessions/<uuid>?with_raw_messages=true"
 ```
 
 ### 4. View Statistics
@@ -93,7 +96,8 @@ curl http://localhost:2529/machines
 | Endpoint | Description |
 |----------|-------------|
 | `GET /sessions` | Search with FTS and filters |
-| `GET /sessions/:id` | Session details (`?with_transcript=true`) |
+| `GET /sessions/:id` | Session details (`?with_raw_messages=true`) |
+| `GET /sessions/:id/transcript` | Compact transcript (text/plain) |
 | `GET /sessions/stats` | Usage statistics |
 | `GET /machines` | List registered machines |
 | `POST /sessions/sync` | Trigger manual localhost sync |
