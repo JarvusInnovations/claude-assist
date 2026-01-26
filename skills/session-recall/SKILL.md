@@ -98,7 +98,7 @@ Returns a **compact, token-efficient text format** of the session—the same for
 Format:
 
 - `[U] <text>` - Full user messages
-- `[A] <snippet>` - Assistant responses (truncated to ~100 chars)
+- `[A] <snippet>` - Assistant responses (truncated to ~280 chars)
 - `[T] <tool_name> <target>` - Tool calls with file paths, commands, etc.
 
 Example response:

@@ -100,11 +100,11 @@ export function serializeTranscript(rawTranscript: string): string {
       }
 
       if (msg.type === 'assistant' && msg.message) {
-        // Extract brief text snippet (first ~100 chars)
+        // Extract brief text snippet (first ~280 chars)
         const text = extractTextContent(msg.message.content);
         if (text) {
           const snippet =
-            text.length > 100 ? text.slice(0, 100) + '...' : text;
+            text.length > 280 ? text.slice(0, 280) + '...' : text;
           output.push(`[A] ${snippet}`);
         }
 
@@ -123,7 +123,8 @@ export function serializeTranscript(rawTranscript: string): string {
 
   const result = output.join('\n');
 
-  // Truncate to stay within reasonable limits
+  // Truncate to stay within Haiku's 200K token context
+  // Reserve ~2K tokens for response + prompt overhead, leaving ~198K for transcript
   // At ~3.5 chars/token (conservative for code): 198K × 3.5 ≈ 693K chars
   const MAX_TRANSCRIPT_CHARS = 680000;
   if (result.length > MAX_TRANSCRIPT_CHARS) {
