@@ -33,6 +33,158 @@ class JsonParseError extends Error {
   }
 }
 
+/**
+ * Manages a multi-turn conversation with Claude for email analysis.
+ * Handles message history, API calls, and JSON parse retries internally.
+ */
+class AnalysisConversation {
+  private messages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+  private systemPrompt: string;
+  private client: Anthropic;
+  private model: string;
+  private maxTokens: number;
+  private log: FastifyBaseLogger;
+  private emailId: number;
+
+  constructor(options: {
+    systemPrompt: string;
+    client: Anthropic;
+    model: string;
+    maxTokens: number;
+    log: FastifyBaseLogger;
+    emailId: number;
+  }) {
+    this.systemPrompt = options.systemPrompt;
+    this.client = options.client;
+    this.model = options.model;
+    this.maxTokens = options.maxTokens;
+    this.log = options.log;
+    this.emailId = options.emailId;
+  }
+
+  /**
+   * Send a message and get the parsed analysis.
+   * Handles JSON parse errors internally with one retry.
+   * All responses (including failed parses) are added to history.
+   */
+  async sendMessage(content: string): Promise<EmailAnalysis> {
+    this.messages.push({ role: 'user', content });
+
+    const maxRetries = 1;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      const response = await this.client.messages.create({
+        model: this.model,
+        max_tokens: this.maxTokens,
+        system: this.systemPrompt,
+        messages: this.messages,
+      });
+
+      const textContent = response.content.find((c) => c.type === 'text');
+      if (!textContent || textContent.type !== 'text') {
+        throw new Error('No text response from AI');
+      }
+
+      // Add raw response to history before parsing
+      this.messages.push({ role: 'assistant', content: textContent.text });
+
+      try {
+        return this.parseAnalysisFromXml(textContent.text);
+      } catch (error) {
+        if (attempt < maxRetries && error instanceof JsonParseError) {
+          this.log.warn(
+            { emailId: this.emailId, attempt, error: error.message },
+            'JSON parse failed, requesting correction'
+          );
+          // Add correction request for next iteration
+          this.messages.push({
+            role: 'user',
+            content: `<error>JSON parse failed: ${error.message}</error>
+
+Please fix the JSON syntax and return the corrected analysis inside <analysis> tags.`,
+          });
+        } else {
+          throw error;
+        }
+      }
+    }
+
+    // TypeScript: unreachable, but satisfies return type
+    throw new Error('Unexpected: retry loop exited without return or throw');
+  }
+
+  /** Get message history for debugging/logging */
+  getHistory(): ReadonlyArray<{ role: string; content: string }> {
+    return this.messages;
+  }
+
+  /**
+   * Parse analysis JSON from XML-tagged AI response
+   */
+  private parseAnalysisFromXml(text: string): EmailAnalysis {
+    // Extract content between <analysis> tags
+    const match = text.match(/<analysis>\s*([\s\S]*?)\s*<\/analysis>/);
+
+    if (!match) {
+      throw new JsonParseError('No <analysis> tags found in response', text);
+    }
+
+    const jsonStr = match[1]!.trim();
+
+    try {
+      const parsed = JSON.parse(jsonStr);
+      return this.validateAnalysis(parsed);
+    } catch (error) {
+      throw new JsonParseError(
+        `JSON parse error: ${error instanceof Error ? error.message : String(error)}`,
+        text
+      );
+    }
+  }
+
+  /**
+   * Validate and normalize the parsed analysis object
+   */
+  private validateAnalysis(parsed: Record<string, unknown>): EmailAnalysis {
+    // Validate sender_type
+    const senderType = parsed.sender_type;
+    if (senderType !== 'automated' && senderType !== 'human') {
+      throw new JsonParseError(
+        `Invalid sender_type: ${senderType}. Must be 'automated' or 'human'.`,
+        JSON.stringify(parsed)
+      );
+    }
+
+    // Validate message_type
+    const messageType = parsed.message_type;
+    const validMessageTypes = ['spam', 'newsletter', 'alert', 'group', 'personal'];
+    if (!validMessageTypes.includes(messageType as string)) {
+      throw new JsonParseError(
+        `Invalid message_type: ${messageType}. Must be one of: ${validMessageTypes.join(', ')}`,
+        JSON.stringify(parsed)
+      );
+    }
+
+    return {
+      overview: typeof parsed.overview === 'string' ? parsed.overview : '',
+      mentioned_people: Array.isArray(parsed.mentioned_people)
+        ? parsed.mentioned_people.filter((p): p is string => typeof p === 'string')
+        : [],
+      mentioned_organizations: Array.isArray(parsed.mentioned_organizations)
+        ? parsed.mentioned_organizations.filter((o): o is string => typeof o === 'string')
+        : [],
+      potential_action_items: Array.isArray(parsed.potential_action_items)
+        ? parsed.potential_action_items.filter((a): a is string => typeof a === 'string')
+        : [],
+      sender_type: senderType as 'automated' | 'human',
+      message_type: messageType as 'spam' | 'newsletter' | 'alert' | 'group' | 'personal',
+      unsubscribe_link:
+        typeof parsed.unsubscribe_link === 'string' ? parsed.unsubscribe_link : null,
+      rationale: typeof parsed.rationale === 'string' ? parsed.rationale : '',
+    };
+  }
+}
+
 // Settings fields from GoogleAccount used for triage
 type AccountSettings = Pick<
   GoogleAccount,
@@ -400,7 +552,8 @@ export class TriageService {
   }
 
   /**
-   * Run Haiku analysis with automatic retry on JSON parse failures
+   * Run Haiku analysis with multi-turn conversation support.
+   * Uses AnalysisConversation for message history management and JSON retry.
    */
   private async runHaikuAnalysis(
     email: EmailRecord,
@@ -411,60 +564,46 @@ export class TriageService {
       aliases: UserAlias[];
     }
   ): Promise<EmailAnalysis> {
-    const systemPrompt = this.buildSystemPrompt(context.settings, context.aliases);
-    const userMessage = this.buildEmailPrompt(email, context);
+    const conversation = new AnalysisConversation({
+      systemPrompt: this.buildSystemPrompt(context.settings, context.aliases),
+      client: this.client,
+      model: this.model,
+      maxTokens: this.maxTokens,
+      log: this.log,
+      emailId: email.id,
+    });
 
-    // Build initial messages array
-    const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
-      { role: 'user', content: userMessage },
-    ];
+    // Turn 1: Initial analysis (JSON retry handled internally)
+    let analysis = await conversation.sendMessage(
+      this.buildEmailPrompt(email, context)
+    );
 
-    const maxRetries = 1;
-    let lastError: Error | null = null;
+    // Turn 2: Newsletter unsubscribe link refinement
+    if (
+      analysis.message_type === 'newsletter' &&
+      !analysis.unsubscribe_link &&
+      email.body_html
+    ) {
+      this.log.info(
+        { emailId: email.id },
+        'Newsletter missing unsubscribe link, checking HTML'
+      );
+      analysis = await conversation.sendMessage(
+        `<refinement>
+The email was classified as a newsletter but no unsubscribe link was found in the text body.
+Please examine the HTML body below and extract the unsubscribe URL if present.
+Return your updated complete analysis.
 
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      try {
-        const response = await this.client.messages.create({
-          model: this.model,
-          max_tokens: this.maxTokens,
-          system: systemPrompt,
-          messages,
-        });
-
-        // Extract text response
-        const textContent = response.content.find((c) => c.type === 'text');
-        if (!textContent || textContent.type !== 'text') {
-          throw new Error('No text response from AI');
-        }
-
-        // Parse JSON from XML-tagged response
-        return this.parseAnalysisFromXml(textContent.text);
-      } catch (error) {
-        lastError = error as Error;
-
-        // If it's a JSON parse error and we have retries left, add feedback for correction
-        if (attempt < maxRetries && error instanceof JsonParseError) {
-          this.log.warn(
-            { emailId: email.id, attempt, error: error.message },
-            'JSON parse failed, retrying with error feedback'
-          );
-
-          // Add the failed response and error feedback for the next attempt
-          messages.push(
-            { role: 'assistant', content: error.rawText },
-            {
-              role: 'user',
-              content: `<error>JSON parse failed: ${error.message}</error>
-
-Please fix the JSON syntax and return ONLY the corrected JSON inside <analysis> tags.`,
-            }
-          );
-        }
-      }
+<html_body>
+${email.body_html}
+</html_body>
+</refinement>`
+      );
     }
 
-    // All retries exhausted
-    throw lastError;
+    // Future conditional turns can be added here as simple if-statements
+
+    return analysis;
   }
 
   /**
@@ -549,73 +688,6 @@ ${email.body_text || email.snippet || '(empty)'}
 </email>`;
   }
 
-  /**
-   * Parse analysis JSON from XML-tagged AI response
-   */
-  private parseAnalysisFromXml(text: string): EmailAnalysis {
-    // Extract content between <analysis> tags
-    const match = text.match(/<analysis>\s*([\s\S]*?)\s*<\/analysis>/);
-
-    if (!match) {
-      throw new JsonParseError(
-        'No <analysis> tags found in response',
-        text
-      );
-    }
-
-    const jsonStr = match[1]!.trim();
-
-    try {
-      const parsed = JSON.parse(jsonStr);
-      return this.validateAnalysis(parsed);
-    } catch (error) {
-      throw new JsonParseError(
-        `JSON parse error: ${error instanceof Error ? error.message : String(error)}`,
-        text
-      );
-    }
-  }
-
-  /**
-   * Validate and normalize the parsed analysis object
-   */
-  private validateAnalysis(parsed: Record<string, unknown>): EmailAnalysis {
-    // Validate sender_type
-    const senderType = parsed.sender_type;
-    if (senderType !== 'automated' && senderType !== 'human') {
-      throw new JsonParseError(
-        `Invalid sender_type: ${senderType}. Must be 'automated' or 'human'.`,
-        JSON.stringify(parsed)
-      );
-    }
-
-    // Validate message_type
-    const messageType = parsed.message_type;
-    const validMessageTypes = ['spam', 'newsletter', 'alert', 'group', 'personal'];
-    if (!validMessageTypes.includes(messageType as string)) {
-      throw new JsonParseError(
-        `Invalid message_type: ${messageType}. Must be one of: ${validMessageTypes.join(', ')}`,
-        JSON.stringify(parsed)
-      );
-    }
-
-    return {
-      overview: typeof parsed.overview === 'string' ? parsed.overview : '',
-      mentioned_people: Array.isArray(parsed.mentioned_people)
-        ? parsed.mentioned_people.filter((p): p is string => typeof p === 'string')
-        : [],
-      mentioned_organizations: Array.isArray(parsed.mentioned_organizations)
-        ? parsed.mentioned_organizations.filter((o): o is string => typeof o === 'string')
-        : [],
-      potential_action_items: Array.isArray(parsed.potential_action_items)
-        ? parsed.potential_action_items.filter((a): a is string => typeof a === 'string')
-        : [],
-      sender_type: senderType as 'automated' | 'human',
-      message_type: messageType as 'spam' | 'newsletter' | 'alert' | 'group' | 'personal',
-      unsubscribe_link: typeof parsed.unsubscribe_link === 'string' ? parsed.unsubscribe_link : null,
-      rationale: typeof parsed.rationale === 'string' ? parsed.rationale : '',
-    };
-  }
 
   /**
    * Get topics of interest for an account
