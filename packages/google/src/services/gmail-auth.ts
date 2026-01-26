@@ -73,10 +73,10 @@ export class GmailAuthService {
       scope: tokens.scope!,
     };
 
-    // Store credentials in database
+    // Store credentials in database (pass object directly for JSONB)
     const [account] = await this.sql<GoogleAccount[]>`
       UPDATE google.accounts
-      SET oauth_credentials = ${JSON.stringify(credentials)}
+      SET oauth_credentials = ${this.sql.json(credentials)}
       WHERE id = ${accountId}
       RETURNING *
     `;
@@ -148,7 +148,7 @@ export class GmailAuthService {
 
     await this.sql`
       UPDATE google.accounts
-      SET oauth_credentials = ${JSON.stringify(updatedCredentials)}
+      SET oauth_credentials = ${this.sql.json(updatedCredentials)}
       WHERE id = ${accountId}
     `;
 
