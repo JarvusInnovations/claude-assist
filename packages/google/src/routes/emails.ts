@@ -15,8 +15,7 @@ import type { TriageService } from '../services/triage.js';
 import type {
   EmailRecord,
   WorkflowStatus,
-  EmailDomain,
-  DigestSection,
+  MessageType,
 } from '../types.js';
 
 // Ensure module augmentation is applied
@@ -43,11 +42,9 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
       Querystring: {
         account?: string;
         workflow_status?: WorkflowStatus;
-        domain?: EmailDomain;
-        digest_section?: DigestSection;
+        message_type?: MessageType;
         search?: string;
         days?: string;
-        interesting?: string;
         limit?: string;
         offset?: string;
       };
@@ -55,11 +52,9 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
       const {
         account,
         workflow_status,
-        domain,
-        digest_section,
+        message_type,
         search,
         days = '30',
-        interesting,
         limit = '50',
         offset = '0',
       } = request.query;
@@ -74,9 +69,7 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
           e.id, e.account_id, e.message_id, e.thread_id,
           e.date, e.from_address, e.from_name, e.to_addresses, e.cc_addresses,
           e.subject, e.snippet, e.gmail_labels,
-          e.email_type, e.domain, e.overview,
-          e.potential_action_items, e.potential_extractions,
-          e.digest_section, e.interesting, e.analysis_notes,
+          e.analysis,
           e.planned_labels, e.gmail_action, e.extractions,
           e.triage_confidence, e.workflow_status,
           e.triaged_at, e.reviewed_at, e.executed_at,
@@ -87,9 +80,7 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
         WHERE e.date > NOW() - INTERVAL '1 day' * ${daysNum}
           ${account ? fastify.sql`AND a.identifier = ${account}` : fastify.sql``}
           ${workflow_status ? fastify.sql`AND e.workflow_status = ${workflow_status}` : fastify.sql``}
-          ${domain ? fastify.sql`AND e.domain = ${domain}` : fastify.sql``}
-          ${digest_section ? fastify.sql`AND e.digest_section = ${digest_section}` : fastify.sql``}
-          ${interesting === 'true' ? fastify.sql`AND e.interesting = true` : fastify.sql``}
+          ${message_type ? fastify.sql`AND e.analysis->>'message_type' = ${message_type}` : fastify.sql``}
           ${search ? fastify.sql`AND e.search_vector @@ plainto_tsquery('english', ${search})` : fastify.sql``}
         ORDER BY e.date DESC
         LIMIT ${limitNum} OFFSET ${offsetNum}
@@ -138,42 +129,32 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
         GROUP BY workflow_status
       `;
 
-      // Get counts by domain
-      const domainStats = await fastify.sql<
-        { domain: string; count: string }[]
+      // Get counts by message_type
+      const messageTypeStats = await fastify.sql<
+        { message_type: string; count: string }[]
       >`
-        SELECT domain, COUNT(*) as count
+        SELECT analysis->>'message_type' as message_type, COUNT(*) as count
         FROM google.emails e
         JOIN google.accounts a ON e.account_id = a.id
         WHERE e.date > NOW() - INTERVAL '1 day' * ${daysNum}
-          AND e.domain IS NOT NULL
+          AND e.analysis->>'message_type' IS NOT NULL
           ${account ? fastify.sql`AND a.identifier = ${account}` : fastify.sql``}
-        GROUP BY domain
+        GROUP BY analysis->>'message_type'
         ORDER BY count DESC
       `;
 
-      // Get counts by digest section
-      const digestStats = await fastify.sql<
-        { digest_section: string; count: string }[]
+      // Get counts by sender_type
+      const senderTypeStats = await fastify.sql<
+        { sender_type: string; count: string }[]
       >`
-        SELECT digest_section, COUNT(*) as count
+        SELECT analysis->>'sender_type' as sender_type, COUNT(*) as count
         FROM google.emails e
         JOIN google.accounts a ON e.account_id = a.id
         WHERE e.date > NOW() - INTERVAL '1 day' * ${daysNum}
-          AND e.digest_section IS NOT NULL
+          AND e.analysis->>'sender_type' IS NOT NULL
           ${account ? fastify.sql`AND a.identifier = ${account}` : fastify.sql``}
-        GROUP BY digest_section
+        GROUP BY analysis->>'sender_type'
         ORDER BY count DESC
-      `;
-
-      // Get interesting count
-      const [interestingStats] = await fastify.sql<{ count: string }[]>`
-        SELECT COUNT(*) as count
-        FROM google.emails e
-        JOIN google.accounts a ON e.account_id = a.id
-        WHERE e.date > NOW() - INTERVAL '1 day' * ${daysNum}
-          AND e.interesting = true
-          ${account ? fastify.sql`AND a.identifier = ${account}` : fastify.sql``}
       `;
 
       return {
@@ -181,13 +162,12 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
         byStatus: Object.fromEntries(
           statusStats.map((s) => [s.workflow_status, parseInt(s.count, 10)])
         ),
-        byDomain: Object.fromEntries(
-          domainStats.map((s) => [s.domain, parseInt(s.count, 10)])
+        byMessageType: Object.fromEntries(
+          messageTypeStats.map((s) => [s.message_type, parseInt(s.count, 10)])
         ),
-        byDigestSection: Object.fromEntries(
-          digestStats.map((s) => [s.digest_section, parseInt(s.count, 10)])
+        bySenderType: Object.fromEntries(
+          senderTypeStats.map((s) => [s.sender_type, parseInt(s.count, 10)])
         ),
-        interesting: parseInt(interestingStats?.count || '0', 10),
       };
     });
 
