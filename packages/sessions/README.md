@@ -77,12 +77,70 @@ curl "http://localhost:2529/sessions/stats?days=30"
 
 ### 5. Push from Satellite Machines
 
+Sessions on the machine running the server are synced automatically every 5 minutes. For other machines ("satellites"), use the push CLI to send sessions to the server:
+
 ```bash
 # Preview what would be pushed
 bunx @jarvus/claude-assist-sessions push -m laptop --dry-run -v
 
 # Push to server
 bunx @jarvus/claude-assist-sessions push -m laptop -s https://my-server.com
+```
+
+#### Schedule Automatic Push (macOS)
+
+On satellite machines, create a launchd plist to push sessions every 5 minutes:
+
+```bash
+cat > ~/Library/LaunchAgents/com.jarvus.claude-assist-push.plist << 'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.jarvus.claude-assist-push</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/path/to/bun</string>
+        <string>run</string>
+        <string>packages/sessions/bin/push.ts</string>
+        <string>--machine</string>
+        <string>my-mac</string>
+        <string>--server</string>
+        <string>http://my-server:2529</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/path/to/claude-assist</string>
+    <key>StartInterval</key>
+    <integer>300</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Users/me/Library/Logs/claude-assist-push.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/me/Library/Logs/claude-assist-push.error.log</string>
+</dict>
+</plist>
+EOF
+```
+
+Update the paths and machine name, then load the job:
+
+```bash
+# Find your bun path (use direct path, not shims)
+asdf where bun  # e.g., ~/.asdf/installs/bun/1.3.6/bin/bun
+
+# Load the scheduled job
+launchctl load ~/Library/LaunchAgents/com.jarvus.claude-assist-push.plist
+
+# Check status (exit code 0 = success)
+launchctl list | grep claude-assist
+
+# View logs
+tail -f ~/Library/Logs/claude-assist-push.log
+
+# Unload to stop
+launchctl unload ~/Library/LaunchAgents/com.jarvus.claude-assist-push.plist
 ```
 
 ### 6. List Machines
