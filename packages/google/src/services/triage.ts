@@ -571,18 +571,8 @@ RULE HINT: This email matched rule "${context.ruleMatch.name}"
       };
     } catch (error) {
       this.log.warn({ text, error }, 'Failed to parse AI response as JSON');
-
-      // Return safe defaults
-      return {
-        email_type: 'personal',
-        domain: 'internal',
-        overview: 'Failed to parse AI analysis',
-        potential_action_items: [],
-        potential_extractions: [],
-        planned_labels: ['p/Normal'],
-        gmail_action: 'leave',
-        extractions: [],
-      };
+      // Re-throw to let triageEmail record the error properly
+      throw new Error(`Failed to parse AI response: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
