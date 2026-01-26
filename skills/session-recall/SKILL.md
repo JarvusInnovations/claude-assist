@@ -1,19 +1,11 @@
 ---
 name: session-recall
-description: Search past Claude sessions for context. Use when asked "where did we leave off?" or "what did we discuss about X?"
+description: Search past Claude sessions for context. Use when asked "where did we leave off?", "what did we discuss about X?", "find a previous conversation", or when needing context from earlier work across machines.
 ---
 
 # Session Recall
 
 Search and retrieve context from past Claude Code sessions across multiple machines.
-
-## When to Use
-
-- User asks "where did we leave off on X?"
-- User asks "what did we discuss about Y?"
-- User wants to find a previous conversation
-- You need context from earlier work
-- User asks about work done on a different machine
 
 ## Important Behavior
 
