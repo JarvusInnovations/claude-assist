@@ -56,6 +56,22 @@ export default createPlugin('mymodule', async (fastify, options) => {
 
 Skills use official Claude SKILL.md format with YAML frontmatter. See `skills/*/SKILL.md` for examples.
 
+## Skill Development
+
+When creating or modifying skills, activate the `skill-creator` skill first for guidance on skill structure, frontmatter, and best practices.
+
+### Server URL Placeholder
+
+Skills that make API calls to the claude-assist server use `<claude-assist-server>` as a placeholder in curl examples:
+
+```bash
+curl <claude-assist-server>/google/emails
+```
+
+**Always include this note** in skills that use the placeholder:
+
+> **Note:** Replace `<claude-assist-server>` with the actual server URL (e.g., `http://localhost:3000`). If a request fails with connection refused, ask the user for the correct server endpoint.
+
 ## Commits
 
 Use conventional commits with scope:
