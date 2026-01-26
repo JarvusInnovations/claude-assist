@@ -39,13 +39,24 @@ export interface SyncStatus {
   syncing: boolean;
   startedAt: Date | null;
   type: 'full' | 'incremental' | null;
+  phase: 'discovering' | 'fetching' | null;
+  discovered: number | null;  // Messages found in phase 1
+  fetched: number | null;     // Messages fetched in phase 2
+}
+
+interface ActiveSyncState {
+  startedAt: Date;
+  type: 'full' | 'incremental';
+  phase: 'discovering' | 'fetching';
+  discovered: number;
+  fetched: number;
 }
 
 export class GmailSyncService {
   private sql: postgres.Sql;
   private log: FastifyBaseLogger;
   private authService: GmailAuthService;
-  private activeSyncs = new Map<number, { startedAt: Date; type: 'full' | 'incremental' }>();
+  private activeSyncs = new Map<number, ActiveSyncState>();
 
   constructor(
     sql: postgres.Sql,
@@ -63,8 +74,15 @@ export class GmailSyncService {
   getSyncStatus(accountId: number): SyncStatus {
     const active = this.activeSyncs.get(accountId);
     return active
-      ? { syncing: true, startedAt: active.startedAt, type: active.type }
-      : { syncing: false, startedAt: null, type: null };
+      ? {
+          syncing: true,
+          startedAt: active.startedAt,
+          type: active.type,
+          phase: active.phase,
+          discovered: active.discovered,
+          fetched: active.fetched,
+        }
+      : { syncing: false, startedAt: null, type: null, phase: null, discovered: null, fetched: null };
   }
 
   /**
@@ -73,7 +91,14 @@ export class GmailSyncService {
   getAllSyncStatuses(): Map<number, SyncStatus> {
     const result = new Map<number, SyncStatus>();
     for (const [accountId, status] of this.activeSyncs) {
-      result.set(accountId, { syncing: true, startedAt: status.startedAt, type: status.type });
+      result.set(accountId, {
+        syncing: true,
+        startedAt: status.startedAt,
+        type: status.type,
+        phase: status.phase,
+        discovered: status.discovered,
+        fetched: status.fetched,
+      });
     }
     return result;
   }
@@ -82,7 +107,13 @@ export class GmailSyncService {
    * Full sync: Fetch untriaged inbox emails
    */
   async syncFull(accountId: number): Promise<SyncResult> {
-    this.activeSyncs.set(accountId, { startedAt: new Date(), type: 'full' });
+    this.activeSyncs.set(accountId, {
+      startedAt: new Date(),
+      type: 'full',
+      phase: 'discovering',
+      discovered: 0,
+      fetched: 0,
+    });
 
     try {
       return await this.doSyncFull(accountId);
@@ -126,6 +157,13 @@ export class GmailSyncService {
       result.messagesScanned = discovered + skipped;
       result.messagesSkipped = skipped;
 
+      // Update status with discovered count and transition to fetching phase
+      const status = this.activeSyncs.get(accountId);
+      if (status) {
+        status.discovered = discovered;
+        status.phase = 'fetching';
+      }
+
       this.log.info(
         { accountId, discovered, skipped, query },
         'Phase 1 complete: Messages discovered'
@@ -138,6 +176,11 @@ export class GmailSyncService {
       );
       result.messagesIngested = fetched;
       result.errors = errors;
+
+      // Update status with fetched count
+      if (status) {
+        status.fetched = fetched;
+      }
 
       this.log.info(
         { accountId, fetched, errors: errors.length },
@@ -177,7 +220,13 @@ export class GmailSyncService {
       return this.syncFull(accountId);
     }
 
-    this.activeSyncs.set(accountId, { startedAt: new Date(), type: 'incremental' });
+    this.activeSyncs.set(accountId, {
+      startedAt: new Date(),
+      type: 'incremental',
+      phase: 'discovering',
+      discovered: 0,
+      fetched: 0,
+    });
 
     try {
       return await this.doSyncIncremental(accountId, account.history_id);
@@ -207,6 +256,12 @@ export class GmailSyncService {
         'Found changed messages'
       );
 
+      // Update status with discovered count
+      const status = this.activeSyncs.get(accountId);
+      if (status) {
+        status.discovered = changedMessageIds.length;
+      }
+
       if (changedMessageIds.length > 0) {
         // Process changes - handles both new messages and label updates
         const changes = await this.processIncrementalChanges(
@@ -220,6 +275,11 @@ export class GmailSyncService {
         result.messagesSkipped = changes.skipped;
         result.errors = changes.errors;
 
+        // Transition to fetching phase
+        if (status) {
+          status.phase = 'fetching';
+        }
+
         // Fetch full content for any newly discovered messages
         const { fetched, errors } = await this.fetchDiscoveredMessages(
           accountId,
@@ -227,6 +287,11 @@ export class GmailSyncService {
         );
         result.messagesIngested += fetched;
         result.errors.push(...errors);
+
+        // Update status with fetched count
+        if (status) {
+          status.fetched = fetched;
+        }
       }
 
       // Update history_id
