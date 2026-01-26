@@ -17,7 +17,15 @@ Ask the user:
 - **Email**: Their Gmail address
 - **Display name**: Their full name (optional)
 
-### 2. Create Account
+### 2. Confirm Test User Setup
+
+Before generating the OAuth URL, ask the user:
+
+> "If this email is not part of your Google Cloud organization, please confirm you've added it as a test user at <https://console.cloud.google.com/auth/audience> (the app must also be set to 'External' rather than 'Internal'). Have you done this?"
+
+Wait for confirmation before proceeding.
+
+### 3. Create Account
 
 ```bash
 curl -X POST http://localhost:3000/google/accounts \
@@ -27,11 +35,11 @@ curl -X POST http://localhost:3000/google/accounts \
 
 Response includes `authUrl` - present this to the user.
 
-### 3. OAuth Authorization
+### 4. OAuth Authorization
 
 Tell the user to open the `authUrl` in their browser and complete Google authorization. Wait for them to confirm completion.
 
-### 4. Verify Credentials
+### 5. Verify Credentials
 
 ```bash
 curl http://localhost:3000/google/accounts/<id>
@@ -39,7 +47,7 @@ curl http://localhost:3000/google/accounts/<id>
 
 Confirm `has_credentials: true`. If false, offer to generate a new auth URL via `POST /google/accounts/<id>/reauth`.
 
-### 5. Configure Settings
+### 6. Configure Settings
 
 Ask the user:
 
@@ -54,7 +62,7 @@ curl -X PATCH http://localhost:3000/google/accounts/<id> \
   -d '{"sync_start_date": "<date>", "label_prefix_tracking": "<prefix>"}'
 ```
 
-### 6. Add Name Aliases
+### 7. Add Name Aliases
 
 Ask the user what names refer to them (for commitment extraction). Examples: "Chris", "Chris Alfano", "Christopher".
 
@@ -66,6 +74,6 @@ curl -X POST http://localhost:3000/google/accounts/<id>/aliases \
   -d '{"alias": "<name>", "is_owner": true}'
 ```
 
-### 7. Complete
+### 8. Complete
 
 Summarize the configured account and ask if they want to trigger an initial sync.
