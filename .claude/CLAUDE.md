@@ -28,8 +28,7 @@ For workspace dependencies: `"@jarvus/claude-assist-core": "workspace:*"`
 ```
 packages/
   core/        # Shared: scheduler, migrations, search, plugin helpers
-  sessions/    # Session archive module (Phase 2)
-  google/      # Google Suite module (Phase 3)
+  sessions/    # Session archive with AI outlines (see README.md)
 apps/
   server/      # Fastify host application
 skills/
@@ -49,24 +48,13 @@ export default createPlugin('mymodule', async (fastify, options) => {
 ```
 
 - Packages use `@jarvus/claude-assist-*` namespace
-- Schema-per-module in PostgreSQL (e.g., `sessions.`, `google.`)
+- Schema-per-module in PostgreSQL (e.g., `sessions.`)
 - Migrations in `migrations/*.sql` (numbered: `001-foo.sql`, `002-bar.sql`)
 - Access `fastify.sql` for database, `fastify.scheduler` for tasks
 
 ## Skills
 
-Skills use official Claude SKILL.md format with YAML frontmatter:
-
-```markdown
----
-name: skill-name
-description: When to use this skill
----
-# Skill Name
-## When to Use
-## Quick Start
-## Available Endpoints
-```
+Skills use official Claude SKILL.md format with YAML frontmatter. See `skills/*/SKILL.md` for examples.
 
 ## Commits
 
@@ -78,6 +66,13 @@ Use conventional commits with scope:
 
 Co-author line: `Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>`
 
+## Environment
+
+See `apps/server/.env.example` for available configuration. Key optional features:
+
+- `ANTHROPIC_API_KEY` - Enables AI-generated session outlines
+- `SESSIONS_ORIGINAL_CLAUDE_DIR` - Docker path translation
+
 ## Docker
 
 ```bash
@@ -86,50 +81,11 @@ docker-compose up postgres -d    # Database only
 docker-compose up -d             # Full stack
 ```
 
-## Key Files
+## Key Patterns
 
-| File | Purpose |
-|------|---------|
-| `packages/core/src/scheduler.ts` | Task scheduling with croner |
-| `packages/core/src/migrations.ts` | SQL migration runner |
-| `packages/core/src/search.ts` | Postgres tsvector helpers |
-| `packages/core/src/plugin.ts` | Fastify plugin factory |
-| `packages/sessions/src/index.ts` | Session archival plugin |
-| `packages/sessions/src/sync.ts` | Sync service for local/satellite ingestion |
-| `packages/sessions/src/parser.ts` | JSONL transcript parser |
-| `packages/sessions/bin/push.ts` | CLI for satellite machines |
-| `apps/server/src/server.ts` | Main application entry |
+### PostgreSQL with postgres.js
 
-## Sessions Module (Phase 2)
-
-Archives Claude Code transcripts from `~/.claude/` with multi-machine support.
-
-**Key concepts:**
-
-- Scans `~/.claude/session-signals/*.ended.json` for completed sessions
-- Extracts `user_messages`, `tools_used`, `files_touched` from JSONL transcripts
-- Stores raw transcript in DB (Claude prunes after ~1 month)
-- MD5 hash-based change detection to avoid duplicates
-
-**CLI tool** for satellite machines:
-
-```bash
-bunx @jarvus/claude-assist-sessions push --machine laptop --server https://devbox:3000
-```
-
-**NPM namespace:** All packages use `@jarvus/claude-assist-*` for both workspace and published names.
-
-## PostgreSQL Patterns
-
-**Weighted full-text search** (search_vector trigger):
-
-```sql
-setweight(to_tsvector('english', search_text), 'A') ||       -- User prompts (highest)
-setweight(to_tsvector('english', tools_used), 'B') ||        -- Tools/files
-setweight(to_tsvector('english', project_path), 'C')         -- Project path
-```
-
-**JSONB array containment** - use explicit array syntax with postgres.js:
+**JSONB array containment** - use explicit array syntax:
 
 ```typescript
 // Correct - explicit ARRAY[]::text[] cast
@@ -139,7 +95,7 @@ fastify.sql`AND tools_used ?| ARRAY[${fastify.sql(toolsArray)}]::text[]`
 fastify.sql`AND tools_used ?| ${toolsArray}`
 ```
 
-**Array indexing** - always use `!` assertion after length check:
+**Array indexing** - use `!` assertion after length check:
 
 ```typescript
 if (rows.length > 0) {
@@ -147,21 +103,46 @@ if (rows.length > 0) {
 }
 ```
 
-## Scheduler Tasks
+**BIGINT handling** - postgres.js returns as string:
 
-Register tasks in plugin setup:
+```typescript
+// Parse explicitly to avoid precision loss
+const tokens = parseInt(row.output_tokens, 10);
+```
+
+### Optional Services
+
+Services requiring external API keys check env and gracefully degrade:
+
+```typescript
+// Pattern: service is null if key missing, routes check before exposing
+const outlineService = process.env.ANTHROPIC_API_KEY
+  ? new OutlineService(config)
+  : null;
+
+if (outlineService) {
+  fastify.post('/outlines', ...);
+}
+```
+
+### Efficient Data Transfer
+
+Two-phase protocol for syncing large datasets:
+
+1. **Inventory phase**: Send lightweight manifest (IDs + MD5 hashes)
+2. **Transfer phase**: Server responds with needed items, client sends only those
+
+MD5 hash-based change detection prevents duplicate processing.
+
+### Scheduled Tasks
+
+Register recurring tasks in plugin setup:
 
 ```typescript
 fastify.scheduler.register({
-  name: 'sessions:sync-local',
-  schedule: '*/5 * * * *',  // Every 5 minutes
+  name: 'module:task-name',
+  schedule: '*/5 * * * *',  // Cron expression
   runOnStartup: true,
   handler: async () => { /* ... */ },
 });
 ```
-
-## Lessons Learned
-
-- **Silent error swallowing**: Track parse error counts for debugging visibility
-- **Timestamp fallbacks**: Derive missing `started_at` from `ended_at`, not `new Date()`
-- **PostgreSQL arrays**: Use explicit `ARRAY[]::text[]` cast with `?|` operator
