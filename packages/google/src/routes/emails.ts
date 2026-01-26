@@ -195,10 +195,10 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
     // Sync and Triage
     // ==========================================
 
-    // POST /google/sync - Trigger email sync (async, returns immediately)
+    // POST /google/emails/sync - Trigger email sync (async, returns immediately)
     fastify.post<{
       Body?: { account?: string; full?: boolean };
-    }>('/google/sync', async (request) => {
+    }>('/google/emails/sync', async (request) => {
       const { account, full = false } = request.body || {};
 
       // Get accounts to sync
@@ -258,10 +258,10 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
         }
       );
 
-      // POST /google/triage - Triage pending emails (async, returns immediately)
+      // POST /google/emails/triage - Triage pending emails (async, returns immediately)
       fastify.post<{
         Body?: { account?: string; limit?: number };
-      }>('/google/triage', async (request) => {
+      }>('/google/emails/triage', async (request) => {
         const { account, limit } = request.body || {};
 
         // Get pending emails
@@ -302,8 +302,8 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
         };
       });
 
-      // GET /google/triage/progress - Triage progress
-      fastify.get('/google/triage/progress', async () => {
+      // GET /google/emails/triage/progress - Triage progress
+      fastify.get('/google/emails/triage/progress', async () => {
         const [stats] = await fastify.sql<{
           discovered: string;
           new: string;

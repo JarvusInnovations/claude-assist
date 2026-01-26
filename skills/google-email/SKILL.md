@@ -80,10 +80,10 @@ Returns accounts with `sync_status` and `triage_status` showing real-time progre
 
 ```bash
 # Incremental sync all accounts
-curl -X POST <claude-assist-server>/google/sync
+curl -X POST <claude-assist-server>/google/emails/sync
 
 # Full sync specific account
-curl -X POST <claude-assist-server>/google/sync \
+curl -X POST <claude-assist-server>/google/emails/sync \
   -H "Content-Type: application/json" \
   -d '{"account": "personal", "full": true}'
 ```
@@ -115,13 +115,13 @@ curl "<claude-assist-server>/google/emails/stats?days=7"
 
 ```bash
 # Batch triage all 'new' emails
-curl -X POST <claude-assist-server>/google/triage
+curl -X POST <claude-assist-server>/google/emails/triage
 
 # Triage single email
 curl -X POST <claude-assist-server>/google/emails/123/triage
 
 # Check progress
-curl <claude-assist-server>/google/triage/progress
+curl <claude-assist-server>/google/emails/triage/progress
 ```
 
 ## Common Workflows
@@ -130,7 +130,7 @@ curl <claude-assist-server>/google/triage/progress
 
 ```bash
 # Trigger full sync
-curl -X POST <claude-assist-server>/google/sync \
+curl -X POST <claude-assist-server>/google/emails/sync \
   -H "Content-Type: application/json" \
   -d '{"account": "personal", "full": true}'
 
@@ -145,7 +145,7 @@ curl <claude-assist-server>/google/accounts
 curl "<claude-assist-server>/google/emails/stats?days=7"
 
 # Check triage progress
-curl <claude-assist-server>/google/triage/progress
+curl <claude-assist-server>/google/emails/triage/progress
 ```
 
 ### 3. Find Newsletters for Review
@@ -176,7 +176,7 @@ If automatic triage isn't running or you want immediate results:
 
 ```bash
 # Triage all pending emails
-curl -X POST <claude-assist-server>/google/triage
+curl -X POST <claude-assist-server>/google/emails/triage
 
 # Or triage a specific email
 curl -X POST <claude-assist-server>/google/emails/123/triage

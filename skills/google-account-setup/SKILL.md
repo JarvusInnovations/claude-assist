@@ -113,7 +113,7 @@ Summarize the configured account and ask: "Would you like me to trigger an initi
 If yes, trigger a full sync:
 
 ```bash
-curl -X POST <claude-assist-server>/google/sync \
+curl -X POST <claude-assist-server>/google/emails/sync \
   -H "Content-Type: application/json" \
   -d '{"account": "<identifier>", "full": true}'
 ```
