@@ -295,14 +295,14 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
           triaged: string;
           reviewed: string;
           executed: string;
-          failed: string;
+          with_errors: string;
         }[]>`
           SELECT
             COUNT(*) FILTER (WHERE workflow_status = 'new') as new,
             COUNT(*) FILTER (WHERE workflow_status = 'triaged') as triaged,
             COUNT(*) FILTER (WHERE workflow_status = 'reviewed') as reviewed,
             COUNT(*) FILTER (WHERE workflow_status = 'executed') as executed,
-            COUNT(*) FILTER (WHERE workflow_status = 'failed') as failed
+            COUNT(*) FILTER (WHERE last_error IS NOT NULL) as with_errors
           FROM google.emails
           WHERE date > NOW() - INTERVAL '7 days'
         `;
@@ -312,7 +312,7 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
           triaged: parseInt(stats?.triaged || '0', 10),
           reviewed: parseInt(stats?.reviewed || '0', 10),
           executed: parseInt(stats?.executed || '0', 10),
-          failed: parseInt(stats?.failed || '0', 10),
+          with_errors: parseInt(stats?.with_errors || '0', 10),
         };
       });
     }

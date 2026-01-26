@@ -117,10 +117,10 @@ export class TriageService {
         error instanceof Error ? error.message : String(error);
       this.log.error({ emailId, error }, 'Triage failed');
 
-      // Mark as failed
+      // Record error but preserve workflow_status for retry
       await this.sql`
         UPDATE google.emails
-        SET workflow_status = 'failed', execution_notes = ${errorMessage}
+        SET last_error = ${errorMessage}, last_error_at = NOW()
         WHERE id = ${emailId}
       `;
 
@@ -252,7 +252,9 @@ export class TriageService {
         triage_confidence = 1.0,
         rule_matched_id = ${rule.id},
         workflow_status = 'triaged',
-        triaged_at = NOW()
+        triaged_at = NOW(),
+        last_error = NULL,
+        last_error_at = NULL
       WHERE id = ${emailId}
     `;
 
@@ -585,7 +587,9 @@ RULE HINT: This email matched rule "${context.ruleMatch.name}"
         triage_confidence = 0.8,
         rule_matched_id = ${ruleMatchedId ?? null},
         workflow_status = 'triaged',
-        triaged_at = NOW()
+        triaged_at = NOW(),
+        last_error = NULL,
+        last_error_at = NULL
       WHERE id = ${emailId}
     `;
 

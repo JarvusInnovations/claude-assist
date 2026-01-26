@@ -2,13 +2,13 @@
 -- Stores synced emails with full analysis structure
 
 -- Workflow status enum for email processing states
+-- Note: Errors are tracked separately via last_error/last_error_at columns
 CREATE TYPE google.workflow_status AS ENUM (
     'discovered',  -- Listed from Gmail but not yet fetched
     'new',         -- Fetched and ready for triage
     'triaged',     -- AI analysis complete
     'reviewed',    -- Human review complete
-    'executed',    -- Actions applied
-    'failed'       -- Processing error
+    'executed'     -- Actions applied
 );
 
 CREATE TABLE google.emails (
@@ -59,6 +59,10 @@ CREATE TABLE google.emails (
     reviewed_at TIMESTAMPTZ,
     executed_at TIMESTAMPTZ,
 
+    -- Error Tracking (separate from workflow status to preserve state on failure)
+    last_error TEXT,             -- Error message from last failed operation
+    last_error_at TIMESTAMPTZ,   -- When the error occurred
+
     -- Execution Results
     applied_labels TEXT[],
     applied_gmail_action VARCHAR(20),
@@ -85,6 +89,7 @@ CREATE INDEX idx_emails_digest ON google.emails(digest_section) WHERE digest_sec
 CREATE INDEX idx_emails_interesting ON google.emails(interesting) WHERE interesting = true;
 CREATE INDEX idx_emails_search ON google.emails USING GIN(search_vector);
 CREATE INDEX idx_emails_discovered ON google.emails(account_id) WHERE workflow_status = 'discovered';
+CREATE INDEX idx_emails_errors ON google.emails(account_id, last_error_at DESC) WHERE last_error IS NOT NULL;
 
 -- Search trigger (weighted: subject/overview high, from/snippet medium, body low)
 CREATE OR REPLACE FUNCTION google.update_email_search_vector()

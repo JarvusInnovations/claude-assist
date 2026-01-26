@@ -129,13 +129,13 @@ export type DigestSection =
 export type GmailAction = 'leave' | 'archive' | 'spam';
 
 // WorkflowStatus enum - must stay in sync with google.workflow_status PostgreSQL enum
+// Note: Errors are tracked separately via last_error/last_error_at fields
 export type WorkflowStatus =
   | 'discovered' // Listed from Gmail but not yet fetched
   | 'new' // Fetched and ready for triage
   | 'triaged'
   | 'reviewed'
-  | 'executed'
-  | 'failed';
+  | 'executed';
 
 export interface ThreadContext {
   parent_labels?: string[];
