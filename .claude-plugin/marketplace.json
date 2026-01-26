@@ -16,7 +16,9 @@
       },
       "description": "Search past Claude sessions for context across multiple machines",
       "skills": [
-        "./skills/session-recall"
+        "./skills/session-recall",
+        "./skills/google-email",
+        "./skills/google-account-setup"
       ]
     }
   ]
