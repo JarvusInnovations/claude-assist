@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "bun --watch src/server.ts",
     "start": "bun src/server.ts",
-    "build": "tsc"
+    "build": "tsc",
+    "backup": "./bin/backup.sh",
+    "backup:init": "./bin/backup-init.sh"
   },
   "devDependencies": {
     "@types/bun": "latest",
