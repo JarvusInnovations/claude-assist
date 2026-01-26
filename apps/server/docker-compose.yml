@@ -6,7 +6,7 @@ services:
       POSTGRES_USER: claude
       POSTGRES_PASSWORD: dev
     ports:
-      - "5432:5432"
+      - "127.0.0.1:2528:5432"
     volumes:
       - pgdata:/var/lib/postgresql
     healthcheck:
@@ -21,7 +21,7 @@ services:
       dockerfile: apps/server/Dockerfile
     env_file: .env
     ports:
-      - "3000:3000"
+      - "127.0.0.1:2529:3000"
     environment:
       DATABASE_URL: postgres://claude:dev@postgres:5432/claude_assist
       PORT: 3000

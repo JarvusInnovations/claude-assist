@@ -26,9 +26,9 @@ This keeps queries concise while still filtering effectively.
 
 ### Server Endpoint
 
-The session recall server may not be running on `localhost:3000`. If your first API request fails (connection refused, timeout, or 404):
+The session recall server may not be running on `localhost:2529`. If your first API request fails (connection refused, timeout, or 404):
 
-1. **Ask the user**: "The session recall server doesn't seem to be running at localhost:3000. Is it running on a different endpoint?"
+1. **Ask the user**: "The session recall server doesn't seem to be running at localhost:2529. Is it running on a different endpoint?"
 2. Use whatever endpoint the user provides for subsequent requests
 3. Common alternatives: different ports, remote servers, or Docker container URLs
 
@@ -37,7 +37,7 @@ The session recall server may not be running on `localhost:3000`. If your first 
 Search sessions by topic (scoped to current project):
 
 ```bash
-curl "http://localhost:3000/sessions?search=RTD+proposal&days=14&project=myproject"
+curl "http://localhost:2529/sessions?search=RTD+proposal&days=14&project=myproject"
 ```
 
 ## Available Endpoints
@@ -271,7 +271,7 @@ bunx @jarvus/claude-assist-sessions push --machine laptop --server https://my-se
 Options:
 
 - `-m, --machine <id>` - Machine identifier (required, e.g., "laptop", "devbox")
-- `-s, --server <url>` - Server URL (default: <http://localhost:3000>)
+- `-s, --server <url>` - Server URL (default: <http://localhost:2529>)
 - `--claude-dir <path>` - Claude directory (default: ~/.claude)
 - `--dry-run` - Preview without pushing
 - `-v, --verbose` - Detailed output

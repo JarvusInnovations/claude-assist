@@ -12,7 +12,7 @@ export const env = {
   // Database
   DATABASE_URL:
     process.env.DATABASE_URL ||
-    'postgres://claude:dev@localhost:5432/claude_assist',
+    'postgres://claude:dev@localhost:2528/claude_assist',
 
   // Logging
   LOG_LEVEL: process.env.LOG_LEVEL || 'info',

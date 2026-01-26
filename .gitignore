@@ -38,3 +38,6 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # GCP credentials
 gcp-service-account.json
+
+# Docker Compose local overrides
+docker-compose.override.yml

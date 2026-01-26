@@ -26,12 +26,12 @@ cd apps/server
 docker compose up --build -d
 ```
 
-The API will be available at <http://localhost:3000>
+The API will be available at <http://localhost:2529>
 
 Sessions from `~/.claude/` on the host machine sync automatically. To sync from other machines:
 
 ```bash
-bunx @jarvus/claude-assist-sessions push -m laptop -s https://your-server:3000
+bunx @jarvus/claude-assist-sessions push -m laptop -s https://your-server:2529
 ```
 
 ## Environment Setup
@@ -124,13 +124,32 @@ docker compose up postgres -d
 docker compose logs -f
 ```
 
+### Local Port Overrides
+
+By default, services bind to localhost only on ports 2528 (PostgreSQL) and 2529 (API).
+To expose on additional interfaces (e.g., Tailscale), create `docker-compose.override.yml` (gitignored):
+
+```yaml
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:2528:5432"
+      - "<your-ip>:2528:5432"
+  api:
+    ports:
+      - "127.0.0.1:2529:3000"
+      - "<your-ip>:2529:3000"
+```
+
+Run `docker compose config` to verify the merged configuration.
+
 ## Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | PORT | 3000 | Server port |
 | HOST | 0.0.0.0 | Server host |
-| DATABASE_URL | postgres://claude:dev@localhost:5432/claude_assist | PostgreSQL connection |
+| DATABASE_URL | postgres://claude:dev@localhost:2528/claude_assist | PostgreSQL connection |
 | LOG_LEVEL | info | Log level (debug, info, warn, error) |
 | NODE_ENV | development | Environment (development, production) |
 | ANTHROPIC_API_KEY | (none) | Enables AI-generated session outlines |

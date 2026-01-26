@@ -20,10 +20,10 @@ cd apps/server && docker-compose up postgres -d
 bun run dev
 
 # Trigger manual sync
-curl -X POST http://localhost:3000/sessions/sync
+curl -X POST http://localhost:2529/sessions/sync
 
 # Search sessions
-curl "http://localhost:3000/sessions?search=refactor&days=7"
+curl "http://localhost:2529/sessions?search=refactor&days=7"
 ```
 
 ## Full Lifecycle
@@ -41,35 +41,35 @@ bun run dev
 
 ```bash
 # Full-text search
-curl "http://localhost:3000/sessions?search=authentication"
+curl "http://localhost:2529/sessions?search=authentication"
 
 # Filter by tools used
-curl "http://localhost:3000/sessions?tools=Edit,Bash"
+curl "http://localhost:2529/sessions?tools=Edit,Bash"
 
 # Filter by project path
-curl "http://localhost:3000/sessions?project=claude-assist"
+curl "http://localhost:2529/sessions?project=claude-assist"
 
 # Filter by machine
-curl "http://localhost:3000/sessions?machine=laptop"
+curl "http://localhost:2529/sessions?machine=laptop"
 
 # Combine filters
-curl "http://localhost:3000/sessions?search=bug&days=14&tools=Edit"
+curl "http://localhost:2529/sessions?search=bug&days=14&tools=Edit"
 ```
 
 ### 3. Get Session Details
 
 ```bash
 # Metadata only
-curl "http://localhost:3000/sessions/<uuid>"
+curl "http://localhost:2529/sessions/<uuid>"
 
 # Include full transcript
-curl "http://localhost:3000/sessions/<uuid>?with_transcript=true"
+curl "http://localhost:2529/sessions/<uuid>?with_transcript=true"
 ```
 
 ### 4. View Statistics
 
 ```bash
-curl "http://localhost:3000/sessions/stats?days=30"
+curl "http://localhost:2529/sessions/stats?days=30"
 ```
 
 ### 5. Push from Satellite Machines
@@ -85,7 +85,7 @@ bunx @jarvus/claude-assist-sessions push -m laptop -s https://my-server.com
 ### 6. List Machines
 
 ```bash
-curl http://localhost:3000/machines
+curl http://localhost:2529/machines
 ```
 
 ## API Reference
@@ -117,7 +117,7 @@ curl http://localhost:3000/machines
 bunx @jarvus/claude-assist-sessions push [options]
 
   -m, --machine <id>     Machine identifier (required)
-  -s, --server <url>     Server URL (default: http://localhost:3000)
+  -s, --server <url>     Server URL (default: http://localhost:2529)
   --claude-dir <path>    Claude directory (default: ~/.claude)
   --dry-run              Scan without pushing
   -v, --verbose          Detailed output

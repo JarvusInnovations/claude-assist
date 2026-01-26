@@ -5,7 +5,7 @@ import { push } from '../src/cli.js';
 const { values } = parseArgs({
   options: {
     machine: { type: 'string', short: 'm' },
-    server: { type: 'string', short: 's', default: 'http://localhost:3000' },
+    server: { type: 'string', short: 's', default: 'http://localhost:2529' },
     'claude-dir': { type: 'string' },
     'dry-run': { type: 'boolean', default: false },
     verbose: { type: 'boolean', short: 'v', default: false },
@@ -23,7 +23,7 @@ Usage:
 
 Options:
   -m, --machine <id>     Machine identifier (required, e.g., "laptop", "devbox")
-  -s, --server <url>     Server URL (default: http://localhost:3000)
+  -s, --server <url>     Server URL (default: http://localhost:2529)
   --claude-dir <path>    Claude directory (default: ~/.claude)
   --dry-run              Scan but don't push
   -v, --verbose          Verbose output
