@@ -30,7 +30,7 @@ Wait for confirmation before proceeding.
 ### 3. Create Account
 
 ```bash
-curl -X POST <claude-assist-server>/google/accounts \
+curl -X POST <claude-assist-server>/api/google/accounts \
   -H "Content-Type: application/json" \
   -d '{"identifier": "<identifier>", "email": "<email>", "display_name": "<name>"}'
 ```
@@ -44,7 +44,7 @@ Tell the user to open the `authUrl` in their browser and complete Google authori
 ### 5. Verify Credentials
 
 ```bash
-curl <claude-assist-server>/google/accounts/<id>
+curl <claude-assist-server>/api/google/accounts/<id>
 ```
 
 Confirm `has_credentials: true`. If false, offer to generate a new auth URL via `POST /google/accounts/<id>/reauth`.
@@ -59,7 +59,7 @@ Ask the user:
 Apply settings:
 
 ```bash
-curl -X PATCH <claude-assist-server>/google/accounts/<id> \
+curl -X PATCH <claude-assist-server>/api/google/accounts/<id> \
   -H "Content-Type: application/json" \
   -d '{"email_sync_start_date": "<date>", "email_label_prefix": "<prefix>"}'
 ```
@@ -77,7 +77,7 @@ The `email_triage_instructions` field lets you customize the AI triage behavior 
 **Example - Name disambiguation:**
 
 ```bash
-curl -X PATCH <claude-assist-server>/google/accounts/<id> \
+curl -X PATCH <claude-assist-server>/api/google/accounts/<id> \
   -H "Content-Type: application/json" \
   -d '{
     "email_triage_instructions": "NAME DISAMBIGUATION:\n- \"Christopher\" in emails refers to teammate Christopher Yamas, NOT the account owner\n- The account owner goes by \"Chris\" or \"Chris Alfano\" only"
@@ -101,7 +101,7 @@ Ask the user what names refer to them (for commitment extraction). Only add name
 For each alias:
 
 ```bash
-curl -X POST <claude-assist-server>/google/accounts/<id>/aliases \
+curl -X POST <claude-assist-server>/api/google/accounts/<id>/aliases \
   -H "Content-Type: application/json" \
   -d '{"alias": "<name>", "is_owner": true}'
 ```
@@ -113,7 +113,7 @@ Summarize the configured account and ask: "Would you like me to trigger an initi
 If yes, trigger a full sync:
 
 ```bash
-curl -X POST <claude-assist-server>/google/emails/sync \
+curl -X POST <claude-assist-server>/api/google/emails/sync \
   -H "Content-Type: application/json" \
   -d '{"account": "<identifier>", "full": true}'
 ```

@@ -21,6 +21,7 @@
     "typescript": "^5"
   },
   "dependencies": {
+    "@fastify/static": "^9.0.0",
     "@jarvus/claude-assist-core": "workspace:*",
     "@jarvus/claude-assist-google": "workspace:*",
     "@jarvus/claude-assist-sessions": "workspace:*",

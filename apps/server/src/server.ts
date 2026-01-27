@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import fastifyStatic from '@fastify/static';
 import postgres from 'postgres';
 import { createScheduler } from '@jarvus/claude-assist-core';
 import sessionsPlugin from '@jarvus/claude-assist-sessions';
@@ -35,53 +36,73 @@ const sql = postgres(env.DATABASE_URL);
 fastify.decorate('sql', sql);
 fastify.decorate('scheduler', createScheduler(fastify));
 
-// Register plugins conditionally based on environment
-if (env.ENABLE_SESSIONS !== 'false') {
-  fastify.log.info('Sessions module enabled');
-  await fastify.register(sessionsPlugin, {
-    migrationsDir: join(__dirname, '../../../packages/sessions/migrations'),
-  });
-} else {
-  fastify.log.info('Sessions module disabled');
-}
-
-if (env.ENABLE_GOOGLE !== 'false') {
-  if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) {
-    fastify.log.warn(
-      'Google module enabled but GOOGLE_CLIENT_ID/SECRET not set - skipping'
-    );
-  } else {
-    fastify.log.info('Google module enabled');
-    await fastify.register(googlePlugin, {
-      migrationsDir: join(__dirname, '../../../packages/google/migrations'),
+// Register all API routes under /api prefix
+await fastify.register(
+  async (api) => {
+    // Health check endpoint
+    api.get('/health', async () => {
+      return { status: 'ok', timestamp: new Date().toISOString() };
     });
-  }
-} else {
-  fastify.log.info('Google module disabled');
-}
 
-// Health check endpoint
-fastify.get('/health', async () => {
-  return { status: 'ok', timestamp: new Date().toISOString() };
-});
+    // Scheduler endpoints
+    api.get('/scheduler/tasks', async () => {
+      return fastify.scheduler.list();
+    });
 
-// Scheduler endpoints
-fastify.get('/scheduler/tasks', async () => {
-  return fastify.scheduler.list();
-});
+    api.post<{ Params: { name: string } }>(
+      '/scheduler/tasks/:name',
+      async (request, reply) => {
+        try {
+          await fastify.scheduler.trigger(request.params.name);
+          return { status: 'triggered', task: request.params.name };
+        } catch (error) {
+          reply.status(404);
+          return { error: (error as Error).message };
+        }
+      }
+    );
 
-fastify.post<{ Params: { name: string } }>(
-  '/scheduler/tasks/:name',
-  async (request, reply) => {
-    try {
-      await fastify.scheduler.trigger(request.params.name);
-      return { status: 'triggered', task: request.params.name };
-    } catch (error) {
-      reply.status(404);
-      return { error: (error as Error).message };
+    // Register plugins conditionally based on environment
+    if (env.ENABLE_SESSIONS !== 'false') {
+      api.log.info('Sessions module enabled');
+      await api.register(sessionsPlugin, {
+        migrationsDir: join(__dirname, '../../../packages/sessions/migrations'),
+      });
+    } else {
+      api.log.info('Sessions module disabled');
     }
-  }
+
+    if (env.ENABLE_GOOGLE !== 'false') {
+      if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) {
+        api.log.warn(
+          'Google module enabled but GOOGLE_CLIENT_ID/SECRET not set - skipping'
+        );
+      } else {
+        api.log.info('Google module enabled');
+        await api.register(googlePlugin, {
+          migrationsDir: join(__dirname, '../../../packages/google/migrations'),
+        });
+      }
+    } else {
+      api.log.info('Google module disabled');
+    }
+  },
+  { prefix: '/api' }
 );
+
+// Serve admin frontend static files
+await fastify.register(fastifyStatic, {
+  root: join(__dirname, '../../admin/dist'),
+  prefix: '/',
+});
+
+// SPA fallback - serve index.html for non-API routes
+fastify.setNotFoundHandler((request, reply) => {
+  if (request.url.startsWith('/api')) {
+    return reply.status(404).send({ error: 'Not found' });
+  }
+  return reply.sendFile('index.html');
+});
 
 // Graceful shutdown
 const shutdown = async () => {

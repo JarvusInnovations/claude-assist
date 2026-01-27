@@ -65,7 +65,7 @@ When creating or modifying skills, activate the `skill-creator` skill first for 
 Skills that make API calls to the claude-assist server use `<claude-assist-server>` as a placeholder in curl examples:
 
 ```bash
-curl <claude-assist-server>/google/emails
+curl <claude-assist-server>/api/google/emails
 ```
 
 **Always include this note** in skills that use the placeholder:
