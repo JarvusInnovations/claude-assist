@@ -9,13 +9,11 @@
 # packages/core
 !packages/core/package.json
 !packages/core/tsconfig.json
-!packages/core/src/
 !packages/core/src/**
 
 # packages/sessions
 !packages/sessions/package.json
 !packages/sessions/tsconfig.json
-!packages/sessions/src/
 !packages/sessions/src/**
 !packages/sessions/migrations/
 !packages/sessions/migrations/**
@@ -23,7 +21,6 @@
 # packages/google
 !packages/google/package.json
 !packages/google/tsconfig.json
-!packages/google/src/
 !packages/google/src/**
 !packages/google/migrations/
 !packages/google/migrations/**
@@ -31,7 +28,6 @@
 # apps/server
 !apps/server/package.json
 !apps/server/tsconfig.json
-!apps/server/src/
 !apps/server/src/**
 
 # apps/admin (frontend)
