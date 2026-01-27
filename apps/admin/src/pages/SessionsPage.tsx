@@ -125,7 +125,7 @@ export function SessionsPage() {
           <CardContent className="py-4">
             <div className="flex items-center justify-between mb-2">
               <span className="text-sm font-medium">
-                Synchronizing new/updated sessions...
+                Synchronizing new/updated sessions on localhost...
               </span>
               <span className="text-sm text-muted-foreground">
                 {outlineProgress.completed} / {outlineProgress.total}
