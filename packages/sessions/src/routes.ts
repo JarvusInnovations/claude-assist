@@ -86,7 +86,10 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
           s.tools_used,
           s.files_touched,
           s.message_count,
+          s.input_tokens,
+          s.output_tokens,
           s.outline,
+          s.title,
           m.machine_id,
           ts_rank(s.search_vector, websearch_to_tsquery('english', ${search})) as rank
         FROM sessions.sessions s
@@ -120,7 +123,10 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
           s.tools_used,
           s.files_touched,
           s.message_count,
+          s.input_tokens,
+          s.output_tokens,
           s.outline,
+          s.title,
           m.machine_id
         FROM sessions.sessions s
         JOIN sessions.machines m ON s.machine_id = m.id
@@ -150,7 +156,10 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       project_path: s.project_path,
       git_branch: s.git_branch,
       outline: s.outline ?? null,
+      title: s.title ?? null,
       message_count: s.message_count,
+      input_tokens: parseInt(String(s.input_tokens), 10) || 0,
+      output_tokens: parseInt(String(s.output_tokens), 10) || 0,
       tools_used: s.tools_used,
       files_touched: s.files_touched,
       machine: s.machine_id,
@@ -195,6 +204,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       cache_read_tokens: session.cache_read_tokens,
       claude_version: session.claude_version,
       outline: session.outline,
+      title: session.title,
       outline_hash: session.outline_hash,
       models_used: session.models_used,
       model_tokens: session.model_tokens,

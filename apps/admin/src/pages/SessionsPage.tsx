@@ -198,7 +198,7 @@ export function SessionsPage() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-[140px]">Started</TableHead>
+                  <TableHead className="w-[100px]">Started</TableHead>
                   <TableHead>Project</TableHead>
                   <TableHead className="w-[100px]">Branch</TableHead>
                   <TableHead className="w-[80px]">Messages</TableHead>
@@ -212,12 +212,14 @@ export function SessionsPage() {
                     <TableCell className="text-sm text-muted-foreground">
                       {new Date(session.started_at).toLocaleDateString()}
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="max-w-0">
                       <Link
                         to={`/sessions/${session.id}`}
-                        className="hover:underline font-medium truncate block max-w-[300px]"
+                        className="hover:underline font-medium truncate block"
                       >
-                        {session.project_path?.split("/").pop() || "Unknown"}
+                        {session.title ||
+                          session.project_path?.split("/").pop() ||
+                          "Unknown"}
                       </Link>
                       <span className="text-xs text-muted-foreground truncate block">
                         {session.project_path}
