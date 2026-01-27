@@ -16,7 +16,7 @@ export interface OutlineProgress {
   total: number;
   currentSession: string | null;
   errors: number;
-  isRunning: boolean;
+  inProgress: boolean;
 }
 
 export interface OutlineResult {
@@ -84,7 +84,7 @@ export class OutlineService {
       total: 0,
       currentSession: null,
       errors: 0,
-      isRunning: false,
+      inProgress: false,
     };
   }
 
@@ -173,13 +173,13 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
    * Returns immediately, processing happens in background
    */
   async queueOutlineGeneration(sessionIds?: string[]): Promise<void> {
-    if (this.progress.isRunning) {
+    if (this.progress.inProgress) {
       this.log.info('Outline generation already in progress, skipping');
       return;
     }
 
     // Mark as running immediately to prevent race conditions
-    this.progress.isRunning = true;
+    this.progress.inProgress = true;
 
     // Find sessions needing outlines
     let sessions: SessionForOutline[];
@@ -201,14 +201,14 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
         `;
       }
     } catch (error) {
-      this.progress.isRunning = false;
+      this.progress.inProgress = false;
       this.log.error({ error }, 'Failed to query sessions for outline generation');
       throw error;
     }
 
     if (sessions.length === 0) {
       this.log.info('No sessions need outline generation');
-      this.progress.isRunning = false;
+      this.progress.inProgress = false;
       return;
     }
 
@@ -218,7 +218,7 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
       total: sessions.length,
       currentSession: null,
       errors: 0,
-      isRunning: true,
+      inProgress: true,
     };
 
     this.log.info({ count: sessions.length }, 'Queuing outline generation');
@@ -261,7 +261,7 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
     Promise.all(promises)
       .then(() => {
         this.progress.currentSession = null;
-        this.progress.isRunning = false;
+        this.progress.inProgress = false;
         this.log.info(
           {
             completed: this.progress.completed,
@@ -271,7 +271,7 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
         );
       })
       .catch((error) => {
-        this.progress.isRunning = false;
+        this.progress.inProgress = false;
         this.log.error({ error }, 'Outline generation batch failed');
       });
   }
@@ -314,7 +314,7 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
       total: sessions.length,
       currentSession: null,
       errors: 0,
-      isRunning: true,
+      inProgress: true,
     };
 
     // Process with concurrency limit
@@ -348,7 +348,7 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
 
     await Promise.all(promises);
     this.progress.currentSession = null;
-    this.progress.isRunning = false;
+    this.progress.inProgress = false;
 
     return result;
   }
