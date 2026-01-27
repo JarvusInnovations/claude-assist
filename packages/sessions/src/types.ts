@@ -181,6 +181,8 @@ export interface SessionRecord {
   synced_at: Date;
   /** AI-generated outline summarizing the session */
   outline: string | null;
+  /** AI-generated concise title for the session */
+  title: string | null;
   /** transcript_hash when outline was generated (for regeneration detection) */
   outline_hash: string | null;
   /** Models used in this session */
