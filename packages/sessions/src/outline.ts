@@ -16,7 +16,7 @@ export interface OutlineProgress {
   total: number;
   currentSession: string | null;
   errors: number;
-  isRunning: boolean;
+  inProgress: boolean;
 }
 
 export interface OutlineResult {
@@ -84,7 +84,7 @@ export class OutlineService {
       total: 0,
       currentSession: null,
       errors: 0,
-      isRunning: false,
+      inProgress: false,
     };
   }
 
@@ -113,6 +113,7 @@ TRANSCRIPT:
 ${serializedTranscript}
 
 Respond with exactly this format:
+<title>[5-10 word concise title describing the main task]</title>
 <summary>
 Task: [1-2 sentence description of what the user wanted to accomplish]
 
@@ -124,23 +125,29 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
   }
 
   /**
-   * Parse the outline response - extract from summary tags if present
+   * Parse the outline response - extract title and summary from tags
    */
-  private parseOutlineResponse(response: string): string {
-    // Extract content from summary tags if present
-    const match = response.match(/<summary>([\s\S]*?)<\/summary>/);
-    if (match?.[1]) {
-      return match[1].trim();
-    }
+  private parseOutlineResponse(response: string): {
+    title: string | null;
+    outline: string;
+  } {
+    // Extract title from title tags
+    const titleMatch = response.match(/<title>([\s\S]*?)<\/title>/);
+    const title = titleMatch?.[1]?.trim() || null;
 
-    // Otherwise return response as-is
-    return response.trim();
+    // Extract content from summary tags if present
+    const summaryMatch = response.match(/<summary>([\s\S]*?)<\/summary>/);
+    const outline = summaryMatch?.[1]?.trim() || response.trim();
+
+    return { title, outline };
   }
 
   /**
-   * Generate outline for a single session
+   * Generate outline and title for a single session
    */
-  async generateOutline(session: SessionForOutline): Promise<string> {
+  async generateOutline(
+    session: SessionForOutline
+  ): Promise<{ title: string | null; outline: string }> {
     const serializedTranscript = serializeTranscript(session.raw_transcript);
     const prompt = this.buildPrompt(
       session.project_path,
@@ -156,9 +163,9 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
 
     // Extract text from response
     const textBlock = response.content.find((block) => block.type === 'text');
-    const rawOutline = textBlock?.type === 'text' ? textBlock.text : '';
+    const rawResponse = textBlock?.type === 'text' ? textBlock.text : '';
 
-    return this.parseOutlineResponse(rawOutline);
+    return this.parseOutlineResponse(rawResponse);
   }
 
   /**
@@ -166,13 +173,13 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
    * Returns immediately, processing happens in background
    */
   async queueOutlineGeneration(sessionIds?: string[]): Promise<void> {
-    if (this.progress.isRunning) {
+    if (this.progress.inProgress) {
       this.log.info('Outline generation already in progress, skipping');
       return;
     }
 
     // Mark as running immediately to prevent race conditions
-    this.progress.isRunning = true;
+    this.progress.inProgress = true;
 
     // Find sessions needing outlines
     let sessions: SessionForOutline[];
@@ -194,14 +201,14 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
         `;
       }
     } catch (error) {
-      this.progress.isRunning = false;
+      this.progress.inProgress = false;
       this.log.error({ error }, 'Failed to query sessions for outline generation');
       throw error;
     }
 
     if (sessions.length === 0) {
       this.log.info('No sessions need outline generation');
-      this.progress.isRunning = false;
+      this.progress.inProgress = false;
       return;
     }
 
@@ -211,7 +218,7 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
       total: sessions.length,
       currentSession: null,
       errors: 0,
-      isRunning: true,
+      inProgress: true,
     };
 
     this.log.info({ count: sessions.length }, 'Queuing outline generation');
@@ -224,12 +231,13 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
 
           // Skip API call for sessions with no assistant output
           const isEmpty = isEmptySession(session);
-          const outline = isEmpty ? null : await this.generateOutline(session);
+          const generated = isEmpty ? null : await this.generateOutline(session);
 
-          // Store the outline (null for empty sessions)
+          // Store the outline and title (null for empty sessions)
           await this.sql`
             UPDATE sessions.sessions
-            SET outline = ${outline},
+            SET outline = ${generated?.outline ?? null},
+                title = ${generated?.title ?? null},
                 outline_hash = ${session.transcript_hash}
             WHERE id = ${session.id}::uuid
           `;
@@ -237,7 +245,7 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
           this.progress.completed++;
           this.log.debug(
             { sessionId: session.id, skipped: isEmpty },
-            outline ? 'Generated outline' : 'Skipped empty session'
+            generated ? 'Generated outline' : 'Skipped empty session'
           );
         } catch (error) {
           this.progress.errors++;
@@ -253,7 +261,7 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
     Promise.all(promises)
       .then(() => {
         this.progress.currentSession = null;
-        this.progress.isRunning = false;
+        this.progress.inProgress = false;
         this.log.info(
           {
             completed: this.progress.completed,
@@ -263,7 +271,7 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
         );
       })
       .catch((error) => {
-        this.progress.isRunning = false;
+        this.progress.inProgress = false;
         this.log.error({ error }, 'Outline generation batch failed');
       });
   }
@@ -306,7 +314,7 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
       total: sessions.length,
       currentSession: null,
       errors: 0,
-      isRunning: true,
+      inProgress: true,
     };
 
     // Process with concurrency limit
@@ -317,11 +325,12 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
 
           // Skip API call for sessions with no assistant output
           const isEmpty = isEmptySession(session);
-          const outline = isEmpty ? null : await this.generateOutline(session);
+          const generated = isEmpty ? null : await this.generateOutline(session);
 
           await this.sql`
             UPDATE sessions.sessions
-            SET outline = ${outline},
+            SET outline = ${generated?.outline ?? null},
+                title = ${generated?.title ?? null},
                 outline_hash = ${session.transcript_hash}
             WHERE id = ${session.id}::uuid
           `;
@@ -339,7 +348,7 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
 
     await Promise.all(promises);
     this.progress.currentSession = null;
-    this.progress.isRunning = false;
+    this.progress.inProgress = false;
 
     return result;
   }

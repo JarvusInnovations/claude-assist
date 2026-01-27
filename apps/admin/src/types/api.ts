@@ -161,6 +161,7 @@ export interface SessionRecord {
   claude_version: string | null;
   synced_at: string;
   outline: string | null;
+  title: string | null;
   outline_hash: string | null;
   models_used: string[];
   model_tokens: Record<string, ModelTokens>;
