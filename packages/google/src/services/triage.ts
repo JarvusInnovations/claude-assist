@@ -455,22 +455,23 @@ export class TriageService {
       this.buildEmailPrompt(email)
     );
 
-    // Turn 2: Newsletter unsubscribe link refinement
+    // Turn 2: Unsubscribe link extraction from HTML (newsletters and alerts)
     if (
-      analysis.message_type === 'newsletter' &&
+      (analysis.message_type === 'newsletter' ||
+        analysis.message_type === 'alert') &&
       !analysis.unsubscribe_link?.startsWith('http://') &&
       !analysis.unsubscribe_link?.startsWith('https://') &&
       email.body_html
     ) {
       this.log.info(
         { emailId: email.id },
-        'Newsletter missing unsubscribe link, checking HTML'
+        'Missing unsubscribe link, checking HTML'
       );
       analysis = await conversation.sendMessage(
         `<refinement>
-The email was classified as a newsletter but no valid unsubscribe URL was found.
-Please examine the HTML body below and extract the actual unsubscribe URL (the href attribute starting with http:// or https://).
-Set unsubscribe_link to the full URL string, not descriptive text.
+No valid unsubscribe URL was found in the text body.
+Please examine the HTML body below and extract the actual unsubscribe URL if present (the href attribute starting with http:// or https://).
+Set unsubscribe_link to the full URL string, or null if no unsubscribe link exists.
 Return your updated complete analysis.
 
 <html_body>
@@ -509,9 +510,10 @@ You are an email analysis assistant. Analyze emails and return structured JSON.
   * Emails with fake "Re:" prefixes that aren't actual replies
   * Mass-mailed pitches with opt-out language ("reply No thanks to opt out")
   * Sender domain that doesn't match the claimed company
-  NOT newsletters (those have unsubscribe links and periodic content).
-- newsletter: Any email with an unsubscribe link (periodic updates, marketing, announcements). Legitimacy determined later.
-- alert: System notifications, transactional (receipts, confirmations, calendar). No unsubscribe link typical.
+  NOT newsletters (those have periodic content the recipient opted into).
+- newsletter: Periodic content updates, marketing emails, or announcements. Usually sent on a schedule (daily/weekly digests, promotional campaigns). Legitimacy determined later.
+- alert: System notifications triggered by specific events or user activity (social media notifications, match alerts, receipts, confirmations, monitoring alerts, calendar reminders). Usually one-off rather than periodic.
+NOTE: Both newsletters and alerts commonly have unsubscribe links. The presence of an unsubscribe link does NOT determine the classification - use the content nature instead.
 - group: Sent to mailing list or large recipient list, not individually addressed. Check TO/CC fields.
 - personal: Direct person-to-person, individually addressed in TO with small/relevant CC. Must have prior relationship or legitimate business context.
 </message_type>
