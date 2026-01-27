@@ -10,7 +10,7 @@ const server = serve({
     // API proxy - handle before SPA catch-all
     "/api/*": async (req) => {
       const url = new URL(req.url);
-      const apiPath = url.pathname.replace(/^\/api/, "");
+      const apiPath = url.pathname;
       const apiUrl = new URL(apiPath, API_TARGET);
       apiUrl.search = url.search;
 
