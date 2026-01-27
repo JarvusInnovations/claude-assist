@@ -104,14 +104,14 @@ export function SessionsPage() {
           <Button
             variant="outline"
             onClick={() => syncMutation.mutate()}
-            disabled={syncMutation.isPending}
+            disabled={syncMutation.isPending || outlineProgress?.inProgress}
           >
             <RefreshCw className="mr-2 h-4 w-4" />
             {syncMutation.isPending ? "Syncing..." : "Sync"}
           </Button>
           <Button
             onClick={() => outlineMutation.mutate()}
-            disabled={outlineMutation.isPending}
+            disabled={outlineMutation.isPending || outlineProgress?.inProgress}
           >
             <Sparkles className="mr-2 h-4 w-4" />
             {outlineMutation.isPending ? "Starting..." : "Generate Outlines"}
