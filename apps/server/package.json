@@ -8,7 +8,9 @@
     "start": "bun src/server.ts",
     "build": "tsc",
     "backup": "./bin/backup.sh",
-    "backup:init": "./bin/backup-init.sh"
+    "backup:init": "./bin/backup-init.sh",
+    "backup:list": "./bin/backup-list.sh",
+    "backup:dump": "./bin/backup-dump.sh"
   },
   "devDependencies": {
     "@types/bun": "latest",
