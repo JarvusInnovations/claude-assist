@@ -81,13 +81,23 @@ export interface ModelTokens {
 }
 
 /**
+ * Files touched with operation type differentiation
+ */
+export interface FilesTouched {
+  /** Files that were read (Read, Glob, Grep tools) */
+  reads: string[];
+  /** Files that were written/modified (Edit, Write, NotebookEdit tools) */
+  writes: string[];
+}
+
+/**
  * Parsed session data extracted from transcript
  */
 export interface ParsedSession {
   sessionId: string;
   userMessages: string[];
   toolsUsed: string[];
-  filesTouched: string[];
+  filesTouched: FilesTouched;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
@@ -168,7 +178,7 @@ export interface SessionRecord {
   ended_at: Date | null;
   user_messages: string[];
   tools_used: string[];
-  files_touched: string[];
+  files_touched: FilesTouched;
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;
