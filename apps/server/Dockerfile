@@ -10,6 +10,7 @@ COPY packages/core packages/core
 COPY packages/sessions packages/sessions
 COPY packages/google packages/google
 COPY apps/server apps/server
+COPY apps/admin/package.json apps/admin/package.json
 RUN bun install --frozen-lockfile
 RUN cd packages/core && bun run build
 RUN cd packages/sessions && bun run build
