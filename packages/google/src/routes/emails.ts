@@ -339,7 +339,13 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
       const { emailIds, action } = request.body;
 
       if (!Array.isArray(emailIds) || emailIds.length === 0) {
-        return { success: false, error: 'emailIds array required', count: 0 };
+        return {
+          success: false,
+          action: action || '',
+          count: 0,
+          message: 'emailIds array required',
+          error: 'emailIds array required',
+        };
       }
 
       fastify.log.info({ emailIds, action }, 'Bulk action requested (no-op)');

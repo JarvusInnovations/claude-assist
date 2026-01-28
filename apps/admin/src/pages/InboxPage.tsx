@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router";
-import { Mail } from "lucide-react";
+import { Mail, ChevronLeft, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
 
 import { Card, CardContent } from "@/components/ui/card";
@@ -40,6 +40,7 @@ const TAB_COLORS: Record<MessageType, string> = {
 };
 
 export function InboxPage() {
+  const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
 
@@ -72,8 +73,14 @@ export function InboxPage() {
     mutationFn: (action: string) =>
       googleApi.bulkAction({ emailIds: Array.from(selectedIds), action }),
     onSuccess: (result) => {
-      toast.success(result.message);
-      setSelectedIds(new Set());
+      if (result.success) {
+        toast.success(result.message);
+        setSelectedIds(new Set());
+        queryClient.invalidateQueries({ queryKey: ["inbox-emails"] });
+        queryClient.invalidateQueries({ queryKey: ["email-stats"] });
+      } else {
+        toast.error(result.error || "Action failed");
+      }
     },
     onError: (error) => {
       toast.error(`Action failed: ${error.message}`);
@@ -97,6 +104,29 @@ export function InboxPage() {
     setSearchParams(newParams);
     setSelectedIds(new Set()); // Clear selection on page size change
   };
+
+  // Pagination handlers
+  const handlePrevPage = () => {
+    const newOffset = Math.max(0, offset - pageSize);
+    const newParams = new URLSearchParams(searchParams);
+    if (newOffset === 0) {
+      newParams.delete("offset");
+    } else {
+      newParams.set("offset", String(newOffset));
+    }
+    setSearchParams(newParams);
+    setSelectedIds(new Set());
+  };
+
+  const handleNextPage = () => {
+    const newParams = new URLSearchParams(searchParams);
+    newParams.set("offset", String(offset + pageSize));
+    setSearchParams(newParams);
+    setSelectedIds(new Set());
+  };
+
+  const currentPage = Math.floor(offset / pageSize) + 1;
+  const hasNextPage = emails?.length === pageSize;
 
   // Selection helpers
   const allSelected =
@@ -253,6 +283,35 @@ export function InboxPage() {
                 <p className="text-muted-foreground">
                   No {activeTab} emails found
                 </p>
+              </div>
+            )}
+
+            {/* Pagination */}
+            {emails && emails.length > 0 && (
+              <div className="flex items-center justify-between px-4 py-3 border-t">
+                <span className="text-sm text-muted-foreground">
+                  Page {currentPage}
+                </span>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handlePrevPage}
+                    disabled={offset === 0}
+                  >
+                    <ChevronLeft className="h-4 w-4 mr-1" />
+                    Previous
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleNextPage}
+                    disabled={!hasNextPage}
+                  >
+                    Next
+                    <ChevronRight className="h-4 w-4 ml-1" />
+                  </Button>
+                </div>
               </div>
             )}
           </Tabs>
