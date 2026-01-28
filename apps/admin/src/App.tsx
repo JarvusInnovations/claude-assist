@@ -13,6 +13,7 @@ import { EmailDetailPage } from "@/pages/EmailDetailPage";
 import { SessionsPage } from "@/pages/SessionsPage";
 import { SessionDetailPage } from "@/pages/SessionDetailPage";
 import { SystemPage } from "@/pages/SystemPage";
+import { InboxPage } from "@/pages/InboxPage";
 
 function App() {
   return (
@@ -28,6 +29,7 @@ function App() {
           }
         >
           <Route index element={<DashboardPage />} />
+          <Route path="inbox" element={<InboxPage />} />
           <Route path="accounts" element={<AccountsPage />} />
           <Route path="accounts/:id" element={<AccountDetailPage />} />
           <Route path="emails" element={<EmailsPage />} />

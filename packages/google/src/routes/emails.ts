@@ -73,7 +73,7 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
         offset = '0',
       } = request.query;
 
-      const limitNum = Math.min(parseInt(limit, 10) || 50, 100);
+      const limitNum = Math.min(parseInt(limit, 10) || 50, 500);
       const offsetNum = parseInt(offset, 10) || 0;
       const daysNum = parseInt(days, 10) || 30;
 
@@ -327,4 +327,34 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
         };
       });
     }
+
+    // ==========================================
+    // Bulk Actions
+    // ==========================================
+
+    // POST /google/emails/bulk-action - Process bulk email actions (placeholder)
+    fastify.post<{
+      Body: { emailIds: number[]; action: string };
+    }>('/google/emails/bulk-action', async (request) => {
+      const { emailIds, action } = request.body;
+
+      if (!Array.isArray(emailIds) || emailIds.length === 0) {
+        return {
+          success: false,
+          action: action || '',
+          count: 0,
+          message: 'emailIds array required',
+          error: 'emailIds array required',
+        };
+      }
+
+      fastify.log.info({ emailIds, action }, 'Bulk action requested (no-op)');
+
+      return {
+        success: true,
+        action,
+        count: emailIds.length,
+        message: `Bulk action "${action}" received for ${emailIds.length} email(s) (no-op placeholder)`,
+      };
+    });
   };

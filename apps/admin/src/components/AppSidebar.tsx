@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/sidebar";
 import {
   LayoutDashboard,
+  Inbox,
   Users,
   Mail,
   ScrollText,
@@ -20,6 +21,7 @@ import {
 
 const navItems = [
   { path: "/", label: "Dashboard", icon: LayoutDashboard },
+  { path: "/inbox", label: "Inbox", icon: Inbox },
   { path: "/accounts", label: "Accounts", icon: Users },
   { path: "/emails", label: "Emails", icon: Mail },
   { path: "/sessions", label: "Sessions", icon: ScrollText },

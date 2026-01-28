@@ -9,6 +9,8 @@ import type {
   CreateAccountPayload,
   UpdateAccountPayload,
   CreateAliasPayload,
+  BulkActionPayload,
+  BulkActionResponse,
 } from "@/types/api";
 
 export const googleApi = {
@@ -71,4 +73,8 @@ export const googleApi = {
     api.post(`/google/emails/${id}/triage`),
 
   getTriageProgress: () => api.get<TriageProgress>("/google/emails/triage/progress"),
+
+  // Bulk Actions
+  bulkAction: (payload: BulkActionPayload) =>
+    api.post<BulkActionResponse>("/google/emails/bulk-action", payload),
 };
