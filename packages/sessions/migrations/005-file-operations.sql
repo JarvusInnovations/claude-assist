@@ -26,12 +26,13 @@ BEGIN
         ) combined;
     END IF;
 
-    -- Weight A: user messages + outline (highest priority for search)
+    -- Weight A: user messages + outline + title (highest priority for search)
     -- Weight B: tools and files touched
     -- Weight C: project path
     NEW.search_vector :=
         setweight(to_tsvector('english', COALESCE(NEW.search_text, '')), 'A') ||
         setweight(to_tsvector('english', COALESCE(NEW.outline, '')), 'A') ||
+        setweight(to_tsvector('english', COALESCE(NEW.title, '')), 'A') ||
         setweight(to_tsvector('english', COALESCE(tools_text, '')), 'B') ||
         setweight(to_tsvector('english', COALESCE(files_text, '')), 'B') ||
         setweight(to_tsvector('english', COALESCE(NEW.project_path, '')), 'C');
