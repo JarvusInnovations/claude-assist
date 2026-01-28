@@ -38,9 +38,12 @@ const TOOL_OPERATIONS: Record<string, FileOperation | null> = {
  * Following the Kuato pattern: extract user messages, tools, files, tokens
  *
  * Note: Claude's transcript logs multiple messages per API response (streaming updates).
- * Each message in a response chain has the same usage data. To avoid over-counting,
- * we only count tokens from the first message in each chain (identified by parentUuid
- * not being another message with usage data).
+ * Token counting requires careful handling:
+ * - input_tokens and cache_read_input_tokens: constant within a chain, count from first message
+ * - output_tokens: cumulative during streaming, count from last message (max value in chain)
+ *
+ * A "chain" is identified by messages linked via parentUuid where each has usage data.
+ * The first message in a chain has a parentUuid pointing to a non-usage message (e.g., user).
  */
 export function parseTranscript(
   sessionId: string,
@@ -56,7 +59,6 @@ export function parseTranscript(
   const modelTokens: Record<string, ModelTokens> = {};
 
   let inputTokens = 0;
-  let outputTokens = 0;
   let cacheReadTokens = 0;
   let startedAt: Date | null = null;
   let endedAt: Date | null = null;
@@ -86,6 +88,10 @@ export function parseTranscript(
       parseErrors++;
     }
   }
+
+  // Track max output tokens per chain root (for cumulative output token handling)
+  // Key is the chain root (parentUuid of first message), value is {model, maxOutput}
+  const chainOutputs = new Map<string, { model: string | undefined; maxOutput: number }>();
 
   // Second pass: process messages, deduplicating token counts
   for (const msg of parsedMessages) {
@@ -131,23 +137,47 @@ export function parseTranscript(
         }
       }
 
-      // Track token usage, but only from first message in each response chain
-      // A message is "first in chain" if its parentUuid is NOT another message with usage
+      // Track token usage with proper deduplication
       if (msg.message.usage) {
+        const usage = msg.message.usage;
         const isFirstInChain = !msg.parentUuid || !messagesWithUsage.has(msg.parentUuid);
 
+        // Input and cache_read are constant within a chain - count from first message only
         if (isFirstInChain) {
-          const usage = msg.message.usage;
           inputTokens += usage.input_tokens ?? 0;
-          outputTokens += usage.output_tokens ?? 0;
           cacheReadTokens += usage.cache_read_input_tokens ?? 0;
 
-          // Per-model tracking
+          // Per-model tracking for input/cache_read
           if (model) {
             modelTokens[model]!.input += usage.input_tokens ?? 0;
-            modelTokens[model]!.output += usage.output_tokens ?? 0;
             modelTokens[model]!.cacheRead += usage.cache_read_input_tokens ?? 0;
           }
+        }
+
+        // Output tokens are cumulative - track max per chain
+        // Find the chain root by walking up to the first message
+        let chainRoot = msg.parentUuid || msg.uuid;
+        if (isFirstInChain) {
+          chainRoot = msg.parentUuid || msg.uuid;
+        } else {
+          // Walk up the chain to find the root
+          let current = msg.parentUuid;
+          while (current && messagesWithUsage.has(current)) {
+            // Find the message with this UUID to get its parent
+            const parentMsg = parsedMessages.find(m => m.uuid === current);
+            if (parentMsg?.parentUuid && messagesWithUsage.has(parentMsg.parentUuid)) {
+              current = parentMsg.parentUuid;
+            } else {
+              chainRoot = parentMsg?.parentUuid || current;
+              break;
+            }
+          }
+        }
+
+        const outputValue = usage.output_tokens ?? 0;
+        const existing = chainOutputs.get(chainRoot);
+        if (!existing || outputValue > existing.maxOutput) {
+          chainOutputs.set(chainRoot, { model, maxOutput: outputValue });
         }
       }
 
@@ -166,6 +196,15 @@ export function parseTranscript(
           }
         }
       }
+    }
+  }
+
+  // Sum up output tokens from chain maximums and update per-model tracking
+  let outputTokens = 0;
+  for (const [, { model, maxOutput }] of chainOutputs) {
+    outputTokens += maxOutput;
+    if (model && modelTokens[model]) {
+      modelTokens[model]!.output += maxOutput;
     }
   }
 
