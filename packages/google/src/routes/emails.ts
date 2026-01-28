@@ -332,7 +332,7 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
     // Bulk Actions
     // ==========================================
 
-    // POST /google/emails/bulk-action - Process bulk email actions (placeholder)
+    // POST /google/emails/bulk-action - Process bulk email actions
     fastify.post<{
       Body: { emailIds: number[]; action: string };
     }>('/google/emails/bulk-action', async (request) => {
@@ -348,6 +348,42 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
         };
       }
 
+      // Handle force-retriage action
+      if (action === 'force-retriage') {
+        if (!triageService) {
+          return {
+            success: false,
+            action,
+            count: 0,
+            message: 'Triage service not available',
+            error: 'Triage service not available (missing ANTHROPIC_API_KEY)',
+          };
+        }
+
+        // Fire and forget - async processing
+        triageService
+          .triageBatch(emailIds)
+          .then((results) => {
+            const success = results.filter((r) => r.success).length;
+            const failed = results.filter((r) => !r.success).length;
+            fastify.log.info(
+              { count: emailIds.length, success, failed },
+              'Bulk force-retriage complete'
+            );
+          })
+          .catch((error) => {
+            fastify.log.error({ error }, 'Bulk force-retriage failed');
+          });
+
+        return {
+          success: true,
+          action,
+          count: emailIds.length,
+          message: `Re-triage started for ${emailIds.length} email(s)`,
+        };
+      }
+
+      // Placeholder for other actions
       fastify.log.info({ emailIds, action }, 'Bulk action requested (no-op)');
 
       return {
