@@ -35,6 +35,23 @@ const server = serve({
       }
       return new Response("Not found", { status: 404 });
     },
+    // Serve source files for development (needed for direct URL navigation)
+    "/src/*": async (req) => {
+      const url = new URL(req.url);
+      const filePath = join(import.meta.dir, url.pathname);
+      const f = file(filePath);
+      if (await f.exists()) {
+        const contentType = url.pathname.endsWith('.tsx') || url.pathname.endsWith('.ts')
+          ? 'text/typescript'
+          : url.pathname.endsWith('.css')
+          ? 'text/css'
+          : 'application/octet-stream';
+        return new Response(f, {
+          headers: { "Content-Type": contentType },
+        });
+      }
+      return new Response("Not found", { status: 404 });
+    },
     // SPA - all other routes serve index.html
     "/*": index,
   },

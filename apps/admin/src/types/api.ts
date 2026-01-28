@@ -136,7 +136,7 @@ export interface MachineRecord {
 
 export interface SessionRecord {
   id: string;
-  machine_id: number;
+  machine: string;
   project_path: string | null;
   git_branch: string | null;
   started_at: string;
