@@ -197,7 +197,6 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
           FROM sessions.sessions
           WHERE outline_hash IS DISTINCT FROM transcript_hash
           ORDER BY started_at DESC
-          LIMIT 100
         `;
       }
     } catch (error) {
@@ -302,7 +301,6 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
         FROM sessions.sessions
         WHERE outline_hash IS DISTINCT FROM transcript_hash
         ORDER BY started_at DESC
-        LIMIT 100
       `;
     }
 
