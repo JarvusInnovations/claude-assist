@@ -12,6 +12,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { sessionsApi } from "@/api/sessions";
+import { TranscriptViewer } from "@/components/TranscriptViewer";
 
 export function SessionDetailPage() {
   const { id } = useParams();
@@ -253,9 +254,7 @@ export function SessionDetailPage() {
             <TabsContent value="transcript" className="p-4">
               <ScrollArea className="h-[400px]">
                 {transcript ? (
-                  <pre className="text-sm whitespace-pre-wrap font-mono">
-                    {transcript}
-                  </pre>
+                  <TranscriptViewer transcript={transcript} />
                 ) : (
                   <p className="text-muted-foreground">Loading transcript...</p>
                 )}
