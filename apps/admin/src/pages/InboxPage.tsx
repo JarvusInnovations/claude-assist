@@ -28,7 +28,7 @@ import {
 import { googleApi } from "@/api/google";
 import type { MessageType } from "@/types/api";
 
-const MESSAGE_TYPES: MessageType[] = ["personal", "alert", "newsletter", "spam", "group"];
+const MESSAGE_TYPES: MessageType[] = ["personal", "group", "alert", "newsletter", "spam"];
 const PAGE_SIZES = [50, 100, 250, 500];
 
 const TAB_COLORS: Record<MessageType, string> = {
