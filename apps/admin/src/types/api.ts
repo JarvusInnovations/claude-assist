@@ -151,7 +151,7 @@ export interface SessionRecord {
   ended_at: string | null;
   user_messages: string[];
   tools_used: string[];
-  files_touched: string[];
+  files_touched: { reads: string[]; writes: string[] };
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;

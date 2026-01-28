@@ -222,7 +222,7 @@ export function SessionDetailPage() {
                 value="files"
                 className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary"
               >
-                Files ({session.files_touched?.length || 0})
+                Files ({(session.files_touched?.reads?.length || 0) + (session.files_touched?.writes?.length || 0)})
               </TabsTrigger>
             </TabsList>
 
@@ -280,16 +280,39 @@ export function SessionDetailPage() {
 
             <TabsContent value="files" className="p-4">
               <ScrollArea className="h-[400px]">
-                {session.files_touched?.length ? (
-                  <div className="space-y-1">
-                    {session.files_touched.map((file, i) => (
-                      <div key={i} className="text-sm font-mono">
-                        {file}
+                {(session.files_touched?.reads?.length || session.files_touched?.writes?.length) ? (
+                  <div className="space-y-4">
+                    {session.files_touched?.writes?.length ? (
+                      <div>
+                        <h4 className="text-sm font-medium text-muted-foreground mb-2">
+                          Written ({session.files_touched.writes.length})
+                        </h4>
+                        <div className="space-y-1">
+                          {session.files_touched.writes.map((file, i) => (
+                            <div key={i} className="text-sm font-mono">
+                              {file}
+                            </div>
+                          ))}
+                        </div>
                       </div>
-                    ))}
+                    ) : null}
+                    {session.files_touched?.reads?.length ? (
+                      <div>
+                        <h4 className="text-sm font-medium text-muted-foreground mb-2">
+                          Read ({session.files_touched.reads.length})
+                        </h4>
+                        <div className="space-y-1">
+                          {session.files_touched.reads.map((file, i) => (
+                            <div key={i} className="text-sm font-mono">
+                              {file}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 ) : (
-                  <p className="text-muted-foreground">No files modified</p>
+                  <p className="text-muted-foreground">No files touched</p>
                 )}
               </ScrollArea>
             </TabsContent>

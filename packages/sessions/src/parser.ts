@@ -4,7 +4,34 @@ import type {
   ContentBlock,
   ToolUseBlock,
   ModelTokens,
+  FilesTouched,
 } from './types.js';
+
+/**
+ * File operation type for classification
+ */
+type FileOperation = 'read' | 'write';
+
+/**
+ * Tool to file operation mapping
+ * Read operations: tools that read file contents
+ * Write operations: tools that modify file contents
+ */
+const TOOL_OPERATIONS: Record<string, FileOperation | null> = {
+  // Read operations
+  Read: 'read',
+  Glob: 'read',
+  Grep: 'read',
+
+  // Write operations
+  Edit: 'write',
+  Write: 'write',
+  NotebookEdit: 'write',
+
+  // Tools that don't directly touch files (or are ambiguous)
+  Bash: null,
+  Task: null,
+};
 
 /**
  * Parse a JSONL transcript and extract structured data
@@ -18,7 +45,8 @@ export function parseTranscript(
 
   const userMessages: string[] = [];
   const toolsUsed = new Set<string>();
-  const filesTouched = new Set<string>();
+  const filesRead = new Set<string>();
+  const filesWritten = new Set<string>();
   const modelsUsed = new Set<string>();
   const modelTokens: Record<string, ModelTokens> = {};
 
@@ -101,10 +129,14 @@ export function parseTranscript(
         for (const tool of tools) {
           toolsUsed.add(tool.name);
 
-          // Extract file paths from file-related tools
-          const filePath = extractFilePath(tool);
-          if (filePath) {
-            filesTouched.add(filePath);
+          // Extract file paths and classify by operation type
+          const fileTouch = extractFileTouch(tool);
+          if (fileTouch) {
+            if (fileTouch.operation === 'read') {
+              filesRead.add(fileTouch.path);
+            } else {
+              filesWritten.add(fileTouch.path);
+            }
           }
         }
       }
@@ -119,7 +151,10 @@ export function parseTranscript(
     sessionId,
     userMessages,
     toolsUsed: [...toolsUsed],
-    filesTouched: [...filesTouched],
+    filesTouched: {
+      reads: [...filesRead],
+      writes: [...filesWritten],
+    },
     inputTokens,
     outputTokens,
     cacheReadTokens,
@@ -162,11 +197,19 @@ function extractToolUses(content: string | ContentBlock[]): ToolUseBlock[] {
   );
 }
 
+interface FileTouch {
+  path: string;
+  operation: FileOperation;
+}
+
 /**
- * Extract file path from tool input
- * Handles Read, Edit, Write, Glob, Grep tools
+ * Extract file path and operation type from tool input
+ * Handles Read, Edit, Write, Glob, Grep, NotebookEdit tools
  */
-function extractFilePath(tool: ToolUseBlock): string | null {
+function extractFileTouch(tool: ToolUseBlock): FileTouch | null {
+  const operation = TOOL_OPERATIONS[tool.name];
+  if (!operation) return null;
+
   const input = tool.input;
   if (!input || typeof input !== 'object') return null;
 
@@ -176,7 +219,7 @@ function extractFilePath(tool: ToolUseBlock): string | null {
   for (const key of pathKeys) {
     const value = (input as Record<string, unknown>)[key];
     if (typeof value === 'string' && value.length > 0) {
-      return value;
+      return { path: value, operation };
     }
   }
 

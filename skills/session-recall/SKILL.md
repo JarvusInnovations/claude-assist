@@ -71,7 +71,7 @@ Example response:
     "first_user_prompt": "Help me with RTD proposal",
     "message_count": 45,
     "tools_used": ["Edit", "Read", "Bash"],
-    "files_touched": ["/proposals/rtd.md"],
+    "files_touched": { "reads": ["/proposals/rtd.md"], "writes": ["/proposals/rtd.md"] },
     "input_tokens": 150000,
     "output_tokens": 25000,
     "machine": "localhost"
