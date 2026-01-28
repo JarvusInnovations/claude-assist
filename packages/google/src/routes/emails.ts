@@ -260,15 +260,15 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
 
       // POST /google/emails/triage - Triage pending emails (async, returns immediately)
       fastify.post<{
-        Body?: { account?: string; limit?: number };
+        Body?: { account?: string; limit?: number; force?: boolean };
       }>('/google/emails/triage', async (request) => {
-        const { account, limit } = request.body || {};
+        const { account, limit, force } = request.body || {};
 
-        // Get pending emails
+        // Get pending emails (or all triageable emails if force=true)
         const pending = await fastify.sql<{ id: number; account_id: number }[]>`
           SELECT e.id, e.account_id FROM google.emails e
           JOIN google.accounts a ON e.account_id = a.id
-          WHERE e.workflow_status = 'new'
+          WHERE ${force ? fastify.sql`e.workflow_status IN ('new', 'triaged')` : fastify.sql`e.workflow_status = 'new'`}
             ${account ? fastify.sql`AND a.identifier = ${account}` : fastify.sql``}
           ORDER BY e.date DESC
           ${limit ? fastify.sql`LIMIT ${limit}` : fastify.sql``}
