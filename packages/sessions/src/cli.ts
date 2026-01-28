@@ -62,9 +62,9 @@ export async function push(options: PushOptions): Promise<void> {
     forceReparse: force,
   };
 
-  log(`Checking inventory with ${serverUrl}/sessions/inventory...`);
+  log(`Checking inventory with ${serverUrl}/api/sessions/inventory...`);
 
-  const inventoryResponse = await fetch(`${serverUrl}/sessions/inventory`, {
+  const inventoryResponse = await fetch(`${serverUrl}/api/sessions/inventory`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(inventoryPayload),
@@ -126,10 +126,10 @@ export async function push(options: PushOptions): Promise<void> {
 
   const totalSize = JSON.stringify(payload).length;
   console.log(
-    `Pushing ${sessions.length} sessions (${Math.round(totalSize / 1024)}KB) to ${serverUrl}/sessions/push...`
+    `Pushing ${sessions.length} sessions (${Math.round(totalSize / 1024)}KB) to ${serverUrl}/api/sessions/push...`
   );
 
-  const response = await fetch(`${serverUrl}/sessions/push`, {
+  const response = await fetch(`${serverUrl}/api/sessions/push`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
