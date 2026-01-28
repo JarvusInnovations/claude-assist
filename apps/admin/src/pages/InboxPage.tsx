@@ -165,12 +165,12 @@ export function InboxPage() {
           {selectedIds.size > 0 && (
             <Button
               variant="outline"
-              onClick={() => bulkMutation.mutate("placeholder")}
+              onClick={() => bulkMutation.mutate("force-retriage")}
               disabled={bulkMutation.isPending}
             >
               {bulkMutation.isPending
                 ? "Processing..."
-                : `Action (${selectedIds.size})`}
+                : `Re-triage (${selectedIds.size})`}
             </Button>
           )}
         </div>

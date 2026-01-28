@@ -507,9 +507,15 @@ You are an email analysis assistant. Analyze emails and return structured JSON.
 - spam: Unsolicited email confidently recognized as spam. Includes:
   * Phishing attempts and scams
   * Cold B2B service solicitations (offshore/nearshore staffing, software development outsourcing, lead generation, business financing/loans, SEO/marketing services, business acquisition inquiries)
-  * Emails with fake "Re:" prefixes that aren't actual replies
+  * Unsolicited podcast invitations (commonly used for lead generation disguised as "thought leadership")
+  * Content production offers (video production, book writing, ghostwriting services)
+  * Emails with fake "Re:" prefixes that aren't actual replies (check is_new_thread field)
+  * Fabricated "forwarded" messages showing fake internal recommendations (e.g., "Ray, I found this prospect...")
   * Mass-mailed pitches with opt-out language ("reply No thanks to opt out")
   * Sender domain that doesn't match the claimed company
+  * Display name spoofing: generic notification names ("Audio Alert", "Voicemail Service") from personal email domains
+  * Fake notification wrappers: claims of audio messages or voicemails that link to unrelated content
+  * Vague references to non-existent past conversations ("following up from our chat", "digging through old notes") combined with a service pitch
   NOT newsletters (those have periodic content the recipient opted into).
 - newsletter: Periodic content updates, marketing emails, or announcements. Usually sent on a schedule (daily/weekly digests, promotional campaigns). Legitimacy determined later.
 - alert: System notifications triggered by specific events or user activity (social media notifications, match alerts, receipts, confirmations, monitoring alerts, calendar reminders). Usually one-off rather than periodic.
@@ -543,6 +549,8 @@ When in doubt, leave it empty. An empty action_items array is the correct answer
 1. Read the email metadata and body carefully
 2. Classify sender_type based on whether a human composed the message
 3. Classify message_type based on content and sender patterns
+   - If gmail_labels includes "SPAM", apply extra scrutiny - Gmail's filter has already flagged this as suspicious
+   - If subject starts with "Re:" or "RE:" but is_new_thread is true, this is likely a fake reply designed to create false familiarity
 4. Extract mentioned people and organizations by name
 5. Extract action items based on message_type (see <action_items> definition):
    - spam: ALWAYS empty []. Spam is unsolicited - any "questions" or "requests" are manipulative tactics, not legitimate action items requiring response.
@@ -581,12 +589,18 @@ Return ONLY a JSON object inside <analysis> tags. No markdown, no explanation ou
       ? `${email.from_name} <${email.from_address}>`
       : email.from_address || 'unknown';
 
+    // Contextual signals for spam detection
+    const gmailLabels = email.gmail_labels?.join(', ') || '';
+    const isNewThread = !email.thread_id;
+
     return `<email>
 <from>${fromField}</from>
 <to>${email.to_addresses?.join(', ') || 'unknown'}</to>
 <cc>${email.cc_addresses?.join(', ') || ''}</cc>
 <bcc></bcc>
 <date>${email.date?.toISOString() || 'unknown'}</date>
+<gmail_labels>${gmailLabels}</gmail_labels>
+<is_new_thread>${isNewThread}</is_new_thread>
 <subject>${email.subject || '(no subject)'}</subject>
 <body>
 ${email.body_text || email.snippet || '(empty)'}
