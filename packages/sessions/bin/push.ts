@@ -8,6 +8,7 @@ const { values } = parseArgs({
     server: { type: 'string', short: 's', default: 'http://localhost:2529' },
     'claude-dir': { type: 'string' },
     'dry-run': { type: 'boolean', default: false },
+    force: { type: 'boolean', short: 'f', default: false },
     verbose: { type: 'boolean', short: 'v', default: false },
     help: { type: 'boolean', short: 'h' },
   },
@@ -26,6 +27,7 @@ Options:
   -s, --server <url>     Server URL (default: http://localhost:2529)
   --claude-dir <path>    Claude directory (default: ~/.claude)
   --dry-run              Scan but don't push
+  -f, --force            Force re-parse all sessions (for parser upgrades)
   -v, --verbose          Verbose output
   -h, --help             Show this help
 
@@ -42,6 +44,7 @@ push({
   serverUrl: values.server!,
   claudeDir: values['claude-dir'],
   dryRun: values['dry-run'],
+  force: values.force,
   verbose: values.verbose,
 }).catch((error) => {
   console.error('Push failed:', error instanceof Error ? error.message : error);
