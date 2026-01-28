@@ -14,6 +14,8 @@ export interface PushOptions {
   claudeDir?: string;
   dryRun?: boolean;
   verbose?: boolean;
+  /** Force re-parsing of all sessions even if hash matches (for parser upgrades) */
+  force?: boolean;
 }
 
 /**
@@ -26,6 +28,7 @@ export async function push(options: PushOptions): Promise<void> {
     claudeDir,
     dryRun = false,
     verbose = false,
+    force = false,
   } = options;
 
   const log = verbose ? console.log.bind(console) : () => {};
@@ -42,6 +45,10 @@ export async function push(options: PushOptions): Promise<void> {
 
   console.log(`Found ${inventory.length} sessions locally`);
 
+  if (force) {
+    console.log('Force mode: all sessions will be re-parsed regardless of hash');
+  }
+
   if (inventory.length === 0) {
     console.log('No sessions found to push');
     return;
@@ -52,11 +59,12 @@ export async function push(options: PushOptions): Promise<void> {
     machineId,
     hostname: getHostname(),
     inventory,
+    forceReparse: force,
   };
 
-  log(`Checking inventory with ${serverUrl}/sessions/inventory...`);
+  log(`Checking inventory with ${serverUrl}/api/sessions/inventory...`);
 
-  const inventoryResponse = await fetch(`${serverUrl}/sessions/inventory`, {
+  const inventoryResponse = await fetch(`${serverUrl}/api/sessions/inventory`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(inventoryPayload),
@@ -113,14 +121,15 @@ export async function push(options: PushOptions): Promise<void> {
     machineId,
     hostname: getHostname(),
     sessions,
+    forceReparse: force,
   };
 
   const totalSize = JSON.stringify(payload).length;
   console.log(
-    `Pushing ${sessions.length} sessions (${Math.round(totalSize / 1024)}KB) to ${serverUrl}/sessions/push...`
+    `Pushing ${sessions.length} sessions (${Math.round(totalSize / 1024)}KB) to ${serverUrl}/api/sessions/push...`
   );
 
-  const response = await fetch(`${serverUrl}/sessions/push`, {
+  const response = await fetch(`${serverUrl}/api/sessions/push`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),

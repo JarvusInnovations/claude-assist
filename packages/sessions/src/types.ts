@@ -136,6 +136,8 @@ export interface PushPayload {
   machineId: string;
   hostname?: string;
   sessions: SessionPushData[];
+  /** Force re-parsing of sessions even if hash matches (for parser upgrades) */
+  forceReparse?: boolean;
 }
 
 export interface SessionPushData {
@@ -219,6 +221,8 @@ export interface InventoryPayload {
   machineId: string;
   hostname?: string;
   inventory: SessionInventoryItem[];
+  /** Force re-parsing of sessions even if hash matches (for parser upgrades) */
+  forceReparse?: boolean;
 }
 
 /**
