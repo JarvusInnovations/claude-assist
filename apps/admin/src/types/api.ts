@@ -199,3 +199,20 @@ export interface HealthStatus {
   status: "ok" | "error";
   timestamp: string;
 }
+
+// ============================================
+// Bulk Action Types
+// ============================================
+
+export interface BulkActionPayload {
+  emailIds: number[];
+  action: string;
+}
+
+export interface BulkActionResponse {
+  success: boolean;
+  action: string;
+  count: number;
+  message: string;
+  error?: string;
+}

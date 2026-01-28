@@ -327,4 +327,28 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
         };
       });
     }
+
+    // ==========================================
+    // Bulk Actions
+    // ==========================================
+
+    // POST /google/emails/bulk-action - Process bulk email actions (placeholder)
+    fastify.post<{
+      Body: { emailIds: number[]; action: string };
+    }>('/google/emails/bulk-action', async (request) => {
+      const { emailIds, action } = request.body;
+
+      if (!Array.isArray(emailIds) || emailIds.length === 0) {
+        return { success: false, error: 'emailIds array required', count: 0 };
+      }
+
+      fastify.log.info({ emailIds, action }, 'Bulk action requested (no-op)');
+
+      return {
+        success: true,
+        action,
+        count: emailIds.length,
+        message: `Bulk action "${action}" received for ${emailIds.length} email(s) (no-op placeholder)`,
+      };
+    });
   };
