@@ -236,8 +236,8 @@ export function AccountDetailPage() {
             </div>
             <div>
               <p className="text-sm text-muted-foreground">OAuth Status</p>
-              <Badge variant={account.oauth_credentials ? "default" : "destructive"}>
-                {account.oauth_credentials ? "Connected" : "Not Connected"}
+              <Badge variant={account.has_credentials ? "default" : "destructive"}>
+                {account.has_credentials ? "Connected" : "Not Connected"}
               </Badge>
             </div>
           </div>

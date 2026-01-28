@@ -45,7 +45,7 @@ export const registerAccountRoutes: FastifyPluginAsync<AccountRoutesConfig> =
     fastify.get('/google/accounts', async () => {
       const accounts = await fastify.sql<GoogleAccount[]>`
         SELECT id, identifier, email, display_name, is_primary,
-               email_history_id IS NOT NULL as has_credentials,
+               oauth_credentials IS NOT NULL as has_credentials,
                created_at, email_last_sync_at
         FROM google.accounts
         ORDER BY is_primary DESC, created_at ASC

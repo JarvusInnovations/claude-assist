@@ -51,7 +51,7 @@ export function AccountsPage() {
             <Card key={account.id}>
               <CardHeader className="flex flex-row items-center justify-between space-y-0">
                 <CardTitle className="text-lg">{account.identifier}</CardTitle>
-                {account.oauth_credentials ? (
+                {account.has_credentials ? (
                   <CheckCircle className="h-5 w-5 text-green-500" />
                 ) : (
                   <XCircle className="h-5 w-5 text-red-500" />
@@ -67,7 +67,7 @@ export function AccountsPage() {
 
                 <div className="flex flex-wrap gap-1">
                   {account.is_primary && <Badge>Primary</Badge>}
-                  {account.oauth_credentials ? (
+                  {account.has_credentials ? (
                     <Badge variant="outline">Connected</Badge>
                   ) : (
                     <Badge variant="destructive">Not Connected</Badge>

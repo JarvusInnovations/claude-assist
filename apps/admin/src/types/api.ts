@@ -7,7 +7,7 @@ export interface GoogleAccount {
   identifier: string;
   email: string;
   display_name: string | null;
-  oauth_credentials: OAuthCredentials | null;
+  has_credentials: boolean;
   is_primary: boolean;
   created_at: string;
   settings_updated_at: string;
@@ -17,14 +17,6 @@ export interface GoogleAccount {
   email_triage_instructions: string | null;
   email_label_prefix: string;
   email_label_prefix_todo: string;
-}
-
-export interface OAuthCredentials {
-  access_token: string;
-  refresh_token: string;
-  token_type: string;
-  expiry_date: number;
-  scope: string;
 }
 
 export interface UserAlias {
