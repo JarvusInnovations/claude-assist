@@ -73,7 +73,7 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
         offset = '0',
       } = request.query;
 
-      const limitNum = Math.min(parseInt(limit, 10) || 50, 100);
+      const limitNum = Math.min(parseInt(limit, 10) || 50, 500);
       const offsetNum = parseInt(offset, 10) || 0;
       const daysNum = parseInt(days, 10) || 30;
 
