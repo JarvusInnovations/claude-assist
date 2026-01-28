@@ -79,10 +79,10 @@ export function SessionDetailPage() {
         </Button>
         <div className="flex-1 min-w-0">
           <h1 className="text-2xl font-semibold truncate">
-            {session.project_path?.split("/").pop() || "Session"}
+            {session.title || session.project_path?.split("/").pop() || "Session"}
           </h1>
           <p className="text-muted-foreground text-sm truncate">
-            {session.project_path}
+            {session.machine}:{session.project_path}
           </p>
         </div>
         {!session.outline && (

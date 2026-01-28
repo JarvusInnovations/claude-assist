@@ -222,7 +222,7 @@ export function SessionsPage() {
                           "Unknown"}
                       </Link>
                       <span className="text-xs text-muted-foreground truncate block">
-                        {session.project_path}
+                        {session.machine}:{session.project_path}
                       </span>
                     </TableCell>
                     <TableCell className="text-sm">
