@@ -162,7 +162,7 @@ export function SessionsPage() {
                 <SelectItem value="all">All machines</SelectItem>
                 {machines?.map((machine) => (
                   <SelectItem key={machine.id} value={machine.machine_id}>
-                    {machine.hostname || machine.machine_id}
+                    {machine.machine_id}
                   </SelectItem>
                 ))}
               </SelectContent>
