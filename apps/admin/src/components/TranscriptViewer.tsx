@@ -83,7 +83,7 @@ const MARKER_TO_TYPE: Record<string, TranscriptItemType> = {
  */
 function parseTranscript(transcript: string): TranscriptItem[] {
   const items: TranscriptItem[] = [];
-  const markerRegex = /^(\[[UATQ?>]\]) /gm;
+  const markerRegex = /^(\[[UAT?>]\]) /gm;
 
   // Find all marker positions
   const markers: { index: number; marker: string }[] = [];
