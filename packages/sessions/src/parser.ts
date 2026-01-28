@@ -36,6 +36,11 @@ const TOOL_OPERATIONS: Record<string, FileOperation | null> = {
 /**
  * Parse a JSONL transcript and extract structured data
  * Following the Kuato pattern: extract user messages, tools, files, tokens
+ *
+ * Note: Claude's transcript logs multiple messages per API response (streaming updates).
+ * Each message in a response chain has the same usage data. To avoid over-counting,
+ * we only count tokens from the first message in each chain (identified by parentUuid
+ * not being another message with usage data).
  */
 export function parseTranscript(
   sessionId: string,
@@ -61,56 +66,77 @@ export function parseTranscript(
   let cwd: string | null = null;
   let parseErrors = 0;
 
+  // First pass: collect UUIDs of messages that have usage data
+  // This allows us to deduplicate streaming messages in the second pass
+  const messagesWithUsage = new Set<string>();
+  const parsedMessages: TranscriptMessage[] = [];
+
   for (const line of lines) {
     if (!line.trim()) continue;
 
     try {
       const msg: TranscriptMessage = JSON.parse(line);
+      parsedMessages.push(msg);
 
-      // Track timestamps
-      if (msg.timestamp) {
-        const ts = new Date(msg.timestamp);
-        if (!startedAt || ts < startedAt) startedAt = ts;
-        if (!endedAt || ts > endedAt) endedAt = ts;
+      // Track UUIDs of messages with usage data
+      if (msg.type === 'assistant' && msg.message?.usage && msg.uuid) {
+        messagesWithUsage.add(msg.uuid);
       }
+    } catch {
+      parseErrors++;
+    }
+  }
 
-      // Track metadata from first message
-      if (msg.gitBranch && !gitBranch) {
-        gitBranch = msg.gitBranch;
+  // Second pass: process messages, deduplicating token counts
+  for (const msg of parsedMessages) {
+    // Track timestamps
+    if (msg.timestamp) {
+      const ts = new Date(msg.timestamp);
+      if (!startedAt || ts < startedAt) startedAt = ts;
+      if (!endedAt || ts > endedAt) endedAt = ts;
+    }
+
+    // Track metadata from first message
+    if (msg.gitBranch && !gitBranch) {
+      gitBranch = msg.gitBranch;
+    }
+    if (msg.version && !claudeVersion) {
+      claudeVersion = msg.version;
+    }
+    if (msg.cwd && !cwd) {
+      cwd = msg.cwd;
+    }
+
+    // Skip queue operations
+    if (msg.type === 'queue-operation') continue;
+
+    messageCount++;
+
+    // Extract user messages
+    if (msg.type === 'user' && msg.message) {
+      const text = extractTextContent(msg.message.content);
+      if (text) {
+        userMessages.push(text);
       }
-      if (msg.version && !claudeVersion) {
-        claudeVersion = msg.version;
-      }
-      if (msg.cwd && !cwd) {
-        cwd = msg.cwd;
-      }
+    }
 
-      // Skip queue operations
-      if (msg.type === 'queue-operation') continue;
-
-      messageCount++;
-
-      // Extract user messages
-      if (msg.type === 'user' && msg.message) {
-        const text = extractTextContent(msg.message.content);
-        if (text) {
-          userMessages.push(text);
+    // Extract tools and files from assistant messages
+    if (msg.type === 'assistant' && msg.message) {
+      // Track model usage
+      const model = msg.message.model;
+      if (model) {
+        modelsUsed.add(model);
+        if (!modelTokens[model]) {
+          modelTokens[model] = { input: 0, output: 0, cacheRead: 0 };
         }
       }
 
-      // Extract tools and files from assistant messages
-      if (msg.type === 'assistant' && msg.message) {
-        // Track model usage
-        const model = msg.message.model;
-        if (model) {
-          modelsUsed.add(model);
-          if (!modelTokens[model]) {
-            modelTokens[model] = { input: 0, output: 0, cacheRead: 0 };
-          }
-        }
+      // Track token usage, but only from first message in each response chain
+      // A message is "first in chain" if its parentUuid is NOT another message with usage
+      if (msg.message.usage) {
+        const isFirstInChain = !msg.parentUuid || !messagesWithUsage.has(msg.parentUuid);
 
-        // Track token usage (aggregate and per-model)
-        if (msg.message.usage) {
+        if (isFirstInChain) {
           const usage = msg.message.usage;
           inputTokens += usage.input_tokens ?? 0;
           outputTokens += usage.output_tokens ?? 0;
@@ -123,27 +149,23 @@ export function parseTranscript(
             modelTokens[model]!.cacheRead += usage.cache_read_input_tokens ?? 0;
           }
         }
+      }
 
-        // Extract tool uses
-        const tools = extractToolUses(msg.message.content);
-        for (const tool of tools) {
-          toolsUsed.add(tool.name);
+      // Extract tool uses
+      const tools = extractToolUses(msg.message.content);
+      for (const tool of tools) {
+        toolsUsed.add(tool.name);
 
-          // Extract file paths and classify by operation type
-          const fileTouch = extractFileTouch(tool);
-          if (fileTouch) {
-            if (fileTouch.operation === 'read') {
-              filesRead.add(fileTouch.path);
-            } else {
-              filesWritten.add(fileTouch.path);
-            }
+        // Extract file paths and classify by operation type
+        const fileTouch = extractFileTouch(tool);
+        if (fileTouch) {
+          if (fileTouch.operation === 'read') {
+            filesRead.add(fileTouch.path);
+          } else {
+            filesWritten.add(fileTouch.path);
           }
         }
       }
-    } catch {
-      // Track parse failures for debugging
-      parseErrors++;
-      continue;
     }
   }
 

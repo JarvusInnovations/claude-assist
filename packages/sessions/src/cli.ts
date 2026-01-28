@@ -14,6 +14,8 @@ export interface PushOptions {
   claudeDir?: string;
   dryRun?: boolean;
   verbose?: boolean;
+  /** Force re-parsing of all sessions even if hash matches (for parser upgrades) */
+  force?: boolean;
 }
 
 /**
@@ -26,6 +28,7 @@ export async function push(options: PushOptions): Promise<void> {
     claudeDir,
     dryRun = false,
     verbose = false,
+    force = false,
   } = options;
 
   const log = verbose ? console.log.bind(console) : () => {};
@@ -42,6 +45,10 @@ export async function push(options: PushOptions): Promise<void> {
 
   console.log(`Found ${inventory.length} sessions locally`);
 
+  if (force) {
+    console.log('Force mode: all sessions will be re-parsed regardless of hash');
+  }
+
   if (inventory.length === 0) {
     console.log('No sessions found to push');
     return;
@@ -52,6 +59,7 @@ export async function push(options: PushOptions): Promise<void> {
     machineId,
     hostname: getHostname(),
     inventory,
+    forceReparse: force,
   };
 
   log(`Checking inventory with ${serverUrl}/sessions/inventory...`);
@@ -113,6 +121,7 @@ export async function push(options: PushOptions): Promise<void> {
     machineId,
     hostname: getHostname(),
     sessions,
+    forceReparse: force,
   };
 
   const totalSize = JSON.stringify(payload).length;

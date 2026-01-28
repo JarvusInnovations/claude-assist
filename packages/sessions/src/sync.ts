@@ -42,8 +42,9 @@ export class SyncService {
 
   /**
    * Run a full sync for localhost
+   * @param forceReparse - If true, re-parse all sessions even if hash matches (for parser upgrades)
    */
-  async syncLocal(): Promise<SyncResult> {
+  async syncLocal(forceReparse = false): Promise<SyncResult> {
     const result: SyncResult = {
       sessionsScanned: 0,
       sessionsIngested: 0,
@@ -60,8 +61,10 @@ export class SyncService {
         true
       );
 
-      // Get known content hashes for this machine
-      const knownHashes = await this.getKnownHashes(machine.id);
+      // Get known content hashes for this machine (empty set if forcing reparse)
+      const knownHashes = forceReparse
+        ? new Set<string>()
+        : await this.getKnownHashes(machine.id);
 
       // Discover new/changed sessions (scans projects directory for all sessions)
       const discovered = await this.scanner.discoverAllSessions(knownHashes);
@@ -111,6 +114,8 @@ export class SyncService {
       errors: [],
     };
 
+    const forceReparse = payload.forceReparse ?? false;
+
     try {
       const machine = await this.ensureMachine(
         payload.machineId,
@@ -118,8 +123,10 @@ export class SyncService {
         false
       );
 
-      // Get known hashes to detect duplicates
-      const knownHashes = await this.getKnownHashes(machine.id);
+      // Get known hashes to detect duplicates (empty set if forcing reparse)
+      const knownHashes = forceReparse
+        ? new Set<string>()
+        : await this.getKnownHashes(machine.id);
 
       for (const sessionData of payload.sessions) {
         try {
@@ -128,7 +135,7 @@ export class SyncService {
             .update(sessionData.transcript)
             .digest('hex');
 
-          // Skip if already have this exact content
+          // Skip if already have this exact content (unless force reparse)
           if (knownHashes.has(transcriptHash)) {
             result.sessionsSkipped++;
             continue;
@@ -175,6 +182,24 @@ export class SyncService {
       payload.hostname ?? null,
       false
     );
+
+    const forceReparse = payload.forceReparse ?? false;
+
+    // If forcing reparse, return all session IDs as needed
+    if (forceReparse) {
+      this.log.info(
+        {
+          machineId: payload.machineId,
+          total: payload.inventory.length,
+        },
+        `Inventory processed with force reparse: all ${payload.inventory.length} sessions needed`
+      );
+
+      return {
+        neededSessionIds: payload.inventory.map((item) => item.sessionId),
+        upToDateCount: 0,
+      };
+    }
 
     const knownHashes = await this.getKnownHashes(machine.id);
 

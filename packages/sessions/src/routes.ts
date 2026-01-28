@@ -9,6 +9,27 @@ import type {
 } from './types.js';
 import { serializeTranscript } from './transcript.js';
 
+/**
+ * Parse model_tokens JSONB field, ensuring all nested values are integers.
+ * postgres.js may return JSONB as a string, and BIGINT values as strings.
+ */
+function parseModelTokens(
+  value: unknown
+): Record<string, { input: number; output: number; cacheRead: number }> {
+  if (!value) return {};
+  const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+  const result: Record<string, { input: number; output: number; cacheRead: number }> = {};
+  for (const [model, tokens] of Object.entries(parsed)) {
+    const t = tokens as { input?: unknown; output?: unknown; cacheRead?: unknown };
+    result[model] = {
+      input: parseInt(String(t.input ?? 0), 10) || 0,
+      output: parseInt(String(t.output ?? 0), 10) || 0,
+      cacheRead: parseInt(String(t.cacheRead ?? 0), 10) || 0,
+    };
+  }
+  return result;
+}
+
 export interface RoutesConfig {
   syncService: SyncService;
   outlineService: OutlineService | null;
@@ -57,7 +78,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
     const excludeEmpty = include_empty !== 'true';
 
     const daysNum = parseInt(days, 10) || 30;
-    const limitNum = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
+    const limitNum = Math.max(parseInt(limit, 10) || 20, 1);
     const offsetNum = Math.max(parseInt(offset, 10) || 0, 0);
 
     // Parse absolute date filters (ISO 8601)
@@ -207,15 +228,15 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       tools_used: session.tools_used,
       files_touched: session.files_touched,
       message_count: session.message_count,
-      input_tokens: session.input_tokens,
-      output_tokens: session.output_tokens,
-      cache_read_tokens: session.cache_read_tokens,
+      input_tokens: parseInt(String(session.input_tokens), 10) || 0,
+      output_tokens: parseInt(String(session.output_tokens), 10) || 0,
+      cache_read_tokens: parseInt(String(session.cache_read_tokens), 10) || 0,
       claude_version: session.claude_version,
       outline: session.outline,
       title: session.title,
       outline_hash: session.outline_hash,
       models_used: session.models_used,
-      model_tokens: session.model_tokens,
+      model_tokens: parseModelTokens(session.model_tokens),
     };
 
     if (withRawMessages) {
@@ -332,11 +353,24 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       LIMIT 10
     `;
 
+    const s = stats[0]!;
     return {
       period_days: daysNum,
-      ...stats[0],
+      total_sessions: s.total_sessions,
+      active_days: s.active_days,
+      avg_messages: s.avg_messages,
+      total_messages: s.total_messages,
+      total_input_tokens: parseInt(String(s.total_input_tokens), 10) || 0,
+      total_output_tokens: parseInt(String(s.total_output_tokens), 10) || 0,
+      unique_projects: s.unique_projects,
       top_tools: topTools,
-      top_models: topModels,
+      top_models: topModels.map((m) => ({
+        model: m.model,
+        session_count: m.session_count,
+        input_tokens: parseInt(String(m.input_tokens), 10) || 0,
+        output_tokens: parseInt(String(m.output_tokens), 10) || 0,
+        cache_read_tokens: parseInt(String(m.cache_read_tokens), 10) || 0,
+      })),
       sessions_per_machine: perMachine,
     };
   });
@@ -387,8 +421,12 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
   });
 
   // POST /sessions/sync - Manually trigger local sync
-  fastify.post('/sessions/sync', async () => {
-    const result = await syncService.syncLocal();
+  // Use ?force=true to re-parse all sessions even if hash matches (for parser upgrades)
+  fastify.post<{
+    Querystring: { force?: string };
+  }>('/sessions/sync', async (request) => {
+    const forceReparse = request.query.force === 'true';
+    const result = await syncService.syncLocal(forceReparse);
 
     // Queue outline generation for newly synced sessions
     if (outlineService && (result.sessionsIngested > 0 || result.sessionsUpdated > 0)) {
