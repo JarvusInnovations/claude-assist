@@ -175,8 +175,9 @@ function formatQuestionTool(tool: ToolUseBlock): string | null {
 
 /**
  * Serialize raw JSONL transcript to token-efficient format
- * Format: [U] user message, [A] assistant snippet, [T] tool + target
+ * Format: [U] user message, [A] assistant message, [T] tool + target
  *         [?] question with options, [>] user response to question
+ *         [S] skill loaded (skill name + path)
  *
  * This is the same format used for AI outline generation.
  */
@@ -218,17 +219,26 @@ export function serializeTranscript(rawTranscript: string): string {
         // Then handle text content (skip if only XML tags)
         const text = extractTextContent(msg.message.content);
         if (text && !isXmlOnlyContent(text)) {
-          output.push(`[U] ${text}`);
+          // Check if this is a skill injection
+          if (text.startsWith('Base directory for this skill:')) {
+            const match = text.match(/^Base directory for this skill: ([^\n]+)/);
+            if (match?.[1]) {
+              const skillPath = match[1];
+              const skillName = skillPath.split('/').pop() || 'unknown';
+              output.push(`[S] ${skillName} (${skillPath})`);
+            } else {
+              output.push(`[S] unknown`);
+            }
+          } else {
+            output.push(`[U] ${text}`);
+          }
         }
       }
 
       if (msg.type === 'assistant' && msg.message) {
-        // Extract brief text snippet (first ~280 chars)
         const text = extractTextContent(msg.message.content);
         if (text) {
-          const snippet =
-            text.length > 280 ? text.slice(0, 280) + '...' : text;
-          output.push(`[A] ${snippet}`);
+          output.push(`[A] ${text}`);
         }
 
         // Extract tool calls

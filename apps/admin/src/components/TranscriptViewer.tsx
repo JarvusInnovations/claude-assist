@@ -5,6 +5,7 @@ import {
   Terminal,
   CircleHelp,
   CornerDownRight,
+  Sparkles,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -14,7 +15,7 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
-type TranscriptItemType = "user" | "assistant" | "tool" | "question" | "response";
+type TranscriptItemType = "user" | "assistant" | "tool" | "question" | "response" | "skill";
 
 interface TranscriptItem {
   type: TranscriptItemType;
@@ -66,6 +67,13 @@ const ITEM_CONFIG: Record<
     textClass: "text-indigo-700 dark:text-indigo-200",
     borderClass: "border-l-indigo-400",
   },
+  skill: {
+    icon: Sparkles,
+    label: "Skill Loaded",
+    bgClass: "bg-pink-50 dark:bg-pink-950",
+    textClass: "text-pink-700 dark:text-pink-200",
+    borderClass: "border-l-pink-400",
+  },
 };
 
 const MARKER_TO_TYPE: Record<string, TranscriptItemType> = {
@@ -74,6 +82,7 @@ const MARKER_TO_TYPE: Record<string, TranscriptItemType> = {
   "[T]": "tool",
   "[?]": "question",
   "[>]": "response",
+  "[S]": "skill",
 };
 
 /**
@@ -83,7 +92,7 @@ const MARKER_TO_TYPE: Record<string, TranscriptItemType> = {
  */
 function parseTranscript(transcript: string): TranscriptItem[] {
   const items: TranscriptItem[] = [];
-  const markerRegex = /^(\[[UAT?>]\]) /gm;
+  const markerRegex = /^(\[[UAT?>S]\]) /gm;
 
   // Find all marker positions
   const markers: { index: number; marker: string }[] = [];
