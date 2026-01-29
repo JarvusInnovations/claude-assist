@@ -77,8 +77,11 @@ await fastify.register(
           minFileSize: fastify.config.SESSIONS_MIN_FILE_SIZE,
           anthropicApiKey: fastify.config.ANTHROPIC_API_KEY,
           outlineConcurrency: fastify.config.OUTLINE_CONCURRENCY,
-          disableLocalIngest: fastify.config.SESSIONS_DISABLE_LOCAL_INGEST,
+          disableLocalIngest:
+            fastify.config.DISABLE_SYNCS ||
+            fastify.config.SESSIONS_DISABLE_LOCAL_INGEST,
           disableGenerateOutlines:
+            fastify.config.DISABLE_SYNCS ||
             fastify.config.SESSIONS_DISABLE_GENERATE_OUTLINES,
         },
       });
@@ -105,8 +108,12 @@ await fastify.register(
             redirectUri: fastify.config.GOOGLE_REDIRECT_URI,
             anthropicApiKey: fastify.config.ANTHROPIC_API_KEY,
             triageConcurrency: fastify.config.TRIAGE_CONCURRENCY,
-            disableEmailSync: fastify.config.GOOGLE_DISABLE_EMAIL_SYNC,
-            disableEmailTriage: fastify.config.GOOGLE_DISABLE_EMAIL_TRIAGE,
+            disableEmailSync:
+              fastify.config.DISABLE_SYNCS ||
+              fastify.config.GOOGLE_DISABLE_EMAIL_SYNC,
+            disableEmailTriage:
+              fastify.config.DISABLE_SYNCS ||
+              fastify.config.GOOGLE_DISABLE_EMAIL_TRIAGE,
           },
         });
       }

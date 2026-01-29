@@ -105,7 +105,9 @@ See `apps/server/.env.example` for available configuration. Key optional feature
 
 - `ANTHROPIC_API_KEY` - Enables AI-generated session outlines and email triage
 - `SESSIONS_ORIGINAL_CLAUDE_DIR` - Docker path translation
+- `DISABLE_SYNCS` - Master override to disable all sync tasks
 - `SESSIONS_DISABLE_LOCAL_INGEST` - Disable filesystem scanning
+- `SESSIONS_DISABLE_GENERATE_OUTLINES` - Disable AI outline generation
 - `GOOGLE_DISABLE_EMAIL_SYNC` - Disable Gmail sync
 - `GOOGLE_DISABLE_EMAIL_TRIAGE` - Disable AI email triage
 

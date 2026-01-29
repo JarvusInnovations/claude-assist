@@ -32,6 +32,9 @@ const schema = {
     ENABLE_SESSIONS: { type: 'boolean', default: true },
     ENABLE_GOOGLE: { type: 'boolean', default: true },
 
+    // Master sync disable (overrides all individual sync disable flags)
+    DISABLE_SYNCS: { type: 'boolean', default: false },
+
     // Sessions module
     SESSIONS_ORIGINAL_CLAUDE_DIR: { type: 'string' },
     SESSIONS_MIN_FILE_SIZE: { type: 'number', default: 500 },
@@ -74,6 +77,9 @@ declare module 'fastify' {
       // Module enablement
       ENABLE_SESSIONS: boolean;
       ENABLE_GOOGLE: boolean;
+
+      // Master sync disable
+      DISABLE_SYNCS: boolean;
 
       // Sessions module
       SESSIONS_ORIGINAL_CLAUDE_DIR?: string;
