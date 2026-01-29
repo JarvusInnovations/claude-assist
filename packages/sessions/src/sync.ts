@@ -45,6 +45,18 @@ export class SyncService {
    * @param forceReparse - If true, re-parse all sessions even if hash matches (for parser upgrades)
    */
   async syncLocal(forceReparse = false): Promise<SyncResult> {
+    // Check if local ingest is disabled
+    if (process.env.SESSIONS_DISABLE_LOCAL_INGEST === 'true') {
+      this.log.info('Local session ingest disabled via SESSIONS_DISABLE_LOCAL_INGEST');
+      return {
+        sessionsScanned: 0,
+        sessionsIngested: 0,
+        sessionsUpdated: 0,
+        sessionsSkipped: 0,
+        errors: [],
+      };
+    }
+
     const result: SyncResult = {
       sessionsScanned: 0,
       sessionsIngested: 0,

@@ -108,6 +108,18 @@ export class GmailSyncService {
    * Skips if sync already in progress for this account
    */
   async syncFull(accountId: number): Promise<SyncResult> {
+    // Check if sync is disabled
+    if (process.env.GOOGLE_DISABLE_EMAIL_SYNC === 'true') {
+      this.log.info('Gmail sync disabled via GOOGLE_DISABLE_EMAIL_SYNC');
+      return {
+        messagesScanned: 0,
+        messagesIngested: 0,
+        messagesUpdated: 0,
+        messagesSkipped: 0,
+        errors: [],
+      };
+    }
+
     // Skip if sync already in progress for this account
     if (this.activeSyncs.has(accountId)) {
       this.log.info({ accountId }, 'Skipping full sync - already in progress');
@@ -224,6 +236,18 @@ export class GmailSyncService {
    * Skips if sync already in progress for this account
    */
   async syncIncremental(accountId: number): Promise<SyncResult> {
+    // Check if sync is disabled
+    if (process.env.GOOGLE_DISABLE_EMAIL_SYNC === 'true') {
+      this.log.info('Gmail sync disabled via GOOGLE_DISABLE_EMAIL_SYNC');
+      return {
+        messagesScanned: 0,
+        messagesIngested: 0,
+        messagesUpdated: 0,
+        messagesSkipped: 0,
+        errors: [],
+      };
+    }
+
     // Skip if sync already in progress for this account
     if (this.activeSyncs.has(accountId)) {
       this.log.info({ accountId }, 'Skipping incremental sync - already in progress');

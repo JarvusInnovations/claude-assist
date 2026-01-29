@@ -256,6 +256,11 @@ export class TriageService {
    * Skips accounts that are already triaging
    */
   async triageBatch(emailIds: number[]): Promise<TriageResult[]> {
+    if (process.env.GOOGLE_DISABLE_EMAIL_TRIAGE === 'true') {
+      this.log.info('Email triage disabled via GOOGLE_DISABLE_EMAIL_TRIAGE');
+      return [];
+    }
+
     if (emailIds.length === 0) {
       return [];
     }
@@ -330,6 +335,11 @@ export class TriageService {
    * Triage a single email
    */
   async triageEmail(emailId: number): Promise<TriageResult> {
+    if (process.env.GOOGLE_DISABLE_EMAIL_TRIAGE === 'true') {
+      this.log.info('Email triage disabled via GOOGLE_DISABLE_EMAIL_TRIAGE');
+      return { emailId, success: false, error: 'Triage disabled' };
+    }
+
     try {
       const email = await this.getEmailWithMetadata(emailId);
       if (!email) {

@@ -75,35 +75,68 @@ export default createPlugin('google', async (fastify: FastifyInstance, _options:
   await fastify.register(registerAccountRoutes, { authService, syncService, triageService });
   await fastify.register(registerEmailRoutes, { syncService, triageService });
 
-  // Register scheduled tasks
-  fastify.scheduler.register({
-    name: 'google:sync',
-    schedule: '*/5 * * * *', // Every 5 minutes
-    runOnStartup: true,
-    handler: async () => {
-      const accounts = await fastify.sql<{ id: number }[]>`
-        SELECT id FROM google.accounts
-        WHERE oauth_credentials IS NOT NULL
-      `;
+  // Register scheduled tasks (unless disabled)
+  if (process.env.GOOGLE_DISABLE_EMAIL_SYNC !== 'true') {
+    fastify.scheduler.register({
+      name: 'google:sync',
+      schedule: '*/5 * * * *', // Every 5 minutes
+      runOnStartup: true,
+      handler: async () => {
+        const accounts = await fastify.sql<{ id: number }[]>`
+          SELECT id FROM google.accounts
+          WHERE oauth_credentials IS NOT NULL
+        `;
 
-      for (const account of accounts) {
-        try {
-          const result = await syncService.syncIncremental(account.id);
-          fastify.log.info(
-            { accountId: account.id, result },
-            'Gmail sync complete'
-          );
-        } catch (error) {
-          fastify.log.error(
-            { accountId: account.id, error },
-            'Gmail sync failed'
-          );
+        for (const account of accounts) {
+          try {
+            const result = await syncService.syncIncremental(account.id);
+            fastify.log.info(
+              { accountId: account.id, result },
+              'Gmail sync complete'
+            );
+          } catch (error) {
+            fastify.log.error(
+              { accountId: account.id, error },
+              'Gmail sync failed'
+            );
+          }
         }
-      }
-    },
-  });
+      },
+    });
 
-  if (triageService) {
+    fastify.scheduler.register({
+      name: 'google:sync-full',
+      schedule: '0 4 * * *', // Daily at 4 AM
+      runOnStartup: false,
+      handler: async () => {
+        const accounts = await fastify.sql<{ id: number }[]>`
+          SELECT id FROM google.accounts
+          WHERE oauth_credentials IS NOT NULL
+        `;
+
+        for (const account of accounts) {
+          try {
+            const result = await syncService.syncFull(account.id);
+            fastify.log.info(
+              { accountId: account.id, result },
+              'Gmail full sync complete'
+            );
+          } catch (error) {
+            fastify.log.error(
+              { accountId: account.id, error },
+              'Gmail full sync failed'
+            );
+          }
+        }
+      },
+    });
+
+    fastify.log.info('Gmail sync scheduled');
+  } else {
+    fastify.log.info('Gmail sync disabled via GOOGLE_DISABLE_EMAIL_SYNC');
+  }
+
+  if (triageService && process.env.GOOGLE_DISABLE_EMAIL_TRIAGE !== 'true') {
     fastify.scheduler.register({
       name: 'google:triage-pending',
       schedule: '*/5 * * * *', // Every 5 minutes
@@ -127,33 +160,6 @@ export default createPlugin('google', async (fastify: FastifyInstance, _options:
       },
     });
   }
-
-  fastify.scheduler.register({
-    name: 'google:sync-full',
-    schedule: '0 4 * * *', // Daily at 4 AM
-    runOnStartup: false,
-    handler: async () => {
-      const accounts = await fastify.sql<{ id: number }[]>`
-        SELECT id FROM google.accounts
-        WHERE oauth_credentials IS NOT NULL
-      `;
-
-      for (const account of accounts) {
-        try {
-          const result = await syncService.syncFull(account.id);
-          fastify.log.info(
-            { accountId: account.id, result },
-            'Gmail full sync complete'
-          );
-        } catch (error) {
-          fastify.log.error(
-            { accountId: account.id, error },
-            'Gmail full sync failed'
-          );
-        }
-      }
-    },
-  });
 });
 
 // Re-export types for external use
