@@ -51,32 +51,40 @@ export default createPlugin('sessions', async (fastify, options) => {
   // Register API routes
   await fastify.register(registerRoutes, { syncService, outlineService });
 
-  // Register scheduled sync task for localhost
-  // Run every 5 minutes, also on startup
-  fastify.scheduler.register({
-    name: 'sessions:sync-local',
-    schedule: '*/5 * * * *',
-    runOnStartup: true,
-    handler: async () => {
-      fastify.log.info('Running scheduled local session sync');
-      const result = await syncService.syncLocal();
-      fastify.log.info(
-        { result },
-        `Scheduled sync: ${result.sessionsIngested} new, ${result.sessionsUpdated} updated`
-      );
+  // Register scheduled sync task for localhost (unless disabled)
+  if (process.env.SESSIONS_DISABLE_LOCAL_INGEST !== 'true') {
+    fastify.scheduler.register({
+      name: 'sessions:sync-local',
+      schedule: '*/5 * * * *',
+      runOnStartup: true,
+      handler: async () => {
+        fastify.log.info('Running scheduled local session sync');
+        const result = await syncService.syncLocal();
+        fastify.log.info(
+          { result },
+          `Scheduled sync: ${result.sessionsIngested} new, ${result.sessionsUpdated} updated`
+        );
 
-      // Queue outline generation for newly ingested/updated sessions (async)
-      if (
-        outlineService &&
-        (result.sessionsIngested > 0 || result.sessionsUpdated > 0)
-      ) {
-        outlineService.queueOutlineGeneration();
-      }
-    },
-  });
+        // Queue outline generation for newly ingested/updated sessions (async)
+        if (
+          outlineService &&
+          (result.sessionsIngested > 0 || result.sessionsUpdated > 0)
+        ) {
+          outlineService.queueOutlineGeneration();
+        }
+      },
+    });
+    fastify.log.info(
+      'Sessions plugin loaded with local sync scheduled every 5 minutes'
+    );
+  } else {
+    fastify.log.info(
+      'Sessions plugin loaded (local sync disabled via SESSIONS_DISABLE_LOCAL_INGEST)'
+    );
+  }
 
   // Register hourly outline generation task (catch-all for any missed sessions)
-  if (outlineService) {
+  if (outlineService && process.env.SESSIONS_DISABLE_GENERATE_OUTLINES !== 'true') {
     fastify.scheduler.register({
       name: 'sessions:generate-outlines',
       schedule: '0 * * * *', // Every hour at :00
@@ -87,10 +95,6 @@ export default createPlugin('sessions', async (fastify, options) => {
       },
     });
   }
-
-  fastify.log.info(
-    'Sessions plugin loaded with local sync scheduled every 5 minutes'
-  );
 });
 
 // Re-export types for external use

@@ -173,6 +173,11 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
    * Returns immediately, processing happens in background
    */
   async queueOutlineGeneration(sessionIds?: string[]): Promise<void> {
+    if (process.env.SESSIONS_DISABLE_GENERATE_OUTLINES === 'true') {
+      this.log.info('Outline generation disabled via SESSIONS_DISABLE_GENERATE_OUTLINES');
+      return;
+    }
+
     if (this.progress.inProgress) {
       this.log.info('Outline generation already in progress, skipping');
       return;
@@ -279,6 +284,16 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
    * Generate outlines synchronously (blocking, for manual triggers)
    */
   async generateOutlinesSync(sessionIds?: string[]): Promise<OutlineResult> {
+    if (process.env.SESSIONS_DISABLE_GENERATE_OUTLINES === 'true') {
+      this.log.info('Outline generation disabled via SESSIONS_DISABLE_GENERATE_OUTLINES');
+      return {
+        sessionsProcessed: 0,
+        outlinesGenerated: 0,
+        skipped: 0,
+        errors: [],
+      };
+    }
+
     const result: OutlineResult = {
       sessionsProcessed: 0,
       outlinesGenerated: 0,

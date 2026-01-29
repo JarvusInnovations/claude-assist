@@ -54,19 +54,23 @@ export function createPlugin(
 
     fastify.log.info(`Loading plugin: ${name}`);
 
-    // Run migrations if migrations directory is provided
+    // Run migrations if migrations directory is provided (unless disabled)
     if (options.migrationsDir && fastify.sql) {
-      const { runMigrations } = await import('./migrations.js');
-      const applied = await runMigrations(fastify.sql, {
-        migrationsDir: options.migrationsDir,
-        schema: options.schema,
-      });
+      if (process.env.DISABLE_MIGRATIONS === 'true') {
+        fastify.log.info(`Skipping migrations for ${name} (DISABLE_MIGRATIONS=true)`);
+      } else {
+        const { runMigrations } = await import('./migrations.js');
+        const applied = await runMigrations(fastify.sql, {
+          migrationsDir: options.migrationsDir,
+          schema: options.schema,
+        });
 
-      if (applied.length > 0) {
-        fastify.log.info(
-          { migrations: applied },
-          `Applied ${applied.length} migrations for ${name}`
-        );
+        if (applied.length > 0) {
+          fastify.log.info(
+            { migrations: applied },
+            `Applied ${applied.length} migrations for ${name}`
+          );
+        }
       }
     }
 
