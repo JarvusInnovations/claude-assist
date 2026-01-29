@@ -159,6 +159,8 @@ export default createPlugin('google', async (fastify: FastifyInstance, _options:
         }
       },
     });
+  } else if (triageService) {
+    fastify.log.info('Email triage disabled via GOOGLE_DISABLE_EMAIL_TRIAGE');
   }
 });
 
