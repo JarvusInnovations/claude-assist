@@ -20,6 +20,50 @@ export interface PluginOptions {
   migrationsDir?: string;
   /** Database schema to use (default: plugin name) */
   schema?: string;
+  /** Skip running migrations on startup */
+  disableMigrations?: boolean;
+  /** Configuration for sessions plugin */
+  sessionsConfig?: SessionsPluginConfig;
+  /** Configuration for google plugin */
+  googleConfig?: GooglePluginConfig;
+}
+
+/**
+ * Configuration for the sessions plugin
+ */
+export interface SessionsPluginConfig {
+  /** Original Claude directory path (for Docker path translation) */
+  originalClaudeDir?: string;
+  /** Minimum file size to process */
+  minFileSize?: number;
+  /** Anthropic API key for AI features */
+  anthropicApiKey?: string;
+  /** Concurrency for outline generation */
+  outlineConcurrency?: number;
+  /** Disable local filesystem scanning */
+  disableLocalIngest?: boolean;
+  /** Disable AI outline generation */
+  disableGenerateOutlines?: boolean;
+}
+
+/**
+ * Configuration for the google plugin
+ */
+export interface GooglePluginConfig {
+  /** Google OAuth client ID */
+  clientId: string;
+  /** Google OAuth client secret */
+  clientSecret: string;
+  /** OAuth redirect URI */
+  redirectUri: string;
+  /** Anthropic API key for AI triage */
+  anthropicApiKey?: string;
+  /** Concurrency for email triage */
+  triageConcurrency?: number;
+  /** Disable Gmail sync */
+  disableEmailSync?: boolean;
+  /** Disable AI email triage */
+  disableEmailTriage?: boolean;
 }
 
 export interface ModulePlugin {
@@ -50,14 +94,17 @@ export function createPlugin(
       name,
       schema: opts.schema ?? name,
       migrationsDir: opts.migrationsDir,
+      disableMigrations: opts.disableMigrations,
+      sessionsConfig: opts.sessionsConfig,
+      googleConfig: opts.googleConfig,
     };
 
     fastify.log.info(`Loading plugin: ${name}`);
 
     // Run migrations if migrations directory is provided (unless disabled)
     if (options.migrationsDir && fastify.sql) {
-      if (process.env.DISABLE_MIGRATIONS === 'true') {
-        fastify.log.info(`Skipping migrations for ${name} (DISABLE_MIGRATIONS=true)`);
+      if (options.disableMigrations) {
+        fastify.log.info(`Skipping migrations for ${name} (disableMigrations=true)`);
       } else {
         const { runMigrations } = await import('./migrations.js');
         const applied = await runMigrations(fastify.sql, {

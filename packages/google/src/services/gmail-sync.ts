@@ -44,6 +44,11 @@ export interface SyncStatus {
   fetched: number | null;     // Messages fetched in phase 2
 }
 
+export interface GmailSyncServiceConfig {
+  /** Disable email sync */
+  disableEmailSync?: boolean;
+}
+
 interface ActiveSyncState {
   startedAt: Date;
   type: 'full' | 'incremental';
@@ -57,15 +62,18 @@ export class GmailSyncService {
   private log: FastifyBaseLogger;
   private authService: GmailAuthService;
   private activeSyncs = new Map<number, ActiveSyncState>();
+  private disableEmailSync: boolean;
 
   constructor(
     sql: postgres.Sql,
     log: FastifyBaseLogger,
-    authService: GmailAuthService
+    authService: GmailAuthService,
+    config: GmailSyncServiceConfig = {}
   ) {
     this.sql = sql;
     this.log = log;
     this.authService = authService;
+    this.disableEmailSync = config.disableEmailSync ?? false;
   }
 
   /**
@@ -109,8 +117,8 @@ export class GmailSyncService {
    */
   async syncFull(accountId: number): Promise<SyncResult> {
     // Check if sync is disabled
-    if (process.env.GOOGLE_DISABLE_EMAIL_SYNC === 'true') {
-      this.log.info('Gmail sync disabled via GOOGLE_DISABLE_EMAIL_SYNC');
+    if (this.disableEmailSync) {
+      this.log.info('Gmail sync disabled via disableEmailSync config');
       return {
         messagesScanned: 0,
         messagesIngested: 0,
@@ -237,8 +245,8 @@ export class GmailSyncService {
    */
   async syncIncremental(accountId: number): Promise<SyncResult> {
     // Check if sync is disabled
-    if (process.env.GOOGLE_DISABLE_EMAIL_SYNC === 'true') {
-      this.log.info('Gmail sync disabled via GOOGLE_DISABLE_EMAIL_SYNC');
+    if (this.disableEmailSync) {
+      this.log.info('Gmail sync disabled via disableEmailSync config');
       return {
         messagesScanned: 0,
         messagesIngested: 0,

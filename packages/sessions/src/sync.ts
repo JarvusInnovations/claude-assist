@@ -16,6 +16,8 @@ import type {
 
 export interface SyncServiceConfig extends ScannerConfig {
   machineId?: string;
+  /** Disable local filesystem scanning */
+  disableLocalIngest?: boolean;
 }
 
 /**
@@ -27,6 +29,7 @@ export class SyncService {
   private scanner: SessionScanner;
   private machineId: string;
   private hostname: string;
+  private disableLocalIngest: boolean;
 
   constructor(
     sql: postgres.Sql,
@@ -38,6 +41,7 @@ export class SyncService {
     this.scanner = new SessionScanner(config);
     this.machineId = config.machineId ?? 'localhost';
     this.hostname = getHostname();
+    this.disableLocalIngest = config.disableLocalIngest ?? false;
   }
 
   /**
@@ -46,8 +50,8 @@ export class SyncService {
    */
   async syncLocal(forceReparse = false): Promise<SyncResult> {
     // Check if local ingest is disabled
-    if (process.env.SESSIONS_DISABLE_LOCAL_INGEST === 'true') {
-      this.log.info('Local session ingest disabled via SESSIONS_DISABLE_LOCAL_INGEST');
+    if (this.disableLocalIngest) {
+      this.log.info('Local session ingest disabled via disableLocalIngest config');
       return {
         sessionsScanned: 0,
         sessionsIngested: 0,

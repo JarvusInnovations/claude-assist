@@ -6,16 +6,17 @@ import sessionsPlugin from '@jarvus/claude-assist-sessions';
 import googlePlugin from '@jarvus/claude-assist-google';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { env } from './env.js';
+import envPlugin from './plugins/env.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Create Fastify instance
+// Note: LOG_LEVEL and NODE_ENV read from process.env here since env plugin isn't loaded yet
 const fastify = Fastify({
   logger: {
-    level: env.LOG_LEVEL,
+    level: process.env.LOG_LEVEL || 'info',
     transport:
-      env.NODE_ENV === 'development'
+      process.env.NODE_ENV === 'development'
         ? {
             target: 'pino-pretty',
             options: {
@@ -29,8 +30,11 @@ const fastify = Fastify({
   bodyLimit: 500 * 1024 * 1024,
 });
 
-// Create postgres connection
-const sql = postgres(env.DATABASE_URL);
+// Register env plugin FIRST to validate and load configuration
+await fastify.register(envPlugin);
+
+// Create postgres connection using validated config
+const sql = postgres(fastify.config.DATABASE_URL);
 
 // Decorate Fastify instance
 fastify.decorate('sql', sql);
@@ -63,17 +67,31 @@ await fastify.register(
     );
 
     // Register plugins conditionally based on environment
-    if (env.ENABLE_SESSIONS !== 'false') {
+    if (fastify.config.ENABLE_SESSIONS !== 'false') {
       api.log.info('Sessions module enabled');
       await api.register(sessionsPlugin, {
         migrationsDir: join(__dirname, '../../../packages/sessions/migrations'),
+        disableMigrations: fastify.config.DISABLE_MIGRATIONS === 'true',
+        sessionsConfig: {
+          originalClaudeDir: fastify.config.SESSIONS_ORIGINAL_CLAUDE_DIR,
+          minFileSize: fastify.config.SESSIONS_MIN_FILE_SIZE,
+          anthropicApiKey: fastify.config.ANTHROPIC_API_KEY,
+          outlineConcurrency: fastify.config.OUTLINE_CONCURRENCY,
+          disableLocalIngest:
+            fastify.config.SESSIONS_DISABLE_LOCAL_INGEST === 'true',
+          disableGenerateOutlines:
+            fastify.config.SESSIONS_DISABLE_GENERATE_OUTLINES === 'true',
+        },
       });
     } else {
       api.log.info('Sessions module disabled');
     }
 
-    if (env.ENABLE_GOOGLE !== 'false') {
-      if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) {
+    if (fastify.config.ENABLE_GOOGLE !== 'false') {
+      if (
+        !fastify.config.GOOGLE_CLIENT_ID ||
+        !fastify.config.GOOGLE_CLIENT_SECRET
+      ) {
         api.log.warn(
           'Google module enabled but GOOGLE_CLIENT_ID/SECRET not set - skipping'
         );
@@ -81,6 +99,18 @@ await fastify.register(
         api.log.info('Google module enabled');
         await api.register(googlePlugin, {
           migrationsDir: join(__dirname, '../../../packages/google/migrations'),
+          disableMigrations: fastify.config.DISABLE_MIGRATIONS === 'true',
+          googleConfig: {
+            clientId: fastify.config.GOOGLE_CLIENT_ID,
+            clientSecret: fastify.config.GOOGLE_CLIENT_SECRET,
+            redirectUri: fastify.config.GOOGLE_REDIRECT_URI,
+            anthropicApiKey: fastify.config.ANTHROPIC_API_KEY,
+            triageConcurrency: fastify.config.TRIAGE_CONCURRENCY,
+            disableEmailSync:
+              fastify.config.GOOGLE_DISABLE_EMAIL_SYNC === 'true',
+            disableEmailTriage:
+              fastify.config.GOOGLE_DISABLE_EMAIL_TRIAGE === 'true',
+          },
         });
       }
     } else {
@@ -119,8 +149,13 @@ process.on('SIGTERM', shutdown);
 // Start server
 const start = async () => {
   try {
-    await fastify.listen({ port: env.PORT, host: env.HOST });
-    fastify.log.info(`Server listening on http://${env.HOST}:${env.PORT}`);
+    await fastify.listen({
+      port: fastify.config.PORT,
+      host: fastify.config.HOST,
+    });
+    fastify.log.info(
+      `Server listening on http://${fastify.config.HOST}:${fastify.config.PORT}`
+    );
   } catch (err) {
     fastify.log.error(err);
     process.exit(1);
