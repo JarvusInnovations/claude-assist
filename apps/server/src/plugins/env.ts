@@ -26,17 +26,17 @@ const schema = {
 
     // Database
     DATABASE_URL: { type: 'string' },
-    DISABLE_MIGRATIONS: { type: 'string', default: 'false' },
+    DISABLE_MIGRATIONS: { type: 'boolean', default: false },
 
     // Module enablement
-    ENABLE_SESSIONS: { type: 'string', default: 'true' },
-    ENABLE_GOOGLE: { type: 'string', default: 'true' },
+    ENABLE_SESSIONS: { type: 'boolean', default: true },
+    ENABLE_GOOGLE: { type: 'boolean', default: true },
 
     // Sessions module
     SESSIONS_ORIGINAL_CLAUDE_DIR: { type: 'string' },
     SESSIONS_MIN_FILE_SIZE: { type: 'number', default: 500 },
-    SESSIONS_DISABLE_LOCAL_INGEST: { type: 'string', default: 'false' },
-    SESSIONS_DISABLE_GENERATE_OUTLINES: { type: 'string', default: 'false' },
+    SESSIONS_DISABLE_LOCAL_INGEST: { type: 'boolean', default: false },
+    SESSIONS_DISABLE_GENERATE_OUTLINES: { type: 'boolean', default: false },
 
     // AI Features (optional)
     ANTHROPIC_API_KEY: { type: 'string' },
@@ -50,8 +50,8 @@ const schema = {
       type: 'string',
       default: 'http://localhost:2529/google/auth/callback',
     },
-    GOOGLE_DISABLE_EMAIL_SYNC: { type: 'string', default: 'false' },
-    GOOGLE_DISABLE_EMAIL_TRIAGE: { type: 'string', default: 'false' },
+    GOOGLE_DISABLE_EMAIL_SYNC: { type: 'boolean', default: false },
+    GOOGLE_DISABLE_EMAIL_TRIAGE: { type: 'boolean', default: false },
   },
 } as const;
 
@@ -69,17 +69,17 @@ declare module 'fastify' {
 
       // Database
       DATABASE_URL: string;
-      DISABLE_MIGRATIONS: string;
+      DISABLE_MIGRATIONS: boolean;
 
       // Module enablement
-      ENABLE_SESSIONS: string;
-      ENABLE_GOOGLE: string;
+      ENABLE_SESSIONS: boolean;
+      ENABLE_GOOGLE: boolean;
 
       // Sessions module
       SESSIONS_ORIGINAL_CLAUDE_DIR?: string;
       SESSIONS_MIN_FILE_SIZE: number;
-      SESSIONS_DISABLE_LOCAL_INGEST: string;
-      SESSIONS_DISABLE_GENERATE_OUTLINES: string;
+      SESSIONS_DISABLE_LOCAL_INGEST: boolean;
+      SESSIONS_DISABLE_GENERATE_OUTLINES: boolean;
 
       // AI Features
       ANTHROPIC_API_KEY?: string;
@@ -90,8 +90,8 @@ declare module 'fastify' {
       GOOGLE_CLIENT_ID?: string;
       GOOGLE_CLIENT_SECRET?: string;
       GOOGLE_REDIRECT_URI: string;
-      GOOGLE_DISABLE_EMAIL_SYNC: string;
-      GOOGLE_DISABLE_EMAIL_TRIAGE: string;
+      GOOGLE_DISABLE_EMAIL_SYNC: boolean;
+      GOOGLE_DISABLE_EMAIL_TRIAGE: boolean;
     };
   }
 }
@@ -102,6 +102,12 @@ export default fp(
       confKey: 'config',
       schema,
       dotenv: true,
+      ajv: {
+        customOptions(ajvInstance) {
+          ajvInstance.opts.coerceTypes = true;
+          return ajvInstance;
+        },
+      },
     });
   },
   { name: 'env' }

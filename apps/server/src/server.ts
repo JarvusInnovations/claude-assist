@@ -67,27 +67,26 @@ await fastify.register(
     );
 
     // Register plugins conditionally based on environment
-    if (fastify.config.ENABLE_SESSIONS !== 'false') {
+    if (fastify.config.ENABLE_SESSIONS) {
       api.log.info('Sessions module enabled');
       await api.register(sessionsPlugin, {
         migrationsDir: join(__dirname, '../../../packages/sessions/migrations'),
-        disableMigrations: fastify.config.DISABLE_MIGRATIONS === 'true',
+        disableMigrations: fastify.config.DISABLE_MIGRATIONS,
         sessionsConfig: {
           originalClaudeDir: fastify.config.SESSIONS_ORIGINAL_CLAUDE_DIR,
           minFileSize: fastify.config.SESSIONS_MIN_FILE_SIZE,
           anthropicApiKey: fastify.config.ANTHROPIC_API_KEY,
           outlineConcurrency: fastify.config.OUTLINE_CONCURRENCY,
-          disableLocalIngest:
-            fastify.config.SESSIONS_DISABLE_LOCAL_INGEST === 'true',
+          disableLocalIngest: fastify.config.SESSIONS_DISABLE_LOCAL_INGEST,
           disableGenerateOutlines:
-            fastify.config.SESSIONS_DISABLE_GENERATE_OUTLINES === 'true',
+            fastify.config.SESSIONS_DISABLE_GENERATE_OUTLINES,
         },
       });
     } else {
       api.log.info('Sessions module disabled');
     }
 
-    if (fastify.config.ENABLE_GOOGLE !== 'false') {
+    if (fastify.config.ENABLE_GOOGLE) {
       if (
         !fastify.config.GOOGLE_CLIENT_ID ||
         !fastify.config.GOOGLE_CLIENT_SECRET
@@ -99,17 +98,15 @@ await fastify.register(
         api.log.info('Google module enabled');
         await api.register(googlePlugin, {
           migrationsDir: join(__dirname, '../../../packages/google/migrations'),
-          disableMigrations: fastify.config.DISABLE_MIGRATIONS === 'true',
+          disableMigrations: fastify.config.DISABLE_MIGRATIONS,
           googleConfig: {
             clientId: fastify.config.GOOGLE_CLIENT_ID,
             clientSecret: fastify.config.GOOGLE_CLIENT_SECRET,
             redirectUri: fastify.config.GOOGLE_REDIRECT_URI,
             anthropicApiKey: fastify.config.ANTHROPIC_API_KEY,
             triageConcurrency: fastify.config.TRIAGE_CONCURRENCY,
-            disableEmailSync:
-              fastify.config.GOOGLE_DISABLE_EMAIL_SYNC === 'true',
-            disableEmailTriage:
-              fastify.config.GOOGLE_DISABLE_EMAIL_TRIAGE === 'true',
+            disableEmailSync: fastify.config.GOOGLE_DISABLE_EMAIL_SYNC,
+            disableEmailTriage: fastify.config.GOOGLE_DISABLE_EMAIL_TRIAGE,
           },
         });
       }
