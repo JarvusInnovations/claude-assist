@@ -188,10 +188,16 @@ type AccountSettings = Pick<
 >;
 
 export interface TriageServiceConfig {
-  apiKey?: string;
+  /** Anthropic API key (required) */
+  apiKey: string;
+  /** Model to use (default: 'claude-3-5-haiku-latest') */
   model?: string;
+  /** Max tokens for response (default: 2048) */
   maxTokens?: number;
+  /** Concurrency for triage operations (default: 5) */
   concurrency?: number;
+  /** Disable email triage */
+  disableEmailTriage?: boolean;
 }
 
 export interface TriageStatus {
@@ -208,21 +214,21 @@ export class TriageService {
   private limit: ReturnType<typeof pLimit>;
   private model: string;
   private maxTokens: number;
+  private disableEmailTriage: boolean;
   private activeTriages = new Map<number, { startedAt: Date; total: number; processed: number }>();
 
   constructor(
     sql: postgres.Sql,
     log: FastifyBaseLogger,
-    config: TriageServiceConfig = {}
+    config: TriageServiceConfig
   ) {
     this.sql = sql;
     this.log = log;
-    this.client = new Anthropic({
-      apiKey: config.apiKey ?? process.env.ANTHROPIC_API_KEY,
-    });
+    this.client = new Anthropic({ apiKey: config.apiKey });
     this.limit = pLimit(config.concurrency ?? 5);
     this.model = config.model ?? 'claude-3-5-haiku-latest';
     this.maxTokens = config.maxTokens ?? 2048;
+    this.disableEmailTriage = config.disableEmailTriage ?? false;
   }
 
   /**
@@ -256,8 +262,8 @@ export class TriageService {
    * Skips accounts that are already triaging
    */
   async triageBatch(emailIds: number[]): Promise<TriageResult[]> {
-    if (process.env.GOOGLE_DISABLE_EMAIL_TRIAGE === 'true') {
-      this.log.info('Email triage disabled via GOOGLE_DISABLE_EMAIL_TRIAGE');
+    if (this.disableEmailTriage) {
+      this.log.info('Email triage disabled via disableEmailTriage config');
       return [];
     }
 
@@ -335,8 +341,8 @@ export class TriageService {
    * Triage a single email
    */
   async triageEmail(emailId: number): Promise<TriageResult> {
-    if (process.env.GOOGLE_DISABLE_EMAIL_TRIAGE === 'true') {
-      this.log.info('Email triage disabled via GOOGLE_DISABLE_EMAIL_TRIAGE');
+    if (this.disableEmailTriage) {
+      this.log.info('Email triage disabled via disableEmailTriage config');
       return { emailId, success: false, error: 'Triage disabled' };
     }
 

@@ -25,4 +25,6 @@ export {
   createPlugin,
   type PluginOptions,
   type ModulePlugin,
+  type SessionsPluginConfig,
+  type GooglePluginConfig,
 } from './plugin.js';

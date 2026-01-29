@@ -6,14 +6,7 @@
  * - Email sync with full body fetching
  * - AI-powered triage using multi-turn Haiku
  *
- * Required environment variables:
- * - GOOGLE_CLIENT_ID: OAuth client ID
- * - GOOGLE_CLIENT_SECRET: OAuth client secret
- *
- * Optional environment variables:
- * - GOOGLE_REDIRECT_URI: OAuth redirect URI (default: http://localhost:2529/google/auth/callback)
- * - TRIAGE_CONCURRENCY: Number of concurrent triage operations (default: 5)
- * - ANTHROPIC_API_KEY: Required for AI-powered triage
+ * Configuration is passed via googleConfig in plugin options.
  */
 
 import type { FastifyInstance } from 'fastify';
@@ -33,42 +26,36 @@ declare module 'fastify' {
   }
 }
 
-export default createPlugin('google', async (fastify: FastifyInstance, _options: PluginOptions) => {
-  // Read configuration from environment variables
-  const clientId = process.env.GOOGLE_CLIENT_ID;
-  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-  const redirectUri = process.env.GOOGLE_REDIRECT_URI || 'http://localhost:2529/google/auth/callback';
-  const triageConcurrency = parseInt(process.env.TRIAGE_CONCURRENCY || '5', 10);
+export default createPlugin('google', async (fastify: FastifyInstance, options: PluginOptions) => {
+  const config = options.googleConfig;
 
-  if (!clientId || !clientSecret) {
-    throw new Error('GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables are required');
+  if (!config?.clientId || !config?.clientSecret) {
+    throw new Error('googleConfig with clientId and clientSecret is required');
   }
 
   // Initialize Gmail Auth service
   const authService = new GmailAuthService(fastify.sql, fastify.log, {
-    clientId,
-    clientSecret,
-    redirectUri,
+    clientId: config.clientId,
+    clientSecret: config.clientSecret,
+    redirectUri: config.redirectUri,
   });
 
   // Initialize Gmail Sync service
-  const syncService = new GmailSyncService(
-    fastify.sql,
-    fastify.log,
-    authService
-  );
+  const syncService = new GmailSyncService(fastify.sql, fastify.log, authService, {
+    disableEmailSync: config.disableEmailSync,
+  });
 
-  // Initialize Triage service (optional - requires ANTHROPIC_API_KEY)
+  // Initialize Triage service (optional - requires anthropicApiKey)
   let triageService: TriageService | null = null;
-  if (process.env.ANTHROPIC_API_KEY) {
+  if (config.anthropicApiKey) {
     triageService = new TriageService(fastify.sql, fastify.log, {
-      concurrency: triageConcurrency,
+      apiKey: config.anthropicApiKey,
+      concurrency: config.triageConcurrency,
+      disableEmailTriage: config.disableEmailTriage,
     });
     fastify.log.info('Triage service enabled');
   } else {
-    fastify.log.warn(
-      'ANTHROPIC_API_KEY not set - email triage disabled'
-    );
+    fastify.log.warn('anthropicApiKey not set - email triage disabled');
   }
 
   // Register routes
@@ -76,7 +63,7 @@ export default createPlugin('google', async (fastify: FastifyInstance, _options:
   await fastify.register(registerEmailRoutes, { syncService, triageService });
 
   // Register scheduled tasks (unless disabled)
-  if (process.env.GOOGLE_DISABLE_EMAIL_SYNC !== 'true') {
+  if (!config.disableEmailSync) {
     fastify.scheduler.register({
       name: 'google:sync',
       schedule: '*/5 * * * *', // Every 5 minutes
@@ -133,10 +120,10 @@ export default createPlugin('google', async (fastify: FastifyInstance, _options:
 
     fastify.log.info('Gmail sync scheduled');
   } else {
-    fastify.log.info('Gmail sync disabled via GOOGLE_DISABLE_EMAIL_SYNC');
+    fastify.log.info('Gmail sync disabled via disableEmailSync config');
   }
 
-  if (triageService && process.env.GOOGLE_DISABLE_EMAIL_TRIAGE !== 'true') {
+  if (triageService && !config.disableEmailTriage) {
     fastify.scheduler.register({
       name: 'google:triage-pending',
       schedule: '*/5 * * * *', // Every 5 minutes
@@ -160,7 +147,7 @@ export default createPlugin('google', async (fastify: FastifyInstance, _options:
       },
     });
   } else if (triageService) {
-    fastify.log.info('Email triage disabled via GOOGLE_DISABLE_EMAIL_TRIAGE');
+    fastify.log.info('Email triage disabled via disableEmailTriage config');
   }
 });
 

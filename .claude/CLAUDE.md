@@ -82,12 +82,34 @@ Use conventional commits with scope:
 
 Co-author line: `Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>`
 
-## Environment
+## Environment Configuration
+
+**NEVER access `process.env` directly in packages.** All env vars are centralized in `apps/server/src/plugins/env.ts` with JSON Schema validation.
+
+In server.ts or plugins with fastify instance, use `fastify.config`:
+
+```typescript
+const apiKey = fastify.config.ANTHROPIC_API_KEY;
+```
+
+For packages, receive config via plugin options:
+
+```typescript
+export default createPlugin('mymodule', async (fastify, options) => {
+  const config = options.myModuleConfig;
+  // Use config.apiKey, config.concurrency, etc.
+});
+```
 
 See `apps/server/.env.example` for available configuration. Key optional features:
 
-- `ANTHROPIC_API_KEY` - Enables AI-generated session outlines
+- `ANTHROPIC_API_KEY` - Enables AI-generated session outlines and email triage
 - `SESSIONS_ORIGINAL_CLAUDE_DIR` - Docker path translation
+- `DISABLE_SYNCS` - Master override to disable all sync tasks
+- `SESSIONS_DISABLE_LOCAL_INGEST` - Disable filesystem scanning
+- `SESSIONS_DISABLE_GENERATE_OUTLINES` - Disable AI outline generation
+- `GOOGLE_DISABLE_EMAIL_SYNC` - Disable Gmail sync
+- `GOOGLE_DISABLE_EMAIL_TRIAGE` - Disable AI email triage
 
 ## Docker
 
@@ -150,13 +172,19 @@ function parseJsonField<T>(value: T | string | null): T | null {
 
 ### Optional Services
 
-Services requiring external API keys check env and gracefully degrade:
+Services requiring external API keys check config and gracefully degrade:
 
 ```typescript
 // Pattern: service is null if key missing, routes check before exposing
-const outlineService = process.env.ANTHROPIC_API_KEY
-  ? new OutlineService(config)
-  : null;
+const config = options.sessionsConfig ?? {};
+
+let outlineService: OutlineService | null = null;
+if (config.anthropicApiKey) {
+  outlineService = new OutlineService(fastify.sql, fastify.log, {
+    apiKey: config.anthropicApiKey,
+    concurrency: config.outlineConcurrency,
+  });
+}
 
 if (outlineService) {
   fastify.post('/outlines', ...);

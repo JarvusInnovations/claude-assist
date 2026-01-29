@@ -5,10 +5,16 @@ import type { FastifyBaseLogger } from 'fastify';
 import { serializeTranscript } from './transcript.js';
 
 export interface OutlineServiceConfig {
-  concurrency?: number; // Default: 5
-  apiKey?: string; // Default: process.env.ANTHROPIC_API_KEY
-  model?: string; // Default: 'claude-haiku-4-5'
-  maxTokens?: number; // Default: 1024
+  /** API key for Anthropic (required) */
+  apiKey: string;
+  /** Concurrency for outline generation (default: 5) */
+  concurrency?: number;
+  /** Model to use (default: 'claude-haiku-4-5') */
+  model?: string;
+  /** Max tokens for response (default: 1024) */
+  maxTokens?: number;
+  /** Disable outline generation */
+  disableGenerateOutlines?: boolean;
 }
 
 export interface OutlineProgress {
@@ -57,23 +63,21 @@ export class OutlineService {
   private model: string;
   private maxTokens: number;
   private progress: OutlineProgress;
+  private disableGenerateOutlines: boolean;
 
   constructor(
     sql: postgres.Sql,
     log: FastifyBaseLogger,
-    config: OutlineServiceConfig = {}
+    config: OutlineServiceConfig
   ) {
     this.sql = sql;
     this.log = log;
     this.model = config.model ?? 'claude-haiku-4-5';
     this.maxTokens = config.maxTokens ?? 1024;
+    this.disableGenerateOutlines = config.disableGenerateOutlines ?? false;
 
     // Initialize Anthropic client
-    const apiKey = config.apiKey ?? process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) {
-      throw new Error('ANTHROPIC_API_KEY environment variable required');
-    }
-    this.client = new Anthropic({ apiKey });
+    this.client = new Anthropic({ apiKey: config.apiKey });
 
     // Initialize concurrency limiter
     this.limit = pLimit(config.concurrency ?? 5);
@@ -173,8 +177,8 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
    * Returns immediately, processing happens in background
    */
   async queueOutlineGeneration(sessionIds?: string[]): Promise<void> {
-    if (process.env.SESSIONS_DISABLE_GENERATE_OUTLINES === 'true') {
-      this.log.info('Outline generation disabled via SESSIONS_DISABLE_GENERATE_OUTLINES');
+    if (this.disableGenerateOutlines) {
+      this.log.info('Outline generation disabled via disableGenerateOutlines config');
       return;
     }
 
@@ -284,8 +288,8 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
    * Generate outlines synchronously (blocking, for manual triggers)
    */
   async generateOutlinesSync(sessionIds?: string[]): Promise<OutlineResult> {
-    if (process.env.SESSIONS_DISABLE_GENERATE_OUTLINES === 'true') {
-      this.log.info('Outline generation disabled via SESSIONS_DISABLE_GENERATE_OUTLINES');
+    if (this.disableGenerateOutlines) {
+      this.log.info('Outline generation disabled via disableGenerateOutlines config');
       return {
         sessionsProcessed: 0,
         outlinesGenerated: 0,
