@@ -11,6 +11,14 @@ Search and retrieve context from past Claude Code sessions across multiple machi
 
 ## Important Behavior
 
+### Use the `curl` command line
+
+You will NOT be able to use your `Fetch()` tool with these URLs because they are non-public.
+
+You MUST shell out to `curl` to fetch responses.
+
+Every endpoint except `/api/sessions/<id>/transcript` returns JSON responses that can be piped into `jq` or explored with `jq` after saving to disk.
+
 ### Default to Current Project
 
 When searching sessions, **always filter by the current project path** unless:
