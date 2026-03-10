@@ -4,6 +4,7 @@ import postgres from 'postgres';
 import { createScheduler } from '@jarvus/claude-assist-core';
 import sessionsPlugin from '@jarvus/claude-assist-sessions';
 import googlePlugin from '@jarvus/claude-assist-google';
+import chatPlugin from '@jarvus/claude-assist-chat';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import envPlugin from './plugins/env.js';
@@ -32,6 +33,7 @@ const fastify = Fastify({
 
 // Register env plugin FIRST to validate and load configuration
 await fastify.register(envPlugin);
+
 
 // Create postgres connection using validated config
 const sql = postgres(fastify.config.DATABASE_URL);
@@ -119,6 +121,31 @@ await fastify.register(
       }
     } else {
       api.log.info('Google module disabled');
+    }
+
+    if (fastify.config.ENABLE_CHAT) {
+      if (
+        !fastify.config.SLACK_BOT_TOKEN ||
+        !fastify.config.SLACK_SIGNING_SECRET
+      ) {
+        api.log.warn(
+          'Chat module enabled but SLACK_BOT_TOKEN/SIGNING_SECRET not set - skipping'
+        );
+      } else {
+        api.log.info('Chat module enabled');
+        await api.register(chatPlugin, {
+          disableMigrations: fastify.config.DISABLE_MIGRATIONS,
+          chatConfig: {
+            slackBotToken: fastify.config.SLACK_BOT_TOKEN,
+            slackSigningSecret: fastify.config.SLACK_SIGNING_SECRET,
+            ownerSlackUserId: fastify.config.SLACK_OWNER_USER_ID,
+            hariRepoPath: fastify.config.HARI_REPO_PATH ?? '/home/chris/Hari',
+            claudeOauthToken: fastify.config.CLAUDE_CODE_OAUTH_TOKEN,
+          },
+        });
+      }
+    } else {
+      api.log.info('Chat module disabled');
     }
   },
   { prefix: '/api' }

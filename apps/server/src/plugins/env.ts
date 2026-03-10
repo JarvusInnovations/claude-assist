@@ -55,6 +55,14 @@ const schema = {
     },
     GOOGLE_DISABLE_EMAIL_SYNC: { type: 'boolean', default: false },
     GOOGLE_DISABLE_EMAIL_TRIAGE: { type: 'boolean', default: false },
+
+    // Chat module
+    ENABLE_CHAT: { type: 'boolean', default: false },
+    SLACK_BOT_TOKEN: { type: 'string' },
+    SLACK_SIGNING_SECRET: { type: 'string' },
+    SLACK_OWNER_USER_ID: { type: 'string' },
+    HARI_REPO_PATH: { type: 'string' },
+    CLAUDE_CODE_OAUTH_TOKEN: { type: 'string' },
   },
 } as const;
 
@@ -98,6 +106,14 @@ declare module 'fastify' {
       GOOGLE_REDIRECT_URI: string;
       GOOGLE_DISABLE_EMAIL_SYNC: boolean;
       GOOGLE_DISABLE_EMAIL_TRIAGE: boolean;
+
+      // Chat module
+      ENABLE_CHAT: boolean;
+      SLACK_BOT_TOKEN?: string;
+      SLACK_SIGNING_SECRET?: string;
+      SLACK_OWNER_USER_ID?: string;
+      HARI_REPO_PATH?: string;
+      CLAUDE_CODE_OAUTH_TOKEN?: string;
     };
   }
 }

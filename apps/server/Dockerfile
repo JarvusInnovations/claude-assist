@@ -7,6 +7,7 @@ WORKDIR /app
 FROM base AS build-frontend
 COPY package.json bun.lock ./
 COPY packages/core/package.json packages/core/package.json
+COPY packages/chat/package.json packages/chat/package.json
 COPY packages/sessions/package.json packages/sessions/package.json
 COPY packages/google/package.json packages/google/package.json
 COPY apps/server/package.json apps/server/package.json
@@ -19,12 +20,14 @@ RUN bun run build
 FROM base AS build-backend
 COPY package.json bun.lock tsconfig.json ./
 COPY packages/core packages/core
+COPY packages/chat packages/chat
 COPY packages/sessions packages/sessions
 COPY packages/google packages/google
 COPY apps/server apps/server
 COPY apps/admin/package.json apps/admin/package.json
 RUN bun install --frozen-lockfile
 RUN cd packages/core && bun run build
+RUN cd packages/chat && bun run build
 RUN cd packages/sessions && bun run build
 RUN cd packages/google && bun run build
 

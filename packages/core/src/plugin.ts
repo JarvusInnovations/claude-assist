@@ -26,6 +26,8 @@ export interface PluginOptions {
   sessionsConfig?: SessionsPluginConfig;
   /** Configuration for google plugin */
   googleConfig?: GooglePluginConfig;
+  /** Configuration for chat plugin */
+  chatConfig?: ChatPluginConfig;
 }
 
 /**
@@ -49,6 +51,24 @@ export interface SessionsPluginConfig {
 /**
  * Configuration for the google plugin
  */
+/**
+ * Configuration for the chat plugin
+ */
+export interface ChatPluginConfig {
+  /** Slack bot token */
+  slackBotToken: string;
+  /** Slack signing secret */
+  slackSigningSecret: string;
+  /** Slack user ID of the owner */
+  ownerSlackUserId?: string;
+  /** Path to Hari repo */
+  hariRepoPath: string;
+  /** Claude OAuth token for Max subscription */
+  claudeOauthToken?: string;
+  /** MCP server configurations */
+  mcpServers?: Record<string, { command: string; args: string[] }>;
+}
+
 export interface GooglePluginConfig {
   /** Google OAuth client ID */
   clientId: string;
@@ -97,6 +117,7 @@ export function createPlugin(
       disableMigrations: opts.disableMigrations,
       sessionsConfig: opts.sessionsConfig,
       googleConfig: opts.googleConfig,
+      chatConfig: opts.chatConfig,
     };
 
     fastify.log.info(`Loading plugin: ${name}`);
