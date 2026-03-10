@@ -43,6 +43,15 @@ export default createPlugin('chat', async (fastify, options) => {
   const chatConfig = config;
 
   /**
+   * Strip backtick-wrapped slash commands.
+   * Slack intercepts bare /commands, so users send them as `/command args`
+   */
+  function preprocessMessage(text: string): string {
+    const match = text.match(/^`(\/[^`]+)`$/);
+    return match?.[1] ?? text;
+  }
+
+  /**
    * Check if this user is allowed to talk to the agent.
    * Returns true if allowed, false if not (and posts a rejection message).
    */
@@ -78,7 +87,7 @@ export default createPlugin('chat', async (fastify, options) => {
         placeholderMsg = await slack.postMessage(replyThreadId, 'Thinking...');
       }
 
-      const result = await handleMessage(message.text);
+      const result = await handleMessage(preprocessMessage(message.text));
       fastify.log.info({ sessionId: result.sessionId, textLength: result.text.length }, 'Posting threaded response');
 
       if (messageTs && channel) {
@@ -125,7 +134,7 @@ export default createPlugin('chat', async (fastify, options) => {
 
       await thread.startTyping('Thinking...');
 
-      const result = await handleMessage(message.text, sessionId ?? undefined);
+      const result = await handleMessage(preprocessMessage(message.text), sessionId ?? undefined);
 
       // Update session mapping (in case session ID changed, e.g. first message in thread)
       await sessionStore.upsert(threadId, result.sessionId);
