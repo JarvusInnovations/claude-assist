@@ -57,8 +57,14 @@ export function createHariHandler(config: ChatPluginConfig, log: FastifyBaseLogg
         }
       }
     } catch (err) {
-      log.error({ err, resumeSessionId }, 'Agent SDK query failed');
-      resultText = "Sorry, I hit an error processing that. Let me know if you'd like me to try again.";
+      // The Agent SDK process may exit with code 1 after delivering a successful result.
+      // Only show error to user if we didn't already get a result.
+      if (resultText) {
+        log.warn({ err, sessionId }, 'Agent SDK process exited with error after successful result');
+      } else {
+        log.error({ err, resumeSessionId }, 'Agent SDK query failed');
+        resultText = "Sorry, I hit an error processing that. Let me know if you'd like me to try again.";
+      }
     }
 
     return { text: resultText, sessionId };
