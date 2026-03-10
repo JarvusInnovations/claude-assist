@@ -43,9 +43,10 @@ export function createHariHandler(config: ChatPluginConfig, log: FastifyBaseLogg
           allowedTools: [
             'Read', 'Write', 'Edit', 'Glob', 'Grep',
             'WebSearch', 'WebFetch',
-            'Agent',
+            'Bash', 'Agent',
+            'mcp__*',  // Allow all MCP tools (deny list in settings.json still applies)
           ],
-          permissionMode: 'acceptEdits',
+          permissionMode: 'bypassPermissions',
           maxTurns: 30,
           ...(resumeSessionId ? { resume: resumeSessionId } : {}),
           ...(config.mcpServers ? { mcpServers: config.mcpServers } : {}),
