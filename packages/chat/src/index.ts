@@ -42,7 +42,7 @@ export default createPlugin('chat', async (fastify, options) => {
   const handleMessage = createAgentHandler(config, fastify.log);
   const chatConfig = config;
 
-  const SLACK_MSG_LIMIT = 2800; // Slack limit is ~4000 but mrkdwn conversion expands text, and chat.update has a lower limit
+  const SLACK_MSG_LIMIT = 3000; // Safe limit accounting for mrkdwn expansion
 
   /**
    * Strip backtick-wrapped slash commands.
@@ -54,38 +54,34 @@ export default createPlugin('chat', async (fastify, options) => {
   }
 
   /**
-   * Post a response, attaching a text file if it exceeds Slack's message limit.
+   * Post a response to a Slack thread. If the text exceeds the limit,
+   * attach the full response as a .md file.
    */
-  async function postResponse(target: { postMessage: (threadId: string, msg: any) => Promise<any> } | any, threadId: string | null, text: string, isEdit?: { messageId: string }) {
-    if (text.length <= SLACK_MSG_LIMIT) {
-      // Short enough — post or edit directly
-      if (isEdit && threadId) {
-        await slack.editMessage(threadId, isEdit.messageId, text);
-      } else if (threadId) {
-        await slack.postMessage(threadId, text);
-      } else {
-        await target.post(text);
-      }
-      return;
-    }
-
-    // Too long — post a truncated message + full response as text file
-    const truncated = text.slice(0, SLACK_MSG_LIMIT - 200) + '\n\n_(full response attached as file)_';
+  async function postResponse(threadId: string, text: string, placeholder?: { messageId: string }) {
     const file = {
       data: Buffer.from(text, 'utf-8'),
       filename: 'response.md',
       mimeType: 'text/markdown',
     };
 
-    if (isEdit && threadId) {
-      await slack.editMessage(threadId, isEdit.messageId, truncated);
-      // Post file as a follow-up in the same thread
-      await slack.postMessage(threadId, { markdown: '', files: [file] });
-    } else if (threadId) {
-      await slack.postMessage(threadId, { markdown: truncated, files: [file] });
+    if (text.length <= SLACK_MSG_LIMIT) {
+      // Short enough — edit placeholder or post directly
+      if (placeholder) {
+        await slack.editMessage(threadId, placeholder.messageId, text);
+      } else {
+        await slack.postMessage(threadId, text);
+      }
     } else {
-      await target.post(truncated);
-      // Can't attach files via thread.post — fall back to just truncated
+      // Too long — delete placeholder if present, post file with summary
+      if (placeholder) {
+        try {
+          await slack.deleteMessage(threadId, placeholder.messageId);
+        } catch {
+          // Ignore delete failures
+        }
+      }
+      // Post just the file — Slack renders .md nicely as a snippet
+      await slack.postMessage(threadId, { markdown: '_(see attached)_', files: [file] });
     }
   }
 
@@ -134,14 +130,14 @@ export default createPlugin('chat', async (fastify, options) => {
         // Store the session mapping
         await sessionStore.upsert(replyThreadId, result.sessionId);
 
-        // Edit the placeholder with the actual response (or post + attach file if too long)
+        // Post the response (or attach file if too long)
         await postResponse(
-          slack, replyThreadId, result.text,
+          replyThreadId, result.text,
           placeholderMsg ? { messageId: placeholderMsg.id } : undefined
         );
       } else {
         fastify.log.warn({ messageTs, channel }, 'Could not determine thread context, posting top-level');
-        await postResponse(thread, null, result.text);
+        await thread.post(result.text);
       }
     } catch (err) {
       fastify.log.error({ err }, 'Error in new conversation handler');
@@ -177,8 +173,7 @@ export default createPlugin('chat', async (fastify, options) => {
       await sessionStore.upsert(threadId, result.sessionId);
 
       fastify.log.info({ sessionId: result.sessionId, textLength: result.text.length }, 'Posting thread response');
-      const threadId2 = thread.id as string;
-      await postResponse(slack, threadId2, result.text);
+      await postResponse(thread.id as string, result.text);
     } catch (err) {
       fastify.log.error({ err }, 'Error in thread reply handler');
       try {
