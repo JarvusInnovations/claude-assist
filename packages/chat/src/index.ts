@@ -69,27 +69,32 @@ export default createPlugin('chat', async (fastify, options) => {
         'New conversation'
       );
 
-      await thread.startTyping('Thinking...');
+      // Post a "Thinking..." placeholder in the thread immediately
+      const messageTs = message.raw?.ts ?? message.metadata?.dateSent;
+      const channel = thread.id.split(':')[1]; // extract channel from slack:CHANNEL:threadTs
+
+      let placeholderMsg: { id: string; threadId: string } | null = null;
+      if (messageTs && channel) {
+        const replyThreadId = `slack:${channel}:${messageTs}`;
+        placeholderMsg = await slack.postMessage(replyThreadId, 'Thinking...');
+      }
 
       const result = await handleMessage(message.text);
       fastify.log.info({ sessionId: result.sessionId, textLength: result.text.length }, 'Posting threaded response');
 
-      // Post reply as a thread on the user's message
-      // The message's raw data has the ts we need for threading
-      const messageTs = message.raw?.ts ?? message.metadata?.dateSent;
-      const channel = thread.id.split(':')[1]; // extract channel from slack:CHANNEL:threadTs
-
       if (messageTs && channel) {
-        // Construct the thread ID for this new thread
         const replyThreadId = `slack:${channel}:${messageTs}`;
 
         // Store the session mapping
         await sessionStore.upsert(replyThreadId, result.sessionId);
 
-        // Post via the adapter with the message ts as thread_ts
-        await slack.postMessage(replyThreadId, result.text);
+        // Edit the placeholder with the actual response
+        if (placeholderMsg) {
+          await slack.editMessage(replyThreadId, placeholderMsg.id, result.text);
+        } else {
+          await slack.postMessage(replyThreadId, result.text);
+        }
       } else {
-        // Fallback: post as top-level (shouldn't happen)
         fastify.log.warn({ messageTs, channel }, 'Could not determine thread context, posting top-level');
         await thread.post(result.text);
       }
