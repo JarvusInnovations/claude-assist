@@ -42,7 +42,7 @@ export default createPlugin('chat', async (fastify, options) => {
   const handleMessage = createAgentHandler(config, fastify.log);
   const chatConfig = config;
 
-  const SLACK_MSG_LIMIT = 3900; // Slack limit is ~4000, leave margin for formatting
+  const SLACK_MSG_LIMIT = 2800; // Slack limit is ~4000 but mrkdwn conversion expands text, and chat.update has a lower limit
 
   /**
    * Strip backtick-wrapped slash commands.
