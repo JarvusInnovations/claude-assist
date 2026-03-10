@@ -42,43 +42,64 @@ export default createPlugin('chat', async (fastify, options) => {
   // Create the Agent SDK handler
   const handleMessage = createHariHandler(config, fastify.log);
 
-  // DM handler — Hari only responds in DMs with Chris
+  // Capture config as non-nullable (we already checked above)
+  const chatConfig = config;
+
+  // Shared handler for processing a message and posting the response
+  async function processMessage(thread: any, message: any, resumeSessionId?: string) {
+    try {
+      fastify.log.info(
+        { isDM: thread.isDM, userId: message.author.userId, text: message.text.slice(0, 50) },
+        'Processing message'
+      );
+
+      // Only respond in DMs
+      if (!thread.isDM) {
+        fastify.log.info('Ignoring non-DM message');
+        return;
+      }
+
+      // Only respond to Chris (if owner user ID is configured)
+      if (chatConfig.ownerSlackUserId && message.author.userId !== chatConfig.ownerSlackUserId) {
+        await thread.post("I'm Chris's personal assistant and only respond to him.");
+        return;
+      }
+
+      await thread.startTyping('Thinking...');
+
+      const result = await handleMessage(message.text, resumeSessionId);
+      fastify.log.info({ sessionId: result.sessionId, textLength: result.text.length }, 'Posting response to Slack');
+      await thread.setState({ sessionId: result.sessionId });
+      await thread.post(result.text);
+    } catch (err) {
+      fastify.log.error({ err }, 'Error in message handler');
+      try {
+        await thread.post("Sorry, something went wrong. Check the server logs.");
+      } catch (postErr) {
+        fastify.log.error({ postErr }, 'Failed to post error message to Slack');
+      }
+    }
+  }
+
+  // Handle @mentions in DMs — subscribe and process
   bot.onNewMention(async (thread, message) => {
-    // Only respond in DMs
-    if (!thread.isDM) {
-      return;
-    }
-
-    // Only respond to Chris (if owner user ID is configured)
-    if (config.ownerSlackUserId && message.author.userId !== config.ownerSlackUserId) {
-      await thread.post("I'm Chris's personal assistant and only respond to him.");
-      return;
-    }
-
     await thread.subscribe();
-    await thread.startTyping('Thinking...');
-
-    const result = await handleMessage(message.text, undefined);
-    await thread.setState({ sessionId: result.sessionId });
-    await thread.post(result.text);
+    await processMessage(thread, message);
   });
 
-  // Continue conversation in subscribed threads
+  // Handle all messages in subscribed threads
   bot.onSubscribedMessage(async (thread, message) => {
-    // Ignore bot's own messages
     if (message.author.isMe) return;
-
-    // Only respond to Chris
-    if (config.ownerSlackUserId && message.author.userId !== config.ownerSlackUserId) {
-      return;
-    }
-
     const threadState = await thread.state;
-    await thread.startTyping('Thinking...');
+    await processMessage(thread, message, threadState?.sessionId);
+  });
 
-    const result = await handleMessage(message.text, threadState?.sessionId);
-    await thread.setState({ sessionId: result.sessionId });
-    await thread.post(result.text);
+  // Handle plain DM messages (no @mention needed)
+  bot.onNewMessage(/.*/, async (thread, message) => {
+    if (!thread.isDM) return;
+    if (message.author.isMe) return;
+    await thread.subscribe();
+    await processMessage(thread, message);
   });
 
   // Register webhook routes
