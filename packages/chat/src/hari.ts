@@ -22,12 +22,24 @@ export function createHariHandler(config: ChatPluginConfig, log: FastifyBaseLogg
 
     log.info({ resumeSessionId, promptLength: userText.length }, 'Starting Agent SDK query');
 
+    // Minimal env for Agent SDK — only what claude needs, nothing from .env leaks in
+    const agentEnv: Record<string, string> = {
+      HOME: process.env.HOME ?? '',
+      PATH: process.env.PATH ?? '',
+      SHELL: process.env.SHELL ?? '/bin/bash',
+      USER: process.env.USER ?? '',
+      LANG: process.env.LANG ?? 'en_US.UTF-8',
+      TERM: process.env.TERM ?? 'xterm-256color',
+      ...(config.claudeOauthToken ? { CLAUDE_CODE_OAUTH_TOKEN: config.claudeOauthToken } : {}),
+    };
+
     try {
       for await (const message of query({
         prompt: userText,
         options: {
           cwd: config.hariRepoPath,
           settingSources: ['project'],
+          env: agentEnv,
           allowedTools: [
             'Read', 'Write', 'Edit', 'Glob', 'Grep',
             'WebSearch', 'WebFetch',
