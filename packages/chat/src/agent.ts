@@ -4,24 +4,19 @@ import { join } from 'node:path';
 import type { FastifyBaseLogger } from 'fastify';
 import type { ChatPluginConfig } from '@jarvus/claude-assist-core';
 
-export interface HariResult {
+export interface AgentResult {
   text: string;
   sessionId: string;
 }
 
 /**
- * Creates a handler that bridges Slack messages to the Agent SDK.
- * Each call to the returned function runs a query() against Claude Code
- * with Hari's full context (CLAUDE.md, skills, MCP servers).
- */
-/**
  * Load env vars from settings.local.json so MCP servers get their API keys.
  * Providing env to the Agent SDK overrides settings.local.json env,
  * so we need to merge them ourselves.
  */
-function loadSettingsEnv(hariRepoPath: string, log: FastifyBaseLogger): Record<string, string> {
+function loadSettingsEnv(repoPath: string, log: FastifyBaseLogger): Record<string, string> {
   try {
-    const settingsPath = join(hariRepoPath, '.claude', 'settings.local.json');
+    const settingsPath = join(repoPath, '.claude', 'settings.local.json');
     const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
     return settings.env ?? {};
   } catch (err) {
@@ -30,15 +25,20 @@ function loadSettingsEnv(hariRepoPath: string, log: FastifyBaseLogger): Record<s
   }
 }
 
-export function createHariHandler(config: ChatPluginConfig, log: FastifyBaseLogger) {
+/**
+ * Creates a handler that bridges chat messages to the Claude Agent SDK.
+ * Each call to the returned function runs a query() against Claude Code
+ * with the agent's full context (CLAUDE.md, skills, MCP servers).
+ */
+export function createAgentHandler(config: ChatPluginConfig, log: FastifyBaseLogger) {
   // Load MCP env vars once at startup
-  const settingsEnv = loadSettingsEnv(config.hariRepoPath, log);
+  const settingsEnv = loadSettingsEnv(config.agentRepoPath, log);
   log.info({ envKeys: Object.keys(settingsEnv) }, 'Loaded settings.local.json env vars');
 
   return async function handleMessage(
     userText: string,
     resumeSessionId?: string,
-  ): Promise<HariResult> {
+  ): Promise<AgentResult> {
     let sessionId = '';
     let resultText = '';
 
@@ -61,7 +61,7 @@ export function createHariHandler(config: ChatPluginConfig, log: FastifyBaseLogg
       for await (const message of query({
         prompt: userText,
         options: {
-          cwd: config.hariRepoPath,
+          cwd: config.agentRepoPath,
           settingSources: ['project'],
           env: agentEnv,
           allowedTools: [

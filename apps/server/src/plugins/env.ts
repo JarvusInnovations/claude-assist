@@ -61,7 +61,8 @@ const schema = {
     SLACK_BOT_TOKEN: { type: 'string' },
     SLACK_SIGNING_SECRET: { type: 'string' },
     SLACK_OWNER_USER_ID: { type: 'string' },
-    HARI_REPO_PATH: { type: 'string' },
+    AGENT_REPO_PATH: { type: 'string' },
+    BOT_USERNAME: { type: 'string' },
     CLAUDE_CODE_OAUTH_TOKEN: { type: 'string' },
   },
 } as const;
@@ -112,7 +113,8 @@ declare module 'fastify' {
       SLACK_BOT_TOKEN?: string;
       SLACK_SIGNING_SECRET?: string;
       SLACK_OWNER_USER_ID?: string;
-      HARI_REPO_PATH?: string;
+      AGENT_REPO_PATH?: string;
+      BOT_USERNAME?: string;
       CLAUDE_CODE_OAUTH_TOKEN?: string;
     };
   }

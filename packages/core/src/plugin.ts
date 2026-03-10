@@ -61,8 +61,10 @@ export interface ChatPluginConfig {
   slackSigningSecret: string;
   /** Slack user ID of the owner */
   ownerSlackUserId?: string;
-  /** Path to Hari repo */
-  hariRepoPath: string;
+  /** Path to the agent's repo (contains CLAUDE.md, skills, protocols) */
+  agentRepoPath: string;
+  /** Bot username for chat platforms */
+  botUsername?: string;
   /** Claude OAuth token for Max subscription */
   claudeOauthToken?: string;
   /** MCP server configurations */

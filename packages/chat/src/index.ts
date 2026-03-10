@@ -3,9 +3,8 @@ import { Chat } from 'chat';
 import { createSlackAdapter } from '@chat-adapter/slack';
 import { createMemoryState } from '@chat-adapter/state-memory';
 import { registerWebhookRoutes } from './routes.js';
-import { createHariHandler } from './hari.js';
+import { createAgentHandler } from './agent.js';
 import { SessionStore } from './sessions.js';
-import { join } from 'node:path';
 import type { ChatPluginConfig } from '@jarvus/claude-assist-core';
 
 export type { ChatPluginConfig } from '@jarvus/claude-assist-core';
@@ -33,24 +32,24 @@ export default createPlugin('chat', async (fastify, options) => {
   // Create bot instance
   const adapters = { slack };
   const bot = new Chat<typeof adapters, Record<string, never>>({
-    userName: 'hari',
+    userName: config.botUsername ?? 'assistant',
     adapters,
     state,
     logger: fastify.log.level === 'debug' || fastify.log.level === 'trace' ? 'debug' : 'info',
   });
 
   // Create the Agent SDK handler
-  const handleMessage = createHariHandler(config, fastify.log);
+  const handleMessage = createAgentHandler(config, fastify.log);
   const chatConfig = config;
 
   /**
-   * Check if this user is allowed to talk to Hari.
+   * Check if this user is allowed to talk to the agent.
    * Returns true if allowed, false if not (and posts a rejection message).
    */
   async function checkAccess(thread: any, message: any): Promise<boolean> {
     if (!thread.isDM) return false;
     if (chatConfig.ownerSlackUserId && message.author.userId !== chatConfig.ownerSlackUserId) {
-      await thread.post("I'm Chris's personal assistant and only respond to him.");
+      await thread.post("I only respond to my owner.");
       return false;
     }
     return true;

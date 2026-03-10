@@ -140,7 +140,8 @@ await fastify.register(
             slackBotToken: fastify.config.SLACK_BOT_TOKEN,
             slackSigningSecret: fastify.config.SLACK_SIGNING_SECRET,
             ownerSlackUserId: fastify.config.SLACK_OWNER_USER_ID,
-            hariRepoPath: fastify.config.HARI_REPO_PATH ?? '/home/chris/Hari',
+            agentRepoPath: fastify.config.AGENT_REPO_PATH ?? '',
+            botUsername: fastify.config.BOT_USERNAME,
             claudeOauthToken: fastify.config.CLAUDE_CODE_OAUTH_TOKEN,
           },
         });
