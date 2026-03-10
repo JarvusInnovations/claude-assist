@@ -22,16 +22,14 @@ export function createHariHandler(config: ChatPluginConfig, log: FastifyBaseLogg
 
     log.info({ resumeSessionId, promptLength: userText.length }, 'Starting Agent SDK query');
 
-    // Minimal env for Agent SDK — only what claude needs, nothing from .env leaks in
-    const agentEnv: Record<string, string> = {
-      HOME: process.env.HOME ?? '',
-      PATH: process.env.PATH ?? '',
-      SHELL: process.env.SHELL ?? '/bin/bash',
-      USER: process.env.USER ?? '',
-      LANG: process.env.LANG ?? 'en_US.UTF-8',
-      TERM: process.env.TERM ?? 'xterm-256color',
-      ...(config.claudeOauthToken ? { CLAUDE_CODE_OAUTH_TOKEN: config.claudeOauthToken } : {}),
-    };
+    // Inherit process env but remove ANTHROPIC_API_KEY so the Agent SDK
+    // uses CLAUDE_CODE_OAUTH_TOKEN (Max subscription) instead of API credits.
+    // MCP servers need the full env for their API keys/tokens.
+    const agentEnv: Record<string, string | undefined> = { ...process.env };
+    delete agentEnv.ANTHROPIC_API_KEY;
+    if (config.claudeOauthToken) {
+      agentEnv.CLAUDE_CODE_OAUTH_TOKEN = config.claudeOauthToken;
+    }
 
     try {
       for await (const message of query({
