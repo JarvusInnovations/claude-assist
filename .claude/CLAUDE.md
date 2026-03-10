@@ -123,6 +123,17 @@ docker-compose up postgres -d    # Database only
 docker-compose up -d             # Full stack
 ```
 
+### .dockerignore
+
+The repo uses a **whitelist-based `.dockerignore`** that ignores everything (`*`) then selectively includes files with `!` patterns. **When adding a new package**, you must add its files to `.dockerignore` and its build step to the `Dockerfile`, or it won't be included in the Docker build context:
+
+```dockerignore
+# packages/newpkg
+!packages/newpkg/package.json
+!packages/newpkg/tsconfig.json
+!packages/newpkg/src/**
+```
+
 ## Key Patterns
 
 ### PostgreSQL with postgres.js
