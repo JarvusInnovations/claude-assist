@@ -1,4 +1,6 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { FastifyBaseLogger } from 'fastify';
 import type { ChatPluginConfig } from '@jarvus/claude-assist-core';
 
@@ -12,7 +14,27 @@ export interface HariResult {
  * Each call to the returned function runs a query() against Claude Code
  * with Hari's full context (CLAUDE.md, skills, MCP servers).
  */
+/**
+ * Load env vars from settings.local.json so MCP servers get their API keys.
+ * Providing env to the Agent SDK overrides settings.local.json env,
+ * so we need to merge them ourselves.
+ */
+function loadSettingsEnv(hariRepoPath: string, log: FastifyBaseLogger): Record<string, string> {
+  try {
+    const settingsPath = join(hariRepoPath, '.claude', 'settings.local.json');
+    const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+    return settings.env ?? {};
+  } catch (err) {
+    log.warn({ err }, 'Could not load settings.local.json env');
+    return {};
+  }
+}
+
 export function createHariHandler(config: ChatPluginConfig, log: FastifyBaseLogger) {
+  // Load MCP env vars once at startup
+  const settingsEnv = loadSettingsEnv(config.hariRepoPath, log);
+  log.info({ envKeys: Object.keys(settingsEnv) }, 'Loaded settings.local.json env vars');
+
   return async function handleMessage(
     userText: string,
     resumeSessionId?: string,
@@ -22,14 +44,18 @@ export function createHariHandler(config: ChatPluginConfig, log: FastifyBaseLogg
 
     log.info({ resumeSessionId, promptLength: userText.length }, 'Starting Agent SDK query');
 
-    // Inherit process env but remove ANTHROPIC_API_KEY so the Agent SDK
-    // uses CLAUDE_CODE_OAUTH_TOKEN (Max subscription) instead of API credits.
-    // MCP servers need the full env for their API keys/tokens.
-    const agentEnv: Record<string, string | undefined> = { ...process.env };
-    delete agentEnv.ANTHROPIC_API_KEY;
-    if (config.claudeOauthToken) {
-      agentEnv.CLAUDE_CODE_OAUTH_TOKEN = config.claudeOauthToken;
-    }
+    // Build env: system essentials + settings.local.json env + OAuth token
+    // Don't pass ANTHROPIC_API_KEY so Agent SDK uses OAuth token
+    const agentEnv: Record<string, string> = {
+      HOME: process.env.HOME ?? '',
+      PATH: process.env.PATH ?? '',
+      SHELL: process.env.SHELL ?? '/bin/bash',
+      USER: process.env.USER ?? '',
+      LANG: process.env.LANG ?? 'en_US.UTF-8',
+      TERM: process.env.TERM ?? 'xterm-256color',
+      ...settingsEnv,
+      ...(config.claudeOauthToken ? { CLAUDE_CODE_OAUTH_TOKEN: config.claudeOauthToken } : {}),
+    };
 
     try {
       for await (const message of query({
