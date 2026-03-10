@@ -134,6 +134,7 @@ await fastify.register(
       } else {
         api.log.info('Chat module enabled');
         await api.register(chatPlugin, {
+          migrationsDir: join(__dirname, '../../../packages/chat/migrations'),
           disableMigrations: fastify.config.DISABLE_MIGRATIONS,
           chatConfig: {
             slackBotToken: fastify.config.SLACK_BOT_TOKEN,
