@@ -190,7 +190,7 @@ type AccountSettings = Pick<
 export interface TriageServiceConfig {
   /** Anthropic API key (required) */
   apiKey: string;
-  /** Model to use (default: 'claude-3-5-haiku-latest') */
+  /** Model to use (default: 'claude-haiku-4-5') */
   model?: string;
   /** Max tokens for response (default: 2048) */
   maxTokens?: number;
@@ -226,7 +226,7 @@ export class TriageService {
     this.log = log;
     this.client = new Anthropic({ apiKey: config.apiKey });
     this.limit = pLimit(config.concurrency ?? 5);
-    this.model = config.model ?? 'claude-3-5-haiku-latest';
+    this.model = config.model ?? 'claude-haiku-4-5';
     this.maxTokens = config.maxTokens ?? 2048;
     this.disableEmailTriage = config.disableEmailTriage ?? false;
   }
