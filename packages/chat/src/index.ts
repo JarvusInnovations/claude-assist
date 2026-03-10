@@ -42,6 +42,8 @@ export default createPlugin('chat', async (fastify, options) => {
   const handleMessage = createAgentHandler(config, fastify.log);
   const chatConfig = config;
 
+  const SLACK_MSG_LIMIT = 3900; // Slack limit is ~4000, leave margin for formatting
+
   /**
    * Strip backtick-wrapped slash commands.
    * Slack intercepts bare /commands, so users send them as `/command args`
@@ -49,6 +51,42 @@ export default createPlugin('chat', async (fastify, options) => {
   function preprocessMessage(text: string): string {
     const match = text.match(/^`(\/[^`]+)`$/);
     return match?.[1] ?? text;
+  }
+
+  /**
+   * Post a response, attaching a text file if it exceeds Slack's message limit.
+   */
+  async function postResponse(target: { postMessage: (threadId: string, msg: any) => Promise<any> } | any, threadId: string | null, text: string, isEdit?: { messageId: string }) {
+    if (text.length <= SLACK_MSG_LIMIT) {
+      // Short enough — post or edit directly
+      if (isEdit && threadId) {
+        await slack.editMessage(threadId, isEdit.messageId, text);
+      } else if (threadId) {
+        await slack.postMessage(threadId, text);
+      } else {
+        await target.post(text);
+      }
+      return;
+    }
+
+    // Too long — post a truncated message + full response as text file
+    const truncated = text.slice(0, SLACK_MSG_LIMIT - 200) + '\n\n_(full response attached as file)_';
+    const file = {
+      data: Buffer.from(text, 'utf-8'),
+      filename: 'response.md',
+      mimeType: 'text/markdown',
+    };
+
+    if (isEdit && threadId) {
+      await slack.editMessage(threadId, isEdit.messageId, truncated);
+      // Post file as a follow-up in the same thread
+      await slack.postMessage(threadId, { markdown: '', files: [file] });
+    } else if (threadId) {
+      await slack.postMessage(threadId, { markdown: truncated, files: [file] });
+    } else {
+      await target.post(truncated);
+      // Can't attach files via thread.post — fall back to just truncated
+    }
   }
 
   /**
@@ -96,15 +134,14 @@ export default createPlugin('chat', async (fastify, options) => {
         // Store the session mapping
         await sessionStore.upsert(replyThreadId, result.sessionId);
 
-        // Edit the placeholder with the actual response
-        if (placeholderMsg) {
-          await slack.editMessage(replyThreadId, placeholderMsg.id, result.text);
-        } else {
-          await slack.postMessage(replyThreadId, result.text);
-        }
+        // Edit the placeholder with the actual response (or post + attach file if too long)
+        await postResponse(
+          slack, replyThreadId, result.text,
+          placeholderMsg ? { messageId: placeholderMsg.id } : undefined
+        );
       } else {
         fastify.log.warn({ messageTs, channel }, 'Could not determine thread context, posting top-level');
-        await thread.post(result.text);
+        await postResponse(thread, null, result.text);
       }
     } catch (err) {
       fastify.log.error({ err }, 'Error in new conversation handler');
@@ -140,7 +177,8 @@ export default createPlugin('chat', async (fastify, options) => {
       await sessionStore.upsert(threadId, result.sessionId);
 
       fastify.log.info({ sessionId: result.sessionId, textLength: result.text.length }, 'Posting thread response');
-      await thread.post(result.text);
+      const threadId2 = thread.id as string;
+      await postResponse(slack, threadId2, result.text);
     } catch (err) {
       fastify.log.error({ err }, 'Error in thread reply handler');
       try {
