@@ -218,7 +218,7 @@ export function serializeTranscript(rawTranscript: string): string {
 
         // Then handle text content (skip if only XML tags)
         const text = extractTextContent(msg.message.content);
-        if (text && !isXmlOnlyContent(text)) {
+        if (text) {
           // Check if this is a skill injection
           if (text.startsWith('Base directory for this skill:')) {
             const match = text.match(/^Base directory for this skill: ([^\n]+)/);
@@ -230,7 +230,18 @@ export function serializeTranscript(rawTranscript: string): string {
               output.push(`[S] unknown`);
             }
           } else {
-            output.push(`[U] ${text}`);
+            // Extract command-args from skill invocations before XML check
+            const argsMatch = text.match(/<command-args>([\s\S]+?)<\/command-args>/);
+            const commandArgs = argsMatch?.[1]?.trim();
+
+            if (commandArgs) {
+              // Skill invocation with user-provided arguments
+              const nameMatch = text.match(/<command-name>\/?([^<]+)<\/command-name>/);
+              const skillName = nameMatch?.[1]?.trim();
+              output.push(`[U] /${skillName ?? 'unknown'} ${commandArgs}`);
+            } else if (!isXmlOnlyContent(text)) {
+              output.push(`[U] ${text}`);
+            }
           }
         }
       }
