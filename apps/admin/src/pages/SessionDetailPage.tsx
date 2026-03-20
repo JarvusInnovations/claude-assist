@@ -85,6 +85,15 @@ export function SessionDetailPage() {
           <p className="text-muted-foreground text-sm truncate">
             {session.machine}:{session.project_path}
           </p>
+          <button
+            className="text-xs font-mono text-muted-foreground hover:text-foreground cursor-pointer"
+            onClick={() => {
+              navigator.clipboard.writeText(session.id);
+              toast.success("Session ID copied");
+            }}
+          >
+            {session.id}
+          </button>
         </div>
         {!session.outline && (
           <Button

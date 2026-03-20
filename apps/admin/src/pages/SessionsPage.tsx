@@ -204,13 +204,15 @@ export function SessionsPage() {
                   <TableHead className="w-[80px]">Messages</TableHead>
                   <TableHead className="w-[100px]">Tokens</TableHead>
                   <TableHead className="w-[80px]">Outline</TableHead>
+                  <TableHead className="w-[80px]">ID</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {sessions.map((session) => (
                   <TableRow key={session.id}>
                     <TableCell className="text-sm text-muted-foreground">
-                      {new Date(session.started_at).toLocaleDateString()}
+                      {new Date(session.started_at).toLocaleDateString()}{" "}
+                      {new Date(session.started_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                     </TableCell>
                     <TableCell className="max-w-0">
                       <Link
@@ -242,6 +244,18 @@ export function SessionsPage() {
                       ) : (
                         <Badge variant="secondary">No</Badge>
                       )}
+                    </TableCell>
+                    <TableCell>
+                      <button
+                        className="text-xs font-mono text-muted-foreground hover:text-foreground cursor-pointer truncate max-w-[80px] block"
+                        title={session.id}
+                        onClick={() => {
+                          navigator.clipboard.writeText(session.id);
+                          toast.success("Session ID copied");
+                        }}
+                      >
+                        {session.id.slice(0, 8)}
+                      </button>
                     </TableCell>
                   </TableRow>
                 ))}
