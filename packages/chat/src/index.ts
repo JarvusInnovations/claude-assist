@@ -131,35 +131,72 @@ export default createPlugin('chat', async (fastify, options) => {
    * Post a response to a Slack thread. If the text exceeds the limit,
    * attach the full response as a .md file.
    */
+  /**
+   * Split blocks into chunks that respect Slack constraints:
+   * - Max 50 blocks per message
+   * - Max 1 table per message
+   */
+  function chunkBlocks(blocks: Awaited<ReturnType<typeof markdownToBlocks>>): typeof blocks[] {
+    const chunks: typeof blocks[] = [];
+    let current: typeof blocks = [];
+
+    for (const block of blocks) {
+      const isTable = (block as { type: string }).type === 'table';
+      const currentHasTable = current.some(b => (b as { type: string }).type === 'table');
+
+      // Start new chunk if adding this block would violate constraints
+      if (current.length >= 50 || (isTable && currentHasTable)) {
+        if (current.length > 0) chunks.push(current);
+        current = [];
+      }
+
+      current.push(block);
+
+      // If we just added a table, flush after it so next table gets its own chunk
+      if (isTable) {
+        chunks.push(current);
+        current = [];
+      }
+    }
+
+    if (current.length > 0) chunks.push(current);
+    return chunks;
+  }
+
   async function postResponse(channel: string, threadTs: string, text: string): Promise<void> {
     const blocks = await markdownToBlocks(text);
-    const BLOCK_LIMIT = 50;
+    const chunks = chunkBlocks(blocks);
 
-    fastify.log.info({
-      blockCount: blocks.length,
-      blockTypes: blocks.map(b => b.type),
-      blocksJson: JSON.stringify(blocks).slice(0, 2000),
-    }, 'markdownToBlocks result');
-
-    // Split blocks into chunks of 50 and post each as a separate message
-    for (let i = 0; i < blocks.length; i += BLOCK_LIMIT) {
-      const chunk = blocks.slice(i, i + BLOCK_LIMIT);
-      const result = await app.client.chat.postMessage({
-        channel,
-        thread_ts: threadTs,
-        blocks: chunk,
-        // text fallback only on first message
-        text: i === 0 ? text.slice(0, 3000) : '(continued)',
-      });
-
-      const msg = result.message as { blocks?: unknown[] } | undefined;
-      fastify.log.info({
-        ok: result.ok,
-        sentBlocks: chunk.length,
-        responseBlocks: msg?.blocks?.length ?? 0,
-        responseError: (result as any).error,
-        responseWarning: (result as any).warning,
-      }, 'chat.postMessage result');
+    for (let i = 0; i < chunks.length; i++) {
+      try {
+        await app.client.chat.postMessage({
+          channel,
+          thread_ts: threadTs,
+          blocks: chunks[i],
+          text: i === 0 ? text.slice(0, 3000) : '(continued)',
+        });
+      } catch (err: any) {
+        // If blocks are rejected, fall back to plain text for this chunk
+        if (err?.data?.error === 'invalid_blocks') {
+          fastify.log.warn({ errors: err.data.errors }, 'Slack rejected blocks, falling back to text');
+          const chunk = chunks[i]!;
+          const fallbackText = chunk
+            .map(b => {
+              const block = b as unknown as Record<string, unknown>;
+              const textObj = block.text as { text?: string } | undefined;
+              return textObj?.text ?? '';
+            })
+            .filter(Boolean)
+            .join('\n\n');
+          await app.client.chat.postMessage({
+            channel,
+            thread_ts: threadTs,
+            text: fallbackText || text.slice(0, 3000),
+          });
+        } else {
+          throw err;
+        }
+      }
     }
   }
 
