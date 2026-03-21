@@ -58,6 +58,8 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       limit?: string;
       offset?: string;
       include_empty?: string;
+      min_user_messages?: string;
+
     };
   }>('/sessions', async (request, reply) => {
     const {
@@ -74,8 +76,10 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       limit = '20',
       offset = '0',
       include_empty,
+      min_user_messages,
     } = request.query;
     const excludeEmpty = include_empty !== 'true';
+    const minUserMsgs = min_user_messages ? parseInt(min_user_messages, 10) : null;
 
     const daysNum = parseInt(days, 10) || 30;
     const limitNum = Math.max(parseInt(limit, 10) || 20, 1);
@@ -111,6 +115,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
           s.tools_used,
           s.files_touched,
           s.message_count,
+          s.user_message_count,
           s.input_tokens,
           s.output_tokens,
           s.outline,
@@ -130,6 +135,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
               : fastify.sql`AND s.started_at > NOW() - INTERVAL '1 day' * ${daysNum}`
           }
           ${excludeEmpty ? fastify.sql`AND s.output_tokens > 0` : fastify.sql``}
+          ${minUserMsgs !== null ? fastify.sql`AND s.user_message_count >= ${minUserMsgs}` : fastify.sql``}
           ${machine ? fastify.sql`AND m.machine_id = ${machine}` : fastify.sql``}
           ${project ? fastify.sql`AND s.project_path ILIKE ${'%' + project + '%'}` : fastify.sql``}
           ${tools ? fastify.sql`AND s.tools_used ?| ${tools.split(',').map(t => t.trim())}` : fastify.sql``}
@@ -150,6 +156,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
           s.tools_used,
           s.files_touched,
           s.message_count,
+          s.user_message_count,
           s.input_tokens,
           s.output_tokens,
           s.outline,
@@ -168,6 +175,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
               : fastify.sql`AND s.started_at > NOW() - INTERVAL '1 day' * ${daysNum}`
           }
           ${excludeEmpty ? fastify.sql`AND s.output_tokens > 0` : fastify.sql``}
+          ${minUserMsgs !== null ? fastify.sql`AND s.user_message_count >= ${minUserMsgs}` : fastify.sql``}
           ${machine ? fastify.sql`AND m.machine_id = ${machine}` : fastify.sql``}
           ${project ? fastify.sql`AND s.project_path ILIKE ${'%' + project + '%'}` : fastify.sql``}
           ${tools ? fastify.sql`AND s.tools_used ?| ${tools.split(',').map(t => t.trim())}` : fastify.sql``}
@@ -187,6 +195,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       outline: s.outline ?? null,
       title: s.title ?? null,
       message_count: s.message_count,
+      user_message_count: s.user_message_count,
       input_tokens: parseInt(String(s.input_tokens), 10) || 0,
       output_tokens: parseInt(String(s.output_tokens), 10) || 0,
       tools_used: s.tools_used,
@@ -228,6 +237,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       tools_used: session.tools_used,
       files_touched: session.files_touched,
       message_count: session.message_count,
+      user_message_count: session.user_message_count,
       input_tokens: parseInt(String(session.input_tokens), 10) || 0,
       output_tokens: parseInt(String(session.output_tokens), 10) || 0,
       cache_read_tokens: parseInt(String(session.cache_read_tokens), 10) || 0,

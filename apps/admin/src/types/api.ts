@@ -150,6 +150,7 @@ export interface SessionRecord {
   transcript_path: string | null;
   transcript_hash: string;
   message_count: number;
+  user_message_count: number;
   claude_version: string | null;
   synced_at: string;
   outline: string | null;
@@ -167,6 +168,7 @@ export interface SessionQueryParams {
   limit?: number;
   offset?: number;
   tools?: string[];
+  min_user_messages?: number;
 }
 
 export interface SessionStats {

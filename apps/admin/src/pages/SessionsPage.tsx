@@ -16,6 +16,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Table,
   TableBody,
@@ -31,11 +32,14 @@ import type { SessionQueryParams } from "@/types/api";
 export function SessionsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
 
+  const hideSubagents = searchParams.get("hide_subagents") !== "false";
+
   const filters: SessionQueryParams = {
     search: searchParams.get("search") || undefined,
     machine: searchParams.get("machine") || undefined,
     days: searchParams.get("days") ? parseInt(searchParams.get("days")!) : 30,
     limit: 50,
+    min_user_messages: hideSubagents ? 2 : undefined,
   };
 
   const { data: sessions, isLoading, refetch } = useQuery({
@@ -181,6 +185,18 @@ export function SessionsPage() {
                 <SelectItem value="365">Last year</SelectItem>
               </SelectContent>
             </Select>
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="hide-subagents"
+                checked={hideSubagents}
+                onCheckedChange={(checked) =>
+                  updateFilter("hide_subagents", checked ? null : "false")
+                }
+              />
+              <label htmlFor="hide-subagents" className="text-sm cursor-pointer select-none">
+                Hide subagents
+              </label>
+            </div>
           </div>
         </CardContent>
       </Card>

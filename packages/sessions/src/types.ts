@@ -189,6 +189,7 @@ export interface SessionRecord {
   raw_transcript: string;
   search_text: string | null;
   message_count: number;
+  user_message_count: number;
   claude_version: string | null;
   synced_at: Date;
   /** AI-generated outline summarizing the session */
