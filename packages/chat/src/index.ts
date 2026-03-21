@@ -133,24 +133,17 @@ export default createPlugin('chat', async (fastify, options) => {
    */
   async function postResponse(channel: string, threadTs: string, text: string): Promise<void> {
     const blocks = await markdownToBlocks(text);
+    const BLOCK_LIMIT = 50;
 
-    // Slack limits messages to 50 blocks
-    if (blocks.length <= 50) {
+    // Split blocks into chunks of 50 and post each as a separate message
+    for (let i = 0; i < blocks.length; i += BLOCK_LIMIT) {
+      const chunk = blocks.slice(i, i + BLOCK_LIMIT);
       await app.client.chat.postMessage({
         channel,
         thread_ts: threadTs,
-        blocks,
-        // text is required as fallback for notifications/accessibility
-        text: text.slice(0, 3000),
-      });
-    } else {
-      // Too many blocks — upload as file
-      await app.client.filesUploadV2({
-        channel_id: channel,
-        thread_ts: threadTs,
-        content: text,
-        filename: 'response.md',
-        initial_comment: '_(full response attached)_',
+        blocks: chunk,
+        // text fallback only on first message
+        text: i === 0 ? text.slice(0, 3000) : '(continued)',
       });
     }
   }
