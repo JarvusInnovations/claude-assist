@@ -60,17 +60,13 @@ Skills use official Claude SKILL.md format with YAML frontmatter. See `skills/*/
 
 When creating or modifying skills, activate the `skill-creator` skill first for guidance on skill structure, frontmatter, and best practices.
 
-### Server URL Placeholder
+### Plugin Version
 
-Skills that make API calls to the claude-assist server use `<claude-assist-server>` as a placeholder in curl examples:
+**Bump the version in `.claude-plugin/plugin.json` before pushing any changes to `skills/**`.** The plugin version controls cache invalidation for installed plugins — without a bump, users won't receive skill updates.
 
-```bash
-curl <claude-assist-server>/api/google/emails
-```
+### Skill Scripts
 
-**Always include this note** in skills that use the placeholder:
-
-> **Note:** Replace `<claude-assist-server>` with the actual server URL (e.g., `http://localhost:2529`). If a request fails with connection refused, ask the user for the correct server endpoint.
+Skills wrap their API calls in executable scripts under `scripts/` (no `.sh` suffix). Scripts default to `http://localhost:2529` and support `CLAUDE_ASSIST_SERVER` env var override.
 
 ## Commits
 
