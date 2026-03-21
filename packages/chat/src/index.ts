@@ -9,6 +9,35 @@ export type { ChatPluginConfig } from '@jarvus/claude-assist-core';
 const SLACK_MSG_LIMIT = 3000;
 const THREAD_TITLE_MAX = 60;
 
+/**
+ * Convert standard markdown to Slack mrkdwn format.
+ * Preserves code blocks (``` and inline `) as-is since Slack supports them natively.
+ */
+function markdownToMrkdwn(text: string): string {
+  // Split on code blocks to avoid transforming content inside them
+  const parts = text.split(/(```[\s\S]*?```|`[^`\n]+`)/g);
+
+  return parts.map((part, i) => {
+    // Odd indices are code blocks/inline code — pass through
+    if (i % 2 === 1) return part;
+
+    return part
+      // Headings: # Heading → *Heading*
+      .replace(/^#{1,6}\s+(.+)$/gm, '*$1*')
+      // Bold: **text** or __text__ → *text*
+      .replace(/\*\*(.+?)\*\*/g, '*$1*')
+      .replace(/__(.+?)__/g, '*$1*')
+      // Images before links: ![alt](url) → <url|alt>
+      .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<$2|$1>')
+      // Links: [text](url) → <url|text>
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<$2|$1>')
+      // Strikethrough: ~~text~~ → ~text~
+      .replace(/~~(.+?)~~/g, '~$1~')
+      // Horizontal rules: --- or *** or ___ → ───
+      .replace(/^(\*{3,}|-{3,}|_{3,})$/gm, '───');
+  }).join('');
+}
+
 const SUGGESTED_PROMPTS = [
   { title: 'Daily briefing', message: '`/briefing`' },
   { title: 'Check commitments', message: '`/commitments`' },
@@ -129,11 +158,13 @@ export default createPlugin('chat', async (fastify, options) => {
    * attach the full response as a .md file.
    */
   async function postResponse(channel: string, threadTs: string, text: string): Promise<void> {
-    if (text.length <= SLACK_MSG_LIMIT) {
+    const mrkdwn = markdownToMrkdwn(text);
+
+    if (mrkdwn.length <= SLACK_MSG_LIMIT) {
       await app.client.chat.postMessage({
         channel,
         thread_ts: threadTs,
-        text,
+        text: mrkdwn,
       });
     } else {
       await app.client.filesUploadV2({
