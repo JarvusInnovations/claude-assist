@@ -19,6 +19,10 @@ All scripts default to `http://localhost:2529`. Override with `CLAUDE_ASSIST_SER
 
 Available scripts: `search`, `transcript`, `details`, `stats`, `machines`, `sync`, `outlines`, `outline-progress`
 
+### Filter Out Subagent Sessions
+
+Always include `--min-user-messages 2` by default to hide single-prompt subagent sessions. Only omit this filter if the user specifically asks about subagent or automated sessions.
+
 ### Default to Current Project
 
 When searching sessions, **always filter by the current project path** unless:
@@ -39,7 +43,7 @@ This keeps queries concise while still filtering effectively.
 Search sessions by topic (scoped to current project):
 
 ```bash
-scripts/search --query "RTD proposal" --days 14 --project myproject
+scripts/search --query "RTD proposal" --days 14 --project myproject --min-user-messages 2
 ```
 
 ## Available Endpoints
@@ -60,6 +64,7 @@ Parameters:
 - `tools` - Filter by tools used (comma-separated, e.g., `Edit,Bash`)
 - `machine` - Filter by machine ID (e.g., `localhost`, `laptop`)
 - `project` - Filter by project path (partial match)
+- `min_user_messages` - Minimum number of user messages (useful for hiding subagent sessions, e.g., `--min-user-messages 2`)
 - `limit` - Max results (default: 20, max: 100)
 - `offset` - Pagination offset
 
