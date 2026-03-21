@@ -15,6 +15,8 @@ Use the `google-account-setup` skill to configure Gmail accounts before using th
 
 The `scripts/` directory contains executable wrappers for all API endpoints. **Always use these scripts** instead of raw curl commands.
 
+Run scripts using their full path relative to this skill's base directory (provided when the skill is loaded). For example: `<skill-base-dir>/scripts/accounts`
+
 All scripts default to `http://localhost:2529`. Override with `CLAUDE_ASSIST_SERVER` env var.
 
 Available scripts: `accounts`, `sync-emails`, `emails`, `email`, `email-stats`, `triage`, `triage-progress`

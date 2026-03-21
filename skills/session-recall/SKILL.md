@@ -13,6 +13,8 @@ Search and retrieve context from past Claude Code sessions across multiple machi
 
 The `scripts/` directory contains executable wrappers for all API endpoints. **Always use these scripts** instead of raw curl commands — they handle URL construction, JSON formatting, and URL encoding.
 
+Run scripts using their full path relative to this skill's base directory (provided when the skill is loaded). For example: `<skill-base-dir>/scripts/search --query "test"`
+
 All scripts default to `http://localhost:2529`. Override with `CLAUDE_ASSIST_SERVER` env var.
 
 Available scripts: `search`, `transcript`, `details`, `stats`, `machines`, `sync`, `outlines`, `outline-progress`

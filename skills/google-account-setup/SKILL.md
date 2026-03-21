@@ -11,6 +11,8 @@ Interactive workflow to set up a Gmail account for sync and triage.
 
 The `scripts/` directory contains executable wrappers for all API endpoints. **Always use these scripts** instead of raw curl commands.
 
+Run scripts using their full path relative to this skill's base directory (provided when the skill is loaded). For example: `<skill-base-dir>/scripts/get-account 1`
+
 All scripts default to `http://localhost:2529`. Override with `CLAUDE_ASSIST_SERVER` env var.
 
 Available scripts: `create-account`, `get-account`, `update-account`, `add-alias`, `sync-emails`
