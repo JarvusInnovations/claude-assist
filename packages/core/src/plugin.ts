@@ -57,6 +57,8 @@ export interface SessionsPluginConfig {
 export interface ChatPluginConfig {
   /** Slack bot token */
   slackBotToken: string;
+  /** Slack app-level token for Socket Mode (xapp-...) */
+  slackAppToken: string;
   /** Slack signing secret */
   slackSigningSecret: string;
   /** Slack user ID of the owner */

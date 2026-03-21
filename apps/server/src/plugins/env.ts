@@ -59,6 +59,7 @@ const schema = {
     // Chat module
     ENABLE_CHAT: { type: 'boolean', default: false },
     SLACK_BOT_TOKEN: { type: 'string' },
+    SLACK_APP_TOKEN: { type: 'string' },
     SLACK_SIGNING_SECRET: { type: 'string' },
     SLACK_OWNER_USER_ID: { type: 'string' },
     AGENT_REPO_PATH: { type: 'string' },
@@ -111,6 +112,7 @@ declare module 'fastify' {
       // Chat module
       ENABLE_CHAT: boolean;
       SLACK_BOT_TOKEN?: string;
+      SLACK_APP_TOKEN?: string;
       SLACK_SIGNING_SECRET?: string;
       SLACK_OWNER_USER_ID?: string;
       AGENT_REPO_PATH?: string;

@@ -123,35 +123,40 @@ await fastify.register(
       api.log.info('Google module disabled');
     }
 
-    if (fastify.config.ENABLE_CHAT) {
-      if (
-        !fastify.config.SLACK_BOT_TOKEN ||
-        !fastify.config.SLACK_SIGNING_SECRET
-      ) {
-        api.log.warn(
-          'Chat module enabled but SLACK_BOT_TOKEN/SIGNING_SECRET not set - skipping'
-        );
-      } else {
-        api.log.info('Chat module enabled');
-        await api.register(chatPlugin, {
-          migrationsDir: join(__dirname, '../../../packages/chat/migrations'),
-          disableMigrations: fastify.config.DISABLE_MIGRATIONS,
-          chatConfig: {
-            slackBotToken: fastify.config.SLACK_BOT_TOKEN,
-            slackSigningSecret: fastify.config.SLACK_SIGNING_SECRET,
-            ownerSlackUserId: fastify.config.SLACK_OWNER_USER_ID,
-            agentRepoPath: fastify.config.AGENT_REPO_PATH ?? '',
-            botUsername: fastify.config.BOT_USERNAME,
-            claudeOauthToken: fastify.config.CLAUDE_CODE_OAUTH_TOKEN,
-          },
-        });
-      }
-    } else {
-      api.log.info('Chat module disabled');
-    }
+    // Chat module is registered outside /api prefix (uses Socket Mode, not webhooks)
   },
   { prefix: '/api' }
 );
+
+// Chat module (Socket Mode — manages its own WebSocket connection)
+if (fastify.config.ENABLE_CHAT) {
+  if (
+    !fastify.config.SLACK_BOT_TOKEN ||
+    !fastify.config.SLACK_APP_TOKEN ||
+    !fastify.config.SLACK_SIGNING_SECRET
+  ) {
+    fastify.log.warn(
+      'Chat module enabled but SLACK_BOT_TOKEN/APP_TOKEN/SIGNING_SECRET not set - skipping'
+    );
+  } else {
+    fastify.log.info('Chat module enabled');
+    await fastify.register(chatPlugin, {
+      migrationsDir: join(__dirname, '../../../packages/chat/migrations'),
+      disableMigrations: fastify.config.DISABLE_MIGRATIONS,
+      chatConfig: {
+        slackBotToken: fastify.config.SLACK_BOT_TOKEN,
+        slackAppToken: fastify.config.SLACK_APP_TOKEN,
+        slackSigningSecret: fastify.config.SLACK_SIGNING_SECRET,
+        ownerSlackUserId: fastify.config.SLACK_OWNER_USER_ID,
+        agentRepoPath: fastify.config.AGENT_REPO_PATH ?? '',
+        botUsername: fastify.config.BOT_USERNAME,
+        claudeOauthToken: fastify.config.CLAUDE_CODE_OAUTH_TOKEN,
+      },
+    });
+  }
+} else {
+  fastify.log.info('Chat module disabled');
+}
 
 // Serve admin frontend static files
 await fastify.register(fastifyStatic, {
