@@ -7,6 +7,13 @@ import type { ChatPluginConfig } from '@jarvus/claude-assist-core';
 export type { ChatPluginConfig } from '@jarvus/claude-assist-core';
 
 const SLACK_MSG_LIMIT = 3000;
+const THREAD_TITLE_MAX = 60;
+
+const SUGGESTED_PROMPTS = [
+  { title: 'Daily briefing', message: '`/briefing`' },
+  { title: 'Check commitments', message: '`/commitments`' },
+  { title: 'What\'s next?', message: '`/next`' },
+];
 
 export default createPlugin('chat', async (fastify, options) => {
   const config = options.chatConfig;
@@ -16,12 +23,10 @@ export default createPlugin('chat', async (fastify, options) => {
     return;
   }
 
-  // config is narrowed to non-undefined after the guard above
   const chatConfig = config;
   const sessionStore = new SessionStore(fastify.sql);
   const handleMessage = createAgentHandler(chatConfig, fastify.log);
 
-  // Map Fastify log level to Bolt log level
   const boltLogLevel = (() => {
     switch (fastify.log.level) {
       case 'trace':
@@ -50,38 +55,87 @@ export default createPlugin('chat', async (fastify, options) => {
   }
 
   /**
+   * Add a reaction to a message. Fails silently.
+   */
+  async function addReaction(channel: string, timestamp: string, name: string) {
+    try {
+      await app.client.reactions.add({ channel, timestamp, name });
+    } catch {
+      // Ignore — reaction may already exist or scope missing
+    }
+  }
+
+  /**
+   * Remove a reaction from a message. Fails silently.
+   */
+  async function removeReaction(channel: string, timestamp: string, name: string) {
+    try {
+      await app.client.reactions.remove({ channel, timestamp, name });
+    } catch {
+      // Ignore
+    }
+  }
+
+  /**
+   * Set the assistant typing status in a thread. Fails silently.
+   */
+  async function setTypingStatus(channel: string, threadTs: string, status: string) {
+    try {
+      await app.client.assistant.threads.setStatus({
+        channel_id: channel,
+        thread_ts: threadTs,
+        status,
+      });
+    } catch {
+      // Ignore — assistant feature may not be enabled
+    }
+  }
+
+  /**
+   * Set suggested prompts in a thread. Fails silently.
+   */
+  async function setSuggestedPrompts(channel: string, threadTs: string) {
+    try {
+      await app.client.assistant.threads.setSuggestedPrompts({
+        channel_id: channel,
+        thread_ts: threadTs,
+        prompts: SUGGESTED_PROMPTS,
+      });
+    } catch {
+      // Ignore
+    }
+  }
+
+  /**
+   * Set a title for a thread. Fails silently.
+   */
+  async function setThreadTitle(channel: string, threadTs: string, title: string) {
+    try {
+      const truncated = title.length > THREAD_TITLE_MAX
+        ? title.slice(0, THREAD_TITLE_MAX - 1) + '…'
+        : title;
+      await app.client.assistant.threads.setTitle({
+        channel_id: channel,
+        thread_ts: threadTs,
+        title: truncated,
+      });
+    } catch {
+      // Ignore
+    }
+  }
+
+  /**
    * Post a response to a Slack thread. If the text exceeds the limit,
    * attach the full response as a .md file.
    */
-  async function postResponse(
-    channel: string,
-    threadTs: string,
-    text: string,
-    placeholder?: { ts: string },
-  ): Promise<void> {
+  async function postResponse(channel: string, threadTs: string, text: string): Promise<void> {
     if (text.length <= SLACK_MSG_LIMIT) {
-      if (placeholder) {
-        await app.client.chat.update({
-          channel,
-          ts: placeholder.ts,
-          text,
-        });
-      } else {
-        await app.client.chat.postMessage({
-          channel,
-          thread_ts: threadTs,
-          text,
-        });
-      }
+      await app.client.chat.postMessage({
+        channel,
+        thread_ts: threadTs,
+        text,
+      });
     } else {
-      // Too long — delete placeholder if present, upload file
-      if (placeholder) {
-        try {
-          await app.client.chat.delete({ channel, ts: placeholder.ts });
-        } catch {
-          // Ignore delete failures
-        }
-      }
       await app.client.filesUploadV2({
         channel_id: channel,
         thread_ts: threadTs,
@@ -96,94 +150,86 @@ export default createPlugin('chat', async (fastify, options) => {
    * Check if a message should be processed.
    */
   function shouldProcess(event: { channel_type?: string; bot_id?: string; user?: string }): boolean {
-    // Only DMs
     if (event.channel_type !== 'im') return false;
-    // Ignore bot messages
     if (event.bot_id) return false;
-    // Owner check
     if (chatConfig.ownerSlackUserId && event.user !== chatConfig.ownerSlackUserId) return false;
     return true;
   }
 
   /**
-   * Handle a new top-level DM (no thread_ts) — start a new conversation thread.
+   * Handle a new top-level DM — start a new conversation thread.
    */
   async function handleNewConversation(channel: string, messageTs: string, text: string) {
     fastify.log.info({ channel, text: text.slice(0, 50) }, 'New conversation');
 
-    // Post "Thinking..." placeholder in a new thread on this message
-    const placeholder = await app.client.chat.postMessage({
-      channel,
-      thread_ts: messageTs,
-      text: 'Thinking...',
-    });
-
-    const threadTs = messageTs;
-    const threadKey = `${channel}:${threadTs}`;
+    // Instant feedback
+    await addReaction(channel, messageTs, 'thinking_face');
 
     try {
       const result = await handleMessage(preprocessMessage(text));
       fastify.log.info({ sessionId: result.sessionId, textLength: result.text.length }, 'Posting threaded response');
 
+      const threadTs = messageTs;
+      const threadKey = `${channel}:${threadTs}`;
       await sessionStore.upsert(threadKey, result.sessionId);
-      await postResponse(channel, threadTs, result.text, placeholder.ts ? { ts: placeholder.ts } : undefined);
+
+      await postResponse(channel, threadTs, result.text);
+      await setThreadTitle(channel, threadTs, text);
+      await setSuggestedPrompts(channel, threadTs);
     } catch (err) {
       fastify.log.error({ err }, 'Error in new conversation handler');
       try {
-        if (placeholder.ts) {
-          await app.client.chat.update({
-            channel,
-            ts: placeholder.ts,
-            text: 'Sorry, something went wrong. Check the server logs.',
-          });
-        }
+        await app.client.chat.postMessage({
+          channel,
+          thread_ts: messageTs,
+          text: 'Sorry, something went wrong. Check the server logs.',
+        });
       } catch (postErr) {
         fastify.log.error({ postErr }, 'Failed to post error message');
       }
+    } finally {
+      await removeReaction(channel, messageTs, 'thinking_face');
     }
   }
 
   /**
    * Handle a reply within an existing Slack thread — resume the Agent SDK session.
    */
-  async function handleThreadReply(channel: string, threadTs: string, text: string) {
+  async function handleThreadReply(channel: string, threadTs: string, messageTs: string, text: string) {
     const threadKey = `${channel}:${threadTs}`;
     const sessionId = await sessionStore.getSessionId(threadKey);
 
     fastify.log.info({ threadKey, sessionId, text: text.slice(0, 50) }, 'Thread reply');
 
-    // Post "Thinking..." in the thread
-    const placeholder = await app.client.chat.postMessage({
-      channel,
-      thread_ts: threadTs,
-      text: 'Thinking...',
-    });
+    // Instant feedback
+    await addReaction(channel, messageTs, 'thinking_face');
+    await setTypingStatus(channel, threadTs, 'Thinking...');
 
     try {
       const result = await handleMessage(preprocessMessage(text), sessionId ?? undefined);
       await sessionStore.upsert(threadKey, result.sessionId);
 
       fastify.log.info({ sessionId: result.sessionId, textLength: result.text.length }, 'Posting thread response');
-      await postResponse(channel, threadTs, result.text, placeholder.ts ? { ts: placeholder.ts } : undefined);
+      await postResponse(channel, threadTs, result.text);
+      await setSuggestedPrompts(channel, threadTs);
     } catch (err) {
       fastify.log.error({ err }, 'Error in thread reply handler');
       try {
-        if (placeholder.ts) {
-          await app.client.chat.update({
-            channel,
-            ts: placeholder.ts,
-            text: 'Sorry, something went wrong. Check the server logs.',
-          });
-        }
+        await app.client.chat.postMessage({
+          channel,
+          thread_ts: threadTs,
+          text: 'Sorry, something went wrong. Check the server logs.',
+        });
       } catch (postErr) {
         fastify.log.error({ postErr }, 'Failed to post error message');
       }
+    } finally {
+      await removeReaction(channel, messageTs, 'thinking_face');
     }
   }
 
   // Listen for all DM messages
   app.event('message', async ({ event }) => {
-    // Type guard — subtypes like message_changed, message_deleted, etc.
     if ('subtype' in event && event.subtype !== undefined) return;
     if (!shouldProcess(event)) return;
 
@@ -197,10 +243,8 @@ export default createPlugin('chat', async (fastify, options) => {
     if (!text) return;
 
     if (threadTs) {
-      // Reply in existing thread
-      await handleThreadReply(channel, threadTs, text);
+      await handleThreadReply(channel, threadTs, ts, text);
     } else {
-      // New top-level message — start new conversation
       await handleNewConversation(channel, ts, text);
     }
   });
