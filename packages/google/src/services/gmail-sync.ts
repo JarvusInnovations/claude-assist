@@ -115,7 +115,7 @@ export class GmailSyncService {
    * Full sync: Fetch untriaged inbox emails
    * Skips if sync already in progress for this account
    */
-  async syncFull(accountId: number): Promise<SyncResult> {
+  async syncFull(accountId: number, options?: { afterDate?: Date }): Promise<SyncResult> {
     // Check if sync is disabled
     if (this.disableEmailSync) {
       this.log.info('Gmail sync disabled via disableEmailSync config');
@@ -149,13 +149,13 @@ export class GmailSyncService {
     });
 
     try {
-      return await this.doSyncFull(accountId);
+      return await this.doSyncFull(accountId, options?.afterDate);
     } finally {
       this.activeSyncs.delete(accountId);
     }
   }
 
-  private async doSyncFull(accountId: number): Promise<SyncResult> {
+  private async doSyncFull(accountId: number, afterDate?: Date): Promise<SyncResult> {
     const gmail = await this.authService.getGmailClient(accountId);
     const settings = await this.getAccountSettings(accountId);
     const labelPrefix = settings?.email_label_prefix ?? 'AI';
@@ -172,12 +172,16 @@ export class GmailSyncService {
       // Build query: inbox emails not yet triaged
       let query = `in:inbox -label:${labelPrefix}/Triaged`;
 
-      // Add start date filter if configured
-      if (settings?.email_sync_start_date) {
-        // Gmail uses YYYY/MM/DD format for after:
-        // Handle both Date objects (from postgres.js) and strings
-        const date = new Date(settings.email_sync_start_date as unknown as string | Date);
-        const dateStr = date.toISOString().split('T')[0]!.replace(/-/g, '/');
+      // Use the most recent date constraint: explicit afterDate or sync_start_date
+      const syncStartDate = settings?.email_sync_start_date
+        ? new Date(settings.email_sync_start_date as unknown as string | Date)
+        : null;
+      const effectiveDate = afterDate && syncStartDate
+        ? (afterDate > syncStartDate ? afterDate : syncStartDate)
+        : afterDate ?? syncStartDate;
+
+      if (effectiveDate) {
+        const dateStr = effectiveDate.toISOString().split('T')[0]!.replace(/-/g, '/');
         query += ` after:${dateStr}`;
       }
 
@@ -268,14 +272,14 @@ export class GmailSyncService {
       };
     }
 
-    const [account] = await this.sql<{ email_history_id: string | null }[]>`
-      SELECT email_history_id FROM google.accounts WHERE id = ${accountId}
+    const [account] = await this.sql<{ email_history_id: string | null; email_last_sync_at: string | null }[]>`
+      SELECT email_history_id, email_last_sync_at FROM google.accounts WHERE id = ${accountId}
     `;
 
     // Fall back to full sync if no email_history_id
     if (!account?.email_history_id) {
       this.log.info({ accountId }, 'No email_history_id, falling back to full sync');
-      return this.syncFull(accountId);
+      return this.syncFull(accountId, { afterDate: this.getLastSyncWithBuffer(account) });
     }
 
     this.activeSyncs.set(accountId, {
@@ -362,14 +366,20 @@ export class GmailSyncService {
         WHERE id = ${accountId}
       `;
     } catch (error) {
-      // History might be expired, fall back to full sync
+      // History might be expired or invalid, fall back to full sync
       if (
         error instanceof Error &&
         (error.message.includes('historyId') ||
-          error.message.includes('Start historyId'))
+          error.message.includes('Start historyId') ||
+          error.message.includes('not found') ||
+          error.message.includes('notFound'))
       ) {
-        this.log.info({ accountId }, 'History expired, falling back to full sync');
-        return this.syncFull(accountId);
+        this.log.info({ accountId }, 'History expired or invalid, falling back to full sync');
+        this.activeSyncs.delete(accountId);
+        const [acc] = await this.sql<{ email_last_sync_at: string | null }[]>`
+          SELECT email_last_sync_at FROM google.accounts WHERE id = ${accountId}
+        `;
+        return this.syncFull(accountId, { afterDate: this.getLastSyncWithBuffer(acc) });
       }
 
       const errorMessage =
@@ -912,6 +922,19 @@ export class GmailSyncService {
     `;
 
     return 'new';
+  }
+
+  /**
+   * Get a date 1 day before the last successful sync, for use as a fallback
+   * query boundary when incremental sync fails and we need to rediscover.
+   */
+  private getLastSyncWithBuffer(
+    account: { email_last_sync_at: string | null } | undefined
+  ): Date | undefined {
+    if (!account?.email_last_sync_at) return undefined;
+    const lastSync = new Date(account.email_last_sync_at);
+    lastSync.setDate(lastSync.getDate() - 1);
+    return lastSync;
   }
 
   /**
