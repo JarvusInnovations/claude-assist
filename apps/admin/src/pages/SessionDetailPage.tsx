@@ -8,7 +8,6 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { sessionsApi } from "@/api/sessions";
@@ -238,13 +237,11 @@ export function SessionDetailPage() {
 
             <TabsContent value="outline" className="p-4">
               {session.outline ? (
-                <ScrollArea className="h-[400px]">
                   <pre className="text-sm whitespace-pre-wrap font-sans">
                     {session.outline}
                   </pre>
-                </ScrollArea>
               ) : (
-                <div className="flex flex-col items-center justify-center h-[200px]">
+                <div className="flex flex-col items-center justify-center py-8">
                   <p className="text-muted-foreground mb-4">
                     No outline generated
                   </p>
@@ -261,17 +258,14 @@ export function SessionDetailPage() {
             </TabsContent>
 
             <TabsContent value="transcript" className="p-4">
-              <ScrollArea className="h-[400px]">
                 {transcript ? (
                   <TranscriptViewer transcript={transcript} />
                 ) : (
                   <p className="text-muted-foreground">Loading transcript...</p>
                 )}
-              </ScrollArea>
             </TabsContent>
 
             <TabsContent value="tools" className="p-4">
-              <ScrollArea className="h-[400px]">
                 {session.tools_used?.length ? (
                   <div className="flex flex-wrap gap-2">
                     {session.tools_used.map((tool, i) => (
@@ -283,11 +277,9 @@ export function SessionDetailPage() {
                 ) : (
                   <p className="text-muted-foreground">No tools used</p>
                 )}
-              </ScrollArea>
             </TabsContent>
 
             <TabsContent value="files" className="p-4">
-              <ScrollArea className="h-[400px]">
                 {(session.files_touched?.reads?.length || session.files_touched?.writes?.length) ? (
                   <div className="space-y-4">
                     {session.files_touched?.writes?.length ? (
@@ -322,7 +314,6 @@ export function SessionDetailPage() {
                 ) : (
                   <p className="text-muted-foreground">No files touched</p>
                 )}
-              </ScrollArea>
             </TabsContent>
           </Tabs>
         </CardContent>
