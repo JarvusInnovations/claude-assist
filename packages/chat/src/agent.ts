@@ -9,6 +9,62 @@ export interface AgentResult {
   sessionId: string;
 }
 
+export interface AgentHandlerOptions {
+  /** Called with a human-readable status when the agent starts a tool or subagent */
+  onStatus?: (status: string) => void;
+}
+
+/** Map tool names to human-readable descriptions */
+const TOOL_LABELS: Record<string, string> = {
+  Read: 'Reading file',
+  Write: 'Writing file',
+  Edit: 'Editing file',
+  Glob: 'Searching files',
+  Grep: 'Searching code',
+  Bash: 'Running command',
+  WebSearch: 'Searching the web',
+  WebFetch: 'Fetching page',
+  Agent: 'Working with subagent',
+};
+
+function describeToolUse(toolName: string, input: Record<string, unknown>): string {
+  // MCP tools: mcp__server__tool → "Using server tool"
+  if (toolName.startsWith('mcp__')) {
+    const parts = toolName.split('__');
+    const server = parts[1] ?? 'mcp';
+    const tool = parts[2] ?? 'tool';
+    return `Using ${server}: ${tool}`;
+  }
+
+  const label = TOOL_LABELS[toolName] ?? `Using ${toolName}`;
+
+  // Add context from input where helpful
+  if (toolName === 'Read' && typeof input.file_path === 'string') {
+    const filename = input.file_path.split('/').pop();
+    return `Reading ${filename}`;
+  }
+  if (toolName === 'Edit' && typeof input.file_path === 'string') {
+    const filename = input.file_path.split('/').pop();
+    return `Editing ${filename}`;
+  }
+  if (toolName === 'Write' && typeof input.file_path === 'string') {
+    const filename = input.file_path.split('/').pop();
+    return `Writing ${filename}`;
+  }
+  if (toolName === 'Bash' && typeof input.command === 'string') {
+    const cmd = input.command.slice(0, 40);
+    return `Running: ${cmd}${input.command.length > 40 ? '...' : ''}`;
+  }
+  if (toolName === 'WebSearch' && typeof input.query === 'string') {
+    return `Searching: ${input.query.slice(0, 40)}`;
+  }
+  if (toolName === 'Grep' && typeof input.pattern === 'string') {
+    return `Searching for: ${input.pattern.slice(0, 40)}`;
+  }
+
+  return label;
+}
+
 /**
  * Load env vars from settings.local.json so MCP servers get their API keys.
  * Providing env to the Agent SDK overrides settings.local.json env,
@@ -38,6 +94,7 @@ export function createAgentHandler(config: ChatPluginConfig, log: FastifyBaseLog
   return async function handleMessage(
     userText: string,
     resumeSessionId?: string,
+    options?: AgentHandlerOptions,
   ): Promise<AgentResult> {
     let sessionId = '';
     let resultText = '';
@@ -80,6 +137,19 @@ export function createAgentHandler(config: ChatPluginConfig, log: FastifyBaseLog
         if (message.type === 'system' && message.subtype === 'init') {
           sessionId = (message as { session_id?: string }).session_id ?? '';
           log.debug({ sessionId }, 'Agent SDK session initialized');
+        }
+
+        // Emit status on assistant messages containing tool_use
+        if (message.type === 'assistant' && options?.onStatus) {
+          const assistantMsg = message as { message?: { content?: Array<{ type: string; name?: string; input?: Record<string, unknown> }> } };
+          const toolUses = assistantMsg.message?.content?.filter(block => block.type === 'tool_use') ?? [];
+          for (const toolUse of toolUses) {
+            if (toolUse.name) {
+              const status = describeToolUse(toolUse.name, toolUse.input ?? {});
+              log.debug({ tool: toolUse.name, status }, 'Tool use status');
+              options.onStatus(status);
+            }
+          }
         }
 
         // Capture result

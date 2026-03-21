@@ -164,9 +164,13 @@ export default createPlugin('chat', async (fastify, options) => {
 
     // Instant feedback
     await addReaction(channel, messageTs, 'thinking_face');
+    // Set typing status on the thread (messageTs becomes the thread_ts)
+    await setTypingStatus(channel, messageTs, 'Thinking...');
 
     try {
-      const result = await handleMessage(preprocessMessage(text));
+      const result = await handleMessage(preprocessMessage(text), undefined, {
+        onStatus: (status) => setTypingStatus(channel, messageTs, status),
+      });
       fastify.log.info({ sessionId: result.sessionId, textLength: result.text.length }, 'Posting threaded response');
 
       const threadTs = messageTs;
@@ -206,7 +210,9 @@ export default createPlugin('chat', async (fastify, options) => {
     await setTypingStatus(channel, threadTs, 'Thinking...');
 
     try {
-      const result = await handleMessage(preprocessMessage(text), sessionId ?? undefined);
+      const result = await handleMessage(preprocessMessage(text), sessionId ?? undefined, {
+        onStatus: (status) => setTypingStatus(channel, threadTs, status),
+      });
       await sessionStore.upsert(threadKey, result.sessionId);
 
       fastify.log.info({ sessionId: result.sessionId, textLength: result.text.length }, 'Posting thread response');
