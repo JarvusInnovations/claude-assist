@@ -7,7 +7,7 @@ ACCOUNT="" FULL="false"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --account) ACCOUNT="$2"; shift 2 ;;
-    --full)    FULL="true"; shift ;;
+    --full)    FULL="true"; shift; [[ ${1:-} == "true" ]] && shift ;;
     *)
       echo "Usage: sync-emails [--account ID] [--full]"
       exit 1
