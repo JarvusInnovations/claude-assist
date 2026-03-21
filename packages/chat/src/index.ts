@@ -135,16 +135,31 @@ export default createPlugin('chat', async (fastify, options) => {
     const blocks = await markdownToBlocks(text);
     const BLOCK_LIMIT = 50;
 
+    fastify.log.info({
+      blockCount: blocks.length,
+      blockTypes: blocks.map(b => b.type),
+      blocksJson: JSON.stringify(blocks).slice(0, 2000),
+    }, 'markdownToBlocks result');
+
     // Split blocks into chunks of 50 and post each as a separate message
     for (let i = 0; i < blocks.length; i += BLOCK_LIMIT) {
       const chunk = blocks.slice(i, i + BLOCK_LIMIT);
-      await app.client.chat.postMessage({
+      const result = await app.client.chat.postMessage({
         channel,
         thread_ts: threadTs,
         blocks: chunk,
         // text fallback only on first message
         text: i === 0 ? text.slice(0, 3000) : '(continued)',
       });
+
+      const msg = result.message as { blocks?: unknown[] } | undefined;
+      fastify.log.info({
+        ok: result.ok,
+        sentBlocks: chunk.length,
+        responseBlocks: msg?.blocks?.length ?? 0,
+        responseError: (result as any).error,
+        responseWarning: (result as any).warning,
+      }, 'chat.postMessage result');
     }
   }
 
