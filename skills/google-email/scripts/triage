@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SERVER="${CLAUDE_ASSIST_SERVER:-http://localhost:2529}"
+
+if [[ $# -gt 0 ]]; then
+  # Triage single email
+  exec curl -sf -X POST "${SERVER}/api/google/emails/$1/triage" | jq .
+else
+  # Batch triage all 'new' emails
+  exec curl -sf -X POST "${SERVER}/api/google/emails/triage" | jq .
+fi

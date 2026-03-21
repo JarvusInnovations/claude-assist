@@ -7,7 +7,13 @@ description: Set up Google Gmail accounts for email sync and triage. Use when us
 
 Interactive workflow to set up a Gmail account for sync and triage.
 
-> **Note:** Replace `<claude-assist-server>` with the actual server URL (e.g., `http://localhost:2529`). If a request fails with connection refused, ask the user for the correct server endpoint.
+## Scripts
+
+The `scripts/` directory contains executable wrappers for all API endpoints. **Always use these scripts** instead of raw curl commands.
+
+All scripts default to `http://localhost:2529`. Override with `CLAUDE_ASSIST_SERVER` env var.
+
+Available scripts: `create-account`, `get-account`, `update-account`, `add-alias`, `sync-emails`
 
 ## Workflow
 
@@ -30,9 +36,7 @@ Wait for confirmation before proceeding.
 ### 3. Create Account
 
 ```bash
-curl -X POST <claude-assist-server>/api/google/accounts \
-  -H "Content-Type: application/json" \
-  -d '{"identifier": "<identifier>", "email": "<email>", "display_name": "<name>"}'
+scripts/create-account --identifier "<identifier>" --email "<email>" --display-name "<name>"
 ```
 
 Response includes `authUrl` - present this to the user.
@@ -44,7 +48,7 @@ Tell the user to open the `authUrl` in their browser and complete Google authori
 ### 5. Verify Credentials
 
 ```bash
-curl <claude-assist-server>/api/google/accounts/<id>
+scripts/get-account <id>
 ```
 
 Confirm `has_credentials: true`. If false, offer to generate a new auth URL via `POST /google/accounts/<id>/reauth`.
@@ -59,9 +63,7 @@ Ask the user:
 Apply settings:
 
 ```bash
-curl -X PATCH <claude-assist-server>/api/google/accounts/<id> \
-  -H "Content-Type: application/json" \
-  -d '{"email_sync_start_date": "<date>", "email_label_prefix": "<prefix>"}'
+scripts/update-account <id> --sync-start-date "<date>" --label-prefix "<prefix>"
 ```
 
 #### Triage System Instructions
@@ -77,11 +79,9 @@ The `email_triage_instructions` field lets you customize the AI triage behavior 
 **Example - Name disambiguation:**
 
 ```bash
-curl -X PATCH <claude-assist-server>/api/google/accounts/<id> \
-  -H "Content-Type: application/json" \
-  -d '{
-    "email_triage_instructions": "NAME DISAMBIGUATION:\n- \"Christopher\" in emails refers to teammate Christopher Yamas, NOT the account owner\n- The account owner goes by \"Chris\" or \"Chris Alfano\" only"
-  }'
+scripts/update-account <id> --triage-instructions "NAME DISAMBIGUATION:
+- \"Christopher\" in emails refers to teammate Christopher Yamas, NOT the account owner
+- The account owner goes by \"Chris\" or \"Chris Alfano\" only"
 ```
 
 **Developing triage instructions:**
@@ -101,9 +101,7 @@ Ask the user what names refer to them (for commitment extraction). Only add name
 For each alias:
 
 ```bash
-curl -X POST <claude-assist-server>/api/google/accounts/<id>/aliases \
-  -H "Content-Type: application/json" \
-  -d '{"alias": "<name>", "is_owner": true}'
+scripts/add-alias <id> --alias "<name>"
 ```
 
 ### 8. Complete
@@ -113,9 +111,7 @@ Summarize the configured account and ask: "Would you like me to trigger an initi
 If yes, trigger a full sync:
 
 ```bash
-curl -X POST <claude-assist-server>/api/google/emails/sync \
-  -H "Content-Type: application/json" \
-  -d '{"account": "<identifier>", "full": true}'
+scripts/sync-emails --account "<identifier>" --full
 ```
 
 This will fetch untriaged inbox emails and queue them for triage.

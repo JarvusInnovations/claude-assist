@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SERVER="${CLAUDE_ASSIST_SERVER:-http://localhost:2529}"
+
+if [[ $# -gt 0 ]]; then
+  # Build JSON array of session IDs
+  IDS=$(printf '%s\n' "$@" | jq -R . | jq -s '{"sessionIds": .}')
+  exec curl -sf -X POST -H "Content-Type: application/json" -d "$IDS" "${SERVER}/api/sessions/outlines" | jq .
+else
+  exec curl -sf -X POST "${SERVER}/api/sessions/outlines" | jq .
+fi

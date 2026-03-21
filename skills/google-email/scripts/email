@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SERVER="${CLAUDE_ASSIST_SERVER:-http://localhost:2529}"
+
+if [[ $# -lt 1 ]]; then
+  echo "Usage: email <email-id>"
+  exit 1
+fi
+
+exec curl -sf "${SERVER}/api/google/emails/$1" | jq .

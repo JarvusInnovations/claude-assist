@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SERVER="${CLAUDE_ASSIST_SERVER:-http://localhost:2529}"
+IDENTIFIER="" EMAIL="" DISPLAY_NAME=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --identifier)    IDENTIFIER="$2"; shift 2 ;;
+    --email)         EMAIL="$2"; shift 2 ;;
+    --display-name)  DISPLAY_NAME="$2"; shift 2 ;;
+    *)
+      echo "Usage: create-account --identifier ID --email EMAIL [--display-name NAME]"
+      exit 1
+      ;;
+  esac
+done
+
+if [[ -z "$IDENTIFIER" || -z "$EMAIL" ]]; then
+  echo "Usage: create-account --identifier ID --email EMAIL [--display-name NAME]"
+  exit 1
+fi
+
+BODY=$(jq -n --arg id "$IDENTIFIER" --arg email "$EMAIL" --arg name "$DISPLAY_NAME" \
+  '{identifier: $id, email: $email} + (if $name != "" then {display_name: $name} else {} end)')
+
+exec curl -sf -X POST -H "Content-Type: application/json" -d "$BODY" "${SERVER}/api/google/accounts" | jq .

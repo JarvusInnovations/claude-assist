@@ -11,7 +11,13 @@ Manage Gmail sync, AI-powered triage, and email analysis workflows.
 
 Use the `google-account-setup` skill to configure Gmail accounts before using these workflows. Accounts must have OAuth credentials (`has_credentials: true`) for sync and triage to work.
 
-> **Note:** Replace `<claude-assist-server>` with the actual server URL (e.g., `http://localhost:2529`). If a request fails with connection refused, ask the user for the correct server endpoint.
+## Scripts
+
+The `scripts/` directory contains executable wrappers for all API endpoints. **Always use these scripts** instead of raw curl commands.
+
+All scripts default to `http://localhost:2529`. Override with `CLAUDE_ASSIST_SERVER` env var.
+
+Available scripts: `accounts`, `sync-emails`, `emails`, `email`, `email-stats`, `triage`, `triage-progress`
 
 ## Workflow States
 
@@ -71,7 +77,7 @@ The AI triage uses a conversational approach:
 ### Check Account Status
 
 ```bash
-curl <claude-assist-server>/api/google/accounts
+scripts/accounts
 ```
 
 Returns accounts with `email_sync_status` and `email_triage_status` showing real-time progress.
@@ -80,25 +86,23 @@ Returns accounts with `email_sync_status` and `email_triage_status` showing real
 
 ```bash
 # Incremental sync all accounts
-curl -X POST <claude-assist-server>/api/google/emails/sync
+scripts/sync-emails
 
 # Full sync specific account
-curl -X POST <claude-assist-server>/api/google/emails/sync \
-  -H "Content-Type: application/json" \
-  -d '{"account": "personal", "full": true}'
+scripts/sync-emails --account personal --full
 ```
 
 ### Query Emails
 
 ```bash
 # Filter by workflow status and message type
-curl "<claude-assist-server>/api/google/emails?workflow_status=triaged&message_type=newsletter&days=7"
+scripts/emails --status triaged --type newsletter --days 7
 
 # Get single email with full details
-curl <claude-assist-server>/api/google/emails/123
+scripts/email 123
 
 # Get statistics
-curl "<claude-assist-server>/api/google/emails/stats?days=7"
+scripts/email-stats --days 7
 ```
 
 **Query Parameters:**
@@ -115,13 +119,13 @@ curl "<claude-assist-server>/api/google/emails/stats?days=7"
 
 ```bash
 # Batch triage all 'new' emails
-curl -X POST <claude-assist-server>/api/google/emails/triage
+scripts/triage
 
 # Triage single email
-curl -X POST <claude-assist-server>/api/google/emails/123/triage
+scripts/triage 123
 
 # Check progress
-curl <claude-assist-server>/api/google/emails/triage/progress
+scripts/triage-progress
 ```
 
 ## Common Workflows
@@ -129,35 +133,27 @@ curl <claude-assist-server>/api/google/emails/triage/progress
 ### 1. Initial Sync After Account Setup
 
 ```bash
-# Trigger full sync
-curl -X POST <claude-assist-server>/api/google/emails/sync \
-  -H "Content-Type: application/json" \
-  -d '{"account": "personal", "full": true}'
-
-# Monitor progress
-curl <claude-assist-server>/api/google/accounts
+scripts/sync-emails --account personal --full
+scripts/accounts  # monitor progress
 ```
 
 ### 2. Check Inbox Status
 
 ```bash
-# Get statistics
-curl "<claude-assist-server>/api/google/emails/stats?days=7"
-
-# Check triage progress
-curl <claude-assist-server>/api/google/emails/triage/progress
+scripts/email-stats --days 7
+scripts/triage-progress
 ```
 
 ### 3. Find Newsletters for Review
 
 ```bash
-curl "<claude-assist-server>/api/google/emails?message_type=newsletter&workflow_status=triaged&days=7"
+scripts/emails --type newsletter --status triaged --days 7
 ```
 
 ### 4. Find Personal Emails Needing Attention
 
 ```bash
-curl "<claude-assist-server>/api/google/emails?message_type=personal&workflow_status=triaged&days=3"
+scripts/emails --type personal --status triaged --days 3
 ```
 
 ### 5. Find Emails with Action Items
@@ -165,19 +161,14 @@ curl "<claude-assist-server>/api/google/emails?message_type=personal&workflow_st
 Query triaged emails and filter by those with `potential_action_items` in the analysis:
 
 ```bash
-curl "<claude-assist-server>/api/google/emails?workflow_status=triaged&days=7"
+scripts/emails --status triaged --days 7
 ```
 
 Then filter results where `analysis.potential_action_items` is non-empty.
 
 ### 6. Manual Triage Trigger
 
-If automatic triage isn't running or you want immediate results:
-
 ```bash
-# Triage all pending emails
-curl -X POST <claude-assist-server>/api/google/emails/triage
-
-# Or triage a specific email
-curl -X POST <claude-assist-server>/api/google/emails/123/triage
+scripts/triage          # all pending
+scripts/triage 123      # specific email
 ```

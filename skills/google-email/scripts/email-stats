@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SERVER="${CLAUDE_ASSIST_SERVER:-http://localhost:2529}"
+CURL_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --days)    CURL_ARGS+=(--data-urlencode "days=$2"); shift 2 ;;
+    --account) CURL_ARGS+=(--data-urlencode "account=$2"); shift 2 ;;
+    *)
+      echo "Usage: email-stats [--days N] [--account ID]"
+      exit 1
+      ;;
+  esac
+done
+
+exec curl -sf -G ${CURL_ARGS[@]+"${CURL_ARGS[@]}"} "${SERVER}/api/google/emails/stats" | jq .

@@ -7,17 +7,15 @@ description: Search past Claude sessions for context. Use when asked "where did 
 
 Search and retrieve context from past Claude Code sessions across multiple machines.
 
-> **Note:** Replace `<claude-assist-server>` with the actual server URL (e.g., `http://localhost:2529`). If a request fails with connection refused, ask the user for the correct server endpoint.
-
 ## Important Behavior
 
-### Use the `curl` command line
+### Use the bundled scripts
 
-You will NOT be able to use your `Fetch()` tool with these URLs because they are non-public.
+The `scripts/` directory contains executable wrappers for all API endpoints. **Always use these scripts** instead of raw curl commands — they handle URL construction, JSON formatting, and URL encoding.
 
-You MUST shell out to `curl` to fetch responses.
+All scripts default to `http://localhost:2529`. Override with `CLAUDE_ASSIST_SERVER` env var.
 
-Every endpoint except `/api/sessions/<id>/transcript` returns JSON responses that can be piped into `jq` or explored with `jq` after saving to disk.
+Available scripts: `search`, `transcript`, `details`, `stats`, `machines`, `sync`, `outlines`, `outline-progress`
 
 ### Default to Current Project
 
@@ -39,7 +37,7 @@ This keeps queries concise while still filtering effectively.
 Search sessions by topic (scoped to current project):
 
 ```bash
-curl "<claude-assist-server>/api/sessions?search=RTD+proposal&days=14&project=myproject"
+scripts/search --query "RTD proposal" --days 14 --project myproject
 ```
 
 ## Available Endpoints
@@ -47,7 +45,7 @@ curl "<claude-assist-server>/api/sessions?search=RTD+proposal&days=14&project=my
 ### Search Sessions
 
 ```bash
-curl "<claude-assist-server>/api/sessions?search=...&days=...&tools=...&machine=...&project=..."
+scripts/search --query "..." --days N --project PATH --tools Edit,Bash --machine ID
 ```
 
 Parameters:
@@ -92,7 +90,7 @@ Example response:
 ### Get Session Transcript (Preferred)
 
 ```bash
-curl <claude-assist-server>/api/sessions/<id>/transcript
+scripts/transcript <session-id>
 ```
 
 Returns a **compact, token-efficient text format** of the session—the same format used for AI outline generation. This is the **recommended way to read full session content**.
@@ -120,7 +118,7 @@ Example response:
 - Understanding what happened in a session
 - Copying session context for continuation
 
-**Use `?with_raw_messages=true` only when:**
+**Use `--raw` only when:**
 
 - You need exact tool inputs/outputs
 - You need token usage per message
@@ -129,12 +127,9 @@ Example response:
 ### Get Session Details
 
 ```bash
-curl "<claude-assist-server>/api/sessions/<id>?with_raw_messages=true"
+scripts/details <session-id>        # metadata only
+scripts/details <session-id> --raw  # include full raw messages
 ```
-
-Parameters:
-
-- `with_raw_messages` - Include full conversation as parsed JSONL message objects (default: false). **Warning: This can be very large.**
 
 Returns session metadata plus optionally the full `raw_messages` array (parsed JSONL messages).
 
@@ -157,7 +152,7 @@ Example `model_tokens` structure:
 ### Session Statistics
 
 ```bash
-curl "<claude-assist-server>/api/sessions/stats?days=30&machine=laptop"
+scripts/stats --days 30 --machine laptop
 ```
 
 Parameters:
@@ -194,7 +189,7 @@ Returns:
 ### List Machines
 
 ```bash
-curl <claude-assist-server>/api/machines
+scripts/machines
 ```
 
 Returns all registered machines with sync status:
@@ -215,7 +210,7 @@ Returns all registered machines with sync status:
 ### Manual Sync (Localhost)
 
 ```bash
-curl -X POST <claude-assist-server>/api/sessions/sync
+scripts/sync
 ```
 
 Triggers an immediate sync of local sessions. Returns sync results:
@@ -233,18 +228,11 @@ Triggers an immediate sync of local sessions. Returns sync results:
 ### Generate Outlines
 
 ```bash
-curl -X POST <claude-assist-server>/api/sessions/outlines
+scripts/outlines                         # all pending
+scripts/outlines <session-id> [...]      # specific sessions
 ```
 
 Manually triggers AI outline generation for sessions without outlines (or with stale outlines). Requires `ANTHROPIC_API_KEY` to be configured.
-
-Optional body:
-
-```json
-{
-  "sessionIds": ["uuid1", "uuid2"]
-}
-```
 
 Returns:
 
@@ -260,7 +248,7 @@ Returns:
 ### Outline Generation Progress
 
 ```bash
-curl <claude-assist-server>/api/sessions/outlines/progress
+scripts/outline-progress
 ```
 
 Check the progress of background outline generation:
@@ -277,20 +265,7 @@ Check the progress of background outline generation:
 
 ### Push from Satellite (API)
 
-```bash
-curl -X POST <claude-assist-server>/api/sessions/push \
-  -H "Content-Type: application/json" \
-  -d '{
-    "machineId": "laptop",
-    "hostname": "chris-macbook",
-    "sessions": [
-      {
-        "signal": { "session_id": "...", "transcript_path": "...", "cwd": "...", "ended_at": "..." },
-        "transcript": "... raw JSONL content ..."
-      }
-    ]
-  }'
-```
+Push is typically done via the CLI (see below), not manually.
 
 ## Multi-Machine Support
 
@@ -317,11 +292,11 @@ Options:
 ## Usage Tips
 
 1. Start with a broad search, then narrow by project or machine
-2. Use `days` parameter to focus on recent sessions
-3. Filter by `tools` to find sessions with specific activities (e.g., `tools=Edit,Bash`)
-4. **Prefer `/api/sessions/:id/transcript`** for reading session content—it's compact and token-efficient
-5. Only use `?with_raw_messages=true` when you need exact tool inputs/outputs or token usage
-6. Use machine filter when looking for work done on a specific device
+2. Use `--days` to focus on recent sessions
+3. Filter by `--tools` to find sessions with specific activities (e.g., `--tools Edit,Bash`)
+4. **Prefer `scripts/transcript`** for reading session content—it's compact and token-efficient
+5. Only use `--raw` when you need exact tool inputs/outputs or token usage
+6. Use `--machine` filter when looking for work done on a specific device
 
 ## Architecture
 

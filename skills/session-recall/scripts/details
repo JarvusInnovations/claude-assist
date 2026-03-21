@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SERVER="${CLAUDE_ASSIST_SERVER:-http://localhost:2529}"
+
+if [[ $# -lt 1 ]]; then
+  echo "Usage: details <session-id> [--raw]"
+  exit 1
+fi
+
+ID="$1"; shift
+PARAMS=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --raw) PARAMS="?with_raw_messages=true"; shift ;;
+    *) echo "Unknown option: $1"; exit 1 ;;
+  esac
+done
+
+exec curl -sf "${SERVER}/api/sessions/${ID}${PARAMS}" | jq .
