@@ -1,6 +1,7 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { Link } from "react-router";
-import { Plus, ExternalLink, CheckCircle, XCircle } from "lucide-react";
+import { Plus, ExternalLink, CheckCircle, XCircle, LogIn } from "lucide-react";
+import { toast } from "sonner";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -14,6 +15,17 @@ export function AccountsPage() {
     queryKey: ["accounts"],
     queryFn: googleApi.getAccounts,
     refetchInterval: 10000,
+  });
+
+  const reauthMutation = useMutation({
+    mutationFn: (id: number) => googleApi.getReauthUrl(id),
+    onSuccess: (data) => {
+      window.open(data.authUrl, "_blank");
+      toast.success("Opened Google sign-in in a new tab");
+    },
+    onError: (error) => {
+      toast.error(`Reconnect failed: ${error.message}`);
+    },
   });
 
   return (
@@ -80,12 +92,26 @@ export function AccountsPage() {
                     : "Never synced"}
                 </div>
 
-                <Button variant="outline" size="sm" asChild className="w-full">
-                  <Link to={`/accounts/${account.id}`}>
-                    <ExternalLink className="mr-2 h-4 w-4" />
-                    Manage
-                  </Link>
-                </Button>
+                <div className="flex gap-2">
+                  {!account.has_credentials && (
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      className="flex-1"
+                      onClick={() => reauthMutation.mutate(account.id)}
+                      disabled={reauthMutation.isPending}
+                    >
+                      <LogIn className="mr-2 h-4 w-4" />
+                      Reconnect
+                    </Button>
+                  )}
+                  <Button variant="outline" size="sm" asChild className="flex-1">
+                    <Link to={`/accounts/${account.id}`}>
+                      <ExternalLink className="mr-2 h-4 w-4" />
+                      Manage
+                    </Link>
+                  </Button>
+                </div>
               </CardContent>
             </Card>
           ))}

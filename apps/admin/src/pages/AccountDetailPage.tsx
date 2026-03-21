@@ -1,6 +1,6 @@
 import { useParams, Link } from "react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Save, RefreshCw, Trash2, Plus } from "lucide-react";
+import { ArrowLeft, Save, RefreshCw, Trash2, Plus, LogIn } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -53,6 +53,17 @@ export function AccountDetailPage() {
     },
     onError: (error) => {
       toast.error(`Sync failed: ${error.message}`);
+    },
+  });
+
+  const reauthMutation = useMutation({
+    mutationFn: () => googleApi.getReauthUrl(accountId),
+    onSuccess: (data) => {
+      window.open(data.authUrl, "_blank");
+      toast.success("Opened Google sign-in in a new tab");
+    },
+    onError: (error) => {
+      toast.error(`Reconnect failed: ${error.message}`);
     },
   });
 
@@ -236,9 +247,20 @@ export function AccountDetailPage() {
             </div>
             <div>
               <p className="text-sm text-muted-foreground">OAuth Status</p>
-              <Badge variant={account.has_credentials ? "default" : "destructive"}>
-                {account.has_credentials ? "Connected" : "Not Connected"}
-              </Badge>
+              <div className="flex items-center gap-2">
+                <Badge variant={account.has_credentials ? "default" : "destructive"}>
+                  {account.has_credentials ? "Connected" : "Not Connected"}
+                </Badge>
+                <Button
+                  variant={account.has_credentials ? "outline" : "destructive"}
+                  size="sm"
+                  onClick={() => reauthMutation.mutate()}
+                  disabled={reauthMutation.isPending}
+                >
+                  <LogIn className="mr-2 h-4 w-4" />
+                  {reauthMutation.isPending ? "Loading..." : "Reconnect"}
+                </Button>
+              </div>
             </div>
           </div>
         </CardContent>
