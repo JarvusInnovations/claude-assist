@@ -38,11 +38,12 @@ function markdownToMrkdwn(text: string): string {
   }).join('');
 }
 
-const SUGGESTED_PROMPTS = [
-  { title: 'Daily briefing', message: '`/briefing`' },
-  { title: 'Check commitments', message: '`/commitments`' },
-  { title: 'What\'s next?', message: '`/next`' },
-];
+// TODO: make suggested prompts dynamic based on conversation context
+// const SUGGESTED_PROMPTS = [
+//   { title: 'Daily briefing', message: '`/briefing`' },
+//   { title: 'Check commitments', message: '`/commitments`' },
+//   { title: 'What\'s next?', message: '`/next`' },
+// ];
 
 export default createPlugin('chat', async (fastify, options) => {
   const config = options.chatConfig;
@@ -123,17 +124,18 @@ export default createPlugin('chat', async (fastify, options) => {
   /**
    * Set suggested prompts in a thread. Fails silently.
    */
-  async function setSuggestedPrompts(channel: string, threadTs: string) {
-    try {
-      await app.client.assistant.threads.setSuggestedPrompts({
-        channel_id: channel,
-        thread_ts: threadTs,
-        prompts: SUGGESTED_PROMPTS,
-      });
-    } catch {
-      // Ignore
-    }
-  }
+  // TODO: make suggested prompts dynamic based on conversation context
+  // async function setSuggestedPrompts(channel: string, threadTs: string) {
+  //   try {
+  //     await app.client.assistant.threads.setSuggestedPrompts({
+  //       channel_id: channel,
+  //       thread_ts: threadTs,
+  //       prompts: SUGGESTED_PROMPTS,
+  //     });
+  //   } catch {
+  //     // Ignore
+  //   }
+  // }
 
   /**
    * Set a title for a thread. Fails silently.
@@ -210,7 +212,7 @@ export default createPlugin('chat', async (fastify, options) => {
 
       await postResponse(channel, threadTs, result.text);
       await setThreadTitle(channel, threadTs, text);
-      await setSuggestedPrompts(channel, threadTs);
+      // await setSuggestedPrompts(channel, threadTs);
     } catch (err) {
       fastify.log.error({ err }, 'Error in new conversation handler');
       try {
@@ -248,7 +250,7 @@ export default createPlugin('chat', async (fastify, options) => {
 
       fastify.log.info({ sessionId: result.sessionId, textLength: result.text.length }, 'Posting thread response');
       await postResponse(channel, threadTs, result.text);
-      await setSuggestedPrompts(channel, threadTs);
+      // await setSuggestedPrompts(channel, threadTs);
     } catch (err) {
       fastify.log.error({ err }, 'Error in thread reply handler');
       try {
