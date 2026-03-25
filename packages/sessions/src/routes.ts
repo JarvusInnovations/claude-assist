@@ -213,9 +213,10 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       after: string;
       group?: string;
       project?: string;
+      min_user_messages?: string;
     };
   }>('/sessions/transcript', async (request, reply) => {
-    const { before, after, group = 'project', project } = request.query;
+    const { before, after, group = 'project', project, min_user_messages = '2' } = request.query;
 
     if (!before || !after) {
       return reply.status(400).send({ error: 'Both before and after params are required' });
@@ -244,6 +245,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       WHERE started_at <= ${beforeDate}
         AND (ended_at >= ${afterDate} OR ended_at IS NULL)
         AND output_tokens > 0
+        AND user_message_count >= ${parseInt(min_user_messages, 10) || 0}
         ${escapedProject ? fastify.sql`AND project_path ILIKE ${'%' + escapedProject + '%'}` : fastify.sql``}
       ORDER BY started_at ASC
       LIMIT 50

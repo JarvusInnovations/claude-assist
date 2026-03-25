@@ -8,6 +8,7 @@ BEFORE=""
 AFTER=""
 GROUP=""
 PROJECT=""
+MIN_USER_MESSAGES=""
 RAW=""
 
 while [[ $# -gt 0 ]]; do
@@ -16,6 +17,7 @@ while [[ $# -gt 0 ]]; do
     --after) AFTER="$2"; shift 2 ;;
     --group) GROUP="$2"; shift 2 ;;
     --project) PROJECT="$2"; shift 2 ;;
+    --min-user-messages) MIN_USER_MESSAGES="$2"; shift 2 ;;
     --raw) RAW="true"; shift; [[ ${1:-} == "true" ]] && shift ;;
     -*) echo "Unknown option: $1"; exit 1 ;;
     *) ID="$1"; shift ;;
@@ -47,7 +49,8 @@ if [[ -z "$ID" ]]; then
     "after=${AFTER}" \
     "before=${BEFORE}" \
     "${GROUP:+group=${GROUP}}" \
-    "${PROJECT:+project=${PROJECT}}")
+    "${PROJECT:+project=${PROJECT}}" \
+    "${MIN_USER_MESSAGES:+min_user_messages=${MIN_USER_MESSAGES}}")
   exec curl -sf "${SERVER}/api/sessions/transcript${PARAMS}"
 else
   # Per-session transcript endpoint

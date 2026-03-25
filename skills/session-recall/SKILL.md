@@ -153,6 +153,7 @@ Parameters:
 - `--before` - End of time range (ISO 8601, required)
 - `--group` - Output grouping: `project` (default) or `time`
 - `--project` - Filter to sessions matching this project path (partial match)
+- `--min-user-messages` - Minimum user messages to include session (default: 2, filters out subagent sessions)
 
 **`--group project`** (default) groups sessions under project path headers:
 
