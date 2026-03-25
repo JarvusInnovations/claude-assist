@@ -233,6 +233,9 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       return reply.status(400).send({ error: 'group must be "project" or "time"' });
     }
 
+    // Overlap query: selects sessions that span any part of [after, before].
+    // Per-message timestamp filtering in serializeTranscript() trims to the exact window.
+    const escapedProject = project?.replace(/%/g, '\\%').replace(/_/g, '\\_');
     const sessions = await fastify.sql<
       { id: string; project_path: string | null; raw_transcript: string; started_at: Date }[]
     >`
@@ -241,8 +244,9 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       WHERE started_at <= ${beforeDate}
         AND (ended_at >= ${afterDate} OR ended_at IS NULL)
         AND output_tokens > 0
-        ${project ? fastify.sql`AND project_path ILIKE ${'%' + project + '%'}` : fastify.sql``}
+        ${escapedProject ? fastify.sql`AND project_path ILIKE ${'%' + escapedProject + '%'}` : fastify.sql``}
       ORDER BY started_at ASC
+      LIMIT 50
     `;
 
     if (group === 'time') {

@@ -22,7 +22,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Build query params
+# Build query params (values are ISO 8601 dates and simple strings, URL-safe)
 build_params() {
   local params=""
   local sep="?"
@@ -44,16 +44,16 @@ if [[ -z "$ID" ]]; then
     exit 1
   fi
   PARAMS=$(build_params \
-    "after=$(jq -rn --arg v "$AFTER" '$v|@uri')" \
-    "before=$(jq -rn --arg v "$BEFORE" '$v|@uri')" \
-    "${GROUP:+group=$(jq -rn --arg v "$GROUP" '$v|@uri')}" \
-    "${PROJECT:+project=$(jq -rn --arg v "$PROJECT" '$v|@uri')}")
+    "after=${AFTER}" \
+    "before=${BEFORE}" \
+    "${GROUP:+group=${GROUP}}" \
+    "${PROJECT:+project=${PROJECT}}")
   exec curl -sf "${SERVER}/api/sessions/transcript${PARAMS}"
 else
   # Per-session transcript endpoint
   PARAMS=$(build_params \
-    "${AFTER:+after=$(jq -rn --arg v "$AFTER" '$v|@uri')}" \
-    "${BEFORE:+before=$(jq -rn --arg v "$BEFORE" '$v|@uri')}" \
+    "${AFTER:+after=${AFTER}}" \
+    "${BEFORE:+before=${BEFORE}}" \
     "${RAW:+with_raw_messages=true}")
   exec curl -sf "${SERVER}/api/sessions/${ID}/transcript${PARAMS}"
 fi

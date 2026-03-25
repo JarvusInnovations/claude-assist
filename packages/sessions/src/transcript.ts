@@ -202,13 +202,12 @@ export function serializeTranscript(
     try {
       const msg: TranscriptMessage = JSON.parse(line);
 
-      // Time-range filtering
+      // Time-range filtering: skip messages without timestamps when filtering is active
       if (options?.after || options?.before) {
-        if (msg.timestamp) {
-          const msgTime = new Date(msg.timestamp);
-          if (options.after && msgTime < options.after) continue;
-          if (options.before && msgTime > options.before) continue;
-        }
+        if (!msg.timestamp) continue;
+        const msgTime = new Date(msg.timestamp);
+        if (options.after && msgTime < options.after) continue;
+        if (options.before && msgTime > options.before) continue;
       }
 
       // Skip queue operations
