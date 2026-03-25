@@ -233,6 +233,10 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
     if (group !== 'project' && group !== 'time') {
       return reply.status(400).send({ error: 'group must be "project" or "time"' });
     }
+    const minMessages = parseInt(min_user_messages, 10);
+    if (isNaN(minMessages) || minMessages < 0) {
+      return reply.status(400).send({ error: 'min_user_messages must be a non-negative integer' });
+    }
 
     // Overlap query: selects sessions that span any part of [after, before].
     // Per-message timestamp filtering in serializeTranscript() trims to the exact window.
@@ -245,7 +249,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       WHERE started_at <= ${beforeDate}
         AND (ended_at >= ${afterDate} OR ended_at IS NULL)
         AND output_tokens > 0
-        AND user_message_count >= ${parseInt(min_user_messages, 10) || 0}
+        AND user_message_count >= ${minMessages}
         ${escapedProject ? fastify.sql`AND project_path ILIKE ${'%' + escapedProject + '%'}` : fastify.sql``}
       ORDER BY started_at ASC
       LIMIT 50
