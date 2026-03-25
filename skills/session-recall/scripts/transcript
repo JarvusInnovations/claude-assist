@@ -24,19 +24,6 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Build query params (values are ISO 8601 dates and simple strings, URL-safe)
-build_params() {
-  local params=""
-  local sep="?"
-  for pair in "$@"; do
-    if [[ -n "$pair" ]]; then
-      params="${params}${sep}${pair}"
-      sep="&"
-    fi
-  done
-  echo "$params"
-}
-
 if [[ -z "$ID" ]]; then
   # Global transcript endpoint — requires before and after
   if [[ -z "$BEFORE" || -z "$AFTER" ]]; then
@@ -45,18 +32,19 @@ if [[ -z "$ID" ]]; then
     echo "Without session-id, --before and --after are required for cross-session transcript."
     exit 1
   fi
-  PARAMS=$(build_params \
-    "after=${AFTER}" \
-    "before=${BEFORE}" \
-    "${GROUP:+group=${GROUP}}" \
-    "${PROJECT:+project=${PROJECT}}" \
-    "${MIN_USER_MESSAGES:+min_user_messages=${MIN_USER_MESSAGES}}")
-  exec curl -sf "${SERVER}/api/sessions/transcript${PARAMS}"
+  # Use curl -G --data-urlencode for proper encoding of all params (especially project paths)
+  ARGS=(-sf -G "${SERVER}/api/sessions/transcript"
+    --data-urlencode "after=${AFTER}"
+    --data-urlencode "before=${BEFORE}")
+  [[ -n "$GROUP" ]] && ARGS+=(--data-urlencode "group=${GROUP}")
+  [[ -n "$PROJECT" ]] && ARGS+=(--data-urlencode "project=${PROJECT}")
+  [[ -n "$MIN_USER_MESSAGES" ]] && ARGS+=(--data-urlencode "min_user_messages=${MIN_USER_MESSAGES}")
+  exec curl "${ARGS[@]}"
 else
   # Per-session transcript endpoint
-  PARAMS=$(build_params \
-    "${AFTER:+after=${AFTER}}" \
-    "${BEFORE:+before=${BEFORE}}" \
-    "${RAW:+with_raw_messages=true}")
-  exec curl -sf "${SERVER}/api/sessions/${ID}/transcript${PARAMS}"
+  ARGS=(-sf -G "${SERVER}/api/sessions/${ID}/transcript")
+  [[ -n "$AFTER" ]] && ARGS+=(--data-urlencode "after=${AFTER}")
+  [[ -n "$BEFORE" ]] && ARGS+=(--data-urlencode "before=${BEFORE}")
+  [[ -n "$RAW" ]] && ARGS+=(--data-urlencode "with_raw_messages=true")
+  exec curl "${ARGS[@]}"
 fi
