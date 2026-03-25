@@ -68,6 +68,14 @@ When creating or modifying skills, activate the `skill-creator` skill first for 
 
 Skills wrap their API calls in executable scripts under `scripts/` (no `.sh` suffix). Scripts default to `http://localhost:2529` and support `CLAUDE_ASSIST_SERVER` env var override.
 
+**URL encoding**: Always use `curl -G --data-urlencode "param=value"` for query parameters instead of manually interpolating values into URLs. This handles spaces, `&`, `#`, and other special characters correctly:
+
+```bash
+ARGS=(-sf -G "${SERVER}/api/endpoint")
+[[ -n "$PARAM" ]] && ARGS+=(--data-urlencode "param=${PARAM}")
+exec curl "${ARGS[@]}"
+```
+
 ## Commits
 
 Use conventional commits with scope:
