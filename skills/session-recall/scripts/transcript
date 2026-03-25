@@ -3,19 +3,57 @@ set -euo pipefail
 
 SERVER="${CLAUDE_ASSIST_SERVER:-http://localhost:2529}"
 
-if [[ $# -lt 1 ]]; then
-  echo "Usage: transcript <session-id> [--raw]"
-  exit 1
-fi
-
-ID="$1"; shift
-PARAMS=""
+ID=""
+BEFORE=""
+AFTER=""
+GROUP=""
+PROJECT=""
+RAW=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --raw) PARAMS="?with_raw_messages=true"; shift; [[ ${1:-} == "true" ]] && shift ;;
-    *) echo "Unknown option: $1"; exit 1 ;;
+    --before) BEFORE="$2"; shift 2 ;;
+    --after) AFTER="$2"; shift 2 ;;
+    --group) GROUP="$2"; shift 2 ;;
+    --project) PROJECT="$2"; shift 2 ;;
+    --raw) RAW="true"; shift; [[ ${1:-} == "true" ]] && shift ;;
+    -*) echo "Unknown option: $1"; exit 1 ;;
+    *) ID="$1"; shift ;;
   esac
 done
 
-exec curl -sf "${SERVER}/api/sessions/${ID}/transcript${PARAMS}"
+# Build query params
+build_params() {
+  local params=""
+  local sep="?"
+  for pair in "$@"; do
+    if [[ -n "$pair" ]]; then
+      params="${params}${sep}${pair}"
+      sep="&"
+    fi
+  done
+  echo "$params"
+}
+
+if [[ -z "$ID" ]]; then
+  # Global transcript endpoint — requires before and after
+  if [[ -z "$BEFORE" || -z "$AFTER" ]]; then
+    echo "Usage: transcript [session-id] [--before DATE] [--after DATE] [--group project|time] [--project PATH]"
+    echo ""
+    echo "Without session-id, --before and --after are required for cross-session transcript."
+    exit 1
+  fi
+  PARAMS=$(build_params \
+    "after=$(jq -rn --arg v "$AFTER" '$v|@uri')" \
+    "before=$(jq -rn --arg v "$BEFORE" '$v|@uri')" \
+    "${GROUP:+group=$(jq -rn --arg v "$GROUP" '$v|@uri')}" \
+    "${PROJECT:+project=$(jq -rn --arg v "$PROJECT" '$v|@uri')}")
+  exec curl -sf "${SERVER}/api/sessions/transcript${PARAMS}"
+else
+  # Per-session transcript endpoint
+  PARAMS=$(build_params \
+    "${AFTER:+after=$(jq -rn --arg v "$AFTER" '$v|@uri')}" \
+    "${BEFORE:+before=$(jq -rn --arg v "$BEFORE" '$v|@uri')}" \
+    "${RAW:+with_raw_messages=true}")
+  exec curl -sf "${SERVER}/api/sessions/${ID}/transcript${PARAMS}"
+fi

@@ -204,6 +204,89 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
     }));
   });
 
+  // GET /sessions/transcript - Cross-session transcript for a time range
+  // Returns LLM-optimized text/plain, grouped by project or sequenced by time
+  // Must be registered before /sessions/:id to avoid :id capturing "transcript"
+  fastify.get<{
+    Querystring: {
+      before: string;
+      after: string;
+      group?: string;
+      project?: string;
+    };
+  }>('/sessions/transcript', async (request, reply) => {
+    const { before, after, group = 'project', project } = request.query;
+
+    if (!before || !after) {
+      return reply.status(400).send({ error: 'Both before and after params are required' });
+    }
+
+    const beforeDate = new Date(before);
+    const afterDate = new Date(after);
+    if (isNaN(beforeDate.getTime())) {
+      return reply.status(400).send({ error: 'Invalid before date format' });
+    }
+    if (isNaN(afterDate.getTime())) {
+      return reply.status(400).send({ error: 'Invalid after date format' });
+    }
+    if (group !== 'project' && group !== 'time') {
+      return reply.status(400).send({ error: 'group must be "project" or "time"' });
+    }
+
+    const sessions = await fastify.sql<
+      { id: string; project_path: string | null; raw_transcript: string; started_at: Date }[]
+    >`
+      SELECT id, project_path, raw_transcript, started_at
+      FROM sessions.sessions
+      WHERE started_at <= ${beforeDate}
+        AND (ended_at >= ${afterDate} OR ended_at IS NULL)
+        AND output_tokens > 0
+        ${project ? fastify.sql`AND project_path ILIKE ${'%' + project + '%'}` : fastify.sql``}
+      ORDER BY started_at ASC
+    `;
+
+    if (group === 'time') {
+      const parts: string[] = [];
+      for (const s of sessions) {
+        const transcript = serializeTranscript(s.raw_transcript, {
+          after: afterDate,
+          before: beforeDate,
+        });
+        if (!transcript.trim()) continue;
+        const proj = s.project_path ?? 'unknown';
+        parts.push(`--- [${proj}] ${s.started_at.toISOString()} ---\n${transcript}`);
+      }
+      reply.type('text/plain');
+      return parts.join('\n\n');
+    }
+
+    // group=project (default)
+    type SessionRow = { id: string; project_path: string | null; raw_transcript: string; started_at: Date };
+    const byProject = new Map<string, SessionRow[]>();
+    for (const s of sessions) {
+      const key = s.project_path ?? 'unknown';
+      if (!byProject.has(key)) byProject.set(key, []);
+      byProject.get(key)!.push(s);
+    }
+
+    const parts: string[] = [];
+    for (const [proj, projectSessions] of byProject) {
+      const sectionParts = [`=== ${proj} ===`];
+      for (const s of projectSessions) {
+        const transcript = serializeTranscript(s.raw_transcript, {
+          after: afterDate,
+          before: beforeDate,
+        });
+        if (!transcript.trim()) continue;
+        sectionParts.push(`--- ${s.started_at.toISOString()} ---\n${transcript}`);
+      }
+      if (sectionParts.length > 1) parts.push(sectionParts.join('\n\n'));
+    }
+
+    reply.type('text/plain');
+    return parts.join('\n\n');
+  });
+
   // GET /sessions/:id - Get session details
   fastify.get<{
     Params: { id: string };
@@ -272,10 +355,22 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
 
   // GET /sessions/:id/transcript - Get session transcript in compact format
   // Returns token-efficient text format (same as used for outline generation)
+  // Optional before/after query params to trim messages to a time range
   fastify.get<{
     Params: { id: string };
+    Querystring: { before?: string; after?: string };
   }>('/sessions/:id/transcript', async (request, reply) => {
     const { id } = request.params;
+    const { before, after } = request.query;
+
+    const beforeDate = before ? new Date(before) : undefined;
+    const afterDate = after ? new Date(after) : undefined;
+    if (beforeDate && isNaN(beforeDate.getTime())) {
+      return reply.status(400).send({ error: 'Invalid before date format' });
+    }
+    if (afterDate && isNaN(afterDate.getTime())) {
+      return reply.status(400).send({ error: 'Invalid after date format' });
+    }
 
     const sessions = await fastify.sql<{ raw_transcript: string }[]>`
       SELECT raw_transcript
@@ -289,7 +384,10 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
     }
 
     const session = sessions[0]!;
-    const transcript = serializeTranscript(session.raw_transcript);
+    const transcript = serializeTranscript(session.raw_transcript, {
+      before: beforeDate,
+      after: afterDate,
+    });
 
     reply.type('text/plain');
     return transcript;

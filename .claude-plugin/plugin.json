@@ -1,7 +1,7 @@
 {
   "name": "claude-assist",
   "description": "Backend services for Claude-based assistants: session recall, email triage, calendar queries. Provides postgres-backed APIs for managing Claude sessions, Gmail integration, and Google Calendar.",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "author": {
     "name": "Chris Alfano",
     "email": "chris@jarv.us"

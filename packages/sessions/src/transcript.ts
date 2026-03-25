@@ -173,6 +173,11 @@ function formatQuestionTool(tool: ToolUseBlock): string | null {
   return formatted;
 }
 
+export interface SerializeTranscriptOptions {
+  after?: Date;
+  before?: Date;
+}
+
 /**
  * Serialize raw JSONL transcript to token-efficient format
  * Format: [U] user message, [A] assistant message, [T] tool + target
@@ -181,7 +186,10 @@ function formatQuestionTool(tool: ToolUseBlock): string | null {
  *
  * This is the same format used for AI outline generation.
  */
-export function serializeTranscript(rawTranscript: string): string {
+export function serializeTranscript(
+  rawTranscript: string,
+  options?: SerializeTranscriptOptions
+): string {
   const lines = rawTranscript.trim().split('\n');
   const output: string[] = [];
 
@@ -193,6 +201,15 @@ export function serializeTranscript(rawTranscript: string): string {
 
     try {
       const msg: TranscriptMessage = JSON.parse(line);
+
+      // Time-range filtering
+      if (options?.after || options?.before) {
+        if (msg.timestamp) {
+          const msgTime = new Date(msg.timestamp);
+          if (options.after && msgTime < options.after) continue;
+          if (options.before && msgTime > options.before) continue;
+        }
+      }
 
       // Skip queue operations
       if (msg.type === 'queue-operation') continue;

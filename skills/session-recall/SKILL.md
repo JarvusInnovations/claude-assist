@@ -98,9 +98,15 @@ Example response:
 
 ```bash
 scripts/transcript <session-id>
+scripts/transcript <session-id> --after 2026-03-25T00:00:00Z --before 2026-03-26T00:00:00Z
 ```
 
 Returns a **compact, token-efficient text format** of the session—the same format used for AI outline generation. This is the **recommended way to read full session content**.
+
+Optional time-range params trim the transcript to only messages within the window:
+
+- `--after` - Only include messages after this ISO 8601 timestamp
+- `--before` - Only include messages before this ISO 8601 timestamp
 
 Format:
 
@@ -130,6 +136,55 @@ Example response:
 - You need exact tool inputs/outputs
 - You need token usage per message
 - You need raw content blocks (thinking, tool results)
+
+### Cross-Session Transcript (Time Range)
+
+```bash
+scripts/transcript --after 2026-03-25T09:00:00Z --before 2026-03-25T17:00:00Z
+scripts/transcript --after 2026-03-25T09:00:00Z --before 2026-03-25T17:00:00Z --group time
+scripts/transcript --after 2026-03-25T09:00:00Z --before 2026-03-25T17:00:00Z --project claude-assist
+```
+
+When called **without a session ID**, returns an LLM-optimized transcript across all sessions that overlap the given time range. Both `--after` and `--before` are required.
+
+Parameters:
+
+- `--after` - Start of time range (ISO 8601, required)
+- `--before` - End of time range (ISO 8601, required)
+- `--group` - Output grouping: `project` (default) or `time`
+- `--project` - Filter to sessions matching this project path (partial match)
+
+**`--group project`** (default) groups sessions under project path headers:
+
+```
+=== /Users/chris/repos/my-app ===
+
+--- 2026-03-25T10:00:00Z ---
+[U] fix the login bug
+[A] I'll look at the auth module...
+
+=== /Users/chris/repos/other ===
+
+--- 2026-03-25T11:00:00Z ---
+[U] update README
+```
+
+**`--group time`** sequences all sessions chronologically with project in each header:
+
+```
+--- [/Users/chris/repos/my-app] 2026-03-25T10:00:00Z ---
+[U] fix the login bug
+[A] I'll look at the auth module...
+
+--- [/Users/chris/repos/other] 2026-03-25T11:00:00Z ---
+[U] update README
+```
+
+**Use this when:**
+
+- Reviewing what happened during a time period (e.g., "what did I work on this morning?")
+- Getting cross-project context for a standup or status update
+- Understanding chronological flow of work across projects
 
 ### Get Session Details
 
