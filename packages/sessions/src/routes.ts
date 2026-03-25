@@ -251,6 +251,11 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       LIMIT 50
     `;
 
+    // Clamp session header timestamp to the query window so long-running sessions
+    // don't misleadingly show dates outside the requested range
+    const displayTime = (s: { started_at: Date }) =>
+      s.started_at < afterDate ? afterDate.toISOString() : s.started_at.toISOString();
+
     if (group === 'time') {
       const parts: string[] = [];
       for (const s of sessions) {
@@ -260,7 +265,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
         });
         if (!transcript.trim()) continue;
         const proj = s.project_path ?? 'unknown';
-        parts.push(`--- [${proj}] ${s.started_at.toISOString()} ---\n${transcript}`);
+        parts.push(`--- [${proj}] ${displayTime(s)} ---\n${transcript}`);
       }
       reply.type('text/plain');
       return parts.join('\n\n');
@@ -284,7 +289,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
           before: beforeDate,
         });
         if (!transcript.trim()) continue;
-        sectionParts.push(`--- ${s.started_at.toISOString()} ---\n${transcript}`);
+        sectionParts.push(`--- ${displayTime(s)} ---\n${transcript}`);
       }
       if (sectionParts.length > 1) parts.push(sectionParts.join('\n\n'));
     }
