@@ -309,9 +309,11 @@ export default createPlugin('chat', async (fastify, options) => {
     }
   });
 
-  // Start Bolt in Socket Mode
-  await app.start();
-  fastify.log.info('Chat module initialized with Slack Bolt (Socket Mode)');
+  // Start Bolt in Socket Mode (non-blocking — don't hold up server boot)
+  app.start().then(
+    () => fastify.log.info('Slack Bolt connected (Socket Mode)'),
+    (err) => fastify.log.error({ err }, 'Slack Bolt failed to connect'),
+  );
 
   // Graceful shutdown
   fastify.addHook('onClose', async () => {
