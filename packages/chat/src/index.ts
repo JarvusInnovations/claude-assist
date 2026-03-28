@@ -24,6 +24,16 @@ export default createPlugin('chat', async (fastify, options) => {
     return;
   }
 
+  if (!config.ownerSlackUserId) {
+    fastify.log.error('SLACK_OWNER_USER_ID is required — the chat module uses bypassPermissions and must restrict access to a single user');
+    return;
+  }
+
+  if (!config.agentRepoPath) {
+    fastify.log.error('AGENT_REPO_PATH is required — the agent needs a working directory with CLAUDE.md and skills');
+    return;
+  }
+
   const chatConfig = config;
   const sessionStore = new SessionStore(fastify.sql);
   const handleMessage = createAgentHandler(chatConfig, fastify.log);
@@ -205,7 +215,7 @@ export default createPlugin('chat', async (fastify, options) => {
   function shouldProcess(event: { channel_type?: string; bot_id?: string; user?: string }): boolean {
     if (event.channel_type !== 'im') return false;
     if (event.bot_id) return false;
-    if (chatConfig.ownerSlackUserId && event.user !== chatConfig.ownerSlackUserId) return false;
+    if (event.user !== chatConfig.ownerSlackUserId) return false;
     return true;
   }
 

@@ -133,10 +133,12 @@ if (fastify.config.ENABLE_CHAT) {
   if (
     !fastify.config.SLACK_BOT_TOKEN ||
     !fastify.config.SLACK_APP_TOKEN ||
-    !fastify.config.SLACK_SIGNING_SECRET
+    !fastify.config.SLACK_SIGNING_SECRET ||
+    !fastify.config.SLACK_OWNER_USER_ID ||
+    !fastify.config.AGENT_REPO_PATH
   ) {
     fastify.log.warn(
-      'Chat module enabled but SLACK_BOT_TOKEN/APP_TOKEN/SIGNING_SECRET not set - skipping'
+      'Chat module enabled but missing required config (SLACK_BOT_TOKEN, SLACK_APP_TOKEN, SLACK_SIGNING_SECRET, SLACK_OWNER_USER_ID, AGENT_REPO_PATH) - skipping'
     );
   } else {
     fastify.log.info('Chat module enabled');
@@ -148,7 +150,7 @@ if (fastify.config.ENABLE_CHAT) {
         slackAppToken: fastify.config.SLACK_APP_TOKEN,
         slackSigningSecret: fastify.config.SLACK_SIGNING_SECRET,
         ownerSlackUserId: fastify.config.SLACK_OWNER_USER_ID,
-        agentRepoPath: fastify.config.AGENT_REPO_PATH ?? '',
+        agentRepoPath: fastify.config.AGENT_REPO_PATH!,
         botUsername: fastify.config.BOT_USERNAME,
         claudeOauthToken: fastify.config.CLAUDE_CODE_OAUTH_TOKEN,
       },
