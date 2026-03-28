@@ -35,6 +35,10 @@ skills/
   */SKILL.md   # Claude skills (on-demand loaded)
 ```
 
+## Scratch Directory
+
+`.scratch/` is gitignored — use it for temporary scripts, reports, and other ephemeral files that shouldn't be tracked in shared history.
+
 ## Module Conventions
 
 Each module is a Fastify plugin using `createPlugin()` from core:
