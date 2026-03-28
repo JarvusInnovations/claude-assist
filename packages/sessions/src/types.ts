@@ -91,6 +91,14 @@ export interface FilesTouched {
 }
 
 /**
+ * A contiguous time range of user activity within a session
+ */
+export interface ActivityRange {
+  start: string;
+  end: string;
+}
+
+/**
  * Parsed session data extracted from transcript
  */
 export interface ParsedSession {
@@ -114,6 +122,8 @@ export interface ParsedSession {
   modelsUsed: string[];
   /** Per-model token breakdown */
   modelTokens: Record<string, ModelTokens>;
+  /** Contiguous time ranges of user activity (30-min gap threshold) */
+  activityRanges: ActivityRange[];
 }
 
 /**
@@ -202,6 +212,8 @@ export interface SessionRecord {
   models_used: string[];
   /** Per-model token breakdown */
   model_tokens: Record<string, ModelTokens>;
+  /** Contiguous time ranges of user activity */
+  activity_ranges: ActivityRange[];
 }
 
 /**

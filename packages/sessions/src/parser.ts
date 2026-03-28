@@ -5,6 +5,7 @@ import type {
   ToolUseBlock,
   ModelTokens,
   FilesTouched,
+  ActivityRange,
 } from './types.js';
 
 /**
@@ -33,6 +34,35 @@ const TOOL_OPERATIONS: Record<string, FileOperation | null> = {
   Task: null,
 };
 
+/** Gap threshold for activity range segmentation (30 minutes) */
+const ACTIVITY_GAP_MS = 30 * 60 * 1000;
+
+/**
+ * Compute contiguous activity ranges from user message timestamps.
+ * A new range starts when the gap between consecutive messages exceeds the threshold.
+ */
+function computeActivityRanges(timestamps: Date[]): ActivityRange[] {
+  if (timestamps.length < 2) return [];
+
+  const sorted = [...timestamps].sort((a, b) => a.getTime() - b.getTime());
+  const ranges: ActivityRange[] = [];
+
+  let rangeStart = sorted[0]!;
+  let rangeEnd = sorted[0]!;
+
+  for (let i = 1; i < sorted.length; i++) {
+    const ts = sorted[i]!;
+    if (ts.getTime() - rangeEnd.getTime() > ACTIVITY_GAP_MS) {
+      ranges.push({ start: rangeStart.toISOString(), end: rangeEnd.toISOString() });
+      rangeStart = ts;
+    }
+    rangeEnd = ts;
+  }
+  ranges.push({ start: rangeStart.toISOString(), end: rangeEnd.toISOString() });
+
+  return ranges;
+}
+
 /**
  * Parse a JSONL transcript and extract structured data
  * Following the Kuato pattern: extract user messages, tools, files, tokens
@@ -52,6 +82,7 @@ export function parseTranscript(
   const lines = jsonlContent.trim().split('\n');
 
   const userMessages: string[] = [];
+  const userTimestamps: Date[] = [];
   const toolsUsed = new Set<string>();
   const filesRead = new Set<string>();
   const filesWritten = new Set<string>();
@@ -123,6 +154,9 @@ export function parseTranscript(
       const text = extractTextContent(msg.message.content);
       if (text) {
         userMessages.push(text);
+        if (msg.timestamp) {
+          userTimestamps.push(new Date(msg.timestamp));
+        }
       }
     }
 
@@ -228,6 +262,7 @@ export function parseTranscript(
     parseErrors,
     modelsUsed: [...modelsUsed],
     modelTokens,
+    activityRanges: computeActivityRanges(userTimestamps),
   };
 }
 
