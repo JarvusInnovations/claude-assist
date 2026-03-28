@@ -1,7 +1,7 @@
 -- Map Slack threads to Agent SDK sessions
 CREATE TABLE chat.thread_sessions (
   id SERIAL PRIMARY KEY,
-  thread_id TEXT UNIQUE NOT NULL,        -- Chat SDK thread ID (e.g. slack:D123:1234567890.123456)
+  thread_id TEXT UNIQUE NOT NULL,        -- Slack channel:thread_ts (e.g. D123:1234567890.123456)
   session_id TEXT NOT NULL,              -- Agent SDK session ID (UUID)
   created_at TIMESTAMPTZ DEFAULT NOW(),
   last_message_at TIMESTAMPTZ DEFAULT NOW()

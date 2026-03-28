@@ -7,7 +7,6 @@ import type { ChatPluginConfig } from '@jarvus/claude-assist-core';
 
 export type { ChatPluginConfig } from '@jarvus/claude-assist-core';
 
-const SLACK_MSG_LIMIT = 3000;
 const THREAD_TITLE_MAX = 60;
 
 // TODO: make suggested prompts dynamic based on conversation context

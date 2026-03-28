@@ -49,9 +49,6 @@ export interface SessionsPluginConfig {
 }
 
 /**
- * Configuration for the google plugin
- */
-/**
  * Configuration for the chat plugin
  */
 export interface ChatPluginConfig {

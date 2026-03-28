@@ -26,10 +26,4 @@ export class SessionStore {
     `;
   }
 
-  async touch(threadId: string): Promise<void> {
-    await this.sql`
-      UPDATE chat.thread_sessions SET last_message_at = NOW()
-      WHERE thread_id = ${threadId}
-    `;
-  }
 }
