@@ -11,6 +11,13 @@
 !packages/core/tsconfig.json
 !packages/core/src/**
 
+# packages/chat
+!packages/chat/package.json
+!packages/chat/tsconfig.json
+!packages/chat/src/**
+!packages/chat/migrations/
+!packages/chat/migrations/**
+
 # packages/sessions
 !packages/sessions/package.json
 !packages/sessions/tsconfig.json

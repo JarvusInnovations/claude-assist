@@ -27,4 +27,5 @@ export {
   type ModulePlugin,
   type SessionsPluginConfig,
   type GooglePluginConfig,
+  type ChatPluginConfig,
 } from './plugin.js';

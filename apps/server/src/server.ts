@@ -4,6 +4,7 @@ import postgres from 'postgres';
 import { createScheduler } from '@jarvus/claude-assist-core';
 import sessionsPlugin from '@jarvus/claude-assist-sessions';
 import googlePlugin from '@jarvus/claude-assist-google';
+import chatPlugin from '@jarvus/claude-assist-chat';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import envPlugin from './plugins/env.js';
@@ -32,6 +33,7 @@ const fastify = Fastify({
 
 // Register env plugin FIRST to validate and load configuration
 await fastify.register(envPlugin);
+
 
 // Create postgres connection using validated config
 const sql = postgres(fastify.config.DATABASE_URL);
@@ -120,9 +122,43 @@ await fastify.register(
     } else {
       api.log.info('Google module disabled');
     }
+
+    // Chat module is registered outside /api prefix (uses Socket Mode, not webhooks)
   },
   { prefix: '/api' }
 );
+
+// Chat module (Socket Mode — manages its own WebSocket connection)
+if (fastify.config.ENABLE_CHAT) {
+  if (
+    !fastify.config.SLACK_BOT_TOKEN ||
+    !fastify.config.SLACK_APP_TOKEN ||
+    !fastify.config.SLACK_SIGNING_SECRET ||
+    !fastify.config.SLACK_OWNER_USER_ID ||
+    !fastify.config.AGENT_REPO_PATH
+  ) {
+    fastify.log.warn(
+      'Chat module enabled but missing required config (SLACK_BOT_TOKEN, SLACK_APP_TOKEN, SLACK_SIGNING_SECRET, SLACK_OWNER_USER_ID, AGENT_REPO_PATH) - skipping'
+    );
+  } else {
+    fastify.log.info('Chat module enabled');
+    await fastify.register(chatPlugin, {
+      migrationsDir: join(__dirname, '../../../packages/chat/migrations'),
+      disableMigrations: fastify.config.DISABLE_MIGRATIONS,
+      chatConfig: {
+        slackBotToken: fastify.config.SLACK_BOT_TOKEN,
+        slackAppToken: fastify.config.SLACK_APP_TOKEN,
+        slackSigningSecret: fastify.config.SLACK_SIGNING_SECRET,
+        ownerSlackUserId: fastify.config.SLACK_OWNER_USER_ID,
+        agentRepoPath: fastify.config.AGENT_REPO_PATH!,
+        botUsername: fastify.config.BOT_USERNAME,
+        claudeOauthToken: fastify.config.CLAUDE_CODE_OAUTH_TOKEN,
+      },
+    });
+  }
+} else {
+  fastify.log.info('Chat module disabled');
+}
 
 // Serve admin frontend static files
 await fastify.register(fastifyStatic, {
