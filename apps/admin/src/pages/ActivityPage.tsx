@@ -113,6 +113,14 @@ function getProjectColor(projectName: string, projectIndex: Map<string, number>)
   return PROJECT_COLORS[idx % PROJECT_COLORS.length]!;
 }
 
+/** Format a Date as YYYY-MM-DD in local timezone */
+function toLocalDateString(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
 function formatTime(date: Date): string {
   return date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
 }
@@ -140,7 +148,7 @@ function toDayKey(date: Date): string {
   if (adjusted.getHours() < START_HOUR) {
     adjusted.setDate(adjusted.getDate() - 1);
   }
-  return adjusted.toISOString().slice(0, 10);
+  return toLocalDateString(adjusted);
 }
 
 interface BarData {
@@ -224,15 +232,15 @@ export function ActivityPage() {
     for (let i = 6; i >= 0; i--) {
       const d = new Date(now);
       d.setDate(d.getDate() - i);
-      keys.push(d.toISOString().slice(0, 10));
+      keys.push(toLocalDateString(d));
     }
     return keys;
   }, []);
 
   const formatDayHeader = (dayKey: string) => {
     const date = new Date(dayKey + "T12:00:00");
-    const today = new Date().toISOString().slice(0, 10);
-    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    const today = toLocalDateString(new Date());
+    const yesterday = toLocalDateString(new Date(Date.now() - 86400000));
     if (dayKey === today) return "Today";
     if (dayKey === yesterday) return "Yesterday";
     return date.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
