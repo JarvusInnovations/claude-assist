@@ -1,6 +1,12 @@
 ---
 name: session-recall
-description: Search past Claude sessions for context. Use when asked "where did we leave off?", "what did we discuss about X?", "find a previous conversation", or when needing context from earlier work across machines.
+description: >-
+  Search past Claude sessions for context. Use when asked "where did we leave off?",
+  "what did we discuss about X?", "find a previous conversation", or when needing context
+  from earlier work across machines. Also use for time-based queries like "what did I work
+  on today/yesterday/this week/this morning?", "what happened on Monday?", "show me
+  everything from last Tuesday", "give me a standup summary", or any request to review
+  work across a time period or across projects.
 ---
 
 # Session Recall
@@ -8,6 +14,42 @@ description: Search past Claude sessions for context. Use when asked "where did 
 Search and retrieve context from past Claude Code sessions across multiple machines.
 
 ## Important Behavior
+
+### Choosing the Right Tool: Search vs Transcript
+
+This skill has two primary retrieval modes. **Choosing correctly is critical.**
+
+| User intent | Tool | Why |
+|---|---|---|
+| Find sessions **about a topic** ("what did we discuss about auth?") | `scripts/search` | Full-text search across outlines, prompts, tools, files |
+| Review **what happened during a time period** ("what did I do today?", "show me yesterday's work") | `scripts/transcript --after ... --before ...` (no session ID) | Cross-session temporal transcript |
+| Read the **content of a specific session** | `scripts/transcript <session-id>` | Per-session transcript |
+| Read part of a session within a **time window** | `scripts/transcript <session-id> --after ... --before ...` | Per-session filtered transcript |
+
+**Key rule**: If the user's question is about a **time period** (today, yesterday, this morning, last week, Monday, a date range), use the **cross-session transcript** endpoint — not search. Search finds sessions by topic keywords; the transcript endpoint reconstructs what actually happened during a time window.
+
+### Recognizing Temporal Queries
+
+Use the **cross-session transcript** (no session ID, with `--after`/`--before`) when the user asks anything like:
+
+- "What did I work on today/yesterday/this week?"
+- "What happened on Monday?"
+- "Show me everything from last Tuesday"
+- "Give me a standup summary"
+- "What did I do this morning/afternoon/evening?"
+- "Review my work from March 15 to March 20"
+- "What's been going on across my projects this week?"
+- "Summarize my activity for the past 3 days"
+
+Convert relative time references to ISO 8601 timestamps:
+
+- "today" → `--after <today 00:00 local>` `--before <now>`
+- "yesterday" → `--after <yesterday 00:00>` `--before <yesterday 23:59:59>`
+- "this morning" → `--after <today 06:00>` `--before <today 12:00>`
+- "this week" → `--after <Monday 00:00>` `--before <now>`
+- "last Tuesday" → `--after <last Tue 00:00>` `--before <last Tue 23:59:59>`
+
+Timestamps must be ISO 8601 (e.g., `2026-03-25T00:00:00Z`). Date-only formats like `2026-03-25` also work (interpreted as midnight UTC).
 
 ### Use the bundled scripts
 
@@ -44,6 +86,13 @@ Search sessions by topic (scoped to current project):
 
 ```bash
 scripts/search --query "RTD proposal" --days 14 --project myproject --min-user-messages 2
+```
+
+Review what happened during a time period (cross-session):
+
+```bash
+scripts/transcript --after 2026-03-28T00:00:00Z --before 2026-03-29T00:00:00Z
+scripts/transcript --after 2026-03-24T00:00:00Z --before 2026-03-29T00:00:00Z --project claude-assist
 ```
 
 ## Available Endpoints
@@ -97,16 +146,24 @@ Example response:
 ### Get Session Transcript (Preferred)
 
 ```bash
+# Full session transcript
 scripts/transcript <session-id>
+
+# Only messages from a specific time window within the session
 scripts/transcript <session-id> --after 2026-03-25T00:00:00Z --before 2026-03-26T00:00:00Z
+
+# Just the afternoon portion
+scripts/transcript <session-id> --after 2026-03-25T12:00:00Z --before 2026-03-25T18:00:00Z
 ```
 
 Returns a **compact, token-efficient text format** of the session—the same format used for AI outline generation. This is the **recommended way to read full session content**.
 
-Optional time-range params trim the transcript to only messages within the window:
+Optional time-range params trim the transcript to only messages within the window. Useful for long-running sessions where you only care about a specific period:
 
 - `--after` - Only include messages after this ISO 8601 timestamp
 - `--before` - Only include messages before this ISO 8601 timestamp
+
+Both params are optional and can be used independently (just `--after` to get everything from a point onward, or just `--before` to get everything up to a point).
 
 Format:
 
@@ -130,6 +187,7 @@ Example response:
 - Reading a full session's conversation flow
 - Understanding what happened in a session
 - Copying session context for continuation
+- Trimming a long session to just the relevant time window (e.g., "what did this session do after 3pm?")
 
 **Use `--raw` only when:**
 
@@ -140,22 +198,35 @@ Example response:
 ### Cross-Session Transcript (Time Range)
 
 ```bash
-scripts/transcript --after 2026-03-25T09:00:00Z --before 2026-03-25T17:00:00Z
-scripts/transcript --after 2026-03-25T09:00:00Z --before 2026-03-25T17:00:00Z --group time
-scripts/transcript --after 2026-03-25T09:00:00Z --before 2026-03-25T17:00:00Z --project claude-assist
+# All work across all projects today
+scripts/transcript --after 2026-03-29T00:00:00Z --before 2026-03-29T23:59:59Z
+
+# Chronological order instead of grouped by project
+scripts/transcript --after 2026-03-29T00:00:00Z --before 2026-03-29T23:59:59Z --group time
+
+# Scoped to a single project
+scripts/transcript --after 2026-03-29T00:00:00Z --before 2026-03-29T23:59:59Z --project claude-assist
+
+# Multi-day range
+scripts/transcript --after 2026-03-24T00:00:00Z --before 2026-03-29T00:00:00Z
+
+# Include subagent sessions (normally filtered out)
+scripts/transcript --after 2026-03-29T00:00:00Z --before 2026-03-29T23:59:59Z --min-user-messages 0
 ```
 
 When called **without a session ID**, returns an LLM-optimized transcript across all sessions that overlap the given time range. Both `--after` and `--before` are required.
 
+**This is the primary tool for temporal queries** — any time the user asks "what did I work on" during some period, this is the endpoint to use.
+
 Parameters:
 
-- `--after` - Start of time range (ISO 8601, required)
-- `--before` - End of time range (ISO 8601, required)
+- `--after` - Start of time range (ISO 8601, required). Date-only like `2026-03-25` works (midnight UTC)
+- `--before` - End of time range (ISO 8601, required). Date-only like `2026-03-26` works (midnight UTC)
 - `--group` - Output grouping: `project` (default) or `time`
 - `--project` - Filter to sessions matching this project path (partial match)
 - `--min-user-messages` - Minimum user messages to include session (default: 2, filters out subagent sessions)
 
-**`--group project`** (default) groups sessions under project path headers:
+**`--group project`** (default) groups sessions under project path headers — best for standup summaries and "what did I do" questions where the project context matters:
 
 ```
 === /Users/chris/repos/my-app ===
@@ -170,7 +241,7 @@ Parameters:
 [U] update README
 ```
 
-**`--group time`** sequences all sessions chronologically with project in each header:
+**`--group time`** sequences all sessions chronologically with project in each header — best for understanding the order of work across projects:
 
 ```
 --- [/Users/chris/repos/my-app] 2026-03-25T10:00:00Z ---
@@ -181,11 +252,17 @@ Parameters:
 [U] update README
 ```
 
-**Use this when:**
+**How session overlap works:** Sessions are included if they overlap the time window at all (started before `--before` AND ended after `--after`). But only **messages with timestamps inside the window** are returned. Long-running sessions that span days will only show the relevant portion. Session headers are clamped to the `--after` bound so you won't see misleading dates from before your window.
 
-- Reviewing what happened during a time period (e.g., "what did I work on this morning?")
-- Getting cross-project context for a standup or status update
-- Understanding chronological flow of work across projects
+**When to use this:**
+
+- "What did I work on today?" → all projects, today's window
+- "What happened this morning?" → all projects, morning window
+- "Give me a standup summary" → all projects, since yesterday
+- "What did I do on the claude-assist project this week?" → scoped to project, week window
+- "Show me everything from last Tuesday" → all projects, single day
+- "Summarize activity across all projects for the past 3 days" → all projects, 3-day window
+- "What was the chronological order of my work yesterday?" → `--group time`, yesterday's window
 
 ### Get Session Details
 
@@ -352,14 +429,72 @@ Options:
 - `--dry-run` - Preview without pushing
 - `-v, --verbose` - Detailed output
 
+## Common Workflows
+
+### "What did I work on today?"
+
+Use cross-session transcript with today's date range across all projects:
+
+```bash
+scripts/transcript --after 2026-03-29T00:00:00Z --before 2026-03-29T23:59:59Z
+```
+
+Then summarize the returned transcript for the user, highlighting key accomplishments per project.
+
+### "Give me a standup summary" / "What did I do yesterday?"
+
+```bash
+scripts/transcript --after 2026-03-28T00:00:00Z --before 2026-03-29T00:00:00Z
+```
+
+Summarize by project, focusing on what was accomplished and any blockers.
+
+### "What did we discuss about X?"
+
+Use search first to find relevant sessions, then pull transcripts for the top results:
+
+```bash
+scripts/search --query "auth refactor" --project myproject --min-user-messages 2
+scripts/transcript <session-id-from-results>
+```
+
+### "Where did we leave off on this project?"
+
+Search for the most recent sessions in the current project:
+
+```bash
+scripts/search --days 7 --project myproject --min-user-messages 2 --limit 5
+scripts/transcript <most-recent-session-id>
+```
+
+### "What happened on this project this week?"
+
+Use cross-session transcript scoped to the project:
+
+```bash
+scripts/transcript --after 2026-03-24T00:00:00Z --before 2026-03-29T23:59:59Z --project claude-assist
+```
+
+### "Show me the chronological order of all my work on Monday"
+
+Use `--group time` to interleave sessions across projects:
+
+```bash
+scripts/transcript --after 2026-03-24T00:00:00Z --before 2026-03-25T00:00:00Z --group time
+```
+
 ## Usage Tips
 
-1. Start with a broad search, then narrow by project or machine
-2. Use `--days` to focus on recent sessions
-3. Filter by `--tools` to find sessions with specific activities (e.g., `--tools Edit,Bash`)
-4. **Prefer `scripts/transcript`** for reading session content—it's compact and token-efficient
-5. Only use `--raw` when you need exact tool inputs/outputs or token usage
-6. Use `--machine` filter when looking for work done on a specific device
+1. **Time-based questions → cross-session transcript.** If the user mentions a time period (today, yesterday, this week, a date), use `scripts/transcript --after ... --before ...` without a session ID
+2. **Topic-based questions → search.** If the user mentions a topic, keyword, or feature name, use `scripts/search`
+3. Start with a broad search, then narrow by project or machine
+4. Use `--days` to focus on recent sessions in search
+5. Filter by `--tools` to find sessions with specific activities (e.g., `--tools Edit,Bash`)
+6. **Prefer `scripts/transcript`** for reading session content—it's compact and token-efficient
+7. Only use `--raw` when you need exact tool inputs/outputs or token usage
+8. Use `--machine` filter when looking for work done on a specific device
+9. Use `--group time` when chronological ordering across projects matters
+10. Use `--project` on cross-session transcripts to reduce noise when the user only cares about one repo
 
 ## Architecture
 
