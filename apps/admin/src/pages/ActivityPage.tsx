@@ -28,16 +28,89 @@ const PROJECT_COLORS = [
   "hsl(240, 50%, 60%)", // indigo
 ];
 
-function getProjectColor(projectPath: string | null, projectIndex: Map<string, number>): string {
-  const key = projectPath ?? "(no project)";
-  const idx = projectIndex.get(key) ?? 0;
-  return PROJECT_COLORS[idx % PROJECT_COLORS.length]!;
+/** Home directory patterns — strip to get relative paths */
+const HOME_PATTERN = /^\/(?:Users|home)\/\w+\//;
+/** Known repo root containers (immediately under home) */
+const REPO_CONTAINERS = new Set(["Repositories", "repos"]);
+/** Worktree patterns that extract a repo name directly */
+const WORKTREE_PATTERNS = [
+  /\/conductor\/workspaces\/([^/]+)/,   // conductor/workspaces/<repo>/<worktree>
+  /\.claude-worktrees\/([^/]+)/,         // .claude-worktrees/<repo>/<worktree>
+];
+
+/**
+ * Build a mapping from raw project paths to display names.
+ *
+ * Strategy:
+ * 1. Extract repo name from worktree patterns
+ * 2. Identify repo roots: ~/Repositories/<repo> and ~/<repo> paths
+ * 3. Collapse any path that is a subdirectory of a known repo root
+ */
+function buildProjectNames(paths: Set<string>): Map<string, string> {
+  const result = new Map<string, string>();
+
+  // Phase 1: handle worktree patterns (these always resolve to a repo name)
+  const remaining = new Set<string>();
+  for (const path of paths) {
+    let matched = false;
+    for (const pattern of WORKTREE_PATTERNS) {
+      const m = path.match(pattern);
+      if (m) {
+        result.set(path, m[1]!);
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) remaining.add(path);
+  }
+
+  // Phase 2: normalize remaining paths to home-relative form
+  // e.g. "/Users/chris/Repositories/hologit/tf" → "Repositories/hologit/tf"
+  // e.g. "/home/chris/claude-assist" → "claude-assist"
+  const homeRelative = new Map<string, string>();
+  for (const path of remaining) {
+    const rel = path.replace(HOME_PATTERN, "");
+    homeRelative.set(path, rel);
+  }
+
+  // Phase 3: identify repo roots
+  // ~/Repositories/<name> or ~/repos/<name> → repo root is the first two components
+  // ~/<name> → repo root is the first component
+  const repoRoots = new Set<string>();
+  for (const rel of homeRelative.values()) {
+    const parts = rel.split("/");
+    if (parts.length >= 2 && REPO_CONTAINERS.has(parts[0]!)) {
+      repoRoots.add(parts[0] + "/" + parts[1]);
+    } else if (parts[0]) {
+      repoRoots.add(parts[0]);
+    }
+  }
+
+  // Phase 4: for each remaining path, find its repo root and use that as the name
+  for (const [path, rel] of homeRelative) {
+    // Find the longest matching repo root
+    let bestRoot = "";
+    for (const root of repoRoots) {
+      if ((rel === root || rel.startsWith(root + "/")) && root.length > bestRoot.length) {
+        bestRoot = root;
+      }
+    }
+
+    if (bestRoot) {
+      // Extract just the repo name (last component of the root)
+      const parts = bestRoot.split("/");
+      result.set(path, parts[parts.length - 1]!);
+    } else {
+      result.set(path, rel || path);
+    }
+  }
+
+  return result;
 }
 
-function getProjectShortName(projectPath: string | null): string {
-  if (!projectPath) return "(no project)";
-  const parts = projectPath.split("/");
-  return parts[parts.length - 1] ?? projectPath;
+function getProjectColor(projectName: string, projectIndex: Map<string, number>): string {
+  const idx = projectIndex.get(projectName) ?? 0;
+  return PROJECT_COLORS[idx % PROJECT_COLORS.length]!;
 }
 
 function formatTime(date: Date): string {
@@ -129,19 +202,19 @@ export function ActivityPage() {
     queryFn: () => sessionsApi.getActivity(7),
   });
 
-  // Build project color index
-  const projectIndex = useMemo(() => {
-    if (!sessions) return new Map<string, number>();
-    const projects = new Set<string>();
+  // Build normalized project name mapping and color index
+  const { projectNames, projectIndex } = useMemo(() => {
+    if (!sessions) return { projectNames: new Map<string, string>(), projectIndex: new Map<string, number>() };
+    const rawPaths = new Set<string>();
     for (const s of sessions) {
-      projects.add(s.project_path ?? "(no project)");
+      rawPaths.add(s.project_path ?? "(no project)");
     }
+    const names = buildProjectNames(rawPaths);
+    // Deduplicate normalized names and assign color indices
+    const uniqueNames = [...new Set(names.values())];
     const index = new Map<string, number>();
-    let i = 0;
-    for (const p of projects) {
-      index.set(p, i++);
-    }
-    return index;
+    uniqueNames.forEach((name, i) => index.set(name, i));
+    return { projectNames: names, projectIndex: index };
   }, [sessions]);
 
   // Build last 7 day keys
@@ -202,13 +275,13 @@ export function ActivityPage() {
       {/* Legend */}
       {sessions && (
         <div className="flex flex-wrap gap-3 text-sm">
-          {[...projectIndex.entries()].map(([project, idx]) => (
-            <div key={project} className="flex items-center gap-1.5">
+          {[...projectIndex.entries()].map(([name, idx]) => (
+            <div key={name} className="flex items-center gap-1.5">
               <div
                 className="w-3 h-3 rounded-sm"
                 style={{ backgroundColor: PROJECT_COLORS[idx % PROJECT_COLORS.length] }}
               />
-              <span className="text-muted-foreground">{getProjectShortName(project === "(no project)" ? null : project)}</span>
+              <span className="text-muted-foreground">{name}</span>
             </div>
           ))}
         </div>
@@ -289,7 +362,10 @@ export function ActivityPage() {
                         height: `${bar.heightPct}%`,
                         left: `calc(${leftPct}% + 2px)`,
                         width: `calc(${widthPct}% - 4px)`,
-                        backgroundColor: getProjectColor(bar.projectPath, projectIndex),
+                        backgroundColor: getProjectColor(
+                          projectNames.get(bar.projectPath ?? "(no project)") ?? bar.projectPath ?? "",
+                          projectIndex
+                        ),
                         minHeight: 3,
                       }}
                       onClick={() => navigate(`/sessions/${bar.sessionId}`)}
@@ -319,7 +395,7 @@ export function ActivityPage() {
         >
           <div className="font-medium">{tooltip.bar.title ?? tooltip.bar.sessionId.slice(0, 8)}</div>
           <div className="text-muted-foreground text-xs">
-            {getProjectShortName(tooltip.bar.projectPath)}
+            {projectNames.get(tooltip.bar.projectPath ?? "(no project)") ?? tooltip.bar.projectPath}
           </div>
           <div className="text-muted-foreground text-xs">
             {formatTime(tooltip.bar.start)} - {formatTime(tooltip.bar.end)}
