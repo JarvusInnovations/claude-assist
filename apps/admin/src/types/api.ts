@@ -160,6 +160,18 @@ export interface SessionRecord {
   model_tokens: Record<string, ModelTokens>;
 }
 
+export interface ActivityRange {
+  start: string;
+  end: string;
+}
+
+export interface ActivitySession {
+  id: string;
+  title: string | null;
+  project_path: string | null;
+  activity_ranges: ActivityRange[];
+}
+
 export interface SessionQueryParams {
   search?: string;
   machine?: string;

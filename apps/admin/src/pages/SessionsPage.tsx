@@ -1,6 +1,6 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router";
-import { ScrollText, RefreshCw, Sparkles, Search } from "lucide-react";
+import { ScrollText, RefreshCw, Sparkles, Search, Activity } from "lucide-react";
 import { toast } from "sonner";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -105,6 +105,12 @@ export function SessionsPage() {
           </p>
         </div>
         <div className="flex gap-2">
+          <Button variant="outline" asChild>
+            <Link to="/sessions/activity">
+              <Activity className="mr-2 h-4 w-4" />
+              Activity
+            </Link>
+          </Button>
           <Button
             variant="outline"
             onClick={() => syncMutation.mutate()}

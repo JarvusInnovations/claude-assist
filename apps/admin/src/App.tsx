@@ -12,6 +12,7 @@ import { EmailsPage } from "@/pages/EmailsPage";
 import { EmailDetailPage } from "@/pages/EmailDetailPage";
 import { SessionsPage } from "@/pages/SessionsPage";
 import { SessionDetailPage } from "@/pages/SessionDetailPage";
+import { ActivityPage } from "@/pages/ActivityPage";
 import { SystemPage } from "@/pages/SystemPage";
 import { InboxPage } from "@/pages/InboxPage";
 
@@ -35,6 +36,7 @@ function App() {
           <Route path="emails" element={<EmailsPage />} />
           <Route path="emails/:id" element={<EmailDetailPage />} />
           <Route path="sessions" element={<SessionsPage />} />
+          <Route path="sessions/activity" element={<ActivityPage />} />
           <Route path="sessions/:id" element={<SessionDetailPage />} />
           <Route path="system" element={<SystemPage />} />
         </Route>

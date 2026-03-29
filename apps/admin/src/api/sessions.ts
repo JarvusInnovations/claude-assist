@@ -5,6 +5,7 @@ import type {
   SessionQueryParams,
   MachineRecord,
   OutlineProgress,
+  ActivitySession,
 } from "@/types/api";
 
 export const sessionsApi = {
@@ -44,6 +45,10 @@ export const sessionsApi = {
     const query = searchParams.toString();
     return api.get<SessionStats>(`/sessions/stats${query ? `?${query}` : ""}`);
   },
+
+  // Activity timeline
+  getActivity: (days = 7) =>
+    api.get<ActivitySession[]>(`/sessions/activity?days=${days}`),
 
   // Machines
   getMachines: () => api.get<MachineRecord[]>("/machines"),
