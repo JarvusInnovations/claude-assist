@@ -204,6 +204,28 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
     }));
   });
 
+  // GET /sessions/activity - Activity ranges for timeline visualization
+  fastify.get<{
+    Querystring: { days?: string };
+  }>('/sessions/activity', async (request) => {
+    const days = parseInt(request.query.days ?? '7', 10) || 7;
+
+    const sessions = await fastify.sql`
+      SELECT id, title, project_path, activity_ranges
+      FROM sessions.sessions
+      WHERE started_at > NOW() - INTERVAL '1 day' * ${days}
+        AND jsonb_array_length(activity_ranges) > 0
+      ORDER BY started_at
+    `;
+
+    return sessions.map((s) => ({
+      id: s.id,
+      title: s.title ?? null,
+      project_path: s.project_path,
+      activity_ranges: s.activity_ranges,
+    }));
+  });
+
   // GET /sessions/transcript - Cross-session transcript for a time range
   // Returns LLM-optimized text/plain, grouped by project or sequenced by time
   // Must be registered before /sessions/:id to avoid :id capturing "transcript"
