@@ -224,13 +224,28 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       .filter((p): p is string => p != null);
     const projectNames = normalizeProjectPaths(projectPaths);
 
-    return sessions.map((s) => ({
-      id: s.id,
-      title: s.title ?? null,
-      project_path: s.project_path,
-      project_name: s.project_path ? (projectNames.get(s.project_path) ?? null) : null,
-      activity_ranges: s.activity_ranges,
-    }));
+    return sessions.map((s) => {
+      const ranges: Array<{ start: string; end: string }> =
+        typeof s.activity_ranges === 'string'
+          ? JSON.parse(s.activity_ranges)
+          : s.activity_ranges ?? [];
+
+      const enrichedRanges = ranges.map((r) => {
+        const ms = new Date(r.end).getTime() - new Date(r.start).getTime();
+        return { ...r, duration_minutes: Math.round(ms / 60_000) };
+      });
+
+      const totalMinutes = enrichedRanges.reduce((sum, r) => sum + r.duration_minutes, 0);
+
+      return {
+        id: s.id,
+        title: s.title ?? null,
+        project_path: s.project_path,
+        project_name: s.project_path ? (projectNames.get(s.project_path) ?? null) : null,
+        activity_ranges: enrichedRanges,
+        total_active_minutes: totalMinutes,
+      };
+    });
   });
 
   // GET /sessions/transcript - Cross-session transcript for a time range

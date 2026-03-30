@@ -163,6 +163,7 @@ export interface SessionRecord {
 export interface ActivityRange {
   start: string;
   end: string;
+  duration_minutes: number;
 }
 
 export interface ActivitySession {
@@ -171,6 +172,7 @@ export interface ActivitySession {
   project_path: string | null;
   project_name: string | null;
   activity_ranges: ActivityRange[];
+  total_active_minutes: number;
 }
 
 export interface SessionQueryParams {
