@@ -23,6 +23,7 @@ This skill has two primary retrieval modes. **Choosing correctly is critical.**
 |---|---|---|
 | Find sessions **about a topic** ("what did we discuss about auth?") | `scripts/search` | Full-text search across outlines, prompts, tools, files |
 | Review **what happened during a time period** ("what did I do today?", "show me yesterday's work") | `scripts/transcript --after ... --before ...` (no session ID) | Cross-session temporal transcript |
+| Check **when** work happened ("when was I active?", "how much time on X?") | `scripts/activity --days N` | Activity time ranges per session |
 | Read the **content of a specific session** | `scripts/transcript <session-id>` | Per-session transcript |
 | Read part of a session within a **time window** | `scripts/transcript <session-id> --after ... --before ...` | Per-session filtered transcript |
 
@@ -59,7 +60,7 @@ Run scripts using their full path relative to this skill's base directory (provi
 
 All scripts default to `http://localhost:2529`. Override with `CLAUDE_ASSIST_SERVER` env var.
 
-Available scripts: `search`, `transcript`, `details`, `stats`, `machines`, `sync`, `outlines`, `outline-progress`
+Available scripts: `search`, `transcript`, `details`, `stats`, `activity`, `machines`, `sync`, `outlines`, `outline-progress`
 
 ### Filter Out Subagent Sessions
 
@@ -325,6 +326,40 @@ Returns:
   ]
 }
 ```
+
+### Activity Ranges
+
+```bash
+scripts/activity --days 7
+```
+
+Returns sessions with their computed activity time ranges for the last N days. Activity ranges are contiguous periods of user interaction, segmented by a 30-minute gap threshold. Use this to understand **when** work happened (time blocks), as opposed to **what** happened (use transcript for that).
+
+Parameters:
+
+- `--days` - Number of days to look back (default: 7)
+
+Response:
+
+```json
+[
+  {
+    "id": "9c8a4c11-c051-4381-90cd-ef3f380a91c8",
+    "title": "Refactor auth module",
+    "project_path": "/Users/chris/repos/myproject",
+    "activity_ranges": [
+      { "start": "2026-03-29T10:15:00.000Z", "end": "2026-03-29T11:42:00.000Z" },
+      { "start": "2026-03-29T14:00:00.000Z", "end": "2026-03-29T15:30:00.000Z" }
+    ]
+  }
+]
+```
+
+**When to use this:**
+
+- "When was I working today?" — understand time blocks, not content
+- "How much time did I spend on X this week?" — sum activity range durations per project
+- "Was I active last night?" — check for late-night activity ranges
 
 ### List Machines
 
