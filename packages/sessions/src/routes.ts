@@ -8,6 +8,7 @@ import type {
   InventoryPayload,
 } from './types.js';
 import { serializeTranscript } from './transcript.js';
+import { normalizeProjectPaths } from './project-names.js';
 
 /**
  * Parse model_tokens JSONB field, ensuring all nested values are integers.
@@ -218,10 +219,16 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       ORDER BY started_at
     `;
 
+    const projectPaths = sessions
+      .map((s) => s.project_path)
+      .filter((p): p is string => p != null);
+    const projectNames = normalizeProjectPaths(projectPaths);
+
     return sessions.map((s) => ({
       id: s.id,
       title: s.title ?? null,
       project_path: s.project_path,
+      project_name: s.project_path ? (projectNames.get(s.project_path) ?? null) : null,
       activity_ranges: s.activity_ranges,
     }));
   });
