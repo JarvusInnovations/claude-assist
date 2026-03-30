@@ -169,6 +169,7 @@ export interface ActivitySession {
   id: string;
   title: string | null;
   project_path: string | null;
+  project_name: string | null;
   activity_ranges: ActivityRange[];
 }
 
