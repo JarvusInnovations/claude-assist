@@ -1,0 +1,37 @@
+{
+  "period_days": 30,
+  "total_sessions": 150,
+  "active_days": 22,
+  "avg_messages": 42,
+  "total_messages": 6300,
+  "total_input_tokens": 45000000,
+  "total_output_tokens": 7500000,
+  "unique_projects": 8,
+  "top_tools": [
+    { "tool": "Edit", "count": 450 },
+    { "tool": "Read", "count": 380 },
+    { "tool": "Bash", "count": 290 },
+    { "tool": "Grep", "count": 210 },
+    { "tool": "Glob", "count": 150 }
+  ],
+  "top_models": [
+    {
+      "model": "claude-sonnet-4-20250514",
+      "session_count": 120,
+      "input_tokens": 30000000,
+      "output_tokens": 5000000,
+      "cache_read_tokens": 18000000
+    },
+    {
+      "model": "claude-haiku-4-5-20251001",
+      "session_count": 30,
+      "input_tokens": 15000000,
+      "output_tokens": 2500000,
+      "cache_read_tokens": 9000000
+    }
+  ],
+  "sessions_per_machine": [
+    { "machine_id": "devbox", "session_count": 120 },
+    { "machine_id": "laptop", "session_count": 30 }
+  ]
+}

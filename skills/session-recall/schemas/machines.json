@@ -1,0 +1,18 @@
+[
+  {
+    "machine_id": "devbox",
+    "hostname": "dev-workstation",
+    "is_localhost": true,
+    "first_seen_at": "2026-01-01T10:00:00.000Z",
+    "last_sync_at": "2026-01-15T19:30:00.000Z",
+    "session_count": 350
+  },
+  {
+    "machine_id": "laptop",
+    "hostname": "macbook-pro",
+    "is_localhost": false,
+    "first_seen_at": "2026-01-05T14:00:00.000Z",
+    "last_sync_at": "2026-01-15T18:00:00.000Z",
+    "session_count": 85
+  }
+]

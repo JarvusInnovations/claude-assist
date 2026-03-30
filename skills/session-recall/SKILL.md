@@ -120,29 +120,9 @@ Parameters:
 
 **Date filtering:** By default, searches are limited to the last 30 days. Use `days` for relative filtering, `since`/`until` for absolute date ranges, or `forever=true` to search all time. When `since` or `until` is provided, they take precedence over `days`. `forever=true` disables all date filtering.
 
-Example response:
+Response schema: see [schemas/search.json](schemas/search.json)
 
-```json
-[
-  {
-    "id": "9c8a4c11-c051-4381-90cd-ef3f380a91c8",
-    "started_at": "2025-01-20T10:00:00Z",
-    "ended_at": "2025-01-20T11:30:00Z",
-    "project_path": "/Users/chris/repos/myproject",
-    "git_branch": "feature/new-api",
-    "outline": "Drafted and refined the RTD proposal document, focusing on technical requirements and timeline.\n\n- RTD proposal structure and formatting\n- Technical requirements documentation\n- Timeline and milestone planning",
-    "first_user_prompt": "Help me with RTD proposal",
-    "message_count": 45,
-    "tools_used": ["Edit", "Read", "Bash"],
-    "files_touched": { "reads": ["/proposals/rtd.md"], "writes": ["/proposals/rtd.md"] },
-    "input_tokens": 150000,
-    "output_tokens": 25000,
-    "machine": "localhost"
-  }
-]
-```
-
-**Note:** The `outline` field contains an AI-generated summary of the session (if available). Falls back to `first_user_prompt` if outline hasn't been generated yet.
+**Note:** The `outline` field contains an AI-generated summary of the session (if available). The `title` field is a short AI-generated title.
 
 ### Get Session Transcript (Preferred)
 
@@ -172,16 +152,7 @@ Format:
 - `[A] <snippet>` - Assistant responses (truncated to ~280 chars)
 - `[T] <tool_name> <target>` - Tool calls with file paths, commands, etc.
 
-Example response:
-
-```
-[U] Help me refactor the auth module
-[A] I'll help refactor the auth module. Let me examine the current implementation...
-[T] Read /src/auth/index.ts
-[T] Read /src/auth/middleware.ts
-[A] I can see the auth module has several issues. Here's my refactoring plan...
-[T] Edit /src/auth/index.ts
-```
+Example response: see [schemas/transcript.txt](schemas/transcript.txt) (text/plain, not JSON)
 
 **Use this endpoint when:**
 
@@ -274,21 +245,7 @@ scripts/details <session-id> --raw  # include full raw messages
 
 Returns session metadata plus optionally the full `raw_messages` array (parsed JSONL messages).
 
-Response includes:
-
-- Basic metadata: `id`, `machine`, `project_path`, `git_branch`, `started_at`, `ended_at`
-- Activity: `user_messages`, `tools_used`, `files_touched`, `message_count`
-- Token usage: `input_tokens`, `output_tokens`, `cache_read_tokens`
-- Model tracking: `models_used` (array of model IDs), `model_tokens` (per-model breakdown)
-- Content: `outline`, `outline_hash`, `claude_version`
-
-Example `model_tokens` structure:
-
-```json
-{
-  "claude-sonnet-4-20250514": { "input": 150000, "output": 25000 }
-}
-```
+Response schema: see [schemas/details.json](schemas/details.json)
 
 ### Session Statistics
 
@@ -301,31 +258,7 @@ Parameters:
 - `days` - Period to analyze (default: 30)
 - `machine` - Filter by machine ID
 
-Returns:
-
-```json
-{
-  "period_days": 30,
-  "total_sessions": 150,
-  "active_days": 25,
-  "avg_messages": 42,
-  "total_messages": 6300,
-  "total_input_tokens": 45000000,
-  "total_output_tokens": 7500000,
-  "unique_projects": 12,
-  "top_tools": [
-    { "tool": "Edit", "count": 450 },
-    { "tool": "Read", "count": 380 }
-  ],
-  "top_models": [
-    { "model": "claude-sonnet-4-20250514", "session_count": 120, "input_tokens": 30000000, "output_tokens": 5000000 }
-  ],
-  "sessions_per_machine": [
-    { "machine_id": "localhost", "session_count": 120 },
-    { "machine_id": "laptop", "session_count": 30 }
-  ]
-}
-```
+Response schema: see [schemas/stats.json](schemas/stats.json)
 
 ### Activity Ranges
 
@@ -339,21 +272,7 @@ Parameters:
 
 - `--days` - Number of days to look back (default: 7)
 
-Response:
-
-```json
-[
-  {
-    "id": "9c8a4c11-c051-4381-90cd-ef3f380a91c8",
-    "title": "Refactor auth module",
-    "project_path": "/Users/chris/repos/myproject",
-    "activity_ranges": [
-      { "start": "2026-03-29T10:15:00.000Z", "end": "2026-03-29T11:42:00.000Z" },
-      { "start": "2026-03-29T14:00:00.000Z", "end": "2026-03-29T15:30:00.000Z" }
-    ]
-  }
-]
-```
+Response schema: see [schemas/activity.json](schemas/activity.json)
 
 **When to use this:**
 
@@ -367,20 +286,7 @@ Response:
 scripts/machines
 ```
 
-Returns all registered machines with sync status:
-
-```json
-[
-  {
-    "machine_id": "localhost",
-    "hostname": "devbox",
-    "is_localhost": true,
-    "first_seen_at": "2025-01-15T10:00:00Z",
-    "last_sync_at": "2025-01-24T19:30:00Z",
-    "session_count": 150
-  }
-]
-```
+Returns all registered machines with sync status. Response schema: see [schemas/machines.json](schemas/machines.json)
 
 ### Manual Sync (Localhost)
 
@@ -530,6 +436,64 @@ scripts/transcript --after 2026-03-24T00:00:00Z --before 2026-03-25T00:00:00Z --
 8. Use `--machine` filter when looking for work done on a specific device
 9. Use `--group time` when chronological ordering across projects matters
 10. Use `--project` on cross-session transcripts to reduce noise when the user only cares about one repo
+
+## jq Recipes
+
+Common `jq` patterns for processing endpoint output. All scripts output JSON (except `transcript` which outputs text/plain).
+
+### Search — list session titles with dates
+
+```bash
+scripts/search --query "auth" --min-user-messages 2 | jq '.[] | {title, started_at, id}'
+```
+
+### Search — sessions that used specific tools
+
+```bash
+scripts/search --days 7 --min-user-messages 2 | jq '[.[] | select(.tools_used | index("Bash"))] | length'
+```
+
+### Activity — total active minutes per project this week
+
+```bash
+scripts/activity --days 7 | jq '[group_by(.project_name)[] | {project: .[0].project_name, sessions: length, minutes: (map(.total_active_minutes) | add)}] | sort_by(-.minutes)'
+```
+
+### Activity — list today's activity ranges with times
+
+```bash
+scripts/activity --days 1 | jq '.[] | {title, project_name, ranges: [.activity_ranges[] | "\(.start[11:16])-\(.end[11:16]) (\(.duration_minutes)m)"]}'
+```
+
+### Activity — total hours across all projects
+
+```bash
+scripts/activity --days 7 | jq '[.[].total_active_minutes] | add / 60 | round'
+```
+
+### Stats — top 5 tools
+
+```bash
+scripts/stats --days 7 | jq '.top_tools[:5] | .[] | "\(.tool): \(.count)"'
+```
+
+### Stats — token cost breakdown by model
+
+```bash
+scripts/stats --days 30 | jq '.top_models[] | {model, sessions: .session_count, input_mtok: (.input_tokens / 1000000 | round), output_mtok: (.output_tokens / 1000000 | round)}'
+```
+
+### Details — list all files written in a session
+
+```bash
+scripts/details <session-id> | jq '.files_touched.writes[]'
+```
+
+### Machines — find last sync time
+
+```bash
+scripts/machines | jq '.[] | {machine_id, last_sync_at}'
+```
 
 ## Architecture
 

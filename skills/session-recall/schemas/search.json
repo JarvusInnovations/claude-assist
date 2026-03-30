@@ -1,0 +1,40 @@
+[
+  {
+    "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "started_at": "2026-01-15T14:30:00.000Z",
+    "ended_at": "2026-01-15T15:45:00.000Z",
+    "project_path": "/home/dev/repos/webapp",
+    "git_branch": "feature/user-auth",
+    "outline": "Implemented JWT authentication middleware and added login/logout routes.\n\n- Set up passport.js with JWT strategy\n- Created auth middleware for protected routes\n- Added token refresh endpoint",
+    "title": "Implement JWT authentication middleware",
+    "message_count": 38,
+    "user_message_count": 12,
+    "input_tokens": 145000,
+    "output_tokens": 23000,
+    "tools_used": ["Edit", "Read", "Bash", "Grep"],
+    "files_touched": {
+      "reads": ["src/auth/middleware.ts", "src/routes/login.ts"],
+      "writes": ["src/auth/middleware.ts", "src/routes/login.ts", "src/routes/logout.ts"]
+    },
+    "machine": "devbox"
+  },
+  {
+    "id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+    "started_at": "2026-01-14T09:00:00.000Z",
+    "ended_at": "2026-01-14T10:20:00.000Z",
+    "project_path": "/home/dev/repos/webapp",
+    "git_branch": "main",
+    "outline": null,
+    "title": "Debug flaky integration tests",
+    "message_count": 25,
+    "user_message_count": 8,
+    "input_tokens": 98000,
+    "output_tokens": 15000,
+    "tools_used": ["Read", "Bash", "Grep"],
+    "files_touched": {
+      "reads": ["tests/integration/auth.test.ts"],
+      "writes": ["tests/integration/auth.test.ts"]
+    },
+    "machine": "laptop"
+  }
+]
