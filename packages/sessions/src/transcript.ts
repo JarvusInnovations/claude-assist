@@ -121,8 +121,7 @@ function extractToolTarget(tool: ToolUseBlock): string | null {
 
   // Command for Bash
   if (tool.name === 'Bash' && typeof inputObj.command === 'string') {
-    const cmd = inputObj.command;
-    return cmd.length > 50 ? cmd.slice(0, 50) + '...' : cmd;
+    return inputObj.command;
   }
 
   // Pattern for search tools
