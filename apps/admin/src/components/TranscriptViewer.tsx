@@ -147,7 +147,7 @@ function TranscriptItemComponent({ item }: TranscriptItemProps) {
 
       <p
         className={cn(
-          "flex-1 min-w-0 text-sm whitespace-pre-wrap break-words",
+          "flex-1 w-0 text-sm whitespace-pre-wrap [overflow-wrap:anywhere]",
           config.textClass
         )}
       >
@@ -171,7 +171,7 @@ export function TranscriptViewer({ transcript }: TranscriptViewerProps) {
   }
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-2 overflow-hidden">
       {items.map((item, index) => (
         <TranscriptItemComponent key={index} item={item} />
       ))}
