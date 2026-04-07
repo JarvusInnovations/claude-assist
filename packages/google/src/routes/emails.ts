@@ -58,6 +58,7 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
         workflow_status?: WorkflowStatus;
         message_type?: MessageType;
         search?: string;
+        with?: string | string[];
         days?: string;
         limit?: string;
         offset?: string;
@@ -72,10 +73,32 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
         limit = '50',
         offset = '0',
       } = request.query;
+      const withParam = request.query.with;
 
       const limitNum = Math.min(parseInt(limit, 10) || 50, 500);
       const offsetNum = parseInt(offset, 10) || 0;
       const daysNum = parseInt(days, 10) || 30;
+
+      // Parse "with" param: supports repeated ?with=a&with=b or comma-separated ?with=a,b
+      const withTerms = withParam
+        ? (Array.isArray(withParam) ? withParam : [withParam])
+            .flatMap((t) => t.split(','))
+            .map((t) => t.trim().toLowerCase())
+            .filter(Boolean)
+        : [];
+
+      // Build OR conditions for each "with" term matching from/to fields
+      const withFragment =
+        withTerms.length > 0
+          ? fastify.sql`AND (${withTerms
+              .map(
+                (term) =>
+                  fastify.sql`LOWER(e.from_address) LIKE ${'%' + term + '%'}
+                    OR LOWER(e.from_name) LIKE ${'%' + term + '%'}
+                    OR EXISTS (SELECT 1 FROM unnest(e.to_addresses) addr WHERE LOWER(addr) LIKE ${'%' + term + '%'})`
+              )
+              .reduce((a, b) => fastify.sql`${a} OR ${b}`)})`
+          : fastify.sql``;
 
       // Use tagged template literals with conditional fragments
       const emails = await fastify.sql<EmailRecord[]>`
@@ -94,6 +117,7 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
           ${workflow_status ? fastify.sql`AND e.workflow_status = ${workflow_status}` : fastify.sql``}
           ${message_type ? fastify.sql`AND e.analysis->>'message_type' = ${message_type}` : fastify.sql``}
           ${search ? fastify.sql`AND e.search_vector @@ plainto_tsquery('english', ${search})` : fastify.sql``}
+          ${withFragment}
         ORDER BY e.date DESC
         LIMIT ${limitNum} OFFSET ${offsetNum}
       `;

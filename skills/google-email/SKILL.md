@@ -113,6 +113,7 @@ scripts/email-stats --days 7
 - `workflow_status` - Filter by state: `discovered`, `new`, `triaged`
 - `message_type` - Filter by classification: `spam`, `newsletter`, `alert`, `group`, `personal`
 - `search` - Full-text search on email content
+- `with` - Comma-separated substrings to match against from/to fields (OR logic). e.g. `--with "alice,bob"` finds emails from or to either person
 - `days` - Look back N days (default: 30)
 - `limit` - Results per page (default: 50, max: 100)
 - `offset` - Pagination offset

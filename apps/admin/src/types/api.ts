@@ -74,6 +74,7 @@ export interface EmailQueryParams {
   workflow_status?: WorkflowStatus;
   message_type?: MessageType;
   search?: string;
+  with?: string;
   days?: number;
   limit?: number;
   offset?: number;

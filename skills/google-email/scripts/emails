@@ -10,12 +10,13 @@ while [[ $# -gt 0 ]]; do
     --status)  CURL_ARGS+=(--data-urlencode "workflow_status=$2"); shift 2 ;;
     --type)    CURL_ARGS+=(--data-urlencode "message_type=$2"); shift 2 ;;
     --search)  CURL_ARGS+=(--data-urlencode "search=$2"); shift 2 ;;
+    --with)    CURL_ARGS+=(--data-urlencode "with=$2"); shift 2 ;;
     --days)    CURL_ARGS+=(--data-urlencode "days=$2"); shift 2 ;;
     --limit)   CURL_ARGS+=(--data-urlencode "limit=$2"); shift 2 ;;
     --offset)  CURL_ARGS+=(--data-urlencode "offset=$2"); shift 2 ;;
     *)
       echo "Usage: emails [--account ID] [--status STATUS] [--type TYPE] [--search TEXT]"
-      echo "              [--days N] [--limit N] [--offset N]"
+      echo "              [--with SUBSTRINGS] [--days N] [--limit N] [--offset N]"
       exit 1
       ;;
   esac
