@@ -14,7 +14,6 @@ import type { TriageService } from '../services/triage.js';
 import type {
   EmailRecord,
   WorkflowStatus,
-  MessageType,
 } from '../types.js';
 
 /**
@@ -56,7 +55,7 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
       Querystring: {
         account?: string;
         workflow_status?: WorkflowStatus;
-        message_type?: MessageType;
+        message_type?: string;
         search?: string;
         with?: string | string[];
         days?: string;
@@ -78,6 +77,11 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
       const limitNum = Math.min(parseInt(limit, 10) || 50, 500);
       const offsetNum = parseInt(offset, 10) || 0;
       const daysNum = parseInt(days, 10) || 30;
+
+      // Parse "message_type" param: supports comma-separated values for OR matching
+      const messageTypes = message_type
+        ? message_type.split(',').map((t) => t.trim()).filter(Boolean)
+        : [];
 
       // Parse "with" param: supports repeated ?with=a&with=b or comma-separated ?with=a,b
       const withTerms = withParam
@@ -115,7 +119,7 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
         WHERE e.date > NOW() - INTERVAL '1 day' * ${daysNum}
           ${account ? fastify.sql`AND a.identifier = ${account}` : fastify.sql``}
           ${workflow_status ? fastify.sql`AND e.workflow_status = ${workflow_status}` : fastify.sql``}
-          ${message_type ? fastify.sql`AND e.analysis->>'message_type' = ${message_type}` : fastify.sql``}
+          ${messageTypes.length > 0 ? fastify.sql`AND e.analysis->>'message_type' IN ${fastify.sql(messageTypes)}` : fastify.sql``}
           ${search ? fastify.sql`AND e.search_vector @@ plainto_tsquery('english', ${search})` : fastify.sql``}
           ${withFragment}
         ORDER BY e.date DESC
