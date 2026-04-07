@@ -119,6 +119,16 @@ function extractToolTarget(tool: ToolUseBlock): string | null {
     }
   }
 
+  // Description for Agent tool
+  if (tool.name === 'Agent' && typeof inputObj.description === 'string') {
+    return inputObj.description;
+  }
+
+  // Skill name for Skill tool
+  if (tool.name === 'Skill' && typeof inputObj.skill === 'string') {
+    return inputObj.skill;
+  }
+
   // Command for Bash
   if (tool.name === 'Bash' && typeof inputObj.command === 'string') {
     return inputObj.command;
@@ -182,6 +192,7 @@ export interface SerializeTranscriptOptions {
  * Format: [U] user message, [A] assistant message, [T] tool + target
  *         [?] question with options, [>] user response to question
  *         [S] skill loaded (skill name + path)
+ *         [N] subagent notification (summary + status)
  *
  * This is the same format used for AI outline generation.
  */
@@ -234,8 +245,15 @@ export function serializeTranscript(
         // Then handle text content (skip if only XML tags)
         const text = extractTextContent(msg.message.content);
         if (text) {
+          // Check if this is a task notification (subagent result)
+          if (text.includes('<task-notification>')) {
+            const summary = text.match(/<summary>([\s\S]*?)<\/summary>/)?.[1]?.trim();
+            const status = text.match(/<status>([\s\S]*?)<\/status>/)?.[1]?.trim();
+            if (summary) {
+              output.push(`[N] ${summary}${status ? ` (${status})` : ''}`);
+            }
           // Check if this is a skill injection
-          if (text.startsWith('Base directory for this skill:')) {
+          } else if (text.startsWith('Base directory for this skill:')) {
             const match = text.match(/^Base directory for this skill: ([^\n]+)/);
             if (match?.[1]) {
               const skillPath = match[1];
