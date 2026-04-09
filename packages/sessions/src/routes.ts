@@ -211,11 +211,16 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
   }>('/sessions/activity', async (request) => {
     const days = parseInt(request.query.days ?? '7', 10) || 7;
 
+    const cutoff = new Date(Date.now() - days * 86400_000).toISOString();
+
     const sessions = await fastify.sql`
       SELECT id, title, project_path, activity_ranges
       FROM sessions.sessions
-      WHERE started_at > NOW() - INTERVAL '1 day' * ${days}
-        AND jsonb_array_length(activity_ranges) > 0
+      WHERE jsonb_array_length(activity_ranges) > 0
+        AND EXISTS (
+          SELECT 1 FROM jsonb_array_elements(activity_ranges) r
+          WHERE r->>'end' >= ${cutoff}
+        )
       ORDER BY started_at
     `;
 
