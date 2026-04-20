@@ -214,7 +214,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
     const cutoff = new Date(Date.now() - days * 86400_000).toISOString();
 
     const sessions = await fastify.sql`
-      SELECT id, title, project_path, activity_ranges
+      SELECT id, title, project_path, activity_ranges, outline
       FROM sessions.sessions
       WHERE jsonb_array_length(activity_ranges) > 0
         AND EXISTS (
@@ -249,6 +249,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
         project_name: s.project_path ? (projectNames.get(s.project_path) ?? null) : null,
         activity_ranges: enrichedRanges,
         total_active_minutes: totalMinutes,
+        outline: s.outline ?? null,
       };
     });
   });
