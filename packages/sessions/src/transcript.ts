@@ -185,6 +185,7 @@ function formatQuestionTool(tool: ToolUseBlock): string | null {
 export interface SerializeTranscriptOptions {
   after?: Date;
   before?: Date;
+  includeTools?: boolean;
 }
 
 /**
@@ -299,7 +300,7 @@ export function serializeTranscript(
               output.push(`[?] ${formatted}`);
               pendingQuestions.add(tool.id);
             }
-          } else {
+          } else if (options?.includeTools) {
             const target = extractToolTarget(tool);
             output.push(`[T] ${tool.name}${target ? ' ' + target : ''}`);
           }

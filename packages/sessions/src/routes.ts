@@ -264,9 +264,11 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       group?: string;
       project?: string;
       min_user_messages?: string;
+      include_tools?: string;
     };
   }>('/sessions/transcript', async (request, reply) => {
-    const { before, after, group = 'project', project, min_user_messages = '2' } = request.query;
+    const { before, after, group = 'project', project, min_user_messages = '2', include_tools = 'false' } = request.query;
+    const includeTools = include_tools === 'true' || include_tools === '1';
 
     if (!before || !after) {
       return reply.status(400).send({ error: 'Both before and after params are required' });
@@ -316,6 +318,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
         const transcript = serializeTranscript(s.raw_transcript, {
           after: afterDate,
           before: beforeDate,
+          includeTools,
         });
         if (!transcript.trim()) continue;
         const proj = s.project_path ?? 'unknown';
@@ -341,6 +344,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
         const transcript = serializeTranscript(s.raw_transcript, {
           after: afterDate,
           before: beforeDate,
+          includeTools,
         });
         if (!transcript.trim()) continue;
         sectionParts.push(`--- ${displayTime(s)} ---\n${transcript}`);
@@ -423,10 +427,11 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
   // Optional before/after query params to trim messages to a time range
   fastify.get<{
     Params: { id: string };
-    Querystring: { before?: string; after?: string };
+    Querystring: { before?: string; after?: string; include_tools?: string };
   }>('/sessions/:id/transcript', async (request, reply) => {
     const { id } = request.params;
-    const { before, after } = request.query;
+    const { before, after, include_tools = 'false' } = request.query;
+    const includeTools = include_tools === 'true' || include_tools === '1';
 
     const beforeDate = before ? new Date(before) : undefined;
     const afterDate = after ? new Date(after) : undefined;
@@ -452,6 +457,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
     const transcript = serializeTranscript(session.raw_transcript, {
       before: beforeDate,
       after: afterDate,
+      includeTools,
     });
 
     reply.type('text/plain');

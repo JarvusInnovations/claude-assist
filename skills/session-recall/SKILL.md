@@ -184,6 +184,9 @@ scripts/transcript --after 2026-03-24T00:00:00Z --before 2026-03-29T00:00:00Z
 
 # Include subagent sessions (normally filtered out)
 scripts/transcript --after 2026-03-29T00:00:00Z --before 2026-03-29T23:59:59Z --min-user-messages 0
+
+# Include tool call lines (excluded by default)
+scripts/transcript --after 2026-03-29T00:00:00Z --before 2026-03-29T23:59:59Z --include-tools
 ```
 
 When called **without a session ID**, returns an LLM-optimized transcript across all sessions that overlap the given time range. Both `--after` and `--before` are required.
@@ -197,6 +200,7 @@ Parameters:
 - `--group` - Output grouping: `project` (default) or `time`
 - `--project` - Filter to sessions matching this project path (partial match)
 - `--min-user-messages` - Minimum user messages to include session (default: 2, filters out subagent sessions)
+- `--include-tools` - Include `[T]` tool call lines in output (excluded by default to reduce token volume)
 
 **`--group project`** (default) groups sessions under project path headers — best for standup summaries and "what did I do" questions where the project context matters:
 

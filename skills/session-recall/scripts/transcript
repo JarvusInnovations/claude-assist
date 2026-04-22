@@ -10,6 +10,7 @@ GROUP=""
 PROJECT=""
 MIN_USER_MESSAGES=""
 RAW=""
+INCLUDE_TOOLS=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -19,6 +20,7 @@ while [[ $# -gt 0 ]]; do
     --project) PROJECT="$2"; shift 2 ;;
     --min-user-messages) MIN_USER_MESSAGES="$2"; [[ "$MIN_USER_MESSAGES" =~ ^[0-9]+$ ]] || { echo "min-user-messages must be a non-negative integer"; exit 1; }; shift 2 ;;
     --raw) RAW="true"; shift; [[ ${1:-} == "true" ]] && shift ;;
+    --include-tools) INCLUDE_TOOLS="true"; shift ;;
     -*) echo "Unknown option: $1"; exit 1 ;;
     *) ID="$1"; shift ;;
   esac
@@ -39,6 +41,7 @@ if [[ -z "$ID" ]]; then
   [[ -n "$GROUP" ]] && ARGS+=(--data-urlencode "group=${GROUP}")
   [[ -n "$PROJECT" ]] && ARGS+=(--data-urlencode "project=${PROJECT}")
   [[ -n "$MIN_USER_MESSAGES" ]] && ARGS+=(--data-urlencode "min_user_messages=${MIN_USER_MESSAGES}")
+  [[ -n "$INCLUDE_TOOLS" ]] && ARGS+=(--data-urlencode "include_tools=true")
   exec curl "${ARGS[@]}"
 else
   # Per-session transcript endpoint
@@ -46,5 +49,6 @@ else
   [[ -n "$AFTER" ]] && ARGS+=(--data-urlencode "after=${AFTER}")
   [[ -n "$BEFORE" ]] && ARGS+=(--data-urlencode "before=${BEFORE}")
   [[ -n "$RAW" ]] && ARGS+=(--data-urlencode "with_raw_messages=true")
+  [[ -n "$INCLUDE_TOOLS" ]] && ARGS+=(--data-urlencode "include_tools=true")
   exec curl "${ARGS[@]}"
 fi
