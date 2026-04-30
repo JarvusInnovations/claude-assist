@@ -264,15 +264,16 @@ export default createPlugin('chat', async (fastify, options) => {
    */
   async function handleThreadReply(channel: string, threadTs: string, messageTs: string, text: string) {
     const threadKey = `${channel}:${threadTs}`;
-    const sessionId = await sessionStore.getSessionId(threadKey);
 
-    fastify.log.info({ threadKey, sessionId, text: text.slice(0, 50) }, 'Thread reply');
+    fastify.log.info({ threadKey, text: text.slice(0, 50) }, 'Thread reply');
 
     // Instant feedback
     await addReaction(channel, messageTs, 'thinking_face');
     await setTypingStatus(channel, threadTs, 'Thinking...');
 
     try {
+      const sessionId = await sessionStore.getSessionId(threadKey);
+      fastify.log.info({ threadKey, sessionId }, 'Resuming session');
       const result = await handleMessage(preprocessMessage(text), sessionId ?? undefined, {
         onStatus: (status) => setTypingStatus(channel, threadTs, status),
       });

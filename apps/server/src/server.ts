@@ -178,8 +178,8 @@ fastify.setNotFoundHandler((request, reply) => {
 const shutdown = async () => {
   fastify.log.info('Shutting down...');
   fastify.scheduler.stop();
+  await fastify.close(); // stops Bolt (via onClose hook) before closing DB
   await sql.end();
-  await fastify.close();
   process.exit(0);
 };
 
