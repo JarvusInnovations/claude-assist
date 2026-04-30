@@ -4,6 +4,7 @@
   "type": "module",
   "private": true,
   "scripts": {
+    "predev": "pkill -f 'bun.*src/server\\.ts' || true",
     "dev": "bun --watch src/server.ts",
     "start": "bun src/server.ts",
     "build": "tsc",
