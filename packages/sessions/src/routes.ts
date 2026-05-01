@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import type { SyncService } from './sync.js';
 import type { OutlineService } from './outline.js';
@@ -462,6 +463,25 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
 
     reply.type('text/plain');
     return transcript;
+  });
+
+  // POST /sessions/:id/share — generate a shareable auth code for a session transcript
+  fastify.post<{ Params: { id: string } }>('/sessions/:id/share', async (request, reply) => {
+    const { id } = request.params;
+
+    const sessions = await fastify.sql`
+      SELECT id FROM sessions.sessions WHERE id = ${id}::uuid
+    `;
+    if (sessions.length === 0) {
+      return reply.status(404).send({ error: 'Session not found' });
+    }
+
+    const authCode = randomBytes(15).toString('base64url');
+    await fastify.sql`
+      INSERT INTO sessions.shares (session_id, auth_code)
+      VALUES (${id}::uuid, ${authCode})
+    `;
+    return { auth_code: authCode };
   });
 
   // GET /sessions/stats - Session statistics

@@ -95,3 +95,4 @@ export { SessionScanner } from './scanner.js';
 export { parseTranscript } from './parser.js';
 export { serializeTranscript } from './transcript.js';
 export { normalizeProjectPaths } from './project-names.js';
+export { registerPublicShareRoutes } from './share-routes.js';

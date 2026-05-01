@@ -6,6 +6,7 @@ import type {
   MachineRecord,
   OutlineProgress,
   ActivitySession,
+  SessionShare,
 } from "@/types/api";
 
 export const sessionsApi = {
@@ -61,4 +62,7 @@ export const sessionsApi = {
 
   // Sync
   triggerSync: () => api.post("/sessions/sync"),
+
+  // Share
+  createShare: (id: string) => api.post<SessionShare>(`/sessions/${id}/share`),
 };

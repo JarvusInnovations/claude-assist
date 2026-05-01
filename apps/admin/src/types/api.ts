@@ -203,6 +203,10 @@ export interface OutlineProgress {
   inProgress: boolean;
 }
 
+export interface SessionShare {
+  auth_code: string;
+}
+
 // ============================================
 // System Types
 // ============================================

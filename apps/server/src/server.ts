@@ -2,7 +2,7 @@ import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import postgres from 'postgres';
 import { createScheduler } from '@jarvus/claude-assist-core';
-import sessionsPlugin from '@jarvus/claude-assist-sessions';
+import sessionsPlugin, { registerPublicShareRoutes } from '@jarvus/claude-assist-sessions';
 import googlePlugin from '@jarvus/claude-assist-google';
 import chatPlugin from '@jarvus/claude-assist-chat';
 import { join, dirname } from 'node:path';
@@ -159,6 +159,9 @@ if (fastify.config.ENABLE_CHAT) {
 } else {
   fastify.log.info('Chat module disabled');
 }
+
+// Public share routes — bypass Caddy basic-auth via /share/* path pattern
+await fastify.register(registerPublicShareRoutes);
 
 // Serve admin frontend static files
 await fastify.register(fastifyStatic, {

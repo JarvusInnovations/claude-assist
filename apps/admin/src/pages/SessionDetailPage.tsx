@@ -2,6 +2,7 @@ import { useParams, Link } from "react-router";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { ArrowLeft, Sparkles, FileText, Clock, Hash } from "lucide-react";
 import { toast } from "sonner";
+import { ShareDialog } from "@/components/ShareDialog";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -94,6 +95,7 @@ export function SessionDetailPage() {
             {session.id}
           </button>
         </div>
+        <ShareDialog sessionId={sessionId} />
         {!session.outline && (
           <Button
             size="sm"
