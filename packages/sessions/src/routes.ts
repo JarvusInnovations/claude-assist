@@ -1,5 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 import type { SyncService } from './sync.js';
 import type { OutlineService } from './outline.js';
 import type {
@@ -374,6 +376,9 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
     Querystring: { with_raw_messages?: string };
   }>('/sessions/:id', async (request, reply) => {
     const { id } = request.params;
+    if (!UUID_RE.test(id)) {
+      return reply.status(400).send({ error: 'Invalid session id' });
+    }
     const withRawMessages = request.query.with_raw_messages === 'true';
 
     const sessions = await fastify.sql<(SessionRecord & { machine_name: string })[]>`
@@ -443,6 +448,9 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
     Querystring: { before?: string; after?: string; include_tools?: string };
   }>('/sessions/:id/transcript', async (request, reply) => {
     const { id } = request.params;
+    if (!UUID_RE.test(id)) {
+      return reply.status(400).send({ error: 'Invalid session id' });
+    }
     const { before, after, include_tools = 'false' } = request.query;
     const includeTools = include_tools === 'true' || include_tools === '1';
 
@@ -480,6 +488,9 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
   // POST /sessions/:id/share — generate a shareable auth code for a session transcript
   fastify.post<{ Params: { id: string } }>('/sessions/:id/share', async (request, reply) => {
     const { id } = request.params;
+    if (!UUID_RE.test(id)) {
+      return reply.status(400).send({ error: 'Invalid session id' });
+    }
 
     const sessions = await fastify.sql`
       SELECT id FROM sessions.sessions WHERE id = ${id}::uuid
