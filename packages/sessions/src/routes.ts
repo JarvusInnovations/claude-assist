@@ -122,6 +122,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
           s.output_tokens,
           s.outline,
           s.title,
+          s.session_name,
           m.machine_id,
           ts_rank(s.search_vector, websearch_to_tsquery('english', ${search})) as rank
         FROM sessions.sessions s
@@ -163,6 +164,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
           s.output_tokens,
           s.outline,
           s.title,
+          s.session_name,
           m.machine_id
         FROM sessions.sessions s
         JOIN sessions.machines m ON s.machine_id = m.id
@@ -196,6 +198,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       git_branch: s.git_branch,
       outline: s.outline ?? null,
       title: s.title ?? null,
+      session_name: s.session_name ?? null,
       message_count: s.message_count,
       user_message_count: s.user_message_count,
       input_tokens: parseInt(String(s.input_tokens), 10) || 0,
@@ -215,7 +218,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
     const cutoff = new Date(Date.now() - days * 86400_000).toISOString();
 
     const sessions = await fastify.sql`
-      SELECT id, title, project_path, activity_ranges, outline
+      SELECT id, title, session_name, project_path, activity_ranges, outline
       FROM sessions.sessions
       WHERE jsonb_array_length(activity_ranges) > 0
         AND EXISTS (
@@ -246,6 +249,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       return {
         id: s.id,
         title: s.title ?? null,
+        session_name: s.session_name ?? null,
         project_path: s.project_path,
         project_name: s.project_path ? (projectNames.get(s.project_path) ?? null) : null,
         activity_ranges: enrichedRanges,
@@ -397,6 +401,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       claude_version: session.claude_version,
       outline: session.outline,
       title: session.title,
+      session_name: session.session_name ?? null,
       outline_hash: session.outline_hash,
       models_used: session.models_used,
       model_tokens: parseModelTokens(session.model_tokens),

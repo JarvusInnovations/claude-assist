@@ -108,7 +108,7 @@ function buildBars(
 
       bars.push({
         sessionId: session.id,
-        title: session.title,
+        title: session.session_name ?? session.title,
         projectName: getProjectName(session),
         start,
         end,

@@ -156,6 +156,7 @@ export interface SessionRecord {
   synced_at: string;
   outline: string | null;
   title: string | null;
+  session_name: string | null;
   outline_hash: string | null;
   models_used: string[];
   model_tokens: Record<string, ModelTokens>;
@@ -170,6 +171,7 @@ export interface ActivityRange {
 export interface ActivitySession {
   id: string;
   title: string | null;
+  session_name: string | null;
   project_path: string | null;
   project_name: string | null;
   activity_ranges: ActivityRange[];

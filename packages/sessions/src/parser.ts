@@ -103,12 +103,23 @@ export function parseTranscript(
   // This allows us to deduplicate streaming messages in the second pass
   const messagesWithUsage = new Set<string>();
   const parsedMessages: TranscriptMessage[] = [];
+  // User-set custom session name (last occurrence wins — renames overwrite the line)
+  let sessionName: string | null = null;
 
   for (const line of lines) {
     if (!line.trim()) continue;
 
     try {
-      const msg: TranscriptMessage = JSON.parse(line);
+      const raw = JSON.parse(line) as { type?: string; customTitle?: string };
+
+      // Special line type written by Claude Code when the user renames the session
+      if (raw.type === 'custom-title' && typeof raw.customTitle === 'string') {
+        const trimmed = raw.customTitle.trim();
+        sessionName = trimmed.length > 0 ? trimmed : null;
+        continue;
+      }
+
+      const msg = raw as TranscriptMessage;
       parsedMessages.push(msg);
 
       // Track UUIDs of messages with usage data
@@ -263,6 +274,7 @@ export function parseTranscript(
     modelsUsed: [...modelsUsed],
     modelTokens,
     activityRanges: computeActivityRanges(userTimestamps),
+    sessionName,
   };
 }
 

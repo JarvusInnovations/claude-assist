@@ -74,14 +74,15 @@ function renderItems(items: TranscriptItem[]): string {
 
 function buildSharePage(opts: {
   authCode: string;
+  sessionName: string | null;
   title: string | null;
   projectPath: string | null;
   startedAt: Date;
   transcript: string;
   baseUrl: string;
 }): string {
-  const { authCode, title, projectPath, startedAt, transcript, baseUrl } = opts;
-  const displayTitle = title || projectPath?.split('/').pop() || 'Session Transcript';
+  const { authCode, sessionName, title, projectPath, startedAt, transcript, baseUrl } = opts;
+  const displayTitle = sessionName || title || projectPath?.split('/').pop() || 'Session Transcript';
   const projectDisplay = projectPath ?? '';
   const dateDisplay = startedAt.toLocaleString('en-US', {
     year: 'numeric', month: 'short', day: 'numeric',
@@ -173,10 +174,11 @@ export async function registerPublicShareRoutes(fastify: FastifyInstance) {
       session_id: string;
       raw_transcript: string;
       title: string | null;
+      session_name: string | null;
       project_path: string | null;
       started_at: Date;
     }[]>`
-      SELECT s.id AS session_id, s.raw_transcript, s.title, s.project_path, s.started_at
+      SELECT s.id AS session_id, s.raw_transcript, s.title, s.session_name, s.project_path, s.started_at
       FROM sessions.shares sh
       JOIN sessions.sessions s ON s.id = sh.session_id
       WHERE sh.auth_code = ${auth_code}
@@ -196,6 +198,7 @@ export async function registerPublicShareRoutes(fastify: FastifyInstance) {
 
     const html = buildSharePage({
       authCode: auth_code,
+      sessionName: row.session_name,
       title: row.title,
       projectPath: row.project_path,
       startedAt: new Date(row.started_at),

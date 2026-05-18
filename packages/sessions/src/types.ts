@@ -124,6 +124,8 @@ export interface ParsedSession {
   modelTokens: Record<string, ModelTokens>;
   /** Contiguous time ranges of user activity (30-min gap threshold) */
   activityRanges: ActivityRange[];
+  /** User-set custom session name (from Claude Code's /title rename), null if none */
+  sessionName: string | null;
 }
 
 /**
@@ -206,6 +208,8 @@ export interface SessionRecord {
   outline: string | null;
   /** AI-generated concise title for the session */
   title: string | null;
+  /** User-set custom session name (from Claude Code's /title rename) */
+  session_name: string | null;
   /** transcript_hash when outline was generated (for regeneration detection) */
   outline_hash: string | null;
   /** Models used in this session */

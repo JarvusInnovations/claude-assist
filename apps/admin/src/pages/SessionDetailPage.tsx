@@ -80,20 +80,36 @@ export function SessionDetailPage() {
         </Button>
         <div className="flex-1 min-w-0">
           <h1 className="text-2xl font-semibold truncate">
-            {session.title || session.project_path?.split("/").pop() || "Session"}
+            {session.session_name || session.title || session.project_path?.split("/").pop() || "Session"}
           </h1>
           <p className="text-muted-foreground text-sm truncate">
             {session.machine}:{session.project_path}
           </p>
-          <button
-            className="text-xs font-mono text-muted-foreground hover:text-foreground cursor-pointer"
-            onClick={() => {
-              navigator.clipboard.writeText(session.id);
-              toast.success("Session ID copied");
-            }}
-          >
-            {session.id}
-          </button>
+          <div className="text-xs font-mono text-muted-foreground flex flex-wrap items-center gap-x-2">
+            {session.session_name && (
+              <>
+                <button
+                  className="hover:text-foreground cursor-pointer text-foreground/80"
+                  onClick={() => {
+                    navigator.clipboard.writeText(session.session_name!);
+                    toast.success("Session name copied");
+                  }}
+                >
+                  {session.session_name}
+                </button>
+                <span className="text-muted-foreground/50">·</span>
+              </>
+            )}
+            <button
+              className="hover:text-foreground cursor-pointer"
+              onClick={() => {
+                navigator.clipboard.writeText(session.id);
+                toast.success("Session ID copied");
+              }}
+            >
+              {session.id}
+            </button>
+          </div>
         </div>
         <ShareDialog sessionId={sessionId} />
         {!session.outline && (

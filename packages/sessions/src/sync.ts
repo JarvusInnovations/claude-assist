@@ -347,6 +347,7 @@ export class SyncService {
           models_used = ${this.sql.json(parsed.modelsUsed)},
           model_tokens = ${this.sql.json(parsed.modelTokens as any)},
           activity_ranges = ${this.sql.json(parsed.activityRanges as any)},
+          session_name = ${parsed.sessionName},
           synced_at = NOW()
         WHERE id = ${sessionId}::uuid AND machine_id = ${machineId}
       `;
@@ -362,7 +363,7 @@ export class SyncService {
         input_tokens, output_tokens, cache_read_tokens,
         transcript_path, transcript_hash, raw_transcript,
         search_text, message_count, user_message_count, claude_version,
-        models_used, model_tokens, activity_ranges
+        models_used, model_tokens, activity_ranges, session_name
       ) VALUES (
         ${sessionId}::uuid,
         ${machineId},
@@ -385,7 +386,8 @@ export class SyncService {
         ${parsed.claudeVersion},
         ${this.sql.json(parsed.modelsUsed)},
         ${this.sql.json(parsed.modelTokens as any)},
-        ${this.sql.json(parsed.activityRanges as any)}
+        ${this.sql.json(parsed.activityRanges as any)},
+        ${parsed.sessionName}
       )
     `;
 
