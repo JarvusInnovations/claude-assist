@@ -6,7 +6,6 @@ import { toast } from "sonner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Progress } from "@/components/ui/progress";
 import {
@@ -222,11 +221,9 @@ export function SessionsPage() {
                 <TableRow>
                   <TableHead className="w-[100px]">Started</TableHead>
                   <TableHead>Project</TableHead>
-                  <TableHead className="w-[100px]">Branch</TableHead>
-                  <TableHead className="w-[80px]">Messages</TableHead>
-                  <TableHead className="w-[100px]">Tokens</TableHead>
-                  <TableHead className="w-[80px]">Outline</TableHead>
-                  <TableHead className="w-[80px]">ID</TableHead>
+                  <TableHead className="max-w-[150px]">Branch</TableHead>
+                  <TableHead className="w-[140px]">Size</TableHead>
+                  <TableHead className="w-[180px]">ID</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -249,34 +246,23 @@ export function SessionsPage() {
                         {session.machine}:{session.project_path}
                       </span>
                     </TableCell>
-                    <TableCell className="text-sm">
+                    <TableCell className="text-sm max-w-[150px] truncate" title={session.git_branch || ""}>
                       {session.git_branch || "N/A"}
                     </TableCell>
-                    <TableCell className="text-sm">
-                      {session.message_count}
-                    </TableCell>
                     <TableCell className="text-sm font-mono">
-                      {formatTokens(
-                        session.input_tokens + session.output_tokens
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      {session.outline ? (
-                        <Badge variant="outline">Yes</Badge>
-                      ) : (
-                        <Badge variant="secondary">No</Badge>
-                      )}
+                      {session.message_count} / {formatTokens(session.input_tokens + session.output_tokens)}
                     </TableCell>
                     <TableCell>
                       <button
-                        className="text-xs font-mono text-muted-foreground hover:text-foreground cursor-pointer truncate max-w-[80px] block"
-                        title={session.id}
+                        className="text-xs font-mono text-muted-foreground hover:text-foreground cursor-pointer truncate max-w-[170px] block text-left"
+                        title={session.session_name || session.id}
                         onClick={() => {
-                          navigator.clipboard.writeText(session.id);
-                          toast.success("Session ID copied");
+                          const value = session.session_name || session.id;
+                          navigator.clipboard.writeText(value);
+                          toast.success(session.session_name ? "Session name copied" : "Session ID copied");
                         }}
                       >
-                        {session.id.slice(0, 8)}
+                        {session.session_name || session.id.slice(0, 8)}
                       </button>
                     </TableCell>
                   </TableRow>
