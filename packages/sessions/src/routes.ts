@@ -106,7 +106,10 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
     let sessions;
 
     if (search) {
-      // Full-text search query
+      // Full-text search + session_name substring (ILIKE) fallback for
+      // identifier-style names that don't tokenize well (e.g. "fine" → "refinement")
+      const escapedSearch = search.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+      const namePattern = '%' + escapedSearch + '%';
       sessions = await fastify.sql`
         SELECT
           s.id,
@@ -127,7 +130,11 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
           ts_rank(s.search_vector, websearch_to_tsquery('english', ${search})) as rank
         FROM sessions.sessions s
         JOIN sessions.machines m ON s.machine_id = m.id
-        WHERE s.search_vector @@ websearch_to_tsquery('english', ${search})
+        WHERE (
+          s.search_vector @@ websearch_to_tsquery('english', ${search})
+          OR s.session_name ILIKE ${namePattern}
+          OR s.project_path ILIKE ${namePattern}
+        )
           ${foreverMode
             ? fastify.sql``
             : useDateRange
