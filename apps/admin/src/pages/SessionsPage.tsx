@@ -221,7 +221,7 @@ export function SessionsPage() {
                 <TableRow>
                   <TableHead className="w-[100px]">Started</TableHead>
                   <TableHead>Project</TableHead>
-                  <TableHead className="max-w-[150px]">Branch</TableHead>
+                  <TableHead className="w-[150px]">Branch</TableHead>
                   <TableHead className="w-[140px]">Size</TableHead>
                   <TableHead className="w-[180px]">ID</TableHead>
                 </TableRow>
@@ -236,18 +236,31 @@ export function SessionsPage() {
                     <TableCell className="max-w-0">
                       <Link
                         to={`/sessions/${session.id}`}
+                        title={
+                          session.title ||
+                          session.project_path?.split("/").pop() ||
+                          "Unknown"
+                        }
                         className="hover:underline font-medium truncate block"
                       >
                         {session.title ||
                           session.project_path?.split("/").pop() ||
                           "Unknown"}
                       </Link>
-                      <span className="text-xs text-muted-foreground truncate block">
+                      <span
+                        className="text-xs text-muted-foreground truncate block"
+                        title={`${session.machine}:${session.project_path}`}
+                      >
                         {session.machine}:{session.project_path}
                       </span>
                     </TableCell>
-                    <TableCell className="text-sm max-w-[150px] truncate" title={session.git_branch || ""}>
-                      {session.git_branch || "N/A"}
+                    <TableCell className="text-sm">
+                      <span
+                        className="block max-w-[150px] truncate"
+                        title={session.git_branch || ""}
+                      >
+                        {session.git_branch || "N/A"}
+                      </span>
                     </TableCell>
                     <TableCell className="text-sm font-mono">
                       {session.message_count} / {formatTokens(session.input_tokens + session.output_tokens)}
