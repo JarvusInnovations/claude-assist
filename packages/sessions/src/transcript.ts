@@ -182,6 +182,47 @@ function formatQuestionTool(tool: ToolUseBlock): string | null {
   return formatted;
 }
 
+/**
+ * Emit a user-side text payload using the right marker:
+ * [N] task-notification, [S] skill injection, [U] user message (or /skill).
+ * Used for both type:user messages and queued_command attachments.
+ */
+function emitUserText(text: string, output: string[]): void {
+  if (text.includes('<task-notification>')) {
+    const summary = text.match(/<summary>([\s\S]*?)<\/summary>/)?.[1]?.trim();
+    const status = text.match(/<status>([\s\S]*?)<\/status>/)?.[1]?.trim();
+    if (summary) {
+      output.push(`[N] ${summary}${status ? ` (${status})` : ''}`);
+    }
+    return;
+  }
+
+  if (text.startsWith('Base directory for this skill:')) {
+    const match = text.match(/^Base directory for this skill: ([^\n]+)/);
+    if (match?.[1]) {
+      const skillPath = match[1];
+      const skillName = skillPath.split('/').pop() || 'unknown';
+      output.push(`[S] ${skillName} (${skillPath})`);
+    } else {
+      output.push(`[S] unknown`);
+    }
+    return;
+  }
+
+  const argsMatch = text.match(/<command-args>([\s\S]+?)<\/command-args>/);
+  const commandArgs = argsMatch?.[1]?.trim();
+  if (commandArgs) {
+    const nameMatch = text.match(/<command-name>\/?([^<]+)<\/command-name>/);
+    const skillName = nameMatch?.[1]?.trim();
+    output.push(`[U] /${skillName ?? 'unknown'} ${commandArgs}`);
+    return;
+  }
+
+  if (!isXmlOnlyContent(text)) {
+    output.push(`[U] ${text}`);
+  }
+}
+
 export interface SerializeTranscriptOptions {
   after?: Date;
   before?: Date;
@@ -246,37 +287,17 @@ export function serializeTranscript(
         // Then handle text content (skip if only XML tags)
         const text = extractTextContent(msg.message.content);
         if (text) {
-          // Check if this is a task notification (subagent result)
-          if (text.includes('<task-notification>')) {
-            const summary = text.match(/<summary>([\s\S]*?)<\/summary>/)?.[1]?.trim();
-            const status = text.match(/<status>([\s\S]*?)<\/status>/)?.[1]?.trim();
-            if (summary) {
-              output.push(`[N] ${summary}${status ? ` (${status})` : ''}`);
-            }
-          // Check if this is a skill injection
-          } else if (text.startsWith('Base directory for this skill:')) {
-            const match = text.match(/^Base directory for this skill: ([^\n]+)/);
-            if (match?.[1]) {
-              const skillPath = match[1];
-              const skillName = skillPath.split('/').pop() || 'unknown';
-              output.push(`[S] ${skillName} (${skillPath})`);
-            } else {
-              output.push(`[S] unknown`);
-            }
-          } else {
-            // Extract command-args from skill invocations before XML check
-            const argsMatch = text.match(/<command-args>([\s\S]+?)<\/command-args>/);
-            const commandArgs = argsMatch?.[1]?.trim();
+          emitUserText(text, output);
+        }
+      }
 
-            if (commandArgs) {
-              // Skill invocation with user-provided arguments
-              const nameMatch = text.match(/<command-name>\/?([^<]+)<\/command-name>/);
-              const skillName = nameMatch?.[1]?.trim();
-              output.push(`[U] /${skillName ?? 'unknown'} ${commandArgs}`);
-            } else if (!isXmlOnlyContent(text)) {
-              output.push(`[U] ${text}`);
-            }
-          }
+      // Queued user prompts are persisted as attachments, not type:user messages.
+      // attachment.prompt may contain a real user message OR a system-generated
+      // <task-notification> — both shapes are already handled by emitUserText().
+      if (msg.type === 'attachment' && msg.attachment?.type === 'queued_command') {
+        const prompt = msg.attachment.prompt;
+        if (typeof prompt === 'string' && prompt.length > 0) {
+          emitUserText(prompt, output);
         }
       }
 

@@ -46,7 +46,7 @@ export interface TokenUsage {
  * Transcript message format (JSONL line)
  */
 export interface TranscriptMessage {
-  type: 'user' | 'assistant' | 'queue-operation';
+  type: 'user' | 'assistant' | 'queue-operation' | 'attachment';
   sessionId: string;
   uuid: string;
   parentUuid: string | null;
@@ -69,6 +69,13 @@ export interface TranscriptMessage {
   };
   // Queue operation specific
   operation?: 'queue' | 'dequeue';
+  // Attachment-specific (Claude Code logs queued user prompts here)
+  attachment?: {
+    type: string;
+    prompt?: string;
+    commandMode?: string;
+    [key: string]: unknown;
+  };
 }
 
 /**

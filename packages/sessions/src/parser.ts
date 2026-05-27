@@ -171,6 +171,21 @@ export function parseTranscript(
       }
     }
 
+    // Extract queued user prompts (typed while assistant was busy).
+    // Claude Code persists these as attachments with attachment.type === 'queued_command'
+    // and the user's text in attachment.prompt — not as type === 'user' messages.
+    if (
+      msg.type === 'attachment' &&
+      msg.attachment?.type === 'queued_command' &&
+      typeof msg.attachment.prompt === 'string' &&
+      msg.attachment.prompt.length > 0
+    ) {
+      userMessages.push(msg.attachment.prompt);
+      if (msg.timestamp) {
+        userTimestamps.push(new Date(msg.timestamp));
+      }
+    }
+
     // Extract tools and files from assistant messages
     if (msg.type === 'assistant' && msg.message) {
       // Track model usage
