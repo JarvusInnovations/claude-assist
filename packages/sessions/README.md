@@ -185,6 +185,29 @@ bunx @jarvus/claude-assist-sessions push [options]
   -v, --verbose          Detailed output
 ```
 
+## Suppressing automated sessions
+
+Some local tools spawn large volumes of tiny, automated Claude sessions (e.g. the M87
+review-item triage runner) that flood the archive. These pass the subagent/min-size
+filters because they're real UUID-named transcripts above the size threshold.
+
+Ingest suppresses any session whose **parsed user messages** contain a configured marker
+substring. Matching parsed user messages — not raw transcript text — is deliberate: a
+legitimate session that merely quotes a marker in tool output or assistant prose is *not*
+dropped, only sessions whose initiating prompt is the automation's marker.
+
+A built-in default suppresses the M87 triage runner. Add your own via the
+`SESSIONS_IGNORE_MARKERS` env var (newline-separated; appended to the defaults):
+
+```bash
+SESSIONS_IGNORE_MARKERS="You are triaging a local-first M87 review item.
+Another automation prompt prefix"
+```
+
+Suppression applies on the host scan, the satellite push CLI's inventory, and as a
+server-side net in the push endpoint (so satellites on an older CLI are still filtered).
+It only blocks *future* ingest — existing rows must be deleted separately.
+
 ## Acknowledgments
 
 This module was heavily inspired by [kuato](https://github.com/alexknowshtml/kuato), a session recall tool that addresses Claude Code's "agent amnesia" between conversations. The core design patterns—extracting user messages, tools used, and files touched as the primary search signals, with weighted full-text search prioritizing user prompts—originated from kuato's approach to session archaeology.
