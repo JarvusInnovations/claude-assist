@@ -7,6 +7,11 @@ import type {
   DiscoveredSession,
   SessionInventoryItem,
 } from './types.js';
+import {
+  DEFAULT_SESSION_IGNORE_MARKERS,
+  matchesIgnoreMarker,
+} from './ignore.js';
+import { parseTranscript } from './parser.js';
 
 export interface ScannerConfig {
   claudeDir?: string;
@@ -14,6 +19,11 @@ export interface ScannerConfig {
   originalClaudeDir?: string;
   /** Minimum transcript file size in bytes (default 500) */
   minFileSize?: number;
+  /**
+   * Transcript content substrings that mark a session for suppression.
+   * Defaults to DEFAULT_SESSION_IGNORE_MARKERS (e.g. M87 triage runner).
+   */
+  ignoreContentMarkers?: readonly string[];
 }
 
 /**
@@ -25,6 +35,7 @@ export class SessionScanner {
   private projectsDir: string;
   private originalClaudeDir: string | null;
   private minFileSize: number;
+  private ignoreContentMarkers: readonly string[];
 
   constructor(config: ScannerConfig = {}) {
     this.claudeDir = config.claudeDir ?? join(homedir(), '.claude');
@@ -32,6 +43,25 @@ export class SessionScanner {
     this.projectsDir = join(this.claudeDir, 'projects');
     this.originalClaudeDir = config.originalClaudeDir ?? null;
     this.minFileSize = config.minFileSize ?? 500;
+    this.ignoreContentMarkers =
+      config.ignoreContentMarkers ?? DEFAULT_SESSION_IGNORE_MARKERS;
+  }
+
+  /**
+   * Decide whether a transcript should be suppressed from ingest.
+   * Matches ignore markers against parsed user messages (the automation's
+   * initiating prompt), not raw transcript text — so legitimate sessions that
+   * merely quote a marker in tool output or assistant prose are not dropped.
+   */
+  private isIgnoredTranscript(
+    sessionId: string,
+    transcriptContent: string
+  ): boolean {
+    if (this.ignoreContentMarkers.length === 0) {
+      return false;
+    }
+    const { userMessages } = parseTranscript(sessionId, transcriptContent);
+    return matchesIgnoreMarker(userMessages, this.ignoreContentMarkers);
   }
 
   /**
@@ -103,6 +133,11 @@ export class SessionScanner {
 
     // Read transcript content
     const transcriptContent = await readFile(transcriptPath, 'utf-8');
+
+    // Skip suppressed sessions (e.g. automated triage runners)
+    if (this.isIgnoredTranscript(signal.session_id, transcriptContent)) {
+      return null;
+    }
 
     // Compute MD5 hash for change detection (Kuato pattern)
     const transcriptHash = createHash('md5')
@@ -255,6 +290,11 @@ export class SessionScanner {
     // Read transcript content
     const transcriptContent = await readFile(transcriptPath, 'utf-8');
 
+    // Skip suppressed sessions (e.g. automated triage runners)
+    if (this.isIgnoredTranscript(sessionId, transcriptContent)) {
+      return null;
+    }
+
     // Compute MD5 hash for change detection
     const transcriptHash = createHash('md5')
       .update(transcriptContent)
@@ -328,6 +368,12 @@ export class SessionScanner {
 
         // Read and hash transcript (then discard content)
         const transcriptContent = await readFile(transcriptPath, 'utf-8');
+
+        // Skip suppressed sessions (e.g. automated triage runners)
+        if (this.isIgnoredTranscript(sessionId, transcriptContent)) {
+          continue;
+        }
+
         const transcriptHash = createHash('md5')
           .update(transcriptContent)
           .digest('hex');
@@ -387,6 +433,12 @@ export class SessionScanner {
 
         const transcriptPath = join(projectPath, file);
         const transcriptContent = await readFile(transcriptPath, 'utf-8');
+
+        // Skip suppressed sessions (e.g. automated triage runners)
+        if (this.isIgnoredTranscript(sessionId, transcriptContent)) {
+          continue;
+        }
+
         const transcriptHash = createHash('md5')
           .update(transcriptContent)
           .digest('hex');

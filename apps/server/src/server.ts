@@ -2,7 +2,10 @@ import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import postgres from 'postgres';
 import { createScheduler } from '@jarvus/claude-assist-core';
-import sessionsPlugin, { registerPublicShareRoutes } from '@jarvus/claude-assist-sessions';
+import sessionsPlugin, {
+  registerPublicShareRoutes,
+  DEFAULT_SESSION_IGNORE_MARKERS,
+} from '@jarvus/claude-assist-sessions';
 import googlePlugin from '@jarvus/claude-assist-google';
 import chatPlugin from '@jarvus/claude-assist-chat';
 import { join, dirname } from 'node:path';
@@ -85,6 +88,14 @@ await fastify.register(
           disableGenerateOutlines:
             fastify.config.DISABLE_SYNCS ||
             fastify.config.SESSIONS_DISABLE_GENERATE_OUTLINES,
+          ignoreContentMarkers: [
+            ...DEFAULT_SESSION_IGNORE_MARKERS,
+            ...(fastify.config.SESSIONS_IGNORE_MARKERS
+              ? fastify.config.SESSIONS_IGNORE_MARKERS.split('\n')
+                  .map((m) => m.trim())
+                  .filter(Boolean)
+              : []),
+          ],
         },
       });
     } else {

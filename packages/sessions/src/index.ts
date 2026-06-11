@@ -23,6 +23,7 @@ export default createPlugin('sessions', async (fastify, options) => {
     originalClaudeDir: config.originalClaudeDir,
     minFileSize: config.minFileSize,
     disableLocalIngest: config.disableLocalIngest,
+    ignoreContentMarkers: config.ignoreContentMarkers,
   });
 
   // Initialize outline service (optional - requires anthropicApiKey)
@@ -96,3 +97,7 @@ export { parseTranscript } from './parser.js';
 export { serializeTranscript } from './transcript.js';
 export { normalizeProjectPaths } from './project-names.js';
 export { registerPublicShareRoutes } from './share-routes.js';
+export {
+  DEFAULT_SESSION_IGNORE_MARKERS,
+  matchesIgnoreMarker,
+} from './ignore.js';

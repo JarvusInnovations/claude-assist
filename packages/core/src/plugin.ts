@@ -46,6 +46,11 @@ export interface SessionsPluginConfig {
   disableLocalIngest?: boolean;
   /** Disable AI outline generation */
   disableGenerateOutlines?: boolean;
+  /**
+   * Transcript content substrings that mark a session for ingest suppression.
+   * Appended to the built-in defaults (e.g. M87 triage runner).
+   */
+  ignoreContentMarkers?: readonly string[];
 }
 
 /**

@@ -4,6 +4,10 @@ import { hostname as getHostname } from 'node:os';
 import { createHash } from 'node:crypto';
 import { SessionScanner, type ScannerConfig } from './scanner.js';
 import { parseTranscript } from './parser.js';
+import {
+  DEFAULT_SESSION_IGNORE_MARKERS,
+  matchesIgnoreMarker,
+} from './ignore.js';
 import type {
   SyncResult,
   MachineRecord,
@@ -30,6 +34,7 @@ export class SyncService {
   private machineId: string;
   private hostname: string;
   private disableLocalIngest: boolean;
+  private ignoreContentMarkers: readonly string[];
 
   constructor(
     sql: postgres.Sql,
@@ -42,6 +47,8 @@ export class SyncService {
     this.machineId = config.machineId ?? 'localhost';
     this.hostname = getHostname();
     this.disableLocalIngest = config.disableLocalIngest ?? false;
+    this.ignoreContentMarkers =
+      config.ignoreContentMarkers ?? DEFAULT_SESSION_IGNORE_MARKERS;
   }
 
   /**
@@ -146,6 +153,21 @@ export class SyncService {
 
       for (const sessionData of payload.sessions) {
         try {
+          // Skip suppressed sessions (e.g. automated triage runners).
+          // Server-side net for satellites running an older push CLI that
+          // doesn't yet filter these out before sending. Match against parsed
+          // user messages (the automation's prompt), not raw transcript text.
+          if (this.ignoreContentMarkers.length > 0) {
+            const { userMessages } = parseTranscript(
+              sessionData.sessionId,
+              sessionData.transcript
+            );
+            if (matchesIgnoreMarker(userMessages, this.ignoreContentMarkers)) {
+              result.sessionsSkipped++;
+              continue;
+            }
+          }
+
           // Compute hash for change detection
           const transcriptHash = createHash('md5')
             .update(sessionData.transcript)

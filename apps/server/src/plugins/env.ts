@@ -40,6 +40,9 @@ const schema = {
     SESSIONS_MIN_FILE_SIZE: { type: 'number', default: 500 },
     SESSIONS_DISABLE_LOCAL_INGEST: { type: 'boolean', default: false },
     SESSIONS_DISABLE_GENERATE_OUTLINES: { type: 'boolean', default: false },
+    // Newline-separated transcript substrings; sessions containing any are
+    // suppressed from ingest. Appended to built-in defaults (e.g. M87 triage).
+    SESSIONS_IGNORE_MARKERS: { type: 'string' },
 
     // AI Features (optional)
     ANTHROPIC_API_KEY: { type: 'string' },
@@ -96,6 +99,7 @@ declare module 'fastify' {
       SESSIONS_MIN_FILE_SIZE: number;
       SESSIONS_DISABLE_LOCAL_INGEST: boolean;
       SESSIONS_DISABLE_GENERATE_OUTLINES: boolean;
+      SESSIONS_IGNORE_MARKERS?: string;
 
       // AI Features
       ANTHROPIC_API_KEY?: string;
