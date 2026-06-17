@@ -183,10 +183,16 @@ export interface SessionQueryParams {
   machine?: string;
   project?: string;
   days?: number;
+  since?: string;
+  until?: string;
+  forever?: string;
   limit?: number;
   offset?: number;
-  tools?: string[];
+  tools?: string;
+  files_read?: string;
+  files_written?: string;
   min_user_messages?: number;
+  include_empty?: string;
 }
 
 export interface SessionStats {
