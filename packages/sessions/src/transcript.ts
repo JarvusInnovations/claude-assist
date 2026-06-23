@@ -97,7 +97,7 @@ function extractToolUses(content: string | ContentBlock[]): ToolUseBlock[] {
 /**
  * Extract primary target from tool input (file path, command, etc.)
  */
-function extractToolTarget(tool: ToolUseBlock): string | null {
+export function extractToolTarget(tool: ToolUseBlock): string | null {
   const input = tool.input;
   if (!input || typeof input !== 'object') return null;
 
@@ -346,4 +346,275 @@ export function serializeTranscript(
   }
 
   return result;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Rich transcript search + anchor-based exploration (#48)
+// ───────────────────────────────────────────────────────────────────────────
+
+/** Per-call cap on a window's serialized size; oversized ranges page instead. */
+const MAX_WINDOW_CHARS = 12000;
+
+/**
+ * Parse JSONL into the canonical ordered message stream — the same ordering the
+ * parser uses to assign msg_index, so a tool_calls row's index lines up here.
+ * Skips Claude Code's `custom-title` lines and any malformed JSON.
+ */
+function parseMessages(rawTranscript: string): TranscriptMessage[] {
+  const out: TranscriptMessage[] = [];
+  for (const line of rawTranscript.trim().split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const raw = JSON.parse(line) as { type?: string };
+      if (raw.type === 'custom-title') continue;
+      out.push(raw as TranscriptMessage);
+    } catch {
+      // skip malformed line
+    }
+  }
+  return out;
+}
+
+/** Flatten a tool_result block's content to text. */
+function toolResultText(content: string | ContentBlock[]): string {
+  if (typeof content === 'string') return content.trim();
+  return (content as unknown[])
+    .filter((b): b is { type: 'text'; text: string } => (b as { type?: string })?.type === 'text')
+    .map((b) => b.text)
+    .join('\n')
+    .trim();
+}
+
+/** Serialize a single message to its display line(s) (no cross-message state). */
+function serializeMessage(msg: TranscriptMessage): string[] {
+  const out: string[] = [];
+  if (msg.type === 'user' && msg.message) {
+    const text = extractTextContent(msg.message.content);
+    if (text) emitUserText(text, out);
+    // Tool results so exploration windows aren't blank around tool calls.
+    for (const result of extractToolResults(msg.message.content)) {
+      const rt = toolResultText(result.content);
+      if (rt) out.push(`[R] ${rt.length > 240 ? rt.slice(0, 240) + '…' : rt}`);
+    }
+  }
+  if (
+    msg.type === 'attachment' &&
+    msg.attachment?.type === 'queued_command' &&
+    typeof msg.attachment.prompt === 'string' &&
+    msg.attachment.prompt.length > 0
+  ) {
+    emitUserText(msg.attachment.prompt, out);
+  }
+  if (msg.type === 'assistant' && msg.message) {
+    const text = extractTextContent(msg.message.content);
+    if (text) out.push(`[A] ${text}`);
+    for (const tool of extractToolUses(msg.message.content)) {
+      const isQuestion =
+        tool.name === 'AskUserQuestion' || tool.name === 'mcp__conductor__AskUserQuestion';
+      if (isQuestion) {
+        const formatted = formatQuestionTool(tool);
+        if (formatted) out.push(`[?] ${formatted}`);
+      } else {
+        const target = extractToolTarget(tool);
+        out.push(`[T] ${tool.name}${target ? ' ' + target : ''}`);
+      }
+    }
+  }
+  return out;
+}
+
+export interface MessageWindow {
+  /** Serialized lines, anchor message prefixed `> `, the rest `  `. */
+  lines: string[];
+  anchor: string;
+  /** uuid at the window's first/last message — the next anchors to page from. */
+  head: string | null;
+  tail: string | null;
+  /** Messages remaining before/after the window (0 = at session boundary). */
+  moreBefore: number;
+  moreAfter: number;
+  truncated: boolean;
+}
+
+/** Build a ±range window of serialized messages centered on `centerIdx`. */
+function buildWindow(
+  msgs: TranscriptMessage[],
+  centerIdx: number,
+  before: number,
+  after: number,
+  markSuffix?: string
+): MessageWindow {
+  const startIdx = Math.max(0, centerIdx - Math.max(0, before));
+  const endIdx = Math.min(msgs.length - 1, centerIdx + Math.max(0, after));
+
+  const lines: string[] = [];
+  let truncated = false;
+  let chars = 0;
+  for (let i = startIdx; i <= endIdx; i++) {
+    const isAnchor = i === centerIdx;
+    const prefix = isAnchor ? '> ' : '  ';
+    const msgLines = serializeMessage(msgs[i]!);
+    for (let j = 0; j < msgLines.length; j++) {
+      let line = `${prefix}${msgLines[j]}`;
+      if (isAnchor && j === msgLines.length - 1 && markSuffix) line += `   ${markSuffix}`;
+      if (chars + line.length > MAX_WINDOW_CHARS) {
+        truncated = true;
+        break;
+      }
+      lines.push(line);
+      chars += line.length + 1;
+    }
+    if (truncated) break;
+  }
+
+  return {
+    lines,
+    anchor: msgs[centerIdx]?.uuid ?? '',
+    // Edge anchors must be usable: skip past any uuid-less messages (e.g. queue
+    // operations) at the window boundary to the nearest real anchor.
+    head: nearestUuid(msgs, startIdx, 1),
+    tail: nearestUuid(msgs, endIdx, -1),
+    moreBefore: startIdx,
+    moreAfter: msgs.length - 1 - endIdx,
+    truncated,
+  };
+}
+
+/** Nearest message with a uuid scanning from `idx` in direction `dir` (+1/-1). */
+function nearestUuid(msgs: TranscriptMessage[], idx: number, dir: 1 | -1): string | null {
+  for (let i = idx; i >= 0 && i < msgs.length; i += dir) {
+    if (msgs[i]?.uuid) return msgs[i]!.uuid;
+  }
+  return null;
+}
+
+export type MatchDimension = 'tool' | 'target' | 'text' | 'any';
+
+export interface FindOptions {
+  /** Substring (case-insensitive) the tool name must contain. */
+  tool?: string;
+  /** Substring (case-insensitive) to find in the chosen dimension. */
+  match?: string;
+  /** Which dimension `match` applies to (default 'any'). */
+  in?: MatchDimension;
+  /** Messages of context on each side of a hit (default 1). */
+  context?: number;
+  /** Resume scanning after this message uuid. */
+  afterUuid?: string;
+  /** Stop scanning at this message uuid (exclusive). */
+  beforeUuid?: string;
+  /** Max matches to return (default 10). */
+  limit?: number;
+  /** Include subagent (sidechain) messages (default false). */
+  includeSidechain?: boolean;
+}
+
+export interface TranscriptMatch {
+  anchor: string;
+  index: number;
+  ts: string | null;
+  /** First tool name on the matched message, if any. */
+  tool: string | null;
+  /** Its derived target, if any. */
+  target: string | null;
+  window: MessageWindow;
+}
+
+function indexOfUuid(msgs: TranscriptMessage[], uuid: string | undefined): number {
+  if (!uuid) return -1;
+  return msgs.findIndex((m) => m.uuid === uuid);
+}
+
+/** Does a message satisfy the tool/match/in filters? Returns the hit's tool/target. */
+function messageMatches(
+  msg: TranscriptMessage,
+  opts: FindOptions
+): { tool: string | null; target: string | null } | null {
+  const tool = opts.tool?.toLowerCase();
+  const match = opts.match?.toLowerCase();
+  const dim = opts.in ?? 'any';
+
+  const tools = msg.type === 'assistant' && msg.message ? extractToolUses(msg.message.content) : [];
+  const text =
+    msg.message ? extractTextContent(msg.message.content) : msg.attachment?.prompt ?? '';
+  const textLower = (text ?? '').toLowerCase();
+
+  // Tool-name filter: at least one tool must contain `tool`.
+  const toolHits = tool ? tools.filter((t) => t.name.toLowerCase().includes(tool)) : tools;
+  if (tool && toolHits.length === 0) return null;
+
+  if (!match) {
+    // Tool-only query: hit if a tool matched (tool filter required when no match).
+    if (!tool) return null;
+    const first = toolHits[0]!;
+    return { tool: first.name, target: extractToolTarget(first) };
+  }
+
+  // Match within the chosen dimension(s).
+  const scanTools = tool ? toolHits : tools;
+  const targetHit = scanTools.find((t) => (extractToolTarget(t) ?? '').toLowerCase().includes(match));
+  const toolNameHit = scanTools.find((t) => t.name.toLowerCase().includes(match));
+  const textHit = textLower.includes(match);
+
+  let matched = false;
+  if (dim === 'target') matched = !!targetHit;
+  else if (dim === 'text') matched = textHit;
+  else if (dim === 'tool') matched = !!toolNameHit;
+  else matched = !!targetHit || !!toolNameHit || textHit; // 'any'
+
+  if (!matched) return null;
+  const hit = targetHit ?? toolNameHit ?? scanTools[0] ?? null;
+  return { tool: hit?.name ?? null, target: hit ? extractToolTarget(hit) : null };
+}
+
+/**
+ * Find messages matching tool/text criteria within a transcript, each returned
+ * with a ±context window and paging anchors. `uuid` is the durable anchor.
+ */
+export function findInTranscript(rawTranscript: string, opts: FindOptions): TranscriptMatch[] {
+  const msgs = parseMessages(rawTranscript);
+  const context = opts.context ?? 1;
+  const limit = opts.limit ?? 10;
+
+  let start = 0;
+  let end = msgs.length;
+  const afterIdx = indexOfUuid(msgs, opts.afterUuid);
+  if (afterIdx >= 0) start = afterIdx + 1;
+  const beforeIdx = indexOfUuid(msgs, opts.beforeUuid);
+  if (beforeIdx >= 0) end = beforeIdx;
+
+  const matches: TranscriptMatch[] = [];
+  for (let i = start; i < end && matches.length < limit; i++) {
+    const msg = msgs[i]!;
+    if (!msg.uuid) continue; // can't anchor a message without a uuid
+    if (!opts.includeSidechain && msg.isSidechain) continue;
+    const hit = messageMatches(msg, opts);
+    if (!hit) continue;
+    matches.push({
+      anchor: msg.uuid,
+      index: i,
+      ts: msg.timestamp ?? null,
+      tool: hit.tool,
+      target: hit.target,
+      window: buildWindow(msgs, i, context, context, '<- match'),
+    });
+  }
+  return matches;
+}
+
+/**
+ * Read a variable range of messages around an anchor uuid — the exploration
+ * follow-up. Returns the window plus head/tail anchors and how much transcript
+ * remains in each direction, so a caller can keep walking outward.
+ */
+export function readAround(
+  rawTranscript: string,
+  anchorUuid: string,
+  before: number,
+  after: number
+): MessageWindow | null {
+  const msgs = parseMessages(rawTranscript);
+  const idx = indexOfUuid(msgs, anchorUuid);
+  if (idx < 0) return null;
+  return buildWindow(msgs, idx, before, after);
 }

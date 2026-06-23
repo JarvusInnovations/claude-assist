@@ -10,7 +10,7 @@ import type {
   MachineRecord,
   InventoryPayload,
 } from './types.js';
-import { serializeTranscript } from './transcript.js';
+import { serializeTranscript, findInTranscript, readAround, type MatchDimension } from './transcript.js';
 import { normalizeProjectPaths } from './project-names.js';
 
 /**
@@ -32,6 +32,23 @@ function parseModelTokens(
     };
   }
   return result;
+}
+
+/** Shape a windowing result for JSON responses (snake_case, paging anchors). */
+function serializeWindow(w: import('./transcript.js').MessageWindow) {
+  return {
+    lines: w.lines,
+    anchor: w.anchor,
+    head: w.head,
+    tail: w.tail,
+    more_before: w.moreBefore,
+    more_after: w.moreAfter,
+    truncated: w.truncated,
+  };
+}
+
+function serializeMatch(m: import('./transcript.js').TranscriptMatch) {
+  return { anchor: m.anchor, index: m.index, ts: m.ts, tool: m.tool, target: m.target, window: serializeWindow(m.window) };
 }
 
 export interface RoutesConfig {
@@ -370,6 +387,67 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
     return parts.join('\n\n');
   });
 
+  // GET /sessions/find - Cross-session tool-call discovery over the index (#48)
+  // Registered before /sessions/:id so ":id" doesn't capture "find".
+  fastify.get<{
+    Querystring: {
+      tool?: string;
+      match?: string;
+      in?: string;
+      project?: string;
+      days?: string;
+      limit?: string;
+      include_sidechain?: string;
+    };
+  }>('/sessions/find', async (request, reply) => {
+    const { tool, match, in: dim = 'any', project, days, limit = '20', include_sidechain } = request.query;
+    if (!tool && !match) {
+      return reply.status(400).send({ error: 'Provide a tool and/or match filter' });
+    }
+    if (match && dim === 'text') {
+      return reply.status(400).send({
+        error: 'Cross-session text search is not indexed — use the search endpoint to find sessions, then find within one with in=text',
+      });
+    }
+    const limitNum = Math.min(parseInt(limit, 10) || 20, 200);
+    const daysNum = days ? parseInt(days, 10) : null;
+    const includeSide = include_sidechain === 'true';
+
+    const rows = await fastify.sql`
+      SELECT tc.session_id, tc.msg_uuid, tc.msg_index, tc.ts, tc.tool_name, tc.target,
+             s.project_path, s.title, s.session_name, m.machine_id
+      FROM sessions.tool_calls tc
+      JOIN sessions.sessions s ON tc.session_id = s.id
+      JOIN sessions.machines m ON s.machine_id = m.id
+      WHERE 1=1
+        ${tool ? fastify.sql`AND tc.tool_name ILIKE ${'%' + tool + '%'}` : fastify.sql``}
+        ${match
+          ? dim === 'tool'
+            ? fastify.sql`AND tc.tool_name ILIKE ${'%' + match + '%'}`
+            : dim === 'target'
+              ? fastify.sql`AND tc.target ILIKE ${'%' + match + '%'}`
+              : fastify.sql`AND (tc.target ILIKE ${'%' + match + '%'} OR tc.tool_name ILIKE ${'%' + match + '%'})`
+          : fastify.sql``}
+        ${project ? fastify.sql`AND s.project_path ILIKE ${'%' + project + '%'}` : fastify.sql``}
+        ${daysNum ? fastify.sql`AND tc.ts > NOW() - INTERVAL '1 day' * ${daysNum}` : fastify.sql``}
+        ${includeSide ? fastify.sql`` : fastify.sql`AND tc.is_sidechain = FALSE`}
+      ORDER BY tc.ts DESC NULLS LAST
+      LIMIT ${limitNum}
+    `;
+
+    return rows.map((r) => ({
+      session_id: r.session_id,
+      anchor: r.msg_uuid,
+      index: r.msg_index,
+      ts: r.ts,
+      tool: r.tool_name,
+      target: r.target,
+      project_path: r.project_path,
+      title: r.title ?? r.session_name ?? null,
+      machine: r.machine_id,
+    }));
+  });
+
   // GET /sessions/:id - Get session details
   fastify.get<{
     Params: { id: string };
@@ -445,14 +523,36 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
   // Optional before/after query params to trim messages to a time range
   fastify.get<{
     Params: { id: string };
-    Querystring: { before?: string; after?: string; include_tools?: string };
+    Querystring: { before?: string; after?: string; include_tools?: string; around?: string };
   }>('/sessions/:id/transcript', async (request, reply) => {
     const { id } = request.params;
     if (!UUID_RE.test(id)) {
       return reply.status(400).send({ error: 'Invalid session id' });
     }
-    const { before, after, include_tools = 'false' } = request.query;
+    const { before, after, include_tools = 'false', around } = request.query;
     const includeTools = include_tools === 'true' || include_tools === '1';
+
+    // Anchor-exploration mode (#48): when `around` (a message uuid) is given,
+    // `before`/`after` are message COUNTS, not dates. Returns a windowed JSON
+    // payload with head/tail anchors and how much transcript remains each way.
+    if (around) {
+      const beforeN = before !== undefined ? parseInt(before, 10) : 1;
+      const afterN = after !== undefined ? parseInt(after, 10) : 1;
+      if (Number.isNaN(beforeN) || Number.isNaN(afterN) || beforeN < 0 || afterN < 0) {
+        return reply.status(400).send({ error: 'before/after must be non-negative integers in around mode' });
+      }
+      const rows = await fastify.sql<{ raw_transcript: string }[]>`
+        SELECT raw_transcript FROM sessions.sessions WHERE id = ${id}::uuid
+      `;
+      if (rows.length === 0) {
+        return reply.status(404).send({ error: 'Session not found' });
+      }
+      const window = readAround(rows[0]!.raw_transcript, around, beforeN, afterN);
+      if (!window) {
+        return reply.status(404).send({ error: 'Anchor uuid not found in this session' });
+      }
+      return serializeWindow(window);
+    }
 
     const beforeDate = before ? new Date(before) : undefined;
     const afterDate = after ? new Date(after) : undefined;
@@ -483,6 +583,50 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
 
     reply.type('text/plain');
     return transcript;
+  });
+
+  // GET /sessions/:id/find - Search within one transcript, windowed matches (#48)
+  fastify.get<{
+    Params: { id: string };
+    Querystring: {
+      tool?: string;
+      match?: string;
+      in?: string;
+      context?: string;
+      after_uuid?: string;
+      before_uuid?: string;
+      limit?: string;
+      include_sidechain?: string;
+    };
+  }>('/sessions/:id/find', async (request, reply) => {
+    const { id } = request.params;
+    if (!UUID_RE.test(id)) {
+      return reply.status(400).send({ error: 'Invalid session id' });
+    }
+    const q = request.query;
+    if (!q.tool && !q.match) {
+      return reply.status(400).send({ error: 'Provide a tool and/or match filter' });
+    }
+
+    const rows = await fastify.sql<{ raw_transcript: string }[]>`
+      SELECT raw_transcript FROM sessions.sessions WHERE id = ${id}::uuid
+    `;
+    if (rows.length === 0) {
+      return reply.status(404).send({ error: 'Session not found' });
+    }
+
+    const matches = findInTranscript(rows[0]!.raw_transcript, {
+      tool: q.tool,
+      match: q.match,
+      in: (q.in as MatchDimension) ?? 'any',
+      context: q.context ? parseInt(q.context, 10) : 1,
+      afterUuid: q.after_uuid,
+      beforeUuid: q.before_uuid,
+      limit: q.limit ? parseInt(q.limit, 10) : 10,
+      includeSidechain: q.include_sidechain === 'true',
+    });
+
+    return { count: matches.length, matches: matches.map(serializeMatch) };
   });
 
   // POST /sessions/:id/share — generate a shareable auth code for a session transcript
