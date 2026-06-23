@@ -2,18 +2,19 @@
 
 Backend services for a Claude-based personal executive assistant. Provides postgres-backed APIs for session recall, email triage, and calendar queries.
 
-## Plugin Installation
+## Installation
 
-Install as a Claude Code plugin to use the session-recall skill:
+Install the skills globally with [`skills`](https://github.com/obra/skills):
 
 ```
-/plugin marketplace add JarvusInnovations/claude-assist
-/plugin install claude-assist@jarvus-claude-assist
+npx skills add -g JarvusInnovations/claude-assist
 ```
 
-After installation, the `/session-recall` skill becomes available. Use it when you need to search past Claude sessions.
+This installs the `assist-sessions`, `assist-gmail`, and `assist-google-setup`
+skills. Each ships a self-contained `*-axi` AXI CLI under its `scripts/` directory;
+use them to search past sessions and manage Gmail.
 
-**Note:** The plugin requires a running backend server with PostgreSQL. See [Quick Start](#quick-start) below.
+**Note:** The skills require a running backend server with PostgreSQL. See [Quick Start](#quick-start) below.
 
 ## Prerequisites
 
@@ -77,7 +78,9 @@ packages/
 apps/
   server/       # Fastify host application
 skills/
-  session-recall/  # Session search skill
+  assist-sessions/      # Session recall (sessions-axi CLI)
+  assist-gmail/         # Gmail sync/triage (gmail-axi CLI)
+  assist-google-setup/  # Google account + OAuth setup (google-axi CLI)
 ```
 
 ## Development
@@ -157,11 +160,25 @@ Run `docker compose config` to verify the merged configuration.
 
 ## Skills
 
-Skills are loaded on-demand by Claude. Available skills:
+Skills are loaded on-demand by Claude. Each bundles a self-contained `*-axi` AXI CLI
+(TOON output, content-first home view, generated SKILL.md). Available skills:
 
-- **session-recall** - Search past Claude sessions
+- **assist-sessions** (`sessions-axi`) - Search past Claude sessions across machines
+- **assist-gmail** (`gmail-axi`) - Gmail sync, triage, and analysis
+- **assist-google-setup** (`google-axi`) - Google account + OAuth setup and name aliases
 
 See `skills/*/SKILL.md` for usage documentation.
+
+### Rebuilding the skill CLIs
+
+The CLI source lives in `packages/sessions/src/axi/` and `packages/google/src/axi/`;
+esbuild bundles each to its skill's `scripts/<name>-axi.mjs` and the command reference is
+spliced into each SKILL.md. After editing CLI source, run:
+
+```bash
+bun run build:skills   # rebuild bundles + splice SKILL.md
+bun run check:skills   # CI drift guard — fails if a committed artifact is stale
+```
 
 ## License
 

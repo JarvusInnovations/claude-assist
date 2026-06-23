@@ -64,21 +64,19 @@ Skills use official Claude SKILL.md format with YAML frontmatter. See `skills/*/
 
 When creating or modifying skills, activate the `skill-creator` skill first for guidance on skill structure, frontmatter, and best practices.
 
-### Plugin Version
+### Embedded AXI CLIs
 
-**Bump the version in `.claude-plugin/plugin.json` before pushing any changes to `skills/**`.** The plugin version controls cache invalidation for installed plugins — without a bump, users won't receive skill updates.
+Each skill ships a self-contained `*-axi` CLI bundled from TypeScript source — not a folder of `curl` scripts. Source lives in `packages/<module>/src/axi/`; esbuild bundles it to `skills/<skill>/scripts/<name>-axi.mjs` (committed, marked `linguist-generated`) alongside a bash shim, and each SKILL.md's command-reference region is spliced from the CLI's `reference.ts` so docs can't drift. `packages/sessions/src/axi/` is the reference implementation; see the `axi` skill for the standards.
 
-### Skill Scripts
-
-Skills wrap their API calls in executable scripts under `scripts/` (no `.sh` suffix). Scripts default to `http://localhost:2529` and support `CLAUDE_ASSIST_SERVER` env var override.
-
-**URL encoding**: Always use `curl -G --data-urlencode "param=value"` for query parameters instead of manually interpolating values into URLs. This handles spaces, `&`, `#`, and other special characters correctly:
+After editing any CLI source or its command reference:
 
 ```bash
-ARGS=(-sf -G "${SERVER}/api/endpoint")
-[[ -n "$PARAM" ]] && ARGS+=(--data-urlencode "param=${PARAM}")
-exec curl "${ARGS[@]}"
+bun run build:skills   # rebuild bundles + splice SKILL.md (build:cli / build:skill run them individually)
+bun run check:skills   # drift guard — fails if a committed bundle or SKILL.md is stale (runs in CI)
+bun run type-check:axi  # type-check the CLI sources (excluded from each package's tsc build)
 ```
+
+CLIs default to `http://localhost:2529` and honor `CLAUDE_ASSIST_SERVER`. They emit TOON via `axi-sdk-js`, lead with a content-first home view, and surface structured errors (exit 2 validation / 1 runtime). Distribution is via the `skills` CLI (`npx skills add -g JarvusInnovations/claude-assist`), not a Claude Code plugin/marketplace.
 
 ## Commits
 
