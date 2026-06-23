@@ -150,9 +150,9 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
           ${minUserMsgs !== null ? fastify.sql`AND s.user_message_count >= ${minUserMsgs}` : fastify.sql``}
           ${machine ? fastify.sql`AND m.machine_id = ${machine}` : fastify.sql``}
           ${project ? fastify.sql`AND s.project_path ILIKE ${'%' + project + '%'}` : fastify.sql``}
-          ${tools ? fastify.sql`AND s.tools_used ?| ${tools.split(',').map(t => t.trim())}` : fastify.sql``}
-          ${files_read ? fastify.sql`AND s.files_touched->'reads' ?| ${files_read.split(',').map(f => f.trim())}` : fastify.sql``}
-          ${files_written ? fastify.sql`AND s.files_touched->'writes' ?| ${files_written.split(',').map(f => f.trim())}` : fastify.sql``}
+          ${tools ? fastify.sql`AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(s.tools_used) AS t WHERE t ILIKE ANY(${tools.split(',').map(t => '%' + t.trim() + '%')}))` : fastify.sql``}
+          ${files_read ? fastify.sql`AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(s.files_touched->'reads') AS f WHERE f ILIKE ANY(${files_read.split(',').map(f => '%' + f.trim() + '%')}))` : fastify.sql``}
+          ${files_written ? fastify.sql`AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(s.files_touched->'writes') AS f WHERE f ILIKE ANY(${files_written.split(',').map(f => '%' + f.trim() + '%')}))` : fastify.sql``}
         ORDER BY rank DESC, s.started_at DESC
         LIMIT ${limitNum} OFFSET ${offsetNum}
       `;
@@ -191,9 +191,9 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
           ${minUserMsgs !== null ? fastify.sql`AND s.user_message_count >= ${minUserMsgs}` : fastify.sql``}
           ${machine ? fastify.sql`AND m.machine_id = ${machine}` : fastify.sql``}
           ${project ? fastify.sql`AND s.project_path ILIKE ${'%' + project + '%'}` : fastify.sql``}
-          ${tools ? fastify.sql`AND s.tools_used ?| ${tools.split(',').map(t => t.trim())}` : fastify.sql``}
-          ${files_read ? fastify.sql`AND s.files_touched->'reads' ?| ${files_read.split(',').map(f => f.trim())}` : fastify.sql``}
-          ${files_written ? fastify.sql`AND s.files_touched->'writes' ?| ${files_written.split(',').map(f => f.trim())}` : fastify.sql``}
+          ${tools ? fastify.sql`AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(s.tools_used) AS t WHERE t ILIKE ANY(${tools.split(',').map(t => '%' + t.trim() + '%')}))` : fastify.sql``}
+          ${files_read ? fastify.sql`AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(s.files_touched->'reads') AS f WHERE f ILIKE ANY(${files_read.split(',').map(f => '%' + f.trim() + '%')}))` : fastify.sql``}
+          ${files_written ? fastify.sql`AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(s.files_touched->'writes') AS f WHERE f ILIKE ANY(${files_written.split(',').map(f => '%' + f.trim() + '%')}))` : fastify.sql``}
         ORDER BY s.started_at DESC
         LIMIT ${limitNum} OFFSET ${offsetNum}
       `;

@@ -1,9 +1,10 @@
+import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router";
-import { ScrollText, RefreshCw, Sparkles, Search, Activity } from "lucide-react";
+import { ScrollText, RefreshCw, Sparkles, Activity, ChevronDown, ChevronUp } from "lucide-react";
 import { toast } from "sonner";
 
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -16,6 +17,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   Table,
   TableBody,
@@ -32,11 +34,29 @@ export function SessionsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const hideSubagents = searchParams.get("hide_subagents") !== "false";
+  const forever = searchParams.get("forever") === "true";
+
+  // Detect if any advanced filter is active to default collapsible open
+  const hasAdvancedFilter = !!(
+    searchParams.get("project") ||
+    searchParams.get("tools") ||
+    searchParams.get("files_read") ||
+    searchParams.get("files_written") ||
+    forever ||
+    searchParams.get("include_empty") === "true"
+  );
+  const [advancedOpen, setAdvancedOpen] = useState(hasAdvancedFilter);
 
   const filters: SessionQueryParams = {
     search: searchParams.get("search") || undefined,
     machine: searchParams.get("machine") || undefined,
-    days: searchParams.get("days") ? parseInt(searchParams.get("days")!) : 30,
+    days: forever ? undefined : (searchParams.get("days") ? parseInt(searchParams.get("days")!) : 30),
+    forever: forever ? "true" : undefined,
+    project: searchParams.get("project") || undefined,
+    tools: searchParams.get("tools") || undefined,
+    files_read: searchParams.get("files_read") || undefined,
+    files_written: searchParams.get("files_written") || undefined,
+    include_empty: searchParams.get("include_empty") === "true" ? "true" : undefined,
     limit: 50,
     min_user_messages: hideSubagents ? 2 : undefined,
   };
@@ -149,7 +169,8 @@ export function SessionsPage() {
 
       {/* Filters */}
       <Card>
-        <CardContent className="py-4">
+        <CardContent className="py-4 space-y-4">
+          {/* Basic filters row */}
           <div className="flex flex-wrap gap-4">
             <div className="flex-1 min-w-[200px]">
               <Input
@@ -177,8 +198,20 @@ export function SessionsPage() {
               </SelectContent>
             </Select>
             <Select
-              value={String(filters.days)}
-              onValueChange={(v) => updateFilter("days", v)}
+              value={forever ? "forever" : String(filters.days ?? 30)}
+              onValueChange={(v) => {
+                if (v === "forever") {
+                  const p = new URLSearchParams(searchParams);
+                  p.set("forever", "true");
+                  p.delete("days");
+                  setSearchParams(p);
+                } else {
+                  const p = new URLSearchParams(searchParams);
+                  p.set("days", v);
+                  p.delete("forever");
+                  setSearchParams(p);
+                }
+              }}
             >
               <SelectTrigger className="w-[140px]">
                 <SelectValue placeholder="Time range" />
@@ -188,6 +221,7 @@ export function SessionsPage() {
                 <SelectItem value="30">Last 30 days</SelectItem>
                 <SelectItem value="90">Last 90 days</SelectItem>
                 <SelectItem value="365">Last year</SelectItem>
+                <SelectItem value="forever">All time</SelectItem>
               </SelectContent>
             </Select>
             <div className="flex items-center gap-2">
@@ -203,6 +237,69 @@ export function SessionsPage() {
               </label>
             </div>
           </div>
+
+          {/* Advanced filters collapsible */}
+          <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+            <CollapsibleTrigger asChild>
+              <button className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors select-none">
+                {advancedOpen ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                Advanced filters
+                {hasAdvancedFilter && (
+                  <span className="ml-1 rounded-full bg-primary w-1.5 h-1.5 inline-block" />
+                )}
+              </button>
+            </CollapsibleTrigger>
+            <CollapsibleContent>
+              <div className="flex flex-wrap gap-4 pt-3">
+                <div className="flex-1 min-w-[200px]">
+                  <label className="text-xs text-muted-foreground mb-1 block">Project path</label>
+                  <Input
+                    placeholder="Substring match, e.g. my-project"
+                    defaultValue={searchParams.get("project") || ""}
+                    onChange={(e) => updateFilter("project", e.target.value || null)}
+                  />
+                </div>
+                <div className="flex-1 min-w-[200px]">
+                  <label className="text-xs text-muted-foreground mb-1 block">Tools used</label>
+                  <Input
+                    placeholder="Bash, Read, Edit, …"
+                    defaultValue={searchParams.get("tools") || ""}
+                    onChange={(e) => updateFilter("tools", e.target.value || null)}
+                  />
+                </div>
+                <div className="flex-1 min-w-[200px]">
+                  <label className="text-xs text-muted-foreground mb-1 block">Files read</label>
+                  <Input
+                    placeholder="Comma-separated paths"
+                    defaultValue={searchParams.get("files_read") || ""}
+                    onChange={(e) => updateFilter("files_read", e.target.value || null)}
+                  />
+                </div>
+                <div className="flex-1 min-w-[200px]">
+                  <label className="text-xs text-muted-foreground mb-1 block">Files written</label>
+                  <Input
+                    placeholder="Comma-separated paths"
+                    defaultValue={searchParams.get("files_written") || ""}
+                    onChange={(e) => updateFilter("files_written", e.target.value || null)}
+                  />
+                </div>
+                <div className="flex items-end gap-2">
+                  <div className="flex items-center gap-2">
+                    <Checkbox
+                      id="include-empty"
+                      checked={searchParams.get("include_empty") === "true"}
+                      onCheckedChange={(checked) =>
+                        updateFilter("include_empty", checked ? "true" : null)
+                      }
+                    />
+                    <label htmlFor="include-empty" className="text-sm cursor-pointer select-none">
+                      Include empty sessions
+                    </label>
+                  </div>
+                </div>
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
         </CardContent>
       </Card>
 
