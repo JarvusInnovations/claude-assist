@@ -14,6 +14,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+        with:
+          # Full history so `git describe --tags` can version the skill bundles.
+          fetch-depth: 0
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -45,6 +48,12 @@ jobs:
 
       - name: Build server
         run: bun run --filter @jarvus/claude-assist-server build
+
+      - name: Type-check skill CLIs
+        run: bun run type-check:axi
+
+      - name: Check skill bundles & SKILL.md are up to date
+        run: bun run check:skills
 
       - name: Run tests
         run: bun test
