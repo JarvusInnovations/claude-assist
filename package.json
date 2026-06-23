@@ -5,11 +5,20 @@
   "workspaces": ["packages/*", "apps/*"],
   "scripts": {
     "build": "bun run --filter '*' build",
+    "build:cli": "bun scripts/build-cli.ts",
+    "build:skill": "bun scripts/build-skill.ts",
+    "build:skills": "bun scripts/build-cli.ts && bun scripts/build-skill.ts",
+    "check:skills": "bun scripts/build-cli.ts --check && bun scripts/build-skill.ts --check",
+    "type-check:axi": "tsc --noEmit -p tsconfig.axi.json",
     "dev": "bun run --filter @jarvus/claude-assist-server dev",
     "test": "bun run --filter '*' test"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@toon-format/toon": "2.3.0",
+    "@types/bun": "latest",
+    "@types/node": "^26.0.0",
+    "axi-sdk-js": "0.1.7",
+    "esbuild": "0.28.0"
   },
   "peerDependencies": {
     "typescript": "^5"
