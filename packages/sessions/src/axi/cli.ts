@@ -4,6 +4,7 @@ import { cliInvocation } from "./invocation.js";
 import { homeCommand } from "./commands/home.js";
 import { searchCommand, SEARCH_HELP } from "./commands/search.js";
 import { transcriptCommand, TRANSCRIPT_HELP } from "./commands/transcript.js";
+import { grepCommand, GREP_HELP } from "./commands/grep.js";
 import { detailsCommand, DETAILS_HELP } from "./commands/detail.js";
 import { activityCommand, ACTIVITY_HELP } from "./commands/activity.js";
 import { statsCommand, STATS_HELP } from "./commands/stats.js";
@@ -47,6 +48,7 @@ const HOME_HELP = `sessions-axi [home] [--all] [--project NAME] [--recent N] [--
 const COMMAND_HELP: Record<string, string> = {
   home: HOME_HELP,
   search: SEARCH_HELP,
+  grep: GREP_HELP,
   transcript: TRANSCRIPT_HELP,
   details: DETAILS_HELP,
   activity: ACTIVITY_HELP,
@@ -63,6 +65,7 @@ const COMMANDS: Record<string, AxiCliCommand<undefined>> = {
   // flags that precede a command).
   home: homeCommand,
   search: searchCommand,
+  grep: grepCommand,
   transcript: transcriptCommand,
   details: detailsCommand,
   activity: activityCommand,

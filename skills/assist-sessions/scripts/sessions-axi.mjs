@@ -584,6 +584,18 @@ var COMMAND_GROUPS = [
         usage: "transcript --after DATE --before DATE [--group project|time] [--project PATH] [--min-user-messages N] [--include-tools]",
         summary: 'cross-session transcript for a time range \u2014 the primary tool for "what did I work on <when>?"'
       },
+      {
+        usage: 'grep <session-id> --tool Bash --match "text" [--in target|text|tool] [--context N]',
+        summary: "find tool calls / text within a transcript \u2014 windowed matches + anchors"
+      },
+      {
+        usage: "grep --tool Edit --match routes.ts [--project P] [--days N]",
+        summary: "no id \u2192 cross-session tool-call discovery over the index"
+      },
+      {
+        usage: "transcript <session-id> --around <uuid> [--before N] [--after M]",
+        summary: "explore a variable range of messages around an anchor (the grep follow-up)"
+      },
       { usage: "details <session-id> [--raw]", summary: "session metadata; --raw adds the parsed raw messages" },
       { usage: "activity [--days N]", summary: "when work happened \u2014 active time blocks per session (default 7 days)" }
     ]
@@ -800,6 +812,9 @@ function count(key, as) {
 }
 function relativeTime(key, as) {
   return { type: "relativeTime", key, as };
+}
+function truncate(key, limit, as) {
+  return { type: "truncate", key, limit, as };
 }
 function custom(as, fn) {
   return { type: "custom", as, fn };
@@ -1078,8 +1093,9 @@ async function searchCommand(args) {
 }
 
 // packages/sessions/src/axi/commands/transcript.ts
-var TRANSCRIPT_HELP = `sessions-axi transcript <session-id> [flags]      # one session
+var TRANSCRIPT_HELP = `sessions-axi transcript <session-id> [flags]                 # one session
 sessions-axi transcript --after DATE --before DATE [flags]   # cross-session, a time range
+sessions-axi transcript <session-id> --around <uuid> [--before N] [--after M]   # explore around an anchor
 
   Compact, token-efficient transcript text ([U] user, [A] assistant, [T] tool).
   With a session id \u2192 that session. Without one \u2192 every session overlapping the
@@ -1090,10 +1106,40 @@ sessions-axi transcript --after DATE --before DATE [flags]   # cross-session, a 
   --group project|time     cross-session grouping (default project)
   --project PATH           cross-session: filter to a project path (substring)
   --min-user-messages N    cross-session: hide subagent sessions (default 2)
-  --include-tools          include [T] tool-call lines (excluded by default)`;
+  --include-tools          include [T] tool-call lines (excluded by default)
+
+  Anchor exploration (the follow-up to a \`grep\` match):
+  --around <uuid>          read a window of messages around this message uuid
+  --before N / --after M   in --around mode these are message COUNTS (not dates);
+                           the result lists head/tail anchors + how much remains,
+                           so you can keep walking outward. --json for raw.`;
 async function transcriptCommand(args) {
-  const { positionals, flags } = parseArgs(args, ["include-tools"]);
+  const { positionals, flags } = parseArgs(args, ["include-tools", "json"]);
   const id = positionals[0];
+  if (typeof flags.around === "string") {
+    if (!id) {
+      throw new AxiError("--around needs a <session-id>", "VALIDATION_ERROR", [TRANSCRIPT_HELP]);
+    }
+    const window = await api.get(`/api/sessions/${encodeURIComponent(id)}/transcript`, {
+      around: flags.around,
+      before: typeof flags.before === "string" ? flags.before : void 0,
+      after: typeof flags.after === "string" ? flags.after : void 0
+    });
+    if (flags.json) return rawJson(window);
+    const cli = cliInvocation();
+    const out = [
+      `around ${flags.around}:`,
+      ...window.lines ?? [],
+      `\u2195 ${window.more_before} before \xB7 ${window.more_after} after${window.truncated ? " \xB7 window truncated" : ""}`
+    ];
+    if (window.more_before > 0) {
+      out.push(`extend back:    ${cli} transcript ${id} --around ${window.head} --before 30 --after 0`);
+    }
+    if (window.more_after > 0) {
+      out.push(`extend forward: ${cli} transcript ${id} --around ${window.tail} --before 0 --after 30`);
+    }
+    return out.join("\n");
+  }
   const after = typeof flags.after === "string" ? validateDate(flags.after, "--after", TRANSCRIPT_HELP) : void 0;
   const before = typeof flags.before === "string" ? validateDate(flags.before, "--before", TRANSCRIPT_HELP) : void 0;
   const includeTools = flags["include-tools"] ? "true" : void 0;
@@ -1128,6 +1174,104 @@ async function transcriptCommand(args) {
     return id ? "transcript: empty (no messages in range, or unknown session)" : "transcript: no sessions found overlapping that window";
   }
   return trimmed;
+}
+
+// packages/sessions/src/axi/commands/grep.ts
+var GREP_HELP = `sessions-axi grep <session-id> [flags]      # within one transcript \u2192 windowed matches
+sessions-axi grep [flags]                   # no id \u2192 cross-session tool-call discovery
+
+  Find tool calls (by name/target) or message text inside transcripts. Each hit
+  returns a window of surrounding messages and anchors you can explore from with
+  \`transcript <id> --around <uuid> --before N --after M\`.
+
+  --tool SUBSTR        tool name contains SUBSTR (e.g. Bash, mcp__slack)
+  --match SUBSTR       content contains SUBSTR
+  --in target|text|tool|any   where --match applies (default any; cross-session: target|tool)
+  --context N          messages of context each side of a per-session hit (default 1)
+  --limit N            max matches (default 10 per-session / 20 cross-session)
+  --include-sidechain  include subagent messages (excluded by default)
+  --after <uuid>       per-session: resume scanning after this message
+  --before <uuid>      per-session: stop scanning at this message
+  --project PATH       cross-session: filter by project path (substring)
+  --days N             cross-session: only the last N days
+  --json               raw API JSON
+
+  At least one of --tool / --match is required.`;
+var CROSS_SCHEMA = [
+  field("session_id", "session"),
+  custom("title", (r) => r.title ?? null),
+  custom("when", (r) => formatRelativeTime(r.ts)),
+  field("tool"),
+  truncate("target", 60),
+  field("anchor")
+];
+async function grepCommand(args) {
+  const { positionals, flags } = parseArgs(args, ["json", "include-sidechain"]);
+  const id = positionals[0];
+  if (!flags.tool && !flags.match) {
+    throw new AxiError("Provide --tool and/or --match", "VALIDATION_ERROR", [GREP_HELP]);
+  }
+  return id ? grepSession(id, flags) : grepCross(flags);
+}
+async function grepSession(id, flags) {
+  const cli = cliInvocation();
+  const query = {};
+  if (typeof flags.tool === "string") query.tool = flags.tool;
+  if (typeof flags.match === "string") query.match = flags.match;
+  if (typeof flags.in === "string") query.in = flags.in;
+  if (typeof flags.context === "string") query.context = flags.context;
+  if (typeof flags.limit === "string") query.limit = flags.limit;
+  if (typeof flags.after === "string") query.after_uuid = flags.after;
+  if (typeof flags.before === "string") query.before_uuid = flags.before;
+  if (flags["include-sidechain"]) query.include_sidechain = "true";
+  const res = await api.get(`/api/sessions/${encodeURIComponent(id)}/find`, query);
+  if (flags.json) return rawJson(res);
+  const matches = res?.matches ?? [];
+  if (matches.length === 0) return "grep: 0 matches in this session";
+  const blocks = [`count: ${matches.length} match${matches.length === 1 ? "" : "es"}`];
+  matches.forEach((m, i) => {
+    const w = m.window;
+    const label = m.tool ? `${m.tool}${m.target ? ` \xB7 ${m.target.slice(0, 60)}` : ""}` : "text";
+    blocks.push(
+      [
+        ``,
+        `match ${i + 1} \u2014 ${label} \u2014 msg ${m.index} \xB7 ${formatRelativeTime(m.ts)}`,
+        ...w.lines,
+        `  \u2195 ${w.more_before} before \xB7 ${w.more_after} after${w.truncated ? " \xB7 window truncated" : ""}`,
+        `  explore: ${cli} transcript ${id} --around ${w.head} --before 20  |  ${cli} transcript ${id} --around ${w.tail} --after 20`
+      ].join("\n")
+    );
+  });
+  const last = matches[matches.length - 1];
+  blocks.push(renderHelp([`Run \`${cli} grep ${id} \u2026 --after ${last.anchor}\` for the next matches`]));
+  return renderOutput2(blocks);
+}
+async function grepCross(flags) {
+  const cli = cliInvocation();
+  if (flags.in === "text") {
+    throw new AxiError("Cross-session text search is not indexed", "VALIDATION_ERROR", [
+      `Use \`${cli} search --query "\u2026"\` to find sessions, then \`${cli} grep <id> --match "\u2026" --in text\``
+    ]);
+  }
+  const query = {};
+  if (typeof flags.tool === "string") query.tool = flags.tool;
+  if (typeof flags.match === "string") query.match = flags.match;
+  if (typeof flags.in === "string") query.in = flags.in;
+  if (typeof flags.project === "string") query.project = flags.project;
+  if (typeof flags.days === "string") query.days = flags.days;
+  if (typeof flags.limit === "string") query.limit = flags.limit;
+  if (flags["include-sidechain"]) query.include_sidechain = "true";
+  const rows = await api.get("/api/sessions/find", query);
+  if (flags.json) return rawJson(rows);
+  if (!Array.isArray(rows) || rows.length === 0) return "grep: 0 matching tool calls found";
+  return renderOutput2([
+    `count: ${rows.length}`,
+    renderList("matches", rows, CROSS_SCHEMA),
+    renderHelp([
+      `Run \`${cli} transcript <session> --around <anchor> --after 20\` to read around a match`,
+      `Run \`${cli} grep <session> --tool \u2026 --match \u2026\` to window matches within one session`
+    ])
+  ]);
 }
 
 // packages/sessions/src/axi/commands/detail.ts
@@ -1297,7 +1441,7 @@ async function shareCommand(args) {
 }
 
 // packages/sessions/src/axi/cli.ts
-var VERSION = true ? "d42cebd" : "dev";
+var VERSION = true ? "84f07ab" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [command] [args] [flags]
        ${CLI}                 # no args \u2192 home (recent activity + next steps)
@@ -1329,6 +1473,7 @@ var HOME_HELP = `sessions-axi [home] [--all] [--project NAME] [--recent N] [--js
 var COMMAND_HELP = {
   home: HOME_HELP,
   search: SEARCH_HELP,
+  grep: GREP_HELP,
   transcript: TRANSCRIPT_HELP,
   details: DETAILS_HELP,
   activity: ACTIVITY_HELP,
@@ -1344,6 +1489,7 @@ var COMMANDS = {
   // flags that precede a command).
   home: homeCommand,
   search: searchCommand,
+  grep: grepCommand,
   transcript: transcriptCommand,
   details: detailsCommand,
   activity: activityCommand,

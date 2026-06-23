@@ -6,7 +6,9 @@ import type {
   ModelTokens,
   FilesTouched,
   ActivityRange,
+  ToolCall,
 } from './types.js';
+import { extractToolTarget } from './transcript.js';
 
 /**
  * File operation type for classification
@@ -84,6 +86,7 @@ export function parseTranscript(
   const userMessages: string[] = [];
   const userTimestamps: Date[] = [];
   const toolsUsed = new Set<string>();
+  const toolCalls: ToolCall[] = [];
   const filesRead = new Set<string>();
   const filesWritten = new Set<string>();
   const modelsUsed = new Set<string>();
@@ -135,8 +138,11 @@ export function parseTranscript(
   // Key is the chain root (parentUuid of first message), value is {model, maxOutput}
   const chainOutputs = new Map<string, { model: string | undefined; maxOutput: number }>();
 
-  // Second pass: process messages, deduplicating token counts
-  for (const msg of parsedMessages) {
+  // Second pass: process messages, deduplicating token counts.
+  // The loop index is the message's ordinal position in the parsed stream — it
+  // becomes msg_index in the tool_calls table and the windowing anchor offset.
+  for (let msgIndex = 0; msgIndex < parsedMessages.length; msgIndex++) {
+    const msg = parsedMessages[msgIndex]!;
     // Track timestamps
     if (msg.timestamp) {
       const ts = new Date(msg.timestamp);
@@ -246,6 +252,18 @@ export function parseTranscript(
       for (const tool of tools) {
         toolsUsed.add(tool.name);
 
+        // Index this call for cross-session tool search (#48)
+        if (msg.uuid) {
+          toolCalls.push({
+            msgUuid: msg.uuid,
+            msgIndex,
+            ts: msg.timestamp ? new Date(msg.timestamp) : null,
+            toolName: tool.name,
+            target: extractToolTarget(tool),
+            isSidechain: msg.isSidechain ?? false,
+          });
+        }
+
         // Extract file paths and classify by operation type
         const fileTouch = extractFileTouch(tool);
         if (fileTouch) {
@@ -290,6 +308,7 @@ export function parseTranscript(
     modelTokens,
     activityRanges: computeActivityRanges(userTimestamps),
     sessionName,
+    toolCalls,
   };
 }
 
