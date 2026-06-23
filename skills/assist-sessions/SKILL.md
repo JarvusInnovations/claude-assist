@@ -64,6 +64,35 @@ Convert relative time to ISO 8601 (e.g. `2026-06-23T00:00:00Z`); date-only
 - **Substring filters:** `--tools`, `--files-read`, and `--files-written` all match
   substrings (e.g. `--tools mcp__plugin_slack` matches every Slack MCP tool).
 
+## Searching inside transcripts
+
+`grep` finds **tool calls** (by name/target) or **message text** *within* transcripts;
+`transcript --around` then lets you explore outward from a match. Two modes:
+
+- **Per-session:** `grep <session-id> --tool Bash --match "tofu apply"` returns each hit
+  as a window of surrounding messages (the matched line marked `>`), with `head`/`tail`
+  anchors and how many messages remain before/after.
+- **Cross-session:** `grep --tool Edit --match routes.ts [--project P] [--days N]` (no id)
+  searches the tool-call index across all sessions and returns a compact list of matches,
+  each with a `session` + `anchor` you can open. (Cross-session matches on tool name/target
+  only; for cross-session *text*, use `search` to find sessions, then `grep <id> --in text`.)
+
+### The exploration loop
+
+Every match carries an anchor `uuid`. Walk outward from it with the follow-up:
+
+```bash
+transcript <id> --around <uuid> --before 1 --after 1     # the immediate ±1 (issue's example)
+transcript <id> --around <head> --before 30 --after 0    # 30 more messages back
+transcript <id> --around <tail> --before 0 --after 100   # a big jump forward
+```
+
+In `--around` mode, `--before`/`--after` are **message counts** (not dates). Each response
+prints the window plus `↕ K before · J after` and `extend back/forward:` commands using the
+window's edge anchors — so you keep ratcheting outward until `more_before`/`more_after` hit
+0 (the session boundary) or you've found what you need. Oversized ranges are token-capped
+and return a continuation anchor rather than dumping the whole session.
+
 ## Commands
 
 <!-- BEGIN GENERATED: command-reference -->
@@ -73,6 +102,9 @@ Convert relative time to ISO 8601 (e.g. `2026-06-23T00:00:00Z`); date-only
 - `scripts/sessions-axi search [--query TEXT] [--project PATH] [--days N | --since DATE --until DATE | --forever] [--tools a,b] [--files-read frag] [--files-written frag] [--machine ID] [--min-user-messages N] [--include-empty] [--limit N] [--offset N]` — find sessions by topic/tool/file (tools & files are substring matches); defaults to last 30 days, hides subagent sessions at --min-user-messages 2
 - `scripts/sessions-axi transcript <session-id> [--after DATE] [--before DATE] [--include-tools]` — compact, token-efficient transcript of one session (optionally trimmed to a time window)
 - `scripts/sessions-axi transcript --after DATE --before DATE [--group project|time] [--project PATH] [--min-user-messages N] [--include-tools]` — cross-session transcript for a time range — the primary tool for "what did I work on <when>?"
+- `scripts/sessions-axi grep <session-id> --tool Bash --match "text" [--in target|text|tool] [--context N]` — find tool calls / text within a transcript — windowed matches + anchors
+- `scripts/sessions-axi grep --tool Edit --match routes.ts [--project P] [--days N]` — no id → cross-session tool-call discovery over the index
+- `scripts/sessions-axi transcript <session-id> --around <uuid> [--before N] [--after M]` — explore a variable range of messages around an anchor (the grep follow-up)
 - `scripts/sessions-axi details <session-id> [--raw]` — session metadata; --raw adds the parsed raw messages
 - `scripts/sessions-axi activity [--days N]` — when work happened — active time blocks per session (default 7 days)
 

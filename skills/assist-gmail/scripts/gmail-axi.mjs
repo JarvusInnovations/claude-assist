@@ -1093,7 +1093,7 @@ async function bulkActionCommand(args) {
 }
 
 // packages/google/src/axi/gmail/cli.ts
-var VERSION = true ? "d42cebd" : "dev";
+var VERSION = true ? "84f07ab" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [command] [args] [flags]
        ${CLI}                 # no args \u2192 home (inbox pipeline + next steps)
