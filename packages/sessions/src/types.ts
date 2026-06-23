@@ -106,6 +106,20 @@ export interface ActivityRange {
 }
 
 /**
+ * A single tool invocation extracted from a transcript, for the tool_calls
+ * index that powers cross-session tool search (#48). `msgUuid` is the durable
+ * anchor; `msgIndex` is the message's ordinal position in the parsed stream.
+ */
+export interface ToolCall {
+  msgUuid: string;
+  msgIndex: number;
+  ts: Date | null;
+  toolName: string;
+  target: string | null;
+  isSidechain: boolean;
+}
+
+/**
  * Parsed session data extracted from transcript
  */
 export interface ParsedSession {
@@ -133,6 +147,8 @@ export interface ParsedSession {
   activityRanges: ActivityRange[];
   /** User-set custom session name (from Claude Code's /title rename), null if none */
   sessionName: string | null;
+  /** Per-message tool invocations, for the tool_calls index (#48) */
+  toolCalls: ToolCall[];
 }
 
 /**

@@ -16,6 +16,7 @@ import type {
   DiscoveredSession,
   InventoryPayload,
   InventoryResponse,
+  ToolCall,
 } from './types.js';
 
 export interface SyncServiceConfig extends ScannerConfig {
@@ -373,6 +374,7 @@ export class SyncService {
           synced_at = NOW()
         WHERE id = ${sessionId}::uuid AND machine_id = ${machineId}
       `;
+      await this.writeToolCalls(sessionId, parsed.toolCalls);
       return false;
     }
 
@@ -413,7 +415,39 @@ export class SyncService {
       )
     `;
 
+    await this.writeToolCalls(sessionId, parsed.toolCalls);
     return true;
+  }
+
+  /**
+   * Replace the tool_calls index rows for a session (#48). Called on every
+   * ingest/update so the index tracks the current transcript; a force re-parse
+   * backfills it for sessions ingested before the index existed.
+   */
+  private async writeToolCalls(sessionId: string, toolCalls: ToolCall[]): Promise<void> {
+    await this.sql`DELETE FROM sessions.tool_calls WHERE session_id = ${sessionId}::uuid`;
+    if (toolCalls.length === 0) return;
+    const rows = toolCalls.map((tc) => ({
+      session_id: sessionId,
+      msg_uuid: tc.msgUuid,
+      msg_index: tc.msgIndex,
+      ts: tc.ts,
+      tool_name: tc.toolName,
+      target: tc.target,
+      is_sidechain: tc.isSidechain,
+    }));
+    await this.sql`
+      INSERT INTO sessions.tool_calls ${this.sql(
+        rows,
+        'session_id',
+        'msg_uuid',
+        'msg_index',
+        'ts',
+        'tool_name',
+        'target',
+        'is_sidechain'
+      )}
+    `;
   }
 
   /**
