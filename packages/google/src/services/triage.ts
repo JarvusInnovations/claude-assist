@@ -208,6 +208,25 @@ export interface TriageStatus {
 }
 
 export class TriageService {
+  /**
+   * Max characters of *cleaned* HTML text allowed into a prompt. Turn 2
+   * (unsubscribe-link refinement) sends the raw HTML body verbatim, and some
+   * newsletter markup is bloated enough to blow past the model's context
+   * window entirely (one real case: a 440KB HTML body produced a 207K-token
+   * prompt against a 200K-token limit). 100KB of cleaned text is generous
+   * for finding an unsubscribe href while staying well under budget.
+   */
+  private static readonly HTML_PROMPT_CHAR_BUDGET = 100_000;
+
+  /**
+   * Emails that fail triage this many times stop being picked up by the
+   * scheduler's every-5-minute sweep - a genuinely broken email (e.g. one
+   * that always blows the context window) would otherwise retry forever,
+   * burning a paid turn-1 call each cycle. `triage_attempts` is only reset
+   * by a successful triage.
+   */
+  static readonly MAX_TRIAGE_ATTEMPTS = 5;
+
   private sql: postgres.Sql;
   private log: FastifyBaseLogger;
   private client: Anthropic;
@@ -373,12 +392,23 @@ export class TriageService {
         error instanceof Error ? error.message : String(error);
       this.log.error({ emailId, error }, 'Triage failed');
 
-      // Record error but preserve workflow_status for retry
-      await this.sql`
+      // Record error and bump the attempt counter, but preserve
+      // workflow_status so a future manual/forced retry can still pick it
+      // up - the scheduler just stops selecting it once attempts hit the cap.
+      const [updated] = await this.sql<{ triage_attempts: number }[]>`
         UPDATE google.emails
-        SET last_error = ${errorMessage}, last_error_at = NOW()
+        SET last_error = ${errorMessage}, last_error_at = NOW(),
+            triage_attempts = triage_attempts + 1
         WHERE id = ${emailId}
+        RETURNING triage_attempts
       `;
+
+      if (updated && updated.triage_attempts >= TriageService.MAX_TRIAGE_ATTEMPTS) {
+        this.log.error(
+          { emailId, attempts: updated.triage_attempts, maxAttempts: TriageService.MAX_TRIAGE_ATTEMPTS },
+          'Triage failed max attempts - scheduler will stop retrying this email'
+        );
+      }
 
       return { emailId, success: false, error: errorMessage };
     }
@@ -479,27 +509,78 @@ export class TriageService {
       !analysis.unsubscribe_link?.startsWith('https://') &&
       email.body_html
     ) {
+      const cleanedHtml = this.cleanHtmlForPrompt(email.body_html);
+
       this.log.info(
-        { emailId: email.id },
+        { emailId: email.id, htmlTruncated: cleanedHtml.truncated, originalLength: email.body_html.length },
         'Missing unsubscribe link, checking HTML'
       );
       analysis = await conversation.sendMessage(
         `<refinement>
 No valid unsubscribe URL was found in the text body.
-Please examine the HTML body below and extract the actual unsubscribe URL if present (the href attribute starting with http:// or https://).
+Please examine the cleaned HTML body below (tags stripped, but href URLs preserved in the links list) and extract the actual unsubscribe URL if present (starting with http:// or https://).
 Set unsubscribe_link to the full URL string, or null if no unsubscribe link exists.
 Return your updated complete analysis.
 
-<html_body>
-${email.body_html}
+<html_body${cleanedHtml.truncated ? ' truncated="true"' : ''}>
+${cleanedHtml.text}
 </html_body>
 </refinement>`
       );
+
+      if (cleanedHtml.truncated) {
+        analysis = { ...analysis, html_truncated: true };
+      }
     }
 
     // Future conditional turns can be added here as simple if-statements
 
     return analysis;
+  }
+
+  /**
+   * Strip HTML markup down to plain text plus a links list, and cap the
+   * result at HTML_PROMPT_CHAR_BUDGET before it enters a prompt.
+   *
+   * Tags/scripts/styles are stripped rather than kept verbatim because raw
+   * marketing HTML can be enormous relative to its actual text content
+   * (seen in production: 440KB of HTML for one newsletter). But turn 2
+   * exists specifically to find an unsubscribe href, so hrefs are pulled
+   * out into a separate list *before* stripping tags, and that links list
+   * is always kept in full (capped independently) rather than getting cut
+   * off by the text truncation.
+   */
+  private cleanHtmlForPrompt(html: string): { text: string; truncated: boolean } {
+    const hrefs = [...html.matchAll(/href\s*=\s*["']([^"']+)["']/gi)].map((m) => m[1]!);
+    const uniqueLinks = [...new Set(hrefs)]
+      .filter((url) => /^https?:\/\//i.test(url))
+      .slice(0, 300);
+
+    const strippedText = html
+      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    const linksBlock =
+      uniqueLinks.length > 0
+        ? `\n\nLinks found in HTML (href values, in document order):\n${uniqueLinks.map((u) => `- ${u}`).join('\n')}`
+        : '';
+
+    // Reserve room for the links block (what turn 2 actually needs) and
+    // truncate the surrounding text to whatever budget remains.
+    const textBudget = Math.max(0, TriageService.HTML_PROMPT_CHAR_BUDGET - linksBlock.length);
+    const textTruncated = strippedText.length > textBudget;
+    const text = (textTruncated ? strippedText.slice(0, textBudget) : strippedText) + linksBlock;
+
+    return { text, truncated: textTruncated };
   }
 
   /**
@@ -637,7 +718,8 @@ ${email.body_text || email.snippet || '(empty)'}
         workflow_status = 'triaged',
         triaged_at = NOW(),
         last_error = NULL,
-        last_error_at = NULL
+        last_error_at = NULL,
+        triage_attempts = 0
       WHERE id = ${emailId}
     `;
 

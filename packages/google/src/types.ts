@@ -134,6 +134,12 @@ export interface EmailAnalysis {
   message_type: MessageType;          // spam, newsletter, alert, group, personal
   unsubscribe_link: string | null;    // Extracted unsubscribe URL if present
   rationale: string;                  // Explanation of classification
+
+  // Set by the triage pipeline itself (not the model) when the turn-2 HTML
+  // refinement had to truncate an oversized body before it entered the
+  // prompt, so a best-effort unsubscribe-link lookup is visible from the
+  // stored analysis alone.
+  html_truncated?: boolean;
 }
 
 // ============================================
