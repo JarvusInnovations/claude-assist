@@ -28,6 +28,7 @@ export interface GmailAuthConfig {
 export class GmailAuthService {
   private sql: postgres.Sql;
   private log: FastifyBaseLogger;
+  private config: GmailAuthConfig;
   private oauth2Client: InstanceType<typeof google.auth.OAuth2>;
 
   constructor(
@@ -37,6 +38,7 @@ export class GmailAuthService {
   ) {
     this.sql = sql;
     this.log = log;
+    this.config = config;
     this.oauth2Client = new google.auth.OAuth2(
       config.clientId,
       config.clientSecret,
@@ -108,53 +110,67 @@ export class GmailAuthService {
 
     const credentials = account.oauth_credentials as OAuthCredentials;
 
-    // Check if token is expired or will expire in the next minute
-    const isExpired =
-      credentials.expiry_date &&
-      credentials.expiry_date < Date.now() + 60 * 1000;
+    // Build a per-account OAuth2 client that carries the client id/secret so the
+    // google-auth-library can refresh the access token itself when it expires.
+    //
+    // Previously this returned a client backed by a bare `new google.auth.OAuth2()`
+    // (no client id/secret) seeded with a stale credentials copy, so the automatic
+    // token refresh POSTed to oauth2.googleapis.com/token without a client id and
+    // failed with `invalid_request: "Could not determine client ID from request."`
+    const auth = new google.auth.OAuth2(
+      this.config.clientId,
+      this.config.clientSecret,
+      this.config.redirectUri
+    );
+    auth.setCredentials(credentials);
 
-    if (isExpired) {
-      this.log.info({ accountId }, 'Refreshing expired token');
-      await this.refreshToken(accountId, credentials);
-    }
-
-    // Create authenticated client
-    const auth = new google.auth.OAuth2();
-    auth.setCredentials(account.oauth_credentials as OAuthCredentials);
+    // Persist tokens whenever the library refreshes the access token so the DB
+    // stays current and we don't refresh on every request.
+    auth.on('tokens', (tokens) => {
+      void this.persistRefreshedTokens(accountId, credentials, tokens);
+    });
 
     return google.gmail({ version: 'v1', auth });
   }
 
   /**
-   * Refresh an expired access token
+   * Persist tokens emitted by google-auth-library when it refreshes the access
+   * token. Refresh responses often omit the refresh_token/scope, so fall back to
+   * the previously stored values.
    */
-  private async refreshToken(
+  private async persistRefreshedTokens(
     accountId: number,
-    credentials: OAuthCredentials
+    previous: OAuthCredentials,
+    tokens: {
+      access_token?: string | null;
+      refresh_token?: string | null;
+      token_type?: string | null;
+      expiry_date?: number | null;
+      scope?: string | null;
+    }
   ): Promise<void> {
-    this.oauth2Client.setCredentials({
-      refresh_token: credentials.refresh_token,
-    });
-
-    const { credentials: newTokens } =
-      await this.oauth2Client.refreshAccessToken();
-
     const updatedCredentials: OAuthCredentials = {
-      access_token: newTokens.access_token!,
-      refresh_token: newTokens.refresh_token || credentials.refresh_token,
-      token_type: newTokens.token_type!,
-      expiry_date: newTokens.expiry_date!,
-      scope: credentials.scope,
+      access_token: tokens.access_token ?? previous.access_token,
+      refresh_token: tokens.refresh_token ?? previous.refresh_token,
+      token_type: tokens.token_type ?? previous.token_type,
+      expiry_date: tokens.expiry_date ?? previous.expiry_date,
+      scope: tokens.scope ?? previous.scope,
     };
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await this.sql`
-      UPDATE google.accounts
-      SET oauth_credentials = ${this.sql.json(updatedCredentials as any)}
-      WHERE id = ${accountId}
-    `;
-
-    this.log.info({ accountId }, 'Token refreshed');
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await this.sql`
+        UPDATE google.accounts
+        SET oauth_credentials = ${this.sql.json(updatedCredentials as any)}
+        WHERE id = ${accountId}
+      `;
+      this.log.info({ accountId }, 'Token refreshed');
+    } catch (error) {
+      this.log.error(
+        { accountId, error },
+        'Failed to persist refreshed OAuth token'
+      );
+    }
   }
 
   /**
