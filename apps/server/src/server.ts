@@ -8,6 +8,7 @@ import sessionsPlugin, {
 } from '@jarvus/claude-assist-sessions';
 import googlePlugin from '@jarvus/claude-assist-google';
 import chatPlugin from '@jarvus/claude-assist-chat';
+import notifyPlugin from '@jarvus/claude-assist-notify';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import envPlugin from './plugins/env.js';
@@ -75,6 +76,32 @@ await fastify.register(
         }
       }
     );
+
+    // Notify module — registered FIRST so its fastify.notify / fastify.heartbeats
+    // decorators are available to the sessions + google pipelines below.
+    if (fastify.config.ENABLE_NOTIFY) {
+      api.log.info('Notify module enabled');
+      await api.register(notifyPlugin, {
+        migrationsDir: join(__dirname, '../../../packages/notify/migrations'),
+        disableMigrations: fastify.config.DISABLE_MIGRATIONS,
+        notifyConfig: {
+          pushoverToken: fastify.config.PUSHOVER_TOKEN,
+          pushoverUser: fastify.config.PUSHOVER_USER,
+          slackBotToken: fastify.config.SLACK_BOT_TOKEN,
+          slackOwnerUserId: fastify.config.SLACK_OWNER_USER_ID,
+          hariRepoPath:
+            fastify.config.NOTIFY_HARI_REPO_PATH ?? fastify.config.AGENT_REPO_PATH,
+          diskCheckPath: fastify.config.NOTIFY_DISK_PATH,
+          diskMinFreeBytes: fastify.config.NOTIFY_DISK_MIN_FREE_GB * 1024 ** 3,
+          diskMinFreePct: fastify.config.NOTIFY_DISK_MIN_FREE_PCT / 100,
+          stalenessCron: fastify.config.NOTIFY_STALENESS_CRON,
+          digestFlushCron: fastify.config.NOTIFY_DIGEST_FLUSH_CRON,
+          disableStalenessCheck: fastify.config.NOTIFY_DISABLE_STALENESS,
+        },
+      });
+    } else {
+      api.log.info('Notify module disabled');
+    }
 
     // Register plugins conditionally based on environment
     if (fastify.config.ENABLE_SESSIONS) {
