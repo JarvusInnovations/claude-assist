@@ -31,7 +31,15 @@ export {
   type NotifyPluginConfig,
   type CapturePluginConfig,
   type SlackUrgencyPluginConfig,
+  type BriefingPluginConfig,
 } from './plugin.js';
+
+// Tana MCP client (shared by capture's inbox executor + the briefing render)
+export {
+  TanaMcpClient,
+  parseMcpBody,
+  type TanaMcpConfig,
+} from './tana-mcp.js';
 
 // Notification + heartbeat contracts
 export type {

@@ -6,6 +6,11 @@ export interface ScheduledTask {
   schedule: string;
   handler: () => Promise<void>;
   runOnStartup?: boolean;
+  /**
+   * IANA timezone the cron expression is evaluated in (e.g. 'America/New_York').
+   * Omit to use the server's local time (UTC in production).
+   */
+  timezone?: string;
 }
 
 export interface Scheduler {
@@ -20,7 +25,7 @@ export function createScheduler(fastify: FastifyInstance): Scheduler {
 
   return {
     register(task: ScheduledTask) {
-      const job = new Cron(task.schedule, async () => {
+      const runner = async () => {
         fastify.log.info(`Running scheduled task: ${task.name}`);
         try {
           await task.handler();
@@ -28,7 +33,10 @@ export function createScheduler(fastify: FastifyInstance): Scheduler {
         } catch (error) {
           fastify.log.error({ error, task: task.name }, `Failed scheduled task: ${task.name}`);
         }
-      });
+      };
+      const job = task.timezone
+        ? new Cron(task.schedule, { timezone: task.timezone }, runner)
+        : new Cron(task.schedule, runner);
 
       tasks.set(task.name, { task, job });
       fastify.log.info(`Registered scheduled task: ${task.name} (${task.schedule})`);

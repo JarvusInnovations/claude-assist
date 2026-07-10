@@ -45,6 +45,8 @@ export interface PluginOptions {
   captureConfig?: CapturePluginConfig;
   /** Configuration for slack-urgency plugin */
   slackUrgencyConfig?: SlackUrgencyPluginConfig;
+  /** Configuration for briefing plugin */
+  briefingConfig?: BriefingPluginConfig;
 }
 
 /**
@@ -77,6 +79,42 @@ export interface SlackUrgencyPluginConfig {
   pollCron?: string;
   /** Disable the poll loop. */
   disablePolling?: boolean;
+}
+
+/**
+ * Configuration for the briefing plugin (daily briefing + meeting alerts).
+ */
+export interface BriefingPluginConfig {
+  /** Anthropic API key for the join-required residue classifier. */
+  anthropicApiKey?: string;
+  /** Residue classifier model (default: claude-haiku-4-5). */
+  classifierModel?: string;
+  /** IANA timezone for "today" + the briefing cron (default America/New_York). */
+  timeZone?: string;
+  /** gws-axi binary path (default: `gws-axi` on PATH). */
+  gwsAxiBin?: string;
+  /** hq-axi binary path (default: `hq-axi` on PATH). */
+  hqAxiBin?: string;
+  /** Calendar account override (default: the CLI's default chris@jarv.us). */
+  calendarAccount?: string;
+  /** tana-local MCP endpoint (default: http://127.0.0.1:8262/mcp). */
+  tanaMcpUrl?: string;
+  /** tana-local MCP Personal Access Token (render target). */
+  tanaMcpToken?: string;
+  /** Tana workspace whose day node the briefing is written into. */
+  tanaWorkspaceId?: string;
+  /** Base URL for links out to richer claude-assist pages. */
+  pageBaseUrl?: string;
+  /** Cron for the morning briefing (evaluated in timeZone). Default 30 6 * * *. */
+  briefingCron?: string;
+  /** Cron for the alert evaluation cycle. Default every 2 min. */
+  alertCron?: string;
+  /** Rolling look-ahead (minutes) for the alert cycle window. Default 60. */
+  alertWindowMinutes?: number;
+  /** Skip the morning briefing schedule. */
+  disableBriefing?: boolean;
+  /** Skip the meeting-alert schedule. */
+  disableAlerts?: boolean;
 }
 
 /**
@@ -268,6 +306,7 @@ export function createPlugin(
       notifyConfig: opts.notifyConfig,
       captureConfig: opts.captureConfig,
       slackUrgencyConfig: opts.slackUrgencyConfig,
+      briefingConfig: opts.briefingConfig,
     };
 
     fastify.log.info(`Loading plugin: ${name}`);

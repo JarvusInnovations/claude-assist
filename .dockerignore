@@ -53,6 +53,12 @@
 !packages/slack-urgency/src/**
 !packages/slack-urgency/migrations/
 !packages/slack-urgency/migrations/**
+# packages/briefing
+!packages/briefing/package.json
+!packages/briefing/tsconfig.json
+!packages/briefing/src/**
+!packages/briefing/migrations/
+!packages/briefing/migrations/**
 
 # apps/server
 !apps/server/package.json

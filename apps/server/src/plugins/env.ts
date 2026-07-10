@@ -89,6 +89,26 @@ const schema = {
     TANA_MCP_TOKEN: { type: 'string' },
     TANA_WORKSPACE_ID: { type: 'string' },
 
+    // Briefing module (daily briefing + join-required meeting alerts)
+    ENABLE_BRIEFING: { type: 'boolean', default: true },
+    BRIEFING_DISABLE: { type: 'boolean', default: false },
+    BRIEFING_DISABLE_ALERTS: { type: 'boolean', default: false },
+    // Timezone for "today" + the morning cron (server clock is UTC).
+    BRIEFING_TIMEZONE: { type: 'string', default: 'America/New_York' },
+    // Cron in BRIEFING_TIMEZONE; default 06:30 local.
+    BRIEFING_CRON: { type: 'string', default: '30 6 * * *' },
+    // Alert evaluation cadence (server local / UTC); default every 2 min.
+    BRIEFING_ALERT_CRON: { type: 'string', default: '*/2 * * * *' },
+    BRIEFING_ALERT_WINDOW_MINUTES: { type: 'number', default: 60 },
+    // CLI binaries (shelled out CLI-as-library); default to PATH.
+    BRIEFING_GWS_AXI_BIN: { type: 'string', default: 'gws-axi' },
+    BRIEFING_HQ_AXI_BIN: { type: 'string', default: 'hq-axi' },
+    BRIEFING_CALENDAR_ACCOUNT: { type: 'string' },
+    // Tana render target (reuses the capture module's TANA_* if unset — wired in server.ts).
+    BRIEFING_TANA_WORKSPACE_ID: { type: 'string' },
+    // Links out to richer claude-assist pages (e.g. https://assist.jarv.us).
+    BRIEFING_PAGE_BASE_URL: { type: 'string' },
+
     // Chat module
     ENABLE_CHAT: { type: 'boolean', default: false },
     SLACK_BOT_TOKEN: { type: 'string' },
@@ -199,6 +219,20 @@ declare module 'fastify' {
       TANA_MCP_URL: string;
       TANA_MCP_TOKEN?: string;
       TANA_WORKSPACE_ID?: string;
+
+      // Briefing module
+      ENABLE_BRIEFING: boolean;
+      BRIEFING_DISABLE: boolean;
+      BRIEFING_DISABLE_ALERTS: boolean;
+      BRIEFING_TIMEZONE: string;
+      BRIEFING_CRON: string;
+      BRIEFING_ALERT_CRON: string;
+      BRIEFING_ALERT_WINDOW_MINUTES: number;
+      BRIEFING_GWS_AXI_BIN: string;
+      BRIEFING_HQ_AXI_BIN: string;
+      BRIEFING_CALENDAR_ACCOUNT?: string;
+      BRIEFING_TANA_WORKSPACE_ID?: string;
+      BRIEFING_PAGE_BASE_URL?: string;
 
       // Chat module
       ENABLE_CHAT: boolean;
