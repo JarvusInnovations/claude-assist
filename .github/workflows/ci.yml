@@ -46,6 +46,9 @@ jobs:
       - name: Build chat
         run: bun run --filter @jarvus/claude-assist-chat build
 
+      - name: Build notify
+        run: bun run --filter @jarvus/claude-assist-notify build
+
       - name: Build server
         run: bun run --filter @jarvus/claude-assist-server build
 
