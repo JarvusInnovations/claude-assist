@@ -132,8 +132,50 @@ export function derivePlanFromAnalysis(
   };
 }
 
+const MESSAGE_TYPES: readonly MessageType[] = [
+  'spam',
+  'newsletter',
+  'alert',
+  'group',
+  'personal',
+];
+
+function isMessageType(value: string | null | undefined): value is MessageType {
+  return !!value && (MESSAGE_TYPES as readonly string[]).includes(value);
+}
+
 /**
- * Derive a plan directly from a skip_ai_triage rule (no analysis available).
+ * Synthesize a minimal EmailAnalysis for a skip_ai_triage rule match.
+ *
+ * No model call happens on this path, but `analysis->>'message_type'` is the
+ * only thing the admin UI's stats/table queries (and the digest) filter on —
+ * without this, a deterministically-triaged email is fully invisible to every
+ * per-type view even though the executor still archives/labels it. Falls back
+ * to the rule's own `action` when `assigned_type` isn't set (most skip rules
+ * only assign a digest_section + gmail_action), and finally to 'alert' since
+ * skip_ai_triage rules by definition match low-touch automated mail.
+ */
+export function analysisFromRule(rule: TriageRule): EmailAnalysis {
+  const messageType: MessageType = isMessageType(rule.assigned_type)
+    ? rule.assigned_type
+    : rule.action === 'spam'
+      ? 'spam'
+      : 'alert';
+
+  return {
+    overview: `Matched deterministic rule "${rule.name}" (skip_ai_triage) — no AI turn ran.`,
+    mentioned_people: [],
+    mentioned_organizations: [],
+    potential_action_items: [],
+    sender_type: 'automated',
+    message_type: messageType,
+    unsubscribe_link: null,
+    rationale: `Rule ${rule.rule_id} matched before any AI analysis.`,
+  };
+}
+
+/**
+ * Derive a plan directly from a skip_ai_triage rule (no AI analysis available).
  * Mirrors the deleted `applyRuleResult`, modernized onto the AI/* + TODO/* tree.
  */
 export function derivePlanFromRule(

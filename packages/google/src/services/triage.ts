@@ -25,6 +25,7 @@ import type { WhitelistService } from './whitelist.js';
 import {
   derivePlanFromAnalysis,
   derivePlanFromRule,
+  analysisFromRule,
   type DerivedPlan,
   type LabelPrefixes,
 } from './plan.js';
@@ -827,6 +828,13 @@ ${email.body_text || email.snippet || '(empty)'}
    * Apply a skip_ai_triage rule deterministically — no model call. Stages a
    * plan derived purely from the rule (mirrors the deleted `applyRuleResult`,
    * modernized onto the AI/* + TODO/* label tree).
+   *
+   * Also synthesizes a minimal `analysis` (via analysisFromRule) so the row
+   * still carries a `message_type`. Every per-type view — the admin UI's
+   * /inbox stats badges and its message_type-filtered table, plus the daily
+   * digest — reads message_type from `analysis`, not from the plan columns;
+   * without this a rule match becomes invisible everywhere except the raw
+   * unfiltered email list even though it was fully triaged and actioned.
    */
   private async applyRuleResult(
     emailId: number,
@@ -834,9 +842,11 @@ ${email.body_text || email.snippet || '(empty)'}
     prefixes: LabelPrefixes
   ): Promise<TriageResult> {
     const plan = derivePlanFromRule(rule, prefixes);
+    const analysis = analysisFromRule(rule);
 
     await this.sql`
       UPDATE google.emails SET
+        analysis = ${analysis as any},
         planned_labels = ${plan.plannedLabels},
         gmail_action = ${plan.gmailAction},
         digest_section = ${plan.digestSection},
@@ -851,13 +861,14 @@ ${email.body_text || email.snippet || '(empty)'}
     `;
 
     this.log.info(
-      { emailId, ruleId: rule.rule_id, gmailAction: plan.gmailAction },
+      { emailId, ruleId: rule.rule_id, gmailAction: plan.gmailAction, messageType: analysis.message_type },
       'Applied rule-based triage (skip_ai_triage)'
     );
 
     return {
       emailId,
       success: true,
+      analysis,
       ruleMatched: rule.rule_id,
       confidence: 1.0,
     };
