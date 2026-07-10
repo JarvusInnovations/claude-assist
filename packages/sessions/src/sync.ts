@@ -4,6 +4,7 @@ import { hostname as getHostname } from 'node:os';
 import { createHash } from 'node:crypto';
 import { SessionScanner, type ScannerConfig } from './scanner.js';
 import { parseTranscript } from './parser.js';
+import { sanitizeText } from './sanitize.js';
 import {
   DEFAULT_SESSION_IGNORE_MARKERS,
   matchesIgnoreMarker,
@@ -313,10 +314,18 @@ export class SyncService {
     machineId: number,
     discovered: DiscoveredSession
   ): Promise<boolean> {
-    const { signal, sessionId, transcriptContent, transcriptHash, transcriptPath } = discovered;
+    const { signal, sessionId, transcriptContent: rawTranscriptContent, transcriptHash, transcriptPath } = discovered;
 
     // Parse transcript to extract structured data
-    const parsed = parseTranscript(sessionId, transcriptContent);
+    const parsed = parseTranscript(sessionId, rawTranscriptContent);
+
+    // raw_transcript is TEXT NOT NULL - Postgres rejects an embedded NUL byte
+    // there too (a different error path than the jsonb columns parseTranscript
+    // already sanitizes, but the same underlying constraint). No real-world
+    // transcript has needed this yet - the two failing sessions carried their
+    // NUL only as a \u0000 escape inside a JSON string, which parseTranscript
+    // handles - but it's a cheap, defensive pass over content we don't control.
+    const transcriptContent = sanitizeText(rawTranscriptContent);
 
     // Compute ended_at: prefer signal, then parsed data
     const endedAt = signal?.ended_at

@@ -9,6 +9,7 @@ import type {
   ToolCall,
 } from './types.js';
 import { extractToolTarget } from './transcript.js';
+import { sanitizeText, sanitizeStringArray } from './sanitize.js';
 
 /**
  * File operation type for classification
@@ -286,13 +287,20 @@ export function parseTranscript(
     }
   }
 
+  // Transcripts occasionally embed a literal   escape (e.g. inside a
+  // pasted diff) or a lone UTF-16 surrogate. JSON.parse() above correctly
+  // turns those into real NUL/lone-surrogate characters, which Postgres's
+  // jsonb parser then rejects on insert ("unsupported Unicode escape
+  // sequence"). Sanitize every extracted string field here, once, so
+  // nothing downstream has to think about it. raw_transcript itself is
+  // untouched (that's the original JSONL text, not JSON.parse() output).
   return {
     sessionId,
-    userMessages,
-    toolsUsed: [...toolsUsed],
+    userMessages: sanitizeStringArray(userMessages),
+    toolsUsed: sanitizeStringArray([...toolsUsed]),
     filesTouched: {
-      reads: [...filesRead],
-      writes: [...filesWritten],
+      reads: sanitizeStringArray([...filesRead]),
+      writes: sanitizeStringArray([...filesWritten]),
     },
     inputTokens,
     outputTokens,
@@ -300,15 +308,19 @@ export function parseTranscript(
     startedAt,
     endedAt,
     messageCount,
-    gitBranch,
+    gitBranch: gitBranch ? sanitizeText(gitBranch) : null,
     claudeVersion,
     cwd,
     parseErrors,
-    modelsUsed: [...modelsUsed],
+    modelsUsed: sanitizeStringArray([...modelsUsed]),
     modelTokens,
     activityRanges: computeActivityRanges(userTimestamps),
-    sessionName,
-    toolCalls,
+    sessionName: sessionName ? sanitizeText(sessionName) : null,
+    toolCalls: toolCalls.map((tc) => ({
+      ...tc,
+      toolName: sanitizeText(tc.toolName),
+      target: tc.target ? sanitizeText(tc.target) : null,
+    })),
   };
 }
 
