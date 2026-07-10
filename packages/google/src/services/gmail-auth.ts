@@ -65,6 +65,14 @@ export class GmailAuthService {
     code: string,
     accountId: number
   ): Promise<GoogleAccount> {
+    const [account] = await this.sql<GoogleAccount[]>`
+      SELECT * FROM google.accounts WHERE id = ${accountId}
+    `;
+
+    if (!account) {
+      throw new Error(`Account ${accountId} not found`);
+    }
+
     const { tokens } = await this.oauth2Client.getToken(code);
 
     const credentials: OAuthCredentials = {
@@ -75,21 +83,49 @@ export class GmailAuthService {
       scope: tokens.scope!,
     };
 
+    // Identity guard: determine who actually authorized this consent grant
+    // before storing anything. It's easy to open account 3's consent link
+    // while signed into account 1's Google identity in the browser - the
+    // callback used to store whatever tokens came back against the account
+    // row named in `state` with no check, so it silently attached account
+    // 1's credentials to account 3's row (see the July mailbox-mismatch
+    // incident this guard was written for).
+    const authClient = new google.auth.OAuth2(
+      this.config.clientId,
+      this.config.clientSecret,
+      this.config.redirectUri
+    );
+    authClient.setCredentials(credentials);
+    const profile = await google
+      .gmail({ version: 'v1', auth: authClient })
+      .users.getProfile({ userId: 'me' });
+    const authorizedEmail = profile.data.emailAddress;
+
+    if (!authorizedEmail || authorizedEmail.toLowerCase() !== account.email.toLowerCase()) {
+      this.log.error(
+        { accountId, expectedEmail: account.email, authorizedEmail },
+        'OAuth callback identity mismatch - refusing to store tokens for the wrong account'
+      );
+      throw new Error(
+        `You authorized as ${authorizedEmail ?? 'an unknown Google account'}, but this connection link is for ${account.email} (account ${accountId}). Sign out of ${authorizedEmail ?? 'that account'} in this browser (or use an incognito window), then reopen the connection link and sign in as ${account.email}.`
+      );
+    }
+
     // Store credentials in database (pass object directly for JSONB)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const [account] = await this.sql<GoogleAccount[]>`
+    const [updated] = await this.sql<GoogleAccount[]>`
       UPDATE google.accounts
       SET oauth_credentials = ${this.sql.json(credentials as any)}
       WHERE id = ${accountId}
       RETURNING *
     `;
 
-    if (!account) {
+    if (!updated) {
       throw new Error(`Account ${accountId} not found`);
     }
 
-    this.log.info({ accountId, email: account.email }, 'OAuth tokens stored');
-    return account;
+    this.log.info({ accountId, email: updated.email }, 'OAuth tokens stored');
+    return updated;
   }
 
   /**
