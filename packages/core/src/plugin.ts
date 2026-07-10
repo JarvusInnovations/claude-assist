@@ -41,6 +41,8 @@ export interface PluginOptions {
   chatConfig?: ChatPluginConfig;
   /** Configuration for notify plugin */
   notifyConfig?: NotifyPluginConfig;
+  /** Configuration for capture plugin */
+  captureConfig?: CapturePluginConfig;
 }
 
 /**
@@ -116,6 +118,26 @@ export interface ChatPluginConfig {
   mcpServers?: Record<string, { command: string; args: string[] }>;
 }
 
+/**
+ * Configuration for the capture plugin
+ */
+export interface CapturePluginConfig {
+  /** Anthropic API key for AI classification */
+  anthropicApiKey?: string;
+  /** Classifier model (default: claude-haiku-4-5) */
+  classifierModel?: string;
+  /** Concurrency for the classification sweep */
+  concurrency?: number;
+  /** Disable the scheduled classify/route sweep */
+  disableClassification?: boolean;
+  /** tana-local MCP endpoint (default: http://127.0.0.1:8262/mcp) */
+  tanaMcpUrl?: string;
+  /** tana-local MCP Personal Access Token */
+  tanaMcpToken?: string;
+  /** Tana workspace whose {id}_CAPTURE_INBOX receives stray thoughts */
+  tanaWorkspaceId?: string;
+}
+
 export interface GooglePluginConfig {
   /** Google OAuth client ID */
   clientId: string;
@@ -166,6 +188,7 @@ export function createPlugin(
       googleConfig: opts.googleConfig,
       chatConfig: opts.chatConfig,
       notifyConfig: opts.notifyConfig,
+      captureConfig: opts.captureConfig,
     };
 
     fastify.log.info(`Loading plugin: ${name}`);
