@@ -1,0 +1,45 @@
+[Unit]
+Description=claude-assist server (Fastify API on :2529)
+After=network-online.target
+Wants=network-online.target
+# User units can't declare a dependency on the system docker.service (it lives
+# in a different manager/namespace than systemd --user). The postgres
+# dependency (docker container server-postgres-1, 127.0.0.1:2528) is instead
+# handled by ExecStartPre polling below.
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+WorkingDirectory=/home/chris/claude-assist/apps/server
+
+# systemd --user's default PATH is minimal (no ~/.local/bin, no asdf shims —
+# verified on this box: systemctl --user show-environment). The bun shim at
+# ~/.asdf/shims/bun execs `asdf exec bun`, which needs the real `asdf` binary
+# (installed at ~/.local/bin/asdf here) on PATH or it fails with
+# "exec: asdf: not found". Prepend both so the shim resolves normally.
+Environment=PATH=/home/chris/.local/bin:/home/chris/.asdf/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin
+
+# Waits for postgres to accept connections (bounded retries) before starting.
+ExecStartPre=/home/chris/claude-assist/deploy/systemd/wait-for-postgres.sh
+
+# asdf-stable invocation: resolves the bun version via the repo's
+# .tool-versions (walked up from WorkingDirectory) at every start, instead of
+# hardcoding a version-pinned path like ~/.asdf/installs/bun/1.3.6/bin/bun
+# that would go stale on a bun upgrade.
+ExecStart=/home/chris/.asdf/shims/bun src/server.ts
+
+# The app loads its own config via @fastify/env (dotenv: true), which reads
+# ./.env relative to process.cwd() — i.e. WorkingDirectory above. No
+# EnvironmentFile= is needed here; apps/server/.env is the single source of
+# env for the process, same as it is today in the herdr pane.
+
+Restart=on-failure
+RestartSec=5
+
+# Explicit for clarity — this is systemd's default for user services anyway.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
