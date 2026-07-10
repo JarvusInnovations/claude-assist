@@ -24,8 +24,9 @@
   "dependencies": {
     "@fastify/env": "^5.0.3",
     "@fastify/static": "^9.0.0",
-    "@jarvus/claude-assist-core": "workspace:*",
+    "@jarvus/claude-assist-capture": "workspace:*",
     "@jarvus/claude-assist-chat": "workspace:*",
+    "@jarvus/claude-assist-core": "workspace:*",
     "@jarvus/claude-assist-google": "workspace:*",
     "@jarvus/claude-assist-notify": "workspace:*",
     "@jarvus/claude-assist-sessions": "workspace:*",
