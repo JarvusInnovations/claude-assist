@@ -42,6 +42,7 @@ interface SessionForOutline {
   outline_hash: string | null;
   // postgres.js returns BIGINT as string to avoid JS number precision loss
   output_tokens: string;
+  outline_attempts: number;
 }
 
 /**
@@ -56,6 +57,29 @@ function isEmptySession(session: SessionForOutline): boolean {
  * Uses p-limit for concurrency control
  */
 export class OutlineService {
+  /**
+   * Max characters of *serialized* transcript allowed into the outline
+   * prompt. serializeTranscript() itself caps at 680K chars assuming
+   * ~3.5 chars/token, but real sessions can run denser than that - one
+   * production case (d1ee9938, a long automated run) measured ~3.33
+   * chars/token, landing at 204,367 tokens against Haiku's 200K-token
+   * limit despite passing that cap, and retrying every cycle forever.
+   * This budget is deliberately much tighter, with real margin even for
+   * dense code-heavy content.
+   */
+  private static readonly TRANSCRIPT_PROMPT_CHAR_BUDGET = 300_000;
+
+  /**
+   * Sessions that fail outline generation this many times stop being
+   * picked up by the automatic sweeps (hourly cron + the post-sync/push
+   * triggers) - a session that's still too large after capping, or fails
+   * for some other persistent reason, would otherwise retry forever,
+   * paying for a failed Haiku call every cycle. `outline_attempts` is only
+   * reset by a successful outline generation. A manual retry that names
+   * specific session ids bypasses the cap, matching a deliberate override.
+   */
+  static readonly MAX_OUTLINE_ATTEMPTS = 5;
+
   private sql: postgres.Sql;
   private log: FastifyBaseLogger;
   private client: Anthropic;
@@ -129,6 +153,61 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
   }
 
   /**
+   * Cap the serialized transcript at TRANSCRIPT_PROMPT_CHAR_BUDGET before it
+   * enters the outline prompt. A blind head-only truncate (what
+   * serializeTranscript() itself does) drops the ending entirely, which is
+   * often the part that matters most for a summary - what actually
+   * happened. So instead, this keeps a head sample (what was asked) and a
+   * tail sample (how it wrapped up), split evenly, and drops the middle -
+   * cutting on line boundaries so [U]/[A]/[T]-prefixed entries stay intact.
+   */
+  private capTranscriptForPrompt(serialized: string): { text: string; truncated: boolean } {
+    if (serialized.length <= OutlineService.TRANSCRIPT_PROMPT_CHAR_BUDGET) {
+      return { text: serialized, truncated: false };
+    }
+
+    const lines = serialized.split('\n');
+    const halfBudget = Math.floor(OutlineService.TRANSCRIPT_PROMPT_CHAR_BUDGET / 2);
+
+    const head: string[] = [];
+    let headChars = 0;
+    let headEnd = 0;
+    for (; headEnd < lines.length; headEnd++) {
+      const line = lines[headEnd]!;
+      if (headChars + line.length + 1 > halfBudget) {
+        // A single line (e.g. one giant pasted diff) can exceed the whole
+        // head budget by itself. Rather than drop it - leaving the sample
+        // empty - keep a raw char slice of it.
+        if (head.length === 0 && line.length > 0) {
+          head.push(line.slice(0, halfBudget));
+          headEnd++;
+        }
+        break;
+      }
+      head.push(line);
+      headChars += line.length + 1;
+    }
+
+    const tail: string[] = [];
+    let tailChars = 0;
+    let i = lines.length - 1;
+    for (; i >= headEnd; i--) {
+      const line = lines[i]!;
+      if (tailChars + line.length + 1 > halfBudget) {
+        if (tail.length === 0 && line.length > 0) {
+          tail.unshift(line.slice(-halfBudget));
+        }
+        break;
+      }
+      tail.unshift(line);
+      tailChars += line.length + 1;
+    }
+
+    const text = [...head, '[...transcript truncated - middle omitted...]', ...tail].join('\n');
+    return { text, truncated: true };
+  }
+
+  /**
    * Parse the outline response - extract title and summary from tags
    */
   private parseOutlineResponse(response: string): {
@@ -153,10 +232,23 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
     session: SessionForOutline
   ): Promise<{ title: string | null; outline: string }> {
     const serializedTranscript = serializeTranscript(session.raw_transcript);
+    const capped = this.capTranscriptForPrompt(serializedTranscript);
+
+    if (capped.truncated) {
+      this.log.info(
+        {
+          sessionId: session.id,
+          originalLength: serializedTranscript.length,
+          cappedLength: capped.text.length,
+        },
+        'Transcript too large for outline prompt, sampling head+tail'
+      );
+    }
+
     const prompt = this.buildPrompt(
       session.project_path,
       session.git_branch,
-      serializedTranscript
+      capped.text
     );
 
     const response = await this.client.messages.create({
@@ -170,6 +262,31 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
     const rawResponse = textBlock?.type === 'text' ? textBlock.text : '';
 
     return this.parseOutlineResponse(rawResponse);
+  }
+
+  /**
+   * Record a failed outline attempt and log clearly once a session hits the
+   * cap (MAX_OUTLINE_ATTEMPTS) - visible without digging through logs when a
+   * permanently-stuck session needs a code fix or a manual sessionIds retry.
+   */
+  private async bumpOutlineAttempts(sessionId: string): Promise<void> {
+    const [updated] = await this.sql<{ outline_attempts: number }[]>`
+      UPDATE sessions.sessions
+      SET outline_attempts = outline_attempts + 1
+      WHERE id = ${sessionId}::uuid
+      RETURNING outline_attempts
+    `;
+
+    if (updated && updated.outline_attempts >= OutlineService.MAX_OUTLINE_ATTEMPTS) {
+      this.log.error(
+        {
+          sessionId,
+          attempts: updated.outline_attempts,
+          maxAttempts: OutlineService.MAX_OUTLINE_ATTEMPTS,
+        },
+        'Outline generation failed max attempts - automatic sweeps will stop retrying this session'
+      );
+    }
   }
 
   /**
@@ -190,21 +307,25 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
     // Mark as running immediately to prevent race conditions
     this.progress.inProgress = true;
 
-    // Find sessions needing outlines
+    // Find sessions needing outlines. Explicit sessionIds (a manual retry)
+    // bypass the retry cap; the unforced full sweep (cron + post-sync/push
+    // triggers) excludes sessions that already hit MAX_OUTLINE_ATTEMPTS so
+    // a permanently-failing session can't burn a paid Haiku call forever.
     let sessions: SessionForOutline[];
     try {
       if (sessionIds && sessionIds.length > 0) {
         sessions = await this.sql<SessionForOutline[]>`
-          SELECT id, project_path, git_branch, raw_transcript, transcript_hash, outline, outline_hash, output_tokens
+          SELECT id, project_path, git_branch, raw_transcript, transcript_hash, outline, outline_hash, output_tokens, outline_attempts
           FROM sessions.sessions
           WHERE id = ANY(${sessionIds}::uuid[])
             AND outline_hash IS DISTINCT FROM transcript_hash
         `;
       } else {
         sessions = await this.sql<SessionForOutline[]>`
-          SELECT id, project_path, git_branch, raw_transcript, transcript_hash, outline, outline_hash, output_tokens
+          SELECT id, project_path, git_branch, raw_transcript, transcript_hash, outline, outline_hash, output_tokens, outline_attempts
           FROM sessions.sessions
           WHERE outline_hash IS DISTINCT FROM transcript_hash
+            AND outline_attempts < ${OutlineService.MAX_OUTLINE_ATTEMPTS}
           ORDER BY started_at DESC
         `;
       }
@@ -241,12 +362,14 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
           const isEmpty = isEmptySession(session);
           const generated = isEmpty ? null : await this.generateOutline(session);
 
-          // Store the outline and title (null for empty sessions)
+          // Store the outline and title (null for empty sessions), and
+          // reset the retry counter now that generation succeeded
           await this.sql`
             UPDATE sessions.sessions
             SET outline = ${generated?.outline ?? null},
                 title = ${generated?.title ?? null},
-                outline_hash = ${session.transcript_hash}
+                outline_hash = ${session.transcript_hash},
+                outline_attempts = 0
             WHERE id = ${session.id}::uuid
           `;
 
@@ -261,6 +384,7 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
             { error, sessionId: session.id },
             'Failed to generate outline'
           );
+          await this.bumpOutlineAttempts(session.id);
         }
       })
     );
@@ -305,20 +429,23 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
       errors: [],
     };
 
-    // Find sessions needing outlines (filter by hash mismatch at query level)
+    // Find sessions needing outlines (filter by hash mismatch at query
+    // level). Explicit sessionIds bypass the retry cap, same as
+    // queueOutlineGeneration - see the comment there.
     let sessions: SessionForOutline[];
     if (sessionIds && sessionIds.length > 0) {
       sessions = await this.sql<SessionForOutline[]>`
-        SELECT id, project_path, git_branch, raw_transcript, transcript_hash, outline, outline_hash, output_tokens
+        SELECT id, project_path, git_branch, raw_transcript, transcript_hash, outline, outline_hash, output_tokens, outline_attempts
         FROM sessions.sessions
         WHERE id = ANY(${sessionIds}::uuid[])
           AND outline_hash IS DISTINCT FROM transcript_hash
       `;
     } else {
       sessions = await this.sql<SessionForOutline[]>`
-        SELECT id, project_path, git_branch, raw_transcript, transcript_hash, outline, outline_hash, output_tokens
+        SELECT id, project_path, git_branch, raw_transcript, transcript_hash, outline, outline_hash, output_tokens, outline_attempts
         FROM sessions.sessions
         WHERE outline_hash IS DISTINCT FROM transcript_hash
+          AND outline_attempts < ${OutlineService.MAX_OUTLINE_ATTEMPTS}
         ORDER BY started_at DESC
       `;
     }
@@ -348,7 +475,8 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
             UPDATE sessions.sessions
             SET outline = ${generated?.outline ?? null},
                 title = ${generated?.title ?? null},
-                outline_hash = ${session.transcript_hash}
+                outline_hash = ${session.transcript_hash},
+                outline_attempts = 0
             WHERE id = ${session.id}::uuid
           `;
 
@@ -359,6 +487,7 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
           result.errors.push(message);
           this.progress.errors++;
           this.log.error({ error, sessionId: session.id }, message);
+          await this.bumpOutlineAttempts(session.id);
         }
       })
     );

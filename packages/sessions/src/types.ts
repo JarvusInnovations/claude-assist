@@ -235,6 +235,8 @@ export interface SessionRecord {
   session_name: string | null;
   /** transcript_hash when outline was generated (for regeneration detection) */
   outline_hash: string | null;
+  /** Failed outline-generation attempts; automatic sweeps stop retrying past OutlineService.MAX_OUTLINE_ATTEMPTS */
+  outline_attempts: number;
   /** Models used in this session */
   models_used: string[];
   /** Per-model token breakdown */

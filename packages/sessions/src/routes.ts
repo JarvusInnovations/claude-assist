@@ -3,7 +3,7 @@ import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 import type { SyncService } from './sync.js';
-import type { OutlineService } from './outline.js';
+import { OutlineService } from './outline.js';
 import type {
   PushPayload,
   SessionRecord,
@@ -831,7 +831,20 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
 
     // GET /sessions/outlines/progress - Check outline generation progress
     fastify.get('/sessions/outlines/progress', async () => {
-      return outlineService.getProgress();
+      // Sessions stuck at outline_attempts >= MAX_OUTLINE_ATTEMPTS - the
+      // automatic sweeps have stopped retrying these; they need a code fix
+      // or a manual POST /sessions/outlines with explicit sessionIds.
+      const [capped] = await fastify.sql<{ capped_count: string }[]>`
+        SELECT COUNT(*) as capped_count
+        FROM sessions.sessions
+        WHERE outline_hash IS DISTINCT FROM transcript_hash
+          AND outline_attempts >= ${OutlineService.MAX_OUTLINE_ATTEMPTS}
+      `;
+
+      return {
+        ...outlineService.getProgress(),
+        capped_count: parseInt(capped?.capped_count ?? '0', 10),
+      };
     });
   }
 };
