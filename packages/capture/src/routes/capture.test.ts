@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import Fastify, { type FastifyInstance } from 'fastify';
-import { MemoryCaptureStore } from '../memory-store.js';
+import { MemoryCaptureStore, MemoryReferenceStore } from '../memory-store.js';
 import { CaptureRouter } from '../services/router.js';
 import { CapturePipeline } from '../services/pipeline.js';
 import { HoldExecutor } from '../services/executors/hold.js';
@@ -20,7 +20,8 @@ describe('capture routes', () => {
     router = new CaptureRouter(store, fastify.log);
     router.register(new HoldExecutor());
     const pipeline = new CapturePipeline(store, null, router, fastify.log);
-    await fastify.register(registerCaptureRoutes, { pipeline });
+    const referenceStore = new MemoryReferenceStore();
+    await fastify.register(registerCaptureRoutes, { pipeline, referenceStore });
     await fastify.ready();
   });
 

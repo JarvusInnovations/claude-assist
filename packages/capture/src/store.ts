@@ -88,6 +88,8 @@ export interface CaptureStore {
 
 export interface ReferenceStore {
   upsert(reference: Omit<ReferenceRecord, 'final_url'> & { final_url?: string | null }): Promise<void>;
+  /** Recent stored references, most recently captured first (review surface). */
+  list(filter: { limit?: number; offset?: number }): Promise<ReferenceRecord[]>;
 }
 
 /** Parse a JSONB field that may come back as a string from postgres.js */
@@ -292,5 +294,20 @@ export class PgReferenceStore implements ReferenceStore {
         extra_urls = EXCLUDED.extra_urls,
         fetch_error = EXCLUDED.fetch_error
     `;
+  }
+
+  async list(filter: { limit?: number; offset?: number }): Promise<ReferenceRecord[]> {
+    const limit = Math.min(filter.limit ?? 50, 500);
+    const offset = filter.offset ?? 0;
+    const rows = await this.sql<ReferenceRecord[]>`
+      SELECT * FROM capture.references
+      ORDER BY captured_at DESC LIMIT ${limit} OFFSET ${offset}
+    `;
+    return rows.map((row) => ({
+      ...row,
+      extra_urls: parseJsonField<LinkMetadata[]>(
+        row.extra_urls as unknown as LinkMetadata[] | string | null
+      ) ?? [],
+    }));
   }
 }

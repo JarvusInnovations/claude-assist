@@ -14,9 +14,11 @@ import type { CaptureInput, CaptureStatus, CaptureType } from '../types.js';
 import { CAPTURE_SOURCES, CAPTURE_TYPES } from '../types.js';
 import { ULID_PATTERN } from '../ulid.js';
 import type { CapturePipeline } from '../services/pipeline.js';
+import type { ReferenceStore } from '../store.js';
 
 export interface CaptureRoutesConfig {
   pipeline: CapturePipeline;
+  referenceStore: ReferenceStore;
 }
 
 const CAPTURE_BODY_SCHEMA = {
@@ -45,7 +47,7 @@ const CAPTURE_BODY_SCHEMA = {
 
 export const registerCaptureRoutes: FastifyPluginAsync<CaptureRoutesConfig> = async (
   fastify,
-  { pipeline }
+  { pipeline, referenceStore }
 ) => {
   // POST /capture - store immediately, ack fast. No classification, no
   // routing, no model calls in this handler — ever.
@@ -91,6 +93,30 @@ export const registerCaptureRoutes: FastifyPluginAsync<CaptureRoutesConfig> = as
       const offset = parseInt(request.query.offset ?? '0', 10);
       const captures = await pipeline.list({ status, limit, offset });
       return { captures, count: captures.length };
+    }
+  );
+
+  // GET /capture/references - stored link references (routed link_reference
+  // captures land here). Static path; find-my-way matches it ahead of :ulid.
+  fastify.get<{ Querystring: { limit?: string; offset?: string } }>(
+    '/capture/references',
+    {
+      schema: {
+        querystring: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            limit: { type: 'string', pattern: '^[0-9]+$' },
+            offset: { type: 'string', pattern: '^[0-9]+$' },
+          },
+        },
+      },
+    },
+    async (request) => {
+      const limit = parseInt(request.query.limit ?? '50', 10);
+      const offset = parseInt(request.query.offset ?? '0', 10);
+      const references = await referenceStore.list({ limit, offset });
+      return { references, count: references.length };
     }
   );
 

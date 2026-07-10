@@ -17,11 +17,21 @@ import {
   Mail,
   ScrollText,
   Settings,
+  Layers,
+  Bell,
+  CalendarClock,
+  Zap,
+  Tags,
 } from "lucide-react";
 
 const navItems = [
   { path: "/", label: "Dashboard", icon: LayoutDashboard },
   { path: "/inbox", label: "Inbox", icon: Inbox },
+  { path: "/captures", label: "Captures", icon: Layers },
+  { path: "/notifications", label: "Notifications", icon: Bell },
+  { path: "/briefing", label: "Briefing", icon: CalendarClock },
+  { path: "/urgency", label: "Slack Urgency", icon: Zap },
+  { path: "/classification", label: "Classification", icon: Tags },
   { path: "/accounts", label: "Accounts", icon: Users },
   { path: "/emails", label: "Emails", icon: Mail },
   { path: "/sessions", label: "Sessions", icon: ScrollText },

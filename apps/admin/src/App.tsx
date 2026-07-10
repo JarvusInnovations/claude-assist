@@ -15,6 +15,11 @@ import { SessionDetailPage } from "@/pages/SessionDetailPage";
 import { ActivityPage } from "@/pages/ActivityPage";
 import { SystemPage } from "@/pages/SystemPage";
 import { InboxPage } from "@/pages/InboxPage";
+import { CapturesPage } from "@/pages/CapturesPage";
+import { NotificationsPage } from "@/pages/NotificationsPage";
+import { BriefingPage } from "@/pages/BriefingPage";
+import { UrgencyPage } from "@/pages/UrgencyPage";
+import { ClassificationPage } from "@/pages/ClassificationPage";
 
 function App() {
   return (
@@ -31,6 +36,11 @@ function App() {
         >
           <Route index element={<DashboardPage />} />
           <Route path="inbox" element={<InboxPage />} />
+          <Route path="captures" element={<CapturesPage />} />
+          <Route path="notifications" element={<NotificationsPage />} />
+          <Route path="briefing" element={<BriefingPage />} />
+          <Route path="urgency" element={<UrgencyPage />} />
+          <Route path="classification" element={<ClassificationPage />} />
           <Route path="accounts" element={<AccountsPage />} />
           <Route path="accounts/:id" element={<AccountDetailPage />} />
           <Route path="emails" element={<EmailsPage />} />

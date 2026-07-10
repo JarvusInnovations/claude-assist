@@ -246,3 +246,244 @@ export interface BulkActionResponse {
   message: string;
   error?: string;
 }
+
+// ============================================
+// Capture Module Types
+// ============================================
+
+export type CaptureStatus =
+  | "queued"
+  | "classified"
+  | "awaiting_executor"
+  | "awaiting_review"
+  | "routed";
+
+export type CaptureType =
+  | "stray_thought"
+  | "link_reference"
+  | "actionable"
+  | "team_relevant";
+
+export interface LinkMetadata {
+  url: string;
+  final_url?: string;
+  title?: string;
+  description?: string;
+  site_name?: string;
+  fetch_error?: string;
+}
+
+export interface CaptureClassification {
+  type: CaptureType;
+  confidence: number;
+  title: string | null;
+  rationale: string;
+  classifier: "model" | "deterministic" | "correction";
+  model?: string;
+  links?: LinkMetadata[];
+}
+
+export interface CaptureRecord {
+  ulid: string;
+  source: "app" | "slack" | "terminal";
+  text: string;
+  type_hint: string | null;
+  urls: string[];
+  tags: string[];
+  payload: Record<string, unknown>;
+  captured_at: string;
+  received_at: string;
+  status: CaptureStatus;
+  classification: CaptureClassification | null;
+  classified_at: string | null;
+  classify_attempts: number;
+  route_destination: string | null;
+  route_attempts: number;
+  routed_at: string | null;
+  route_result: Record<string, unknown> | null;
+  last_error: string | null;
+  last_error_at: string | null;
+}
+
+export interface CaptureListResponse {
+  captures: CaptureRecord[];
+  count: number;
+}
+
+export interface ReferenceRecord {
+  capture_ulid: string;
+  url: string;
+  final_url: string | null;
+  title: string | null;
+  description: string | null;
+  site_name: string | null;
+  notes: string;
+  tags: string[];
+  source: string;
+  captured_at: string;
+  extra_urls: LinkMetadata[];
+  fetch_error: string | null;
+}
+
+export interface ReferenceListResponse {
+  references: ReferenceRecord[];
+  count: number;
+}
+
+// ============================================
+// Notify Module Types
+// ============================================
+
+export type NotificationPriority = "interrupt" | "notice" | "digest";
+export type NotificationStatus = "sent" | "pending" | "error";
+
+export interface NotificationLogEntry {
+  id: number;
+  ts: string;
+  priority: NotificationPriority;
+  title: string;
+  body: string;
+  delivered_via: string[];
+  url_redacted: string | null;
+  payload_hash: string | null;
+  status: NotificationStatus;
+  error: string | null;
+}
+
+export interface NotificationListResponse {
+  notifications: NotificationLogEntry[];
+  count: number;
+}
+
+export interface HeartbeatEntry {
+  name: string;
+  last_success_at: string | null;
+  threshold_interval: string;
+  source: "heartbeat" | "manual";
+  ledger_path: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface HeartbeatListResponse {
+  heartbeats: HeartbeatEntry[];
+}
+
+// ============================================
+// Briefing (Meeting Alerts) Types
+// ============================================
+
+export type OverrideAction = "suppress" | "force";
+
+export interface SeriesOverride {
+  seriesId: string;
+  action: OverrideAction;
+  leadMinutes: number | null;
+  note: string | null;
+}
+
+export interface OverrideListResponse {
+  overrides: SeriesOverride[];
+}
+
+export interface AlertPlanItem {
+  eventId: string;
+  seriesId: string | null;
+  summary: string;
+  start: string;
+  joinRequired: boolean;
+  reason: string;
+  venue: string | null;
+  source: string;
+  leadMinutes: number | null;
+  fireAt: string | null;
+}
+
+export interface AlertPlan {
+  date: string;
+  calendarError: string | null;
+  items: AlertPlanItem[];
+}
+
+// ============================================
+// Slack Urgency Types
+// ============================================
+
+export interface UrgencyCandidate {
+  channel: string;
+  ts: string;
+  thread_ts: string | null;
+  channel_type: string;
+  sender: string;
+  sender_name: string | null;
+  text: string;
+  permalink: string | null;
+  tier: string;
+  verdict: string;
+  classifier: string;
+  model: string | null;
+  gist: string | null;
+  signals: string[];
+  rationale: string | null;
+  confidence: number | null;
+  interrupted: boolean;
+  near_miss: boolean;
+  notification_id: number | null;
+  message_ts: string;
+  created_at: string;
+}
+
+export interface NearMissListResponse {
+  near_misses: UrgencyCandidate[];
+  count: number;
+}
+
+export interface InterruptListResponse {
+  interrupts: UrgencyCandidate[];
+  count: number;
+}
+
+export interface UrgencyCorrectionResponse {
+  corrected: string;
+  sender: string;
+  channel: string;
+  sender_weight: number;
+  channel_weight: number;
+}
+
+// ============================================
+// Session Classification Types
+// ============================================
+
+export type ClassificationEventType =
+  | "correction"
+  | "friction"
+  | "rule-candidate"
+  | "notable-decision";
+
+export interface ClassificationEvent {
+  id: string;
+  session_id: string;
+  seq_start: number;
+  seq_end: number;
+  event_type: ClassificationEventType;
+  summary: string;
+  confidence: number;
+  quote: string | null;
+  model: string | null;
+  created_at: string;
+  project_path: string | null;
+  git_branch: string | null;
+  title: string | null;
+}
+
+export interface SynthesisReport {
+  id: string;
+  kind: string;
+  period_start: string;
+  period_end: string;
+  report: string;
+  event_count: number;
+  created_at: string;
+}

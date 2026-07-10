@@ -155,4 +155,12 @@ export class MemoryReferenceStore implements ReferenceStore {
   async upsert(ref: Omit<ReferenceRecord, 'final_url'> & { final_url?: string | null }): Promise<void> {
     this.records.set(ref.capture_ulid, { ...ref, final_url: ref.final_url ?? null });
   }
+
+  async list(filter: { limit?: number; offset?: number }): Promise<ReferenceRecord[]> {
+    const limit = filter.limit ?? 50;
+    const offset = filter.offset ?? 0;
+    return [...this.records.values()]
+      .sort((a, b) => b.captured_at.getTime() - a.captured_at.getTime())
+      .slice(offset, offset + limit);
+  }
 }
