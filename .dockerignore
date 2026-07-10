@@ -32,6 +32,13 @@
 !packages/google/migrations/
 !packages/google/migrations/**
 
+# packages/notify
+!packages/notify/package.json
+!packages/notify/tsconfig.json
+!packages/notify/src/**
+!packages/notify/migrations/
+!packages/notify/migrations/**
+
 # apps/server
 !apps/server/package.json
 !apps/server/tsconfig.json

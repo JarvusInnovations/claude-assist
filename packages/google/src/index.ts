@@ -81,6 +81,11 @@ export default createPlugin('google', async (fastify: FastifyInstance, options: 
               { accountId: account.id, result },
               'Gmail sync complete'
             );
+            // Coverage heartbeat: a successful per-account sync (absence pages).
+            await fastify.heartbeats?.beat(`email-sync:${account.id}`, {
+              threshold: '12 hours',
+              metadata: { accountId: account.id },
+            });
           } catch (error) {
             fastify.log.error(
               { accountId: account.id, error },
@@ -148,6 +153,8 @@ export default createPlugin('google', async (fastify: FastifyInstance, options: 
             'Triage batch complete'
           );
         }
+        // Coverage heartbeat: the triage sweep ran to completion this cycle.
+        await fastify.heartbeats?.beat('triage', { threshold: '6 hours' });
       },
     });
   } else if (triageService) {

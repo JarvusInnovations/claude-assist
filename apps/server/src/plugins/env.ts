@@ -68,6 +68,23 @@ const schema = {
     AGENT_REPO_PATH: { type: 'string' },
     BOT_USERNAME: { type: 'string' },
     CLAUDE_CODE_OAUTH_TOKEN: { type: 'string' },
+
+    // Notify module (notification dispatcher + heartbeat registry)
+    ENABLE_NOTIFY: { type: 'boolean', default: true },
+    // Pushover (interrupt + notice channel). Values live in the pushover MCP config.
+    PUSHOVER_TOKEN: { type: 'string' },
+    PUSHOVER_USER: { type: 'string' },
+    // Slack DM (digest channel) reuses SLACK_BOT_TOKEN + SLACK_OWNER_USER_ID above.
+    // Absolute path to the Hari repo clone (for manual coverage-ledger files).
+    // Defaults to AGENT_REPO_PATH when unset.
+    NOTIFY_HARI_REPO_PATH: { type: 'string' },
+    // Host disk health.
+    NOTIFY_DISK_PATH: { type: 'string', default: '/' },
+    NOTIFY_DISK_MIN_FREE_GB: { type: 'number', default: 20 },
+    NOTIFY_DISK_MIN_FREE_PCT: { type: 'number', default: 8 },
+    NOTIFY_DISABLE_STALENESS: { type: 'boolean', default: false },
+    NOTIFY_STALENESS_CRON: { type: 'string' },
+    NOTIFY_DIGEST_FLUSH_CRON: { type: 'string' },
   },
 } as const;
 
@@ -122,6 +139,18 @@ declare module 'fastify' {
       AGENT_REPO_PATH?: string;
       BOT_USERNAME?: string;
       CLAUDE_CODE_OAUTH_TOKEN?: string;
+
+      // Notify module
+      ENABLE_NOTIFY: boolean;
+      PUSHOVER_TOKEN?: string;
+      PUSHOVER_USER?: string;
+      NOTIFY_HARI_REPO_PATH?: string;
+      NOTIFY_DISK_PATH: string;
+      NOTIFY_DISK_MIN_FREE_GB: number;
+      NOTIFY_DISK_MIN_FREE_PCT: number;
+      NOTIFY_DISABLE_STALENESS: boolean;
+      NOTIFY_STALENESS_CRON?: string;
+      NOTIFY_DIGEST_FLUSH_CRON?: string;
     };
   }
 }

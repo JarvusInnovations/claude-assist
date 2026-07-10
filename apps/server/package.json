@@ -27,6 +27,7 @@
     "@jarvus/claude-assist-core": "workspace:*",
     "@jarvus/claude-assist-chat": "workspace:*",
     "@jarvus/claude-assist-google": "workspace:*",
+    "@jarvus/claude-assist-notify": "workspace:*",
     "@jarvus/claude-assist-sessions": "workspace:*",
     "fastify": "^5.7.1",
     "fastify-plugin": "^5.1.0",

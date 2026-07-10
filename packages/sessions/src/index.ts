@@ -63,6 +63,11 @@ export default createPlugin('sessions', async (fastify, options) => {
         ) {
           outlineService.queueOutlineGeneration();
         }
+
+        // Coverage heartbeat: localhost session ingest succeeded this cycle.
+        await fastify.heartbeats?.beat('session-ingest:localhost', {
+          threshold: '48 hours',
+        });
       },
     });
     fastify.log.info(
@@ -83,6 +88,8 @@ export default createPlugin('sessions', async (fastify, options) => {
       handler: async () => {
         fastify.log.info('Running scheduled outline generation');
         outlineService.queueOutlineGeneration();
+        // Coverage heartbeat: the outline pipeline ran this cycle.
+        await fastify.heartbeats?.beat('outline', { threshold: '24 hours' });
       },
     });
   }
