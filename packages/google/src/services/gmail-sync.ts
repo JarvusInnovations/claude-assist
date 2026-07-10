@@ -58,6 +58,17 @@ interface ActiveSyncState {
 }
 
 export class GmailSyncService {
+  /**
+   * Active syncs older than this are treated as stuck rather than genuinely
+   * in progress. A sync promise that hangs (network stall, unresolved API
+   * call, etc.) never reaches its `finally` block, so the in-memory lock can
+   * otherwise sit at `syncing: true` indefinitely - we saw this leave an
+   * account's incremental syncs skipped as "already in progress" for 4 days
+   * straight. 30 minutes is well beyond how long a normal full or
+   * incremental sync takes, so clearing the lock past that point is safe.
+   */
+  private static readonly STALE_SYNC_TIMEOUT_MS = 30 * 60 * 1000;
+
   private sql: postgres.Sql;
   private log: FastifyBaseLogger;
   private authService: GmailAuthService;
@@ -112,6 +123,32 @@ export class GmailSyncService {
   }
 
   /**
+   * Check whether an account has a genuinely active sync lock, clearing it
+   * first if it has exceeded STALE_SYNC_TIMEOUT_MS. A stale lock means a
+   * previous sync's promise hung without ever settling (so its `finally`
+   * never ran) - clearing it here lets the next sync cycle proceed instead
+   * of skipping forever.
+   */
+  private hasActiveSync(accountId: number): boolean {
+    const active = this.activeSyncs.get(accountId);
+    if (!active) {
+      return false;
+    }
+
+    const ageMs = Date.now() - active.startedAt.getTime();
+    if (ageMs > GmailSyncService.STALE_SYNC_TIMEOUT_MS) {
+      this.log.warn(
+        { accountId, startedAt: active.startedAt, ageMs, type: active.type, phase: active.phase },
+        'Clearing stale sync lock - sync exceeded staleness timeout without settling, likely a hung promise'
+      );
+      this.activeSyncs.delete(accountId);
+      return false;
+    }
+
+    return true;
+  }
+
+  /**
    * Full sync: Fetch untriaged inbox emails
    * Skips if sync already in progress for this account
    */
@@ -128,8 +165,8 @@ export class GmailSyncService {
       };
     }
 
-    // Skip if sync already in progress for this account
-    if (this.activeSyncs.has(accountId)) {
+    // Skip if sync already in progress for this account (staleness-checked)
+    if (this.hasActiveSync(accountId)) {
       this.log.info({ accountId }, 'Skipping full sync - already in progress');
       return {
         messagesScanned: 0,
@@ -260,8 +297,8 @@ export class GmailSyncService {
       };
     }
 
-    // Skip if sync already in progress for this account
-    if (this.activeSyncs.has(accountId)) {
+    // Skip if sync already in progress for this account (staleness-checked)
+    if (this.hasActiveSync(accountId)) {
       this.log.info({ accountId }, 'Skipping incremental sync - already in progress');
       return {
         messagesScanned: 0,
