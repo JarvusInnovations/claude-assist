@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import {
   derivePlanFromAnalysis,
   derivePlanFromRule,
+  analysisFromRule,
   actionForMessageType,
   titleCase,
 } from './plan.js';
@@ -88,7 +89,7 @@ describe('derivePlanFromAnalysis', () => {
 });
 
 describe('derivePlanFromRule (skip_ai_triage)', () => {
-  it('builds a deterministic plan with no analysis', () => {
+  it('builds a deterministic plan with no AI analysis input', () => {
     const plan = derivePlanFromRule(
       rule({ action: 'archive', gmail_action: 'archive', digest_section: 'calendar', priority_level: 'low' })
     );
@@ -96,5 +97,30 @@ describe('derivePlanFromRule (skip_ai_triage)', () => {
     expect(plan.plannedLabels).toContain('AI/Priority/Low');
     expect(plan.gmailAction).toBe('archive');
     expect(plan.digestSection).toBe('calendar');
+  });
+});
+
+describe('analysisFromRule (skip_ai_triage)', () => {
+  it('uses assigned_type when the rule sets one', () => {
+    const analysis = analysisFromRule(rule({ assigned_type: 'newsletter' }));
+    expect(analysis.message_type).toBe('newsletter');
+    expect(analysis.sender_type).toBe('automated');
+  });
+
+  it('falls back to spam for a spam-action rule with no assigned_type', () => {
+    const analysis = analysisFromRule(rule({ action: 'spam', assigned_type: null }));
+    expect(analysis.message_type).toBe('spam');
+  });
+
+  it('falls back to alert for any other rule with no assigned_type (e.g. calendar/financial notification rules)', () => {
+    const analysis = analysisFromRule(
+      rule({ action: 'archive', assigned_type: null, digest_section: 'calendar' })
+    );
+    expect(analysis.message_type).toBe('alert');
+  });
+
+  it('ignores an assigned_type that is not a valid MessageType', () => {
+    const analysis = analysisFromRule(rule({ action: 'leave', assigned_type: 'not-a-real-type' }));
+    expect(analysis.message_type).toBe('alert');
   });
 });
