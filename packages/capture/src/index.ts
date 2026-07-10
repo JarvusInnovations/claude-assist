@@ -84,7 +84,7 @@ export default createPlugin('capture', async (fastify: FastifyInstance, options:
     concurrency: config.concurrency,
   });
 
-  await fastify.register(registerCaptureRoutes, { pipeline });
+  await fastify.register(registerCaptureRoutes, { pipeline, referenceStore });
 
   if (!config.disableClassification) {
     fastify.scheduler.register({
