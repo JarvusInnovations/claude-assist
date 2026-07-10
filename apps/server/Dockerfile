@@ -12,6 +12,7 @@ COPY packages/chat/package.json packages/chat/package.json
 COPY packages/sessions/package.json packages/sessions/package.json
 COPY packages/google/package.json packages/google/package.json
 COPY packages/notify/package.json packages/notify/package.json
+COPY packages/slack-urgency/package.json packages/slack-urgency/package.json
 COPY apps/server/package.json apps/server/package.json
 COPY apps/admin apps/admin
 RUN bun install --frozen-lockfile
@@ -27,6 +28,7 @@ COPY packages/chat packages/chat
 COPY packages/sessions packages/sessions
 COPY packages/google packages/google
 COPY packages/notify packages/notify
+COPY packages/slack-urgency packages/slack-urgency
 COPY apps/server apps/server
 COPY apps/admin/package.json apps/admin/package.json
 RUN bun install --frozen-lockfile
@@ -36,6 +38,7 @@ RUN cd packages/chat && bun run build
 RUN cd packages/sessions && bun run build
 RUN cd packages/google && bun run build
 RUN cd packages/notify && bun run build
+RUN cd packages/slack-urgency && bun run build
 
 # Production image
 FROM base AS runner

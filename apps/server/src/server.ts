@@ -8,6 +8,7 @@ import sessionsPlugin, {
 } from '@jarvus/claude-assist-sessions';
 import googlePlugin from '@jarvus/claude-assist-google';
 import capturePlugin from '@jarvus/claude-assist-capture';
+import slackUrgencyPlugin from '@jarvus/claude-assist-slack-urgency';
 import chatPlugin from '@jarvus/claude-assist-chat';
 import notifyPlugin from '@jarvus/claude-assist-notify';
 import { join, dirname } from 'node:path';
@@ -205,6 +206,49 @@ await fastify.register(
       });
     } else {
       api.log.info('Capture module disabled');
+    }
+
+    // Slack urgency module — read-only listener over Chris's Slack; interrupts
+    // (via the notify dispatcher, registered above) only for what can't wait.
+    // Reads AS Chris via a user token, so it's independent of the chat bot.
+    if (fastify.config.ENABLE_SLACK_URGENCY) {
+      if (
+        !fastify.config.SLACK_URGENCY_USER_TOKEN ||
+        !fastify.config.SLACK_OWNER_USER_ID
+      ) {
+        api.log.warn(
+          'Slack urgency enabled but SLACK_URGENCY_USER_TOKEN / SLACK_OWNER_USER_ID not set - skipping'
+        );
+      } else {
+        api.log.info('Slack urgency module enabled');
+        await api.register(slackUrgencyPlugin, {
+          schema: 'slack_urgency',
+          migrationsDir: join(__dirname, '../../../packages/slack-urgency/migrations'),
+          disableMigrations: fastify.config.DISABLE_MIGRATIONS,
+          slackUrgencyConfig: {
+            userToken: fastify.config.SLACK_URGENCY_USER_TOKEN,
+            ownerId: fastify.config.SLACK_OWNER_USER_ID,
+            roster: fastify.config.SLACK_URGENCY_ROSTER,
+            watchChannels: fastify.config.SLACK_URGENCY_WATCH_CHANNELS
+              ? fastify.config.SLACK_URGENCY_WATCH_CHANNELS.split(',')
+                  .map((c) => c.trim())
+                  .filter(Boolean)
+              : [],
+            anthropicApiKey: fastify.config.ANTHROPIC_API_KEY,
+            model: fastify.config.SLACK_URGENCY_MODEL,
+            timeZone: fastify.config.SLACK_URGENCY_TZ,
+            quietStartHour: fastify.config.SLACK_URGENCY_QUIET_START,
+            quietEndHour: fastify.config.SLACK_URGENCY_QUIET_END,
+            cooldownMinutes: fastify.config.SLACK_URGENCY_COOLDOWN_MIN,
+            historyLimit: fastify.config.SLACK_URGENCY_HISTORY_LIMIT,
+            pollCron: fastify.config.SLACK_URGENCY_POLL_CRON,
+            disablePolling:
+              fastify.config.DISABLE_SYNCS || fastify.config.SLACK_URGENCY_DISABLE_POLL,
+          },
+        });
+      }
+    } else {
+      api.log.info('Slack urgency module disabled');
     }
 
     // Chat module is registered outside /api prefix (uses Socket Mode, not webhooks)

@@ -52,6 +52,9 @@ jobs:
       - name: Build notify
         run: bun run --filter @jarvus/claude-assist-notify build
 
+      - name: Build slack-urgency
+        run: bun run --filter @jarvus/claude-assist-slack-urgency build
+
       - name: Build server
         run: bun run --filter @jarvus/claude-assist-server build
 

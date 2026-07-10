@@ -43,6 +43,40 @@ export interface PluginOptions {
   notifyConfig?: NotifyPluginConfig;
   /** Configuration for capture plugin */
   captureConfig?: CapturePluginConfig;
+  /** Configuration for slack-urgency plugin */
+  slackUrgencyConfig?: SlackUrgencyPluginConfig;
+}
+
+/**
+ * Configuration for the slack-urgency plugin (read-only urgency listener).
+ */
+export interface SlackUrgencyPluginConfig {
+  /** Slack USER token (xoxp-…) — the poller reads AS Chris (same token slack-axi stores). */
+  userToken?: string;
+  /** Slack user id of Chris. Messages from this id never interrupt. */
+  ownerId?: string;
+  /** Team roster: CSV/newline `id=Name` pairs (SLACK_URGENCY_ROSTER). */
+  roster?: string;
+  /** Channel ids to watch beyond DMs. */
+  watchChannels?: string[];
+  /** Anthropic API key for the Haiku residue pass. */
+  anthropicApiKey?: string;
+  /** Residue classifier model (default claude-haiku-4-5). */
+  model?: string;
+  /** IANA time zone for quiet hours (default America/New_York). */
+  timeZone?: string;
+  /** Quiet-hours window start hour 0–23 (default 22). */
+  quietStartHour?: number;
+  /** Quiet-hours window end hour 0–23 (default 7). */
+  quietEndHour?: number;
+  /** Per-thread interrupt cooldown in minutes (default 30). */
+  cooldownMinutes?: number;
+  /** Max messages pulled per conversation per cycle (default 50). */
+  historyLimit?: number;
+  /** Cron for the poll loop (default every minute). */
+  pollCron?: string;
+  /** Disable the poll loop. */
+  disablePolling?: boolean;
 }
 
 /**
@@ -233,6 +267,7 @@ export function createPlugin(
       chatConfig: opts.chatConfig,
       notifyConfig: opts.notifyConfig,
       captureConfig: opts.captureConfig,
+      slackUrgencyConfig: opts.slackUrgencyConfig,
     };
 
     fastify.log.info(`Loading plugin: ${name}`);
