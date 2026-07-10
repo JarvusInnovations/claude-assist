@@ -3,6 +3,7 @@
  *
  *   POST /api/slack-urgency/:id/correct   { verdict: "should_interrupt" | "should_not" }
  *   GET  /api/slack-urgency/near-misses   digest / review surface
+ *   GET  /api/slack-urgency/interrupts    recently fired interrupts (review)
  *
  * A correction nudges per-sender and per-channel weights, which the
  * deterministic core reads to promote/demote future borderline (residue)
@@ -103,6 +104,24 @@ export const registerUrgencyRoutes: FastifyPluginAsync<UrgencyRoutesConfig> = as
       const limit = Math.min(parseInt(request.query.limit ?? '50', 10), 200);
       const nearMisses = await store.listNearMisses(limit);
       return { near_misses: nearMisses, count: nearMisses.length };
+    }
+  );
+
+  fastify.get<{ Querystring: { limit?: string } }>(
+    '/slack-urgency/interrupts',
+    {
+      schema: {
+        querystring: {
+          type: 'object',
+          additionalProperties: false,
+          properties: { limit: { type: 'string', pattern: '^[0-9]+$' } },
+        },
+      },
+    },
+    async (request) => {
+      const limit = Math.min(parseInt(request.query.limit ?? '50', 10), 200);
+      const interrupts = await store.listInterrupts(limit);
+      return { interrupts, count: interrupts.length };
     }
   );
 };
