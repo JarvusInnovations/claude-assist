@@ -43,6 +43,14 @@ const schema = {
     // Newline-separated transcript substrings; sessions containing any are
     // suppressed from ingest. Appended to built-in defaults (e.g. M87 triage).
     SESSIONS_IGNORE_MARKERS: { type: 'string' },
+    // Classification pipeline (self-improvement loop)
+    SESSIONS_DISABLE_CLASSIFICATION: { type: 'boolean', default: false },
+    SESSIONS_CLASSIFICATION_CONCURRENCY: { type: 'number', default: 3 },
+    SESSIONS_CLASSIFICATION_MIN_DELTA: { type: 'number', default: 6 },
+    SESSIONS_CLASSIFICATION_LOOKBACK: { type: 'string', default: '3 days' },
+    SESSIONS_CLASSIFICATION_CRON: { type: 'string' },
+    SESSIONS_SYNTHESIS_CRON: { type: 'string' },
+    SESSIONS_SYNTHESIS_MODEL: { type: 'string', default: 'claude-sonnet-5' },
 
     // AI Features (optional)
     ANTHROPIC_API_KEY: { type: 'string' },
@@ -126,6 +134,13 @@ declare module 'fastify' {
       SESSIONS_DISABLE_LOCAL_INGEST: boolean;
       SESSIONS_DISABLE_GENERATE_OUTLINES: boolean;
       SESSIONS_IGNORE_MARKERS?: string;
+      SESSIONS_DISABLE_CLASSIFICATION: boolean;
+      SESSIONS_CLASSIFICATION_CONCURRENCY: number;
+      SESSIONS_CLASSIFICATION_MIN_DELTA: number;
+      SESSIONS_CLASSIFICATION_LOOKBACK: string;
+      SESSIONS_CLASSIFICATION_CRON?: string;
+      SESSIONS_SYNTHESIS_CRON?: string;
+      SESSIONS_SYNTHESIS_MODEL: string;
 
       // AI Features
       ANTHROPIC_API_KEY?: string;

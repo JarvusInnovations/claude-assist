@@ -2,6 +2,13 @@ import { createPlugin } from '@jarvus/claude-assist-core';
 import { SyncService } from './sync.js';
 import { OutlineService } from './outline.js';
 import { registerRoutes } from './routes.js';
+import {
+  ClassificationStore,
+  ClassificationEventClassifier,
+  ClassificationService,
+  SynthesisService,
+  lastWeekPeriod,
+} from './classification/index.js';
 
 /**
  * Sessions plugin for archiving Claude Code transcripts
@@ -39,8 +46,48 @@ export default createPlugin('sessions', async (fastify, options) => {
     fastify.log.warn('anthropicApiKey not set - outline generation disabled');
   }
 
+  // Initialize classification pipeline (optional - requires anthropicApiKey).
+  // Per-session incremental cursors → append-only Haiku classification events →
+  // weekly Sonnet synthesis + timeline narrative. The self-improvement loop.
+  let classificationService: ClassificationService | null = null;
+  let synthesisService: SynthesisService | null = null;
+  let classificationStore: ClassificationStore | null = null;
+  if (config.anthropicApiKey && !config.disableClassification) {
+    classificationStore = new ClassificationStore(fastify.sql);
+    const classifier = new ClassificationEventClassifier(
+      { apiKey: config.anthropicApiKey },
+      fastify.log
+    );
+    classificationService = new ClassificationService(
+      classificationStore,
+      classifier,
+      fastify.log,
+      {
+        concurrency: config.classificationConcurrency,
+        minDelta: config.classificationMinDelta,
+        lookback: config.classificationLookback,
+      }
+    );
+    synthesisService = new SynthesisService(
+      classificationStore,
+      { apiKey: config.anthropicApiKey, model: config.synthesisModel },
+      fastify.log
+    );
+    fastify.log.info('Classification pipeline enabled');
+  } else if (!config.anthropicApiKey) {
+    fastify.log.warn('anthropicApiKey not set - classification pipeline disabled');
+  } else {
+    fastify.log.info('Classification pipeline disabled via disableClassification config');
+  }
+
   // Register API routes
-  await fastify.register(registerRoutes, { syncService, outlineService });
+  await fastify.register(registerRoutes, {
+    syncService,
+    outlineService,
+    classificationService,
+    synthesisService,
+    classificationStore,
+  });
 
   // Register scheduled sync task for localhost (unless disabled)
   if (!config.disableLocalIngest) {
@@ -93,7 +140,70 @@ export default createPlugin('sessions', async (fastify, options) => {
       },
     });
   }
+
+  // Classification sweep: delta-only Haiku classification of recent sessions.
+  // Runs on a modest cadence (not every 5-min sync) to keep windows dense and
+  // cost bounded; a short lookback means it never touches the session backlog.
+  if (classificationService) {
+    fastify.scheduler.register({
+      name: 'sessions:classify',
+      schedule: config.classificationCron ?? '*/30 * * * *', // every 30 minutes
+      runOnStartup: false,
+      handler: async () => {
+        const result = await classificationService!.sweep();
+        fastify.log.info({ result }, 'Classification sweep complete');
+        // Coverage heartbeat: classification succeeded this cycle (absence pages).
+        await fastify.heartbeats?.beat('session-classification', {
+          threshold: '24 hours',
+        });
+      },
+    });
+    fastify.log.info('Classification sweep scheduled');
+  }
+
+  // Weekly synthesis + timeline narrative (Sonnet). Digests the week's events
+  // into proposed changes + friction hotspots, and an evolution narrative;
+  // both are persisted AND delivered via the notify digest.
+  if (synthesisService) {
+    fastify.scheduler.register({
+      name: 'sessions:weekly-synthesis',
+      schedule: config.synthesisCron ?? '0 13 * * 1', // Mondays ~09:00 ET
+      runOnStartup: false,
+      handler: async () => {
+        const period = lastWeekPeriod();
+
+        const synthesis = await synthesisService!.synthesizeWeek(period);
+        await fastify.notify?.notify({
+          priority: 'digest',
+          title: `Weekly self-improvement synthesis (${period.startLabel} → ${period.endLabel})`,
+          body:
+            `${synthesis.eventCount} classification events.\n\n` +
+            truncate(synthesis.report, 1500),
+        });
+
+        const narrative = await synthesisService!.narrateWeek(period);
+        await fastify.notify?.notify({
+          priority: 'digest',
+          title: `Hari weekly evolution narrative (${period.startLabel} → ${period.endLabel})`,
+          body: truncate(narrative.narrative, 1500),
+        });
+
+        fastify.log.info(
+          { eventCount: synthesis.eventCount, period: period.startLabel },
+          'Weekly synthesis + narrative complete'
+        );
+        // Coverage heartbeat: the weekly synthesis ran (absence pages after ~8d).
+        await fastify.heartbeats?.beat('session-synthesis', { threshold: '8 days' });
+      },
+    });
+    fastify.log.info('Weekly synthesis scheduled');
+  }
 });
+
+/** Trim a report to a digest-friendly length, keeping the head. */
+function truncate(text: string, maxChars: number): string {
+  return text.length <= maxChars ? text : text.slice(0, maxChars) + '\n…';
+}
 
 // Re-export types for external use
 export * from './types.js';
@@ -108,3 +218,4 @@ export {
   DEFAULT_SESSION_IGNORE_MARKERS,
   matchesIgnoreMarker,
 } from './ignore.js';
+export * from './classification/index.js';

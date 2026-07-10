@@ -121,6 +121,15 @@ await fastify.register(
           disableGenerateOutlines:
             fastify.config.DISABLE_SYNCS ||
             fastify.config.SESSIONS_DISABLE_GENERATE_OUTLINES,
+          disableClassification:
+            fastify.config.DISABLE_SYNCS ||
+            fastify.config.SESSIONS_DISABLE_CLASSIFICATION,
+          classificationConcurrency: fastify.config.SESSIONS_CLASSIFICATION_CONCURRENCY,
+          classificationMinDelta: fastify.config.SESSIONS_CLASSIFICATION_MIN_DELTA,
+          classificationLookback: fastify.config.SESSIONS_CLASSIFICATION_LOOKBACK,
+          classificationCron: fastify.config.SESSIONS_CLASSIFICATION_CRON,
+          synthesisCron: fastify.config.SESSIONS_SYNTHESIS_CRON,
+          synthesisModel: fastify.config.SESSIONS_SYNTHESIS_MODEL,
           ignoreContentMarkers: [
             ...DEFAULT_SESSION_IGNORE_MARKERS,
             ...(fastify.config.SESSIONS_IGNORE_MARKERS
