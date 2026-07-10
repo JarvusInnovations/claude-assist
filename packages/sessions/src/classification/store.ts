@@ -19,9 +19,16 @@ export class ClassificationStore {
   /**
    * Sessions whose transcript has new content to classify: no cursor yet, or a
    * cursor whose last_hash differs from the current transcript_hash (the outline
-   * pattern). Bounded by `sinceInterval` so the scheduled sweep tracks only
-   * recent/live sessions and never sweeps the whole backlog — historical
-   * backfill goes through an explicit `--since` (see `backfillSince`).
+   * pattern). Bounded by `sinceInterval` on **synced_at** — the timestamp
+   * ingestion bumps only when a transcript's content actually changes (both the
+   * local scan and the push path hash-skip unchanged transcripts before the
+   * UPDATE that sets `synced_at = NOW()`). Filtering on recent *activity* rather
+   * than `started_at` means a session started months ago and resumed today IS
+   * selected, while the untouched historical backlog (stale synced_at) never is.
+   * Historical coverage goes through an explicit bounded backfill (see
+   * `selectForBackfill`). Note: a manual force-reparse bumps synced_at for every
+   * session, which pulls the cursor-less backlog into the sweep — treat a
+   * force-reparse as implying the backfill cost.
    */
   async selectForClassification(
     limit: number,
@@ -38,7 +45,7 @@ export class ClassificationStore {
       FROM sessions.sessions s
       LEFT JOIN sessions.classification_cursors c ON c.session_id = s.id
       WHERE s.output_tokens > 0
-        AND s.started_at > NOW() - ${sinceInterval}::interval
+        AND s.synced_at > NOW() - ${sinceInterval}::interval
         AND (c.session_id IS NULL OR c.last_hash IS DISTINCT FROM s.transcript_hash)
         AND COALESCE(c.attempts, 0) < ${maxAttempts}
       ORDER BY s.ended_at ASC NULLS LAST
@@ -117,8 +124,17 @@ export class ClassificationStore {
         last_seq = EXCLUDED.last_seq,
         last_hash = EXCLUDED.last_hash,
         message_count = EXCLUDED.message_count,
-        -- final_pass_done is sticky: once terminal, stay terminal.
-        final_pass_done = sessions.classification_cursors.final_pass_done OR EXCLUDED.final_pass_done,
+        -- final_pass_done marks "the terminal pass covered through last_seq".
+        -- When new messages advance the cursor past that seq (a resumed
+        -- session), the old final pass no longer covers the tail — take the
+        -- freshly-computed flag (false while the resumed segment is active,
+        -- true when this pass itself was the quiet flush). When the cursor
+        -- did NOT advance (a hash-only no-delta pass), keep it sticky.
+        final_pass_done = CASE
+          WHEN EXCLUDED.last_seq > sessions.classification_cursors.last_seq
+            THEN EXCLUDED.final_pass_done
+          ELSE sessions.classification_cursors.final_pass_done OR EXCLUDED.final_pass_done
+        END,
         attempts = 0,
         last_classified_at = NOW(),
         updated_at = NOW()

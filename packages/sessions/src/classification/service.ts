@@ -29,7 +29,14 @@ export interface ClassificationServiceConfig {
   minDelta?: number;
   /** Hours of inactivity after which a session gets its terminal (final) pass (default 48). */
   quietHours?: number;
-  /** How far back the scheduled sweep looks (Postgres interval, default '3 days'). */
+  /**
+   * How far back the scheduled sweep looks, by last transcript *activity*
+   * (sessions.synced_at — bumped only when content changes), so a months-old
+   * session resumed today is still swept. Postgres interval, default '3 days'.
+   * MUST comfortably exceed quietHours: a held sub-minDelta tail is flushed by
+   * the quiet pass, which can only fire while the session's synced_at is still
+   * inside this window.
+   */
   lookback?: string;
 }
 

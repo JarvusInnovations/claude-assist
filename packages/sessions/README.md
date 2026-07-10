@@ -240,7 +240,14 @@ beats `session-synthesis`. Both are coverage ledgers that page on absence.
 ### Cost posture — no auto-backfill
 
 The scheduled sweep only looks back `SESSIONS_CLASSIFICATION_LOOKBACK` (default
-`3 days`), so deploying this does **not** classify the ~2,400-session backlog.
+`3 days`) of transcript **activity** (`synced_at`, which ingestion bumps only
+when content changes) — so a months-old session resumed today is swept, while
+deploying this does **not** classify the ~2,400-session untouched backlog. A
+resumed session whose earlier final pass is now behind new messages has its
+`final_pass_done` flag reset, so the resumed segment gets its own quiet-time
+final pass. Keep the lookback comfortably above the 48h quiet threshold — the
+quiet flush for a small held tail must fire while the session is still inside
+the window.
 Historical coverage is an explicit, bounded backfill:
 
 ```bash

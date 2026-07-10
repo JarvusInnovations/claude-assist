@@ -102,7 +102,11 @@ export interface SessionsPluginConfig {
   classificationConcurrency?: number;
   /** Min new messages before a still-active session's delta is classified (default 6). */
   classificationMinDelta?: number;
-  /** How far back the scheduled sweep looks; Postgres interval (default '3 days'). */
+  /**
+   * How far back the scheduled sweep looks by last transcript activity
+   * (sessions.synced_at), so resumed old sessions are still swept; Postgres
+   * interval (default '3 days'). Must exceed the 48h quiet threshold.
+   */
   classificationLookback?: string;
   /** Cron for the classification sweep (default every 30 min). */
   classificationCron?: string;
