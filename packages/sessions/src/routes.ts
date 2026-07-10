@@ -783,6 +783,12 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       outlineService.queueOutlineGeneration();
     }
 
+    // Coverage heartbeat: this machine's session push succeeded (absence pages).
+    await fastify.heartbeats?.beat(`session-ingest:${payload.machineId}`, {
+      threshold: '48 hours',
+      metadata: { machineId: payload.machineId },
+    });
+
     return result;
   });
 
