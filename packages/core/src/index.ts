@@ -29,6 +29,8 @@ export {
   type GooglePluginConfig,
   type ChatPluginConfig,
   type NotifyPluginConfig,
+  type CapturePluginConfig,
+  type SlackUrgencyPluginConfig,
 } from './plugin.js';
 
 // Notification + heartbeat contracts

@@ -47,6 +47,13 @@
 !packages/notify/migrations/
 !packages/notify/migrations/**
 
+# packages/slack-urgency
+!packages/slack-urgency/package.json
+!packages/slack-urgency/tsconfig.json
+!packages/slack-urgency/src/**
+!packages/slack-urgency/migrations/
+!packages/slack-urgency/migrations/**
+
 # apps/server
 !apps/server/package.json
 !apps/server/tsconfig.json

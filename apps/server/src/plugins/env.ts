@@ -94,6 +94,24 @@ const schema = {
     NOTIFY_DISABLE_STALENESS: { type: 'boolean', default: false },
     NOTIFY_STALENESS_CRON: { type: 'string' },
     NOTIFY_DIGEST_FLUSH_CRON: { type: 'string' },
+
+    // Slack urgency module (read-only urgency listener over Chris's Slack)
+    ENABLE_SLACK_URGENCY: { type: 'boolean', default: false },
+    // User token (xoxp-…) — reads AS Chris (same token slack-axi stores).
+    SLACK_URGENCY_USER_TOKEN: { type: 'string' },
+    // Team roster: CSV/newline `U0123=Julia Stone` pairs. Owner id reuses SLACK_OWNER_USER_ID.
+    SLACK_URGENCY_ROSTER: { type: 'string' },
+    // CSV of channel ids to watch beyond DMs.
+    SLACK_URGENCY_WATCH_CHANNELS: { type: 'string' },
+    // Residue classifier model (defaults to claude-haiku-4-5); reuses ANTHROPIC_API_KEY.
+    SLACK_URGENCY_MODEL: { type: 'string' },
+    SLACK_URGENCY_TZ: { type: 'string', default: 'America/New_York' },
+    SLACK_URGENCY_QUIET_START: { type: 'number', default: 22 },
+    SLACK_URGENCY_QUIET_END: { type: 'number', default: 7 },
+    SLACK_URGENCY_COOLDOWN_MIN: { type: 'number', default: 30 },
+    SLACK_URGENCY_HISTORY_LIMIT: { type: 'number', default: 50 },
+    SLACK_URGENCY_POLL_CRON: { type: 'string' },
+    SLACK_URGENCY_DISABLE_POLL: { type: 'boolean', default: false },
   },
 } as const;
 
@@ -169,6 +187,20 @@ declare module 'fastify' {
       NOTIFY_DISABLE_STALENESS: boolean;
       NOTIFY_STALENESS_CRON?: string;
       NOTIFY_DIGEST_FLUSH_CRON?: string;
+
+      // Slack urgency module
+      ENABLE_SLACK_URGENCY: boolean;
+      SLACK_URGENCY_USER_TOKEN?: string;
+      SLACK_URGENCY_ROSTER?: string;
+      SLACK_URGENCY_WATCH_CHANNELS?: string;
+      SLACK_URGENCY_MODEL?: string;
+      SLACK_URGENCY_TZ: string;
+      SLACK_URGENCY_QUIET_START: number;
+      SLACK_URGENCY_QUIET_END: number;
+      SLACK_URGENCY_COOLDOWN_MIN: number;
+      SLACK_URGENCY_HISTORY_LIMIT: number;
+      SLACK_URGENCY_POLL_CRON?: string;
+      SLACK_URGENCY_DISABLE_POLL: boolean;
     };
   }
 }
