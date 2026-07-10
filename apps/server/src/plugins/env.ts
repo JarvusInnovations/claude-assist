@@ -59,6 +59,15 @@ const schema = {
     GOOGLE_DISABLE_EMAIL_SYNC: { type: 'boolean', default: false },
     GOOGLE_DISABLE_EMAIL_TRIAGE: { type: 'boolean', default: false },
 
+    // Capture module
+    ENABLE_CAPTURE: { type: 'boolean', default: true },
+    CAPTURE_DISABLE_CLASSIFICATION: { type: 'boolean', default: false },
+    CAPTURE_CONCURRENCY: { type: 'number', default: 3 },
+    CAPTURE_CLASSIFIER_MODEL: { type: 'string' },
+    TANA_MCP_URL: { type: 'string', default: 'http://127.0.0.1:8262/mcp' },
+    TANA_MCP_TOKEN: { type: 'string' },
+    TANA_WORKSPACE_ID: { type: 'string' },
+
     // Chat module
     ENABLE_CHAT: { type: 'boolean', default: false },
     SLACK_BOT_TOKEN: { type: 'string' },
@@ -129,6 +138,15 @@ declare module 'fastify' {
       GOOGLE_REDIRECT_URI: string;
       GOOGLE_DISABLE_EMAIL_SYNC: boolean;
       GOOGLE_DISABLE_EMAIL_TRIAGE: boolean;
+
+      // Capture module
+      ENABLE_CAPTURE: boolean;
+      CAPTURE_DISABLE_CLASSIFICATION: boolean;
+      CAPTURE_CONCURRENCY: number;
+      CAPTURE_CLASSIFIER_MODEL?: string;
+      TANA_MCP_URL: string;
+      TANA_MCP_TOKEN?: string;
+      TANA_WORKSPACE_ID?: string;
 
       // Chat module
       ENABLE_CHAT: boolean;
