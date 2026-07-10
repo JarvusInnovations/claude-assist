@@ -9,6 +9,7 @@ import sessionsPlugin, {
 import googlePlugin from '@jarvus/claude-assist-google';
 import capturePlugin from '@jarvus/claude-assist-capture';
 import slackUrgencyPlugin from '@jarvus/claude-assist-slack-urgency';
+import briefingPlugin from '@jarvus/claude-assist-briefing';
 import chatPlugin from '@jarvus/claude-assist-chat';
 import notifyPlugin from '@jarvus/claude-assist-notify';
 import { join, dirname } from 'node:path';
@@ -249,6 +250,38 @@ await fastify.register(
       }
     } else {
       api.log.info('Slack urgency module disabled');
+    }
+
+    // Briefing module — daily briefing into Tana + join-required meeting alerts.
+    // Registered after notify (needs fastify.notify / fastify.heartbeats) and
+    // reuses the capture module's TANA_* config as the render target unless
+    // overridden with a BRIEFING_TANA_WORKSPACE_ID.
+    if (fastify.config.ENABLE_BRIEFING) {
+      api.log.info('Briefing module enabled');
+      await api.register(briefingPlugin, {
+        migrationsDir: join(__dirname, '../../../packages/briefing/migrations'),
+        disableMigrations: fastify.config.DISABLE_MIGRATIONS,
+        briefingConfig: {
+          anthropicApiKey: fastify.config.ANTHROPIC_API_KEY,
+          classifierModel: fastify.config.CAPTURE_CLASSIFIER_MODEL,
+          timeZone: fastify.config.BRIEFING_TIMEZONE,
+          gwsAxiBin: fastify.config.BRIEFING_GWS_AXI_BIN,
+          hqAxiBin: fastify.config.BRIEFING_HQ_AXI_BIN,
+          calendarAccount: fastify.config.BRIEFING_CALENDAR_ACCOUNT,
+          tanaMcpUrl: fastify.config.TANA_MCP_URL,
+          tanaMcpToken: fastify.config.TANA_MCP_TOKEN,
+          tanaWorkspaceId:
+            fastify.config.BRIEFING_TANA_WORKSPACE_ID ?? fastify.config.TANA_WORKSPACE_ID,
+          pageBaseUrl: fastify.config.BRIEFING_PAGE_BASE_URL,
+          briefingCron: fastify.config.BRIEFING_CRON,
+          alertCron: fastify.config.BRIEFING_ALERT_CRON,
+          alertWindowMinutes: fastify.config.BRIEFING_ALERT_WINDOW_MINUTES,
+          disableBriefing: fastify.config.DISABLE_SYNCS || fastify.config.BRIEFING_DISABLE,
+          disableAlerts: fastify.config.DISABLE_SYNCS || fastify.config.BRIEFING_DISABLE_ALERTS,
+        },
+      });
+    } else {
+      api.log.info('Briefing module disabled');
     }
 
     // Chat module is registered outside /api prefix (uses Socket Mode, not webhooks)

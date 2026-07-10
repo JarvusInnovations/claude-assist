@@ -45,6 +45,8 @@ export interface PluginOptions {
   captureConfig?: CapturePluginConfig;
   /** Configuration for slack-urgency plugin */
   slackUrgencyConfig?: SlackUrgencyPluginConfig;
+  /** Configuration for briefing plugin */
+  briefingConfig?: BriefingPluginConfig;
 }
 
 /**
@@ -77,8 +79,6 @@ export interface SlackUrgencyPluginConfig {
   pollCron?: string;
   /** Disable the poll loop. */
   disablePolling?: boolean;
-  /** Configuration for briefing plugin */
-  briefingConfig?: BriefingPluginConfig;
 }
 
 /**

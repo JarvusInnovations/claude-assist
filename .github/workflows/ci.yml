@@ -54,6 +54,8 @@ jobs:
 
       - name: Build slack-urgency
         run: bun run --filter @jarvus/claude-assist-slack-urgency build
+      - name: Build briefing
+        run: bun run --filter @jarvus/claude-assist-briefing build
 
       - name: Build server
         run: bun run --filter @jarvus/claude-assist-server build
