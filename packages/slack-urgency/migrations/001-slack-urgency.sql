@@ -1,10 +1,10 @@
 -- Slack urgency module: a read-only listener over Chris's incoming Slack that
 -- fires wrist-reaching interrupts ONLY for what genuinely can't wait (a blocked
 -- teammate, a time-sensitive request, an explicit ask waiting on Chris) per the
--- Hari "interrupts are earned" principle. Everything else batches to the digest.
+-- "interrupts are earned" principle. Everything else batches to the digest.
 --
--- Ingestion is a poll loop over a USER token (reads AS Chris): the Hari bot's
--- socket only sees its own DMs/mentions, never Chris's personal DMs from
+-- Ingestion is a poll loop over a USER token (reads AS the owner): the chat
+-- bot's socket only sees its own DMs/mentions, never the owner's personal DMs from
 -- teammates. Per-conversation cursors make each poll incremental (rate-limit
 -- friendly). This module NEVER posts, reacts, or marks-read anything.
 --

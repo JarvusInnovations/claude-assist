@@ -1,7 +1,7 @@
 /**
  * Slack urgency module — a read-only listener over Chris's incoming Slack that
  * interrupts (phone + watch, via the notification dispatcher) ONLY for what
- * genuinely can't wait, per the Hari "interrupts are earned" principle.
+ * genuinely can't wait, per the "interrupts are earned" principle.
  * Everything else batches to the digest; near-misses back-stop false negatives.
  *
  * Wiring: a user-token Web API reader (reads AS Chris) → a poll loop with
@@ -10,9 +10,9 @@
  * A per-cycle heartbeat means a silently-dead listener pages Chris — the exact
  * failure mode this system exists to eliminate.
  *
- * FIREWALL / READ-ONLY: no HQ write path, and the Slack side is strictly read
- * (never posts, reacts, or marks-read). Team roster comes from config / an
- * HQ-contacts dump, never from a transcript.
+ * FIREWALL / READ-ONLY: no write path to any external system of record, and the
+ * Slack side is strictly read (never posts, reacts, or marks-read). Team roster
+ * comes from config / an external contacts dump, never from a transcript.
  */
 
 import type { FastifyInstance } from 'fastify';

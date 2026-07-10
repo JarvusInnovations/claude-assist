@@ -1,7 +1,7 @@
 /**
  * Ingestion — a poll loop that reads Chris's incoming Slack AS CHRIS.
  *
- * Why polling, not the bot socket: the Hari chat bot's socket only receives
+ * Why polling, not the bot socket: the chat bot's socket only receives
  * events for conversations the *bot* belongs to (its own DMs, its @mentions,
  * channels it was invited to). It never sees Chris's personal DMs from
  * teammates or @mentions of Chris the person. So urgency ingestion runs on a

@@ -5,9 +5,10 @@
  *
  * The roster is configured, not guessed. Two sources, in order:
  *   1. SLACK_URGENCY_ROSTER env — a CSV of `U0123ABCD=Julia Stone` pairs.
- *   2. HQ contacts (read-only) — Chris can periodically dump the team's Slack
- *      ids into that env var from `hq-axi`; this module never writes to HQ
- *      (personal/team firewall) and never reads a name off a transcript.
+ *   2. An external contacts source (read-only) — you can periodically dump the
+ *      team's Slack ids into that env var from whatever CRM/contacts tool you
+ *      use; this module never writes to any external system of record
+ *      (read-only firewall) and never reads a name off a transcript.
  *
  * A bare id with no `=name` is allowed (membership without a display name).
  */
