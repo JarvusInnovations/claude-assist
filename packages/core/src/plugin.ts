@@ -94,6 +94,26 @@ export interface SessionsPluginConfig {
    * Appended to the built-in defaults (e.g. M87 triage runner).
    */
   ignoreContentMarkers?: readonly string[];
+
+  // ── Classification pipeline (self-improvement loop) ──────────────────────
+  /** Disable the delta-classification sweep + weekly synthesis. */
+  disableClassification?: boolean;
+  /** Parallel classify calls per sweep (default 3). */
+  classificationConcurrency?: number;
+  /** Min new messages before a still-active session's delta is classified (default 6). */
+  classificationMinDelta?: number;
+  /**
+   * How far back the scheduled sweep looks by last transcript activity
+   * (sessions.synced_at), so resumed old sessions are still swept; Postgres
+   * interval (default '3 days'). Must exceed the 48h quiet threshold.
+   */
+  classificationLookback?: string;
+  /** Cron for the classification sweep (default every 30 min). */
+  classificationCron?: string;
+  /** Cron for the weekly synthesis + narrative (default Mondays ~09:00 ET). */
+  synthesisCron?: string;
+  /** Synthesis model id (default 'claude-sonnet-5'). */
+  synthesisModel?: string;
 }
 
 /**

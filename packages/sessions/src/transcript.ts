@@ -360,7 +360,7 @@ const MAX_WINDOW_CHARS = 12000;
  * parser uses to assign msg_index, so a tool_calls row's index lines up here.
  * Skips Claude Code's `custom-title` lines and any malformed JSON.
  */
-function parseMessages(rawTranscript: string): TranscriptMessage[] {
+export function parseMessages(rawTranscript: string): TranscriptMessage[] {
   const out: TranscriptMessage[] = [];
   for (const line of rawTranscript.trim().split('\n')) {
     if (!line.trim()) continue;
@@ -386,7 +386,7 @@ function toolResultText(content: string | ContentBlock[]): string {
 }
 
 /** Serialize a single message to its display line(s) (no cross-message state). */
-function serializeMessage(msg: TranscriptMessage): string[] {
+export function serializeMessage(msg: TranscriptMessage): string[] {
   const out: string[] = [];
   if (msg.type === 'user' && msg.message) {
     const text = extractTextContent(msg.message.content);
@@ -617,4 +617,75 @@ export function readAround(
   const idx = indexOfUuid(msgs, anchorUuid);
   if (idx < 0) return null;
   return buildWindow(msgs, idx, before, after);
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Incremental classification windows (per-session message-seq cursors)
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * The highest message index in a transcript. `seq` here is a message's ordinal
+ * position in the canonical parsed stream (parseMessages ordering), which lines
+ * up with tool_calls.msg_index and is stable across re-ingests because Claude
+ * Code's JSONL is append-only. Returns -1 for an empty transcript.
+ */
+export function lastMessageSeq(rawTranscript: string): number {
+  return parseMessages(rawTranscript).length - 1;
+}
+
+export interface SerializedDelta {
+  /** Serialized transcript text of the new-message window (empty when no delta). */
+  text: string;
+  /** First message index included (afterSeq + 1), or -1 when there's no delta. */
+  seqStart: number;
+  /** Last message index included (== lastMessageSeq), or afterSeq when no delta. */
+  seqEnd: number;
+  /** Number of messages in the window (regardless of whether they rendered text). */
+  count: number;
+  /** True when the window was too large and the head was dropped (tail kept). */
+  truncated: boolean;
+}
+
+/** Default char budget for a classification delta window (well under Haiku's context). */
+const DELTA_CHAR_BUDGET = 200_000;
+
+/**
+ * Serialize only the messages *after* `afterSeq` — the delta a per-session
+ * cursor hasn't classified yet. Re-serializing with `afterSeq = seqEnd` of a
+ * prior call yields an empty window (count 0), which is what makes re-ingestion
+ * of a long-running session cost only the delta and stay idempotent.
+ *
+ * Tools and tool results are always included (friction shows up as tool errors,
+ * permission blocks, and repeated retries). When the window exceeds the char
+ * budget the *head* is dropped and the tail kept — corrections and decisions
+ * cluster at the end of a work window.
+ */
+export function serializeSince(
+  rawTranscript: string,
+  afterSeq: number,
+  opts?: { maxChars?: number }
+): SerializedDelta {
+  const msgs = parseMessages(rawTranscript);
+  const lastSeq = msgs.length - 1;
+  const start = Math.max(0, afterSeq + 1);
+
+  if (start > lastSeq) {
+    return { text: '', seqStart: -1, seqEnd: afterSeq, count: 0, truncated: false };
+  }
+
+  const lines: string[] = [];
+  for (let i = start; i <= lastSeq; i++) {
+    for (const l of serializeMessage(msgs[i]!)) lines.push(l);
+  }
+
+  const maxChars = opts?.maxChars ?? DELTA_CHAR_BUDGET;
+  let text = lines.join('\n');
+  let truncated = false;
+  if (text.length > maxChars) {
+    // Keep the tail (most recent activity).
+    text = '[...older delta truncated...]\n' + text.slice(text.length - maxChars);
+    truncated = true;
+  }
+
+  return { text, seqStart: start, seqEnd: lastSeq, count: lastSeq - start + 1, truncated };
 }

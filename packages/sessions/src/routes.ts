@@ -12,6 +12,10 @@ import type {
 } from './types.js';
 import { serializeTranscript, findInTranscript, readAround, type MatchDimension } from './transcript.js';
 import { normalizeProjectPaths } from './project-names.js';
+import type { ClassificationService } from './classification/service.js';
+import type { SynthesisService } from './classification/synthesis.js';
+import { lastWeekPeriod, type Period } from './classification/synthesis.js';
+import type { ClassificationStore } from './classification/store.js';
 
 /**
  * Parse model_tokens JSONB field, ensuring all nested values are integers.
@@ -54,6 +58,9 @@ function serializeMatch(m: import('./transcript.js').TranscriptMatch) {
 export interface RoutesConfig {
   syncService: SyncService;
   outlineService: OutlineService | null;
+  classificationService?: ClassificationService | null;
+  synthesisService?: SynthesisService | null;
+  classificationStore?: ClassificationStore | null;
 }
 
 /**
@@ -61,7 +68,7 @@ export interface RoutesConfig {
  */
 export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
   fastify,
-  { syncService, outlineService }
+  { syncService, outlineService, classificationService, synthesisService, classificationStore }
 ) => {
   // GET /sessions - Search sessions with full-text search and filters
   fastify.get<{
@@ -852,5 +859,87 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
         capped_count: parseInt(capped?.capped_count ?? '0', 10),
       };
     });
+  }
+
+  // ── Classification pipeline endpoints (only when enabled) ─────────────────
+  if (classificationService) {
+    // POST /sessions/classify - Manually trigger a classification sweep
+    fastify.post('/sessions/classify', async () => {
+      return classificationService.sweep();
+    });
+
+    // POST /sessions/classify/backfill?since=ISO - Bounded historical backfill.
+    // Deliberately NOT run automatically on deploy (would classify the whole
+    // ~2,400-session backlog). Recommended first window: 30 days. `since` is
+    // required so a backfill can never be unbounded.
+    fastify.post<{ Querystring: { since?: string } }>(
+      '/sessions/classify/backfill',
+      async (request, reply) => {
+        const { since } = request.query;
+        if (!since) {
+          return reply.status(400).send({
+            error: 'since (ISO 8601) is required — backfill must be bounded (e.g. 30 days ago)',
+          });
+        }
+        const sinceDate = new Date(since);
+        if (isNaN(sinceDate.getTime())) {
+          return reply.status(400).send({ error: 'Invalid since date format' });
+        }
+        return classificationService.backfillSince(sinceDate);
+      }
+    );
+  }
+
+  if (classificationStore) {
+    // GET /sessions/classification/events - Recent classification events
+    fastify.get<{
+      Querystring: { type?: string; days?: string; limit?: string };
+    }>('/sessions/classification/events', async (request) => {
+      const { type, days, limit } = request.query;
+      const events = await classificationStore.listEvents({
+        type,
+        days: days ? parseInt(days, 10) : undefined,
+        limit: Math.min(parseInt(limit ?? '100', 10) || 100, 500),
+      });
+      return events;
+    });
+
+    // GET /sessions/classification/reports - Recent synthesis + narrative reports
+    fastify.get<{
+      Querystring: { limit?: string };
+    }>('/sessions/classification/reports', async (request) => {
+      const limit = Math.min(parseInt(request.query.limit ?? '20', 10) || 20, 100);
+      return classificationStore.listReports(limit);
+    });
+  }
+
+  // POST /sessions/synthesis - Manually run the weekly synthesis + narrative for
+  // the last 7 days (or a `week` ending date). Persists; does not deliver a
+  // digest (that's the scheduled job's role).
+  if (synthesisService) {
+    fastify.post<{ Querystring: { ending?: string } }>(
+      '/sessions/synthesis',
+      async (request, reply) => {
+        let period: Period;
+        if (request.query.ending) {
+          const end = new Date(request.query.ending);
+          if (isNaN(end.getTime())) {
+            return reply.status(400).send({ error: 'Invalid ending date format' });
+          }
+          period = lastWeekPeriod(end);
+        } else {
+          period = lastWeekPeriod();
+        }
+        const synthesis = await synthesisService.synthesizeWeek(period);
+        const narrative = await synthesisService.narrateWeek(period);
+        return {
+          period: { start: period.startLabel, end: period.endLabel },
+          event_count: synthesis.eventCount,
+          synthesis: synthesis.report,
+          proposals: synthesis.payload,
+          narrative: narrative.narrative,
+        };
+      }
+    );
   }
 };

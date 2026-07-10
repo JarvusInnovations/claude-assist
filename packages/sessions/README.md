@@ -152,7 +152,7 @@ curl http://localhost:2529/machines
 ## API Reference
 
 | Endpoint | Description |
-|----------|-------------|
+| ---------- | ------------- |
 | `GET /sessions` | Search with FTS and filters |
 | `GET /sessions/:id` | Session details (`?with_raw_messages=true`) |
 | `GET /sessions/:id/transcript` | Compact transcript (text/plain) |
@@ -164,7 +164,7 @@ curl http://localhost:2529/machines
 ## Query Parameters
 
 | Param | Default | Description |
-|-------|---------|-------------|
+| ------- | --------- | ------------- |
 | `search` | - | Full-text search query |
 | `days` | 30 | Limit to N days ago |
 | `tools` | - | Filter by tools (comma-separated) |
@@ -207,6 +207,58 @@ Another automation prompt prefix"
 Suppression applies on the host scan, the satellite push CLI's inventory, and as a
 server-side net in the push endpoint (so satellites on an older CLI are still filtered).
 It only blocks *future* ingest — existing rows must be deleted separately.
+
+## Classification pipeline (self-improvement loop)
+
+On top of ingestion + outlines, the module runs a per-session **classification**
+pipeline that feeds a weekly self-improvement review. It has three moving parts,
+all in `src/classification/`:
+
+1. **Per-session incremental cursors** (`classification_cursors`). A long-running
+   session re-ingests repeatedly as it evolves; the cursor tracks the last
+   classified message seq (aligned with `tool_calls.msg_index`), so each cycle
+   classifies only the **delta**. Re-serializing from the advanced cursor yields
+   an empty window — classification is delta-only and idempotent. A session quiet
+   for >48h gets a terminal (final) pass and is then flagged done.
+
+2. **Classification events** (`classification_events`, APPEND-ONLY). A cheap
+   Haiku pass over each new-message window records typed signals —
+   `correction` (highest value), `friction`, `rule-candidate`,
+   `notable-decision` — each with a seq range, one-line summary, confidence, and
+   a verbatim quote. Windows usually yield nothing; the prompt is tuned for
+   signal density. No window ever rewrites a prior window's events.
+
+3. **Weekly synthesis + narrative** (`synthesis_reports`). Once a week a stronger
+   model (Sonnet) digests the events into a structured report — proposed
+   memory/rule/hook/skill/spec changes and ranked friction hotspots — plus an
+   andy-timeline-style narrative of how the system evolved. Both are persisted
+   **and** delivered via the notify digest.
+
+The scheduled sweep beats a `session-classification` heartbeat; the weekly job
+beats `session-synthesis`. Both are coverage ledgers that page on absence.
+
+### Cost posture — no auto-backfill
+
+The scheduled sweep only looks back `SESSIONS_CLASSIFICATION_LOOKBACK` (default
+`3 days`) of transcript **activity** (`synced_at`, which ingestion bumps only
+when content changes) — so a months-old session resumed today is swept, while
+deploying this does **not** classify the ~2,400-session untouched backlog. A
+resumed session whose earlier final pass is now behind new messages has its
+`final_pass_done` flag reset, so the resumed segment gets its own quiet-time
+final pass. Keep the lookback comfortably above the 48h quiet threshold — the
+quiet flush for a small held tail must fire while the session is still inside
+the window.
+Historical coverage is an explicit, bounded backfill:
+
+```bash
+# Recommended initial window: 30 days.
+curl -XPOST "$BASE/api/sessions/classify/backfill?since=$(date -u -d '30 days ago' +%FT%TZ)"
+```
+
+`since` is required — a backfill can never be unbounded. Other endpoints:
+`POST /sessions/classify` (trigger a sweep), `POST /sessions/synthesis`
+(run the week's synthesis + narrative, persist only),
+`GET /sessions/classification/events`, `GET /sessions/classification/reports`.
 
 ## Acknowledgments
 
