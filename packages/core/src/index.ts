@@ -28,4 +28,19 @@ export {
   type SessionsPluginConfig,
   type GooglePluginConfig,
   type ChatPluginConfig,
+  type NotifyPluginConfig,
 } from './plugin.js';
+
+// Notification + heartbeat contracts
+export type {
+  NotificationPriority,
+  NotificationChannel,
+  NotificationStatus,
+  NotifyInput,
+  NotifyResult,
+  NotifyDispatcher,
+  HeartbeatOptions,
+  HeartbeatRegistration,
+  HeartbeatRow,
+  HeartbeatRegistry,
+} from './notify.js';

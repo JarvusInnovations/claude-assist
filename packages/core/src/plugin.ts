@@ -2,6 +2,7 @@ import type { FastifyPluginAsync, FastifyInstance } from 'fastify';
 import fp from 'fastify-plugin';
 import type postgres from 'postgres';
 import type { Scheduler } from './scheduler.js';
+import type { NotifyDispatcher, HeartbeatRegistry } from './notify.js';
 
 /**
  * Extended Fastify instance with claude-assist decorators
@@ -10,6 +11,16 @@ declare module 'fastify' {
   interface FastifyInstance {
     sql: postgres.Sql;
     scheduler: Scheduler;
+    /**
+     * Notification dispatcher — the single delivery spine. Present only when
+     * the notify module is loaded; callers guard with `fastify.notify?.…`.
+     */
+    notify?: NotifyDispatcher;
+    /**
+     * Coverage-ledger registry. Pipelines call `fastify.heartbeats?.beat(name)`
+     * on a successful run so the daily monitor can alert on absence of success.
+     */
+    heartbeats?: HeartbeatRegistry;
   }
 }
 
@@ -28,6 +39,36 @@ export interface PluginOptions {
   googleConfig?: GooglePluginConfig;
   /** Configuration for chat plugin */
   chatConfig?: ChatPluginConfig;
+  /** Configuration for notify plugin */
+  notifyConfig?: NotifyPluginConfig;
+}
+
+/**
+ * Configuration for the notify (notification dispatcher + heartbeat) plugin
+ */
+export interface NotifyPluginConfig {
+  /** Pushover application API token (interrupt + notice channel). */
+  pushoverToken?: string;
+  /** Pushover user/group key (recipient). */
+  pushoverUser?: string;
+  /** Slack bot token (xoxb-…) reused from the chat module for the digest DM. */
+  slackBotToken?: string;
+  /** Slack user id of the owner — the digest DM recipient. */
+  slackOwnerUserId?: string;
+  /** Absolute path to the Hari repo clone (for manual coverage-ledger files). */
+  hariRepoPath?: string;
+  /** Filesystem path whose free space the host-health check watches (default `/`). */
+  diskCheckPath?: string;
+  /** Alert when free space drops below this many bytes (default 20 GiB). */
+  diskMinFreeBytes?: number;
+  /** Alert when free space drops below this fraction 0–1 (default 0.08). */
+  diskMinFreePct?: number;
+  /** Cron for the daily staleness + host-health check. */
+  stalenessCron?: string;
+  /** Cron for flushing batched digest notifications to Slack. */
+  digestFlushCron?: string;
+  /** Skip registering the daily staleness/host-health check. */
+  disableStalenessCheck?: boolean;
 }
 
 /**
@@ -124,6 +165,7 @@ export function createPlugin(
       sessionsConfig: opts.sessionsConfig,
       googleConfig: opts.googleConfig,
       chatConfig: opts.chatConfig,
+      notifyConfig: opts.notifyConfig,
     };
 
     fastify.log.info(`Loading plugin: ${name}`);
