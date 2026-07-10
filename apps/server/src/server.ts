@@ -7,6 +7,7 @@ import sessionsPlugin, {
   DEFAULT_SESSION_IGNORE_MARKERS,
 } from '@jarvus/claude-assist-sessions';
 import googlePlugin from '@jarvus/claude-assist-google';
+import capturePlugin from '@jarvus/claude-assist-capture';
 import chatPlugin from '@jarvus/claude-assist-chat';
 import notifyPlugin from '@jarvus/claude-assist-notify';
 import { join, dirname } from 'node:path';
@@ -164,6 +165,27 @@ await fastify.register(
       }
     } else {
       api.log.info('Google module disabled');
+    }
+
+    if (fastify.config.ENABLE_CAPTURE) {
+      api.log.info('Capture module enabled');
+      await api.register(capturePlugin, {
+        migrationsDir: join(__dirname, '../../../packages/capture/migrations'),
+        disableMigrations: fastify.config.DISABLE_MIGRATIONS,
+        captureConfig: {
+          anthropicApiKey: fastify.config.ANTHROPIC_API_KEY,
+          classifierModel: fastify.config.CAPTURE_CLASSIFIER_MODEL,
+          concurrency: fastify.config.CAPTURE_CONCURRENCY,
+          disableClassification:
+            fastify.config.DISABLE_SYNCS ||
+            fastify.config.CAPTURE_DISABLE_CLASSIFICATION,
+          tanaMcpUrl: fastify.config.TANA_MCP_URL,
+          tanaMcpToken: fastify.config.TANA_MCP_TOKEN,
+          tanaWorkspaceId: fastify.config.TANA_WORKSPACE_ID,
+        },
+      });
+    } else {
+      api.log.info('Capture module disabled');
     }
 
     // Chat module is registered outside /api prefix (uses Socket Mode, not webhooks)

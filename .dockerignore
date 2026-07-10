@@ -11,6 +11,14 @@
 !packages/core/tsconfig.json
 !packages/core/src/**
 
+# packages/capture
+!packages/capture/package.json
+!packages/capture/tsconfig.json
+!packages/capture/src/**
+!packages/capture/bin/**
+!packages/capture/migrations/
+!packages/capture/migrations/**
+
 # packages/chat
 !packages/chat/package.json
 !packages/chat/tsconfig.json

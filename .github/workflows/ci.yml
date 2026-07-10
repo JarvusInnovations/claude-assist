@@ -43,6 +43,9 @@ jobs:
       - name: Build google
         run: bun run --filter @jarvus/claude-assist-google build
 
+      - name: Build capture
+        run: bun run --filter @jarvus/claude-assist-capture build
+
       - name: Build chat
         run: bun run --filter @jarvus/claude-assist-chat build
 

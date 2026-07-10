@@ -1,6 +1,7 @@
 import { App, LogLevel } from '@slack/bolt';
 import { markdownToBlocks } from '@tryfabric/mack';
 import { createPlugin } from '@jarvus/claude-assist-core';
+import { matchCaptureSigil, ulidFromSeed } from '@jarvus/claude-assist-capture';
 import { createAgentHandler } from './agent.js';
 import { SessionStore } from './sessions.js';
 import type { ChatPluginConfig } from '@jarvus/claude-assist-core';
@@ -298,6 +299,46 @@ export default createPlugin('chat', async (fastify, options) => {
     }
   }
 
+  /**
+   * Capture path: a DM starting with the `+ ` sigil is a capture, not a
+   * conversation. It goes straight to POST /api/capture (source=slack) via
+   * fastify.inject — same process, no network hop — and never spawns an
+   * agent session. The ULID derives deterministically from channel+ts so
+   * Slack's at-least-once event delivery collapses to one capture row.
+   */
+  async function handleCaptureMessage(channel: string, messageTs: string, captureText: string) {
+    try {
+      const timeMs = Math.round(parseFloat(messageTs) * 1000);
+      const response = await fastify.inject({
+        method: 'POST',
+        url: '/api/capture',
+        payload: {
+          ulid: ulidFromSeed(timeMs, `slack:${channel}:${messageTs}`),
+          text: captureText,
+          source: 'slack',
+          captured_at: new Date(timeMs).toISOString(),
+        },
+      });
+      if (response.statusCode >= 300) {
+        throw new Error(`capture endpoint returned ${response.statusCode}: ${response.body.slice(0, 200)}`);
+      }
+      fastify.log.info({ channel, statusCode: response.statusCode }, 'Slack capture stored');
+      await addReaction(channel, messageTs, 'inbox_tray');
+    } catch (err) {
+      fastify.log.error({ err }, 'Slack capture failed');
+      await addReaction(channel, messageTs, 'warning');
+      try {
+        await app.client.chat.postMessage({
+          channel,
+          thread_ts: messageTs,
+          text: 'Capture failed - check the server logs.',
+        });
+      } catch (postErr) {
+        fastify.log.error({ postErr }, 'Failed to post capture error message');
+      }
+    }
+  }
+
   // Listen for all DM messages
   app.event('message', async ({ event }) => {
     if ('subtype' in event && event.subtype !== undefined) return;
@@ -311,6 +352,12 @@ export default createPlugin('chat', async (fastify, options) => {
     };
 
     if (!text) return;
+
+    const captureText = matchCaptureSigil(text);
+    if (captureText !== null) {
+      await handleCaptureMessage(channel, ts, captureText);
+      return;
+    }
 
     if (threadTs) {
       await handleThreadReply(channel, threadTs, ts, text);

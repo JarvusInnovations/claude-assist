@@ -1,0 +1,138 @@
+/**
+ * Capture routes
+ *
+ * POST /capture              - dumb-fast idempotent ingest (the whole point)
+ * GET  /capture              - list captures (status filter; review surfaces)
+ * GET  /capture/:ulid        - single capture
+ * POST /capture/:ulid/correct - human routing correction (re-classifies + re-routes)
+ *
+ * Registered under the server's /api prefix → /api/capture.
+ */
+
+import type { FastifyPluginAsync } from 'fastify';
+import type { CaptureInput, CaptureStatus, CaptureType } from '../types.js';
+import { CAPTURE_SOURCES, CAPTURE_TYPES } from '../types.js';
+import { ULID_PATTERN } from '../ulid.js';
+import type { CapturePipeline } from '../services/pipeline.js';
+
+export interface CaptureRoutesConfig {
+  pipeline: CapturePipeline;
+}
+
+const CAPTURE_BODY_SCHEMA = {
+  type: 'object',
+  required: ['ulid', 'text', 'source'],
+  additionalProperties: false,
+  properties: {
+    ulid: { type: 'string', pattern: ULID_PATTERN.source },
+    source: { type: 'string', enum: [...CAPTURE_SOURCES] },
+    text: { type: 'string', minLength: 1, maxLength: 100_000 },
+    type: { type: 'string', maxLength: 100 },
+    urls: {
+      type: 'array',
+      maxItems: 20,
+      items: { type: 'string', pattern: '^https?://', maxLength: 2048 },
+    },
+    tags: {
+      type: 'array',
+      maxItems: 20,
+      items: { type: 'string', minLength: 1, maxLength: 100 },
+    },
+    payload: { type: 'object' },
+    captured_at: { type: 'string', format: 'date-time' },
+  },
+} as const;
+
+export const registerCaptureRoutes: FastifyPluginAsync<CaptureRoutesConfig> = async (
+  fastify,
+  { pipeline }
+) => {
+  // POST /capture - store immediately, ack fast. No classification, no
+  // routing, no model calls in this handler — ever.
+  fastify.post<{ Body: CaptureInput }>(
+    '/capture',
+    { schema: { body: CAPTURE_BODY_SCHEMA } },
+    async (request, reply) => {
+      const { record, created } = await pipeline.ingest(request.body);
+      reply.status(created ? 201 : 200);
+      return {
+        ulid: record.ulid,
+        status: record.status,
+        created,
+        received_at: record.received_at,
+      };
+    }
+  );
+
+  // GET /capture - list (review dashboard, digests)
+  fastify.get<{
+    Querystring: { status?: CaptureStatus; limit?: string; offset?: string };
+  }>(
+    '/capture',
+    {
+      schema: {
+        querystring: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            status: {
+              type: 'string',
+              enum: ['queued', 'classified', 'awaiting_executor', 'awaiting_review', 'routed'],
+            },
+            limit: { type: 'string', pattern: '^[0-9]+$' },
+            offset: { type: 'string', pattern: '^[0-9]+$' },
+          },
+        },
+      },
+    },
+    async (request) => {
+      const { status } = request.query;
+      const limit = parseInt(request.query.limit ?? '50', 10);
+      const offset = parseInt(request.query.offset ?? '0', 10);
+      const captures = await pipeline.list({ status, limit, offset });
+      return { captures, count: captures.length };
+    }
+  );
+
+  // GET /capture/:ulid
+  fastify.get<{ Params: { ulid: string } }>('/capture/:ulid', async (request, reply) => {
+    const capture = await pipeline.get(request.params.ulid);
+    if (!capture) {
+      reply.status(404);
+      return { error: 'Capture not found' };
+    }
+    return capture;
+  });
+
+  // POST /capture/:ulid/correct - Chris overrides the classified type; the
+  // capture re-routes to the corrected destination immediately. Corrections
+  // are recorded (classifier: 'correction') as tuning signal.
+  fastify.post<{ Params: { ulid: string }; Body: { type: CaptureType } }>(
+    '/capture/:ulid/correct',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          required: ['type'],
+          additionalProperties: false,
+          properties: {
+            type: { type: 'string', enum: [...CAPTURE_TYPES] },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const capture = await pipeline.get(request.params.ulid);
+      if (!capture) {
+        reply.status(404);
+        return { error: 'Capture not found' };
+      }
+      if (capture.status === 'queued') {
+        reply.status(409);
+        return { error: 'Capture not yet classified - nothing to correct' };
+      }
+      const updated = await pipeline.correct(request.params.ulid, request.body.type);
+      return updated;
+    }
+  );
+};
