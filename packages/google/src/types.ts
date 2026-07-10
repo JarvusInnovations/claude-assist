@@ -82,6 +82,7 @@ export interface EmailRecord {
   // Error Tracking
   last_error: string | null;
   last_error_at: Date | null;
+  triage_attempts: number; // Failed triage attempts; scheduler stops retrying past TriageService.MAX_TRIAGE_ATTEMPTS
 
   // Metadata
   synced_at: Date;

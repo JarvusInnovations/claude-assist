@@ -12,7 +12,7 @@ import type postgres from 'postgres';
 import type { Scheduler } from '@jarvus/claude-assist-core';
 import type { GmailAuthService } from '../services/gmail-auth.js';
 import type { GmailSyncService } from '../services/gmail-sync.js';
-import type { TriageService } from '../services/triage.js';
+import { TriageService } from '../services/triage.js';
 import type {
   GoogleAccount,
   UserAlias,
@@ -51,12 +51,26 @@ export const registerAccountRoutes: FastifyPluginAsync<AccountRoutesConfig> =
         ORDER BY is_primary DESC, created_at ASC
       `;
 
+      // Count emails per account that hit the triage retry cap (see
+      // TriageService.MAX_TRIAGE_ATTEMPTS) - these are stuck at
+      // workflow_status='new' and the scheduler has stopped retrying them.
+      const cappedCounts = await fastify.sql<{ account_id: number; count: string }[]>`
+        SELECT account_id, COUNT(*) as count
+        FROM google.emails
+        WHERE workflow_status = 'new' AND triage_attempts >= ${TriageService.MAX_TRIAGE_ATTEMPTS}
+        GROUP BY account_id
+      `;
+      const cappedByAccount = new Map(
+        cappedCounts.map((row) => [row.account_id, parseInt(row.count, 10)])
+      );
+
       // Add sync and triage status to each account
       const defaultTriageStatus = { triaging: false, startedAt: null, emailCount: null, processedCount: null };
       return accounts.map((account) => ({
         ...account,
         email_sync_status: syncService.getSyncStatus(account.id),
         email_triage_status: triageService?.getTriageStatus(account.id) ?? defaultTriageStatus,
+        email_triage_retry_capped_count: cappedByAccount.get(account.id) ?? 0,
       }));
     });
 
@@ -139,11 +153,18 @@ export const registerAccountRoutes: FastifyPluginAsync<AccountRoutesConfig> =
           return reply.status(404).send({ error: 'Account not found' });
         }
 
+        const [cappedRow] = await fastify.sql<{ count: string }[]>`
+          SELECT COUNT(*) as count FROM google.emails
+          WHERE account_id = ${accountId}
+            AND workflow_status = 'new' AND triage_attempts >= ${TriageService.MAX_TRIAGE_ATTEMPTS}
+        `;
+
         const defaultTriageStatus = { triaging: false, startedAt: null, emailCount: null, processedCount: null };
         return {
           ...account,
           email_sync_status: syncService.getSyncStatus(accountId),
           email_triage_status: triageService?.getTriageStatus(accountId) ?? defaultTriageStatus,
+          email_triage_retry_capped_count: parseInt(cappedRow?.count || '0', 10),
         };
       }
     );

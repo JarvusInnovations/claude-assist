@@ -10,7 +10,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import type postgres from 'postgres';
 import type { Scheduler } from '@jarvus/claude-assist-core';
 import type { GmailSyncService } from '../services/gmail-sync.js';
-import type { TriageService } from '../services/triage.js';
+import { TriageService } from '../services/triage.js';
 import type {
   EmailRecord,
   WorkflowStatus,
@@ -292,11 +292,16 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
       }>('/google/emails/triage', async (request) => {
         const { account, limit, force } = request.body || {};
 
-        // Get pending emails (or all triageable emails if force=true)
+        // Get pending emails (or all triageable emails if force=true).
+        // force=true also bypasses the retry cap (TriageService.MAX_TRIAGE_ATTEMPTS)
+        // since a manually-forced retry is a deliberate override; the
+        // unforced path skips emails that have already hit the cap so a
+        // manual trigger can't accidentally re-burn tokens on a
+        // permanently-failing email either.
         const pending = await fastify.sql<{ id: number; account_id: number }[]>`
           SELECT e.id, e.account_id FROM google.emails e
           JOIN google.accounts a ON e.account_id = a.id
-          WHERE ${force ? fastify.sql`e.workflow_status IN ('new', 'triaged')` : fastify.sql`e.workflow_status = 'new'`}
+          WHERE ${force ? fastify.sql`e.workflow_status IN ('new', 'triaged')` : fastify.sql`e.workflow_status = 'new' AND e.triage_attempts < ${TriageService.MAX_TRIAGE_ATTEMPTS}`}
             ${account ? fastify.sql`AND a.identifier = ${account}` : fastify.sql``}
           ORDER BY e.date DESC
           ${limit ? fastify.sql`LIMIT ${limit}` : fastify.sql``}
@@ -337,12 +342,14 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
           new: string;
           triaged: string;
           with_errors: string;
+          retry_capped: string;
         }[]>`
           SELECT
             COUNT(*) FILTER (WHERE workflow_status = 'discovered') as discovered,
             COUNT(*) FILTER (WHERE workflow_status = 'new') as new,
             COUNT(*) FILTER (WHERE workflow_status = 'triaged') as triaged,
-            COUNT(*) FILTER (WHERE last_error IS NOT NULL) as with_errors
+            COUNT(*) FILTER (WHERE last_error IS NOT NULL) as with_errors,
+            COUNT(*) FILTER (WHERE workflow_status = 'new' AND triage_attempts >= ${TriageService.MAX_TRIAGE_ATTEMPTS}) as retry_capped
           FROM google.emails
           WHERE date > NOW() - INTERVAL '7 days'
         `;
@@ -352,6 +359,10 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
           new: parseInt(stats?.new || '0', 10),
           triaged: parseInt(stats?.triaged || '0', 10),
           with_errors: parseInt(stats?.with_errors || '0', 10),
+          // Emails stuck at workflow_status='new' that hit MAX_TRIAGE_ATTEMPTS -
+          // the scheduler has stopped retrying these; they need a code fix or
+          // a manual force=true retry via POST /google/emails/triage.
+          retry_capped: parseInt(stats?.retry_capped || '0', 10),
         };
       });
     }

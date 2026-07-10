@@ -129,9 +129,13 @@ export default createPlugin('google', async (fastify: FastifyInstance, options: 
       schedule: '*/5 * * * *', // Every 5 minutes
       runOnStartup: false,
       handler: async () => {
+        // Excludes emails that already hit the retry cap (see
+        // TriageService.MAX_TRIAGE_ATTEMPTS) so a permanently-failing email
+        // (e.g. one that keeps blowing the model's context window) doesn't
+        // burn a paid turn-1 call every cycle forever.
         const pending = await fastify.sql<{ id: number }[]>`
           SELECT id FROM google.emails
-          WHERE workflow_status = 'new'
+          WHERE workflow_status = 'new' AND triage_attempts < ${TriageService.MAX_TRIAGE_ATTEMPTS}
           ORDER BY date DESC
         `;
 
