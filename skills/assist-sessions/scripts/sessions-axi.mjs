@@ -1441,7 +1441,7 @@ async function shareCommand(args) {
 }
 
 // packages/sessions/src/axi/cli.ts
-var VERSION = true ? "84f07ab" : "dev";
+var VERSION = true ? "957eb36" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [command] [args] [flags]
        ${CLI}                 # no args \u2192 home (recent activity + next steps)

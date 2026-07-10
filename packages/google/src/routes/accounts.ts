@@ -13,6 +13,7 @@ import type { Scheduler } from '@jarvus/claude-assist-core';
 import type { GmailAuthService } from '../services/gmail-auth.js';
 import type { GmailSyncService } from '../services/gmail-sync.js';
 import { TriageService } from '../services/triage.js';
+import { seedAccountRules, type SeedContent } from '../services/seed-rules.js';
 import type {
   GoogleAccount,
   UserAlias,
@@ -33,10 +34,12 @@ export interface AccountRoutesConfig {
   authService: GmailAuthService;
   syncService: GmailSyncService;
   triageService: TriageService | null;
+  /** Seed content used to bootstrap a freshly-authorized account's rules/topics. */
+  seedContent?: SeedContent;
 }
 
 export const registerAccountRoutes: FastifyPluginAsync<AccountRoutesConfig> =
-  async (fastify, { authService, syncService, triageService }) => {
+  async (fastify, { authService, syncService, triageService, seedContent }) => {
     // ==========================================
     // Account Management
     // ==========================================
@@ -116,6 +119,16 @@ export const registerAccountRoutes: FastifyPluginAsync<AccountRoutesConfig> =
 
       try {
         const account = await authService.handleCallback(code, accountId);
+        // Bootstrap triage rules + topics for the freshly-authorized account
+        // (idempotent; a no-op if they already exist).
+        try {
+          await seedAccountRules(fastify.sql, account.id, seedContent);
+        } catch (seedError) {
+          fastify.log.error(
+            { accountId: account.id, error: seedError },
+            'Failed to seed triage rules after OAuth callback'
+          );
+        }
         return {
           success: true,
           account: {

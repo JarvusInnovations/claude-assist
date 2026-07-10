@@ -57,6 +57,11 @@ Sync and batch triage are **asynchronous** — they return immediately. Poll
 - `scripts/gmail-axi triage progress` — discovered/new/triaged/error counts for the last 7 days
 - `scripts/gmail-axi bulk-action <action> <email-id>...` — run a bulk action over emails (e.g. force-retriage)
 
+### Actions
+
+- `scripts/gmail-axi digest` — preview the daily confirm-to-execute digest (staged actions grouped by section)
+- `scripts/gmail-axi execute <email-id>... [--no-labels] [--no-actions]` — apply staged plans: AI/* + TODO/* labels and archive/spam moves (deterministic; spam is quarantined, never deleted)
+
 <!-- END GENERATED: command-reference -->
 
 ## Tips

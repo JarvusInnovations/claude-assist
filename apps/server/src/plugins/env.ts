@@ -58,6 +58,19 @@ const schema = {
     },
     GOOGLE_DISABLE_EMAIL_SYNC: { type: 'boolean', default: false },
     GOOGLE_DISABLE_EMAIL_TRIAGE: { type: 'boolean', default: false },
+    // Deterministic action layer (executor + digests + urgent alerts)
+    GOOGLE_DISABLE_EMAIL_ACTIONS: { type: 'boolean', default: false },
+    GOOGLE_DISABLE_EMAIL_ALERTS: { type: 'boolean', default: false },
+    // Comma-separated team domains treated as whitelisted for the alert bar.
+    // Empty by default — set to your own domain(s) on the deploy, e.g.
+    // GOOGLE_TEAM_DOMAINS=example.com,example.org
+    GOOGLE_TEAM_DOMAINS: { type: 'string', default: '' },
+    // Optional path to a JSON seed file ({ rules: [...], topics: [...] }) used to
+    // bootstrap deterministic triage rules + topics of interest at first boot.
+    // When unset, a few generic example rules are seeded instead.
+    GOOGLE_TRIAGE_SEED_FILE: { type: 'string' },
+    GOOGLE_EMAIL_DIGEST_CRON: { type: 'string', default: '0 12 * * *' },
+    GOOGLE_SPAM_QUARANTINE_CRON: { type: 'string', default: '0 13 * * 1' },
 
     // Capture module
     ENABLE_CAPTURE: { type: 'boolean', default: true },
@@ -138,6 +151,12 @@ declare module 'fastify' {
       GOOGLE_REDIRECT_URI: string;
       GOOGLE_DISABLE_EMAIL_SYNC: boolean;
       GOOGLE_DISABLE_EMAIL_TRIAGE: boolean;
+      GOOGLE_DISABLE_EMAIL_ACTIONS: boolean;
+      GOOGLE_DISABLE_EMAIL_ALERTS: boolean;
+      GOOGLE_TEAM_DOMAINS: string;
+      GOOGLE_TRIAGE_SEED_FILE?: string;
+      GOOGLE_EMAIL_DIGEST_CRON: string;
+      GOOGLE_SPAM_QUARANTINE_CRON: string;
 
       // Capture module
       ENABLE_CAPTURE: boolean;

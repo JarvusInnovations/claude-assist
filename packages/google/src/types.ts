@@ -75,9 +75,27 @@ export interface EmailRecord {
   // Consolidated AI Analysis
   analysis: EmailAnalysis | null;
 
+  // Plan (set at triage, editable during review; consumed by the executor)
+  planned_labels: string[] | null;      // Full Gmail label paths, already prefix-namespaced
+  gmail_action: GmailAction | null;     // 'leave' | 'archive' | 'spam'
+  digest_section: string | null;        // Digest bucket (newsletters, financial, ...)
+  triage_confidence: number | null;     // 0-1 (rule matches are 1.0)
+  rule_matched_id: number | null;       // FK to google.triage_rules, if a rule matched
+
   // Workflow State
   workflow_status: WorkflowStatus;
   triaged_at: Date | null;
+  reviewed_at: Date | null;
+  executed_at: Date | null;
+  alerted_at: Date | null;              // When the urgent-alert path fired, if it did
+
+  // Execution Results (written only by the deterministic executor)
+  applied_labels: string[] | null;
+  applied_gmail_action: GmailAction | null;
+  applied_at: Date | null;
+  execution_notes: string | null;
+  execution_error: string | null;
+  execution_error_at: Date | null;
 
   // Error Tracking
   last_error: string | null;
@@ -94,7 +112,94 @@ export interface EmailRecord {
 export type WorkflowStatus =
   | 'discovered' // Listed from Gmail but not yet fetched
   | 'new' // Fetched and ready for triage
-  | 'triaged';
+  | 'triaged' // AI/rule analysis complete; plan staged
+  | 'reviewed' // Human/plan review complete
+  | 'executed'; // Deterministic actions applied to Gmail
+
+// Deterministic action the executor takes in Gmail. 'spam' moves the message to
+// Gmail's Spam folder — it is NEVER deleted/trashed.
+export type GmailAction = 'leave' | 'archive' | 'spam';
+
+// ============================================
+// Rules and Topics
+// ============================================
+
+// What the rule intends. 'analyze_relevance' hands the email to AI triage but
+// pre-assigns a digest section / topic assessment.
+export type RuleAction = 'archive' | 'leave' | 'spam' | 'analyze_relevance';
+
+export interface TriageRule {
+  id: number;
+  account_id: number;
+  rule_id: string;
+  name: string;
+  description: string | null;
+
+  // Pattern matching (all present clauses must match; each is an OR over patterns)
+  from_patterns: string[] | null;
+  subject_contains: string[] | null;
+  body_contains: string[] | null;
+  body_not_contains: string[] | null;
+
+  // Action
+  action: RuleAction;
+  gmail_action: GmailAction | null;
+  priority_level: 'high' | 'medium' | 'low' | null;
+
+  // Categorization
+  digest_section: string | null;
+  assess_against_topics: boolean;
+  assigned_domain: string | null;
+  assigned_type: string | null;
+
+  // Behavior
+  skip_ai_triage: boolean;
+
+  // Metadata
+  enabled: boolean;
+  priority: number;
+  notes: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface TopicOfInterest {
+  id: number;
+  account_id: number;
+  topic_type: 'keyword' | 'domain' | 'exclude';
+  value: string;
+  description: string | null;
+  enabled: boolean;
+  created_at: Date;
+}
+
+export interface CreateRulePayload {
+  rule_id: string;
+  name: string;
+  description?: string;
+  from_patterns?: string[];
+  subject_contains?: string[];
+  body_contains?: string[];
+  body_not_contains?: string[];
+  action: RuleAction;
+  gmail_action?: GmailAction;
+  priority_level?: 'high' | 'medium' | 'low';
+  digest_section?: string;
+  assess_against_topics?: boolean;
+  assigned_domain?: string;
+  assigned_type?: string;
+  skip_ai_triage?: boolean;
+  enabled?: boolean;
+  priority?: number;
+  notes?: string;
+}
+
+export interface CreateTopicPayload {
+  topic_type: 'keyword' | 'domain' | 'exclude';
+  value: string;
+  description?: string;
+  enabled?: boolean;
+}
 
 // ============================================
 // Service Interfaces
@@ -112,6 +217,23 @@ export interface TriageResult {
   emailId: number;
   success: boolean;
   analysis?: EmailAnalysis;
+  ruleMatched?: string;   // rule_id of a deterministic rule, if one applied
+  confidence?: number;
+  alerted?: boolean;      // whether the urgent-alert path fired
+  error?: string;
+}
+
+// ============================================
+// Executor
+// ============================================
+
+export interface ExecuteResult {
+  emailId: number;
+  success: boolean;
+  appliedLabels?: string[];
+  appliedGmailAction?: GmailAction | null;
+  skipped?: boolean;      // true when a guardrail (e.g. whitelist) blocked the action
+  reason?: string;        // why it was skipped / errored
   error?: string;
 }
 

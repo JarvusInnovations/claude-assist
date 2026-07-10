@@ -153,6 +153,30 @@ export interface GooglePluginConfig {
   disableEmailSync?: boolean;
   /** Disable AI email triage */
   disableEmailTriage?: boolean;
+  /**
+   * Domains whose senders are treated as team/whitelisted for the urgent-alert
+   * path (in addition to reply history and any optional external contacts
+   * source). Default: [] — configure via GOOGLE_TEAM_DOMAINS on the deploy.
+   */
+  teamDomains?: string[];
+  /**
+   * Optional path to a JSON seed file ({ rules, topics }) used to bootstrap the
+   * deterministic triage rules + topics of interest at first boot. When unset,
+   * generic example rules are seeded instead.
+   */
+  triageSeedFile?: string;
+  /**
+   * Disable the deterministic action layer entirely — the executor endpoint,
+   * the daily digest, the spam-quarantine digest, and the urgent-alert path.
+   * Sync + triage still run. Use as a kill switch for the Gmail-mutating side.
+   */
+  disableEmailActions?: boolean;
+  /** Disable only the urgent-alert dispatch at triage completion. */
+  disableEmailAlerts?: boolean;
+  /** Cron for the daily confirm-to-execute digest (default '0 12 * * *' ~08:00 ET). */
+  emailDigestCron?: string;
+  /** Cron for the weekly spam-quarantine review digest (default '0 13 * * 1'). */
+  spamQuarantineDigestCron?: string;
 }
 
 export interface ModulePlugin {

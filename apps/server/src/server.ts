@@ -160,6 +160,16 @@ await fastify.register(
             disableEmailTriage:
               fastify.config.DISABLE_SYNCS ||
               fastify.config.GOOGLE_DISABLE_EMAIL_TRIAGE,
+            disableEmailActions:
+              fastify.config.DISABLE_SYNCS ||
+              fastify.config.GOOGLE_DISABLE_EMAIL_ACTIONS,
+            disableEmailAlerts: fastify.config.GOOGLE_DISABLE_EMAIL_ALERTS,
+            teamDomains: fastify.config.GOOGLE_TEAM_DOMAINS.split(',')
+              .map((d) => d.trim())
+              .filter(Boolean),
+            triageSeedFile: fastify.config.GOOGLE_TRIAGE_SEED_FILE,
+            emailDigestCron: fastify.config.GOOGLE_EMAIL_DIGEST_CRON,
+            spamQuarantineDigestCron: fastify.config.GOOGLE_SPAM_QUARANTINE_CRON,
           },
         });
       }
