@@ -12,6 +12,12 @@ import {
   bulkActionCommand,
   BULK_ACTION_HELP,
 } from "./commands/pipeline.js";
+import {
+  executeCommand,
+  EXECUTE_HELP,
+  digestCommand,
+  DIGEST_HELP,
+} from "./commands/actions.js";
 
 declare const __AXI_VERSION__: string;
 const VERSION = typeof __AXI_VERSION__ === "string" ? __AXI_VERSION__ : "dev";
@@ -42,6 +48,8 @@ const COMMAND_HELP: Record<string, string> = {
   sync: SYNC_HELP,
   triage: TRIAGE_HELP,
   "bulk-action": BULK_ACTION_HELP,
+  execute: EXECUTE_HELP,
+  digest: DIGEST_HELP,
 };
 
 const COMMANDS: Record<string, AxiCliCommand<undefined>> = {
@@ -51,6 +59,8 @@ const COMMANDS: Record<string, AxiCliCommand<undefined>> = {
   sync: syncCommand,
   triage: triageCommand,
   "bulk-action": bulkActionCommand,
+  execute: executeCommand,
+  digest: digestCommand,
 };
 
 export async function main(argv?: string[]): Promise<void> {

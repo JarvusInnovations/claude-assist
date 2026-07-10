@@ -195,7 +195,6 @@ export class GmailSyncService {
   private async doSyncFull(accountId: number, afterDate?: Date): Promise<SyncResult> {
     const gmail = await this.authService.getGmailClient(accountId);
     const settings = await this.getAccountSettings(accountId);
-    const labelPrefix = settings?.email_label_prefix ?? 'AI';
 
     const result: SyncResult = {
       messagesScanned: 0,
@@ -217,8 +216,16 @@ export class GmailSyncService {
       const profile = await gmail.users.getProfile({ userId: 'me' });
       this.assertMailboxIdentity(accountId, settings.email, profile.data.emailAddress);
 
-      // Build query: inbox emails not yet triaged
-      let query = `in:inbox -label:${labelPrefix}/Triaged`;
+      // Build query: current inbox. We deliberately do NOT exclude by an
+      // `-label:<prefix>/Triaged` filter here. That old assumption was broken —
+      // it depended on every processed email carrying the Triaged label, but the
+      // label is only applied by the executor on confirm-to-execute, so triaged-
+      // but-unexecuted mail was silently re-listed while the filter also risked
+      // hiding mail the executor never got to. The DB is the source of truth for
+      // what's processed: discovery batch-upserts with ON CONFLICT DO NOTHING and
+      // phase 2 only fetches rows still in 'discovered' state, so re-listing the
+      // full inbox is idempotent and cheap (no duplicate rows, no re-fetches).
+      let query = `in:inbox`;
 
       // Use the most recent date constraint: explicit afterDate or sync_start_date
       const syncStartDate = settings?.email_sync_start_date

@@ -4,8 +4,9 @@
  */
 
 export const DESCRIPTION =
-  "Manage Gmail sync, triage, and analysis — search the inbox, check triage progress, " +
-  "trigger sync/triage, and review per-message AI analysis.";
+  "Manage Gmail sync, triage, and actions — search the inbox, check triage progress, " +
+  "trigger sync/triage, review per-message AI analysis, preview the daily digest, and " +
+  "confirm-to-execute staged label/archive/spam actions.";
 
 export interface CommandRef {
   usage: string;
@@ -36,6 +37,13 @@ export const COMMAND_GROUPS: CommandGroup[] = [
       { usage: "triage [<email-id>] [--account ID] [--limit N] [--force]", summary: "triage one email (id) or a batch of pending ones (needs ANTHROPIC_API_KEY)" },
       { usage: "triage progress", summary: "discovered/new/triaged/error counts for the last 7 days" },
       { usage: "bulk-action <action> <email-id>...", summary: "run a bulk action over emails (e.g. force-retriage)" },
+    ],
+  },
+  {
+    group: "Actions",
+    commands: [
+      { usage: "digest", summary: "preview the daily confirm-to-execute digest (staged actions grouped by section)" },
+      { usage: "execute <email-id>... [--no-labels] [--no-actions]", summary: "apply staged plans: AI/* + TODO/* labels and archive/spam moves (deterministic; spam is quarantined, never deleted)" },
     ],
   },
 ];

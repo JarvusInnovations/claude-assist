@@ -11,6 +11,9 @@ import type postgres from 'postgres';
 import type { Scheduler } from '@jarvus/claude-assist-core';
 import type { GmailSyncService } from '../services/gmail-sync.js';
 import { TriageService } from '../services/triage.js';
+import type { GmailExecutorService } from '../services/gmail-executor.js';
+import type { DigestService } from '../services/digest.js';
+import { renderDailyDigest } from '../services/digest.js';
 import type {
   EmailRecord,
   WorkflowStatus,
@@ -42,10 +45,12 @@ declare module 'fastify' {
 export interface EmailRoutesConfig {
   syncService: GmailSyncService;
   triageService: TriageService | null;
+  executorService: GmailExecutorService | null;
+  digestService: DigestService | null;
 }
 
 export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
-  async (fastify, { syncService, triageService }) => {
+  async (fastify, { syncService, triageService, executorService, digestService }) => {
     // ==========================================
     // Email Queries
     // ==========================================
@@ -111,7 +116,9 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
           e.date, e.from_address, e.from_name, e.to_addresses, e.cc_addresses,
           e.subject, e.snippet, e.gmail_labels,
           e.analysis,
-          e.workflow_status, e.triaged_at,
+          e.planned_labels, e.gmail_action, e.digest_section,
+          e.applied_labels, e.applied_gmail_action,
+          e.workflow_status, e.triaged_at, e.reviewed_at, e.executed_at, e.alerted_at,
           a.identifier as account_identifier,
           a.email as account_email
         FROM google.emails e
@@ -366,6 +373,77 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
         };
       });
     }
+
+    // ==========================================
+    // Review + Execute (deterministic action layer)
+    // ==========================================
+
+    // PATCH /google/emails/:id - edit the staged plan during review
+    fastify.patch<{
+      Params: { id: string };
+      Body: {
+        planned_labels?: string[];
+        gmail_action?: string;
+        digest_section?: string;
+      };
+    }>('/google/emails/:id', async (request, reply) => {
+      const emailId = parseInt(request.params.id, 10);
+      const { planned_labels, gmail_action, digest_section } = request.body;
+
+      const [email] = await fastify.sql<EmailRecord[]>`
+        UPDATE google.emails SET
+          planned_labels = COALESCE(${planned_labels ?? null}, planned_labels),
+          gmail_action = COALESCE(${gmail_action ?? null}, gmail_action),
+          digest_section = COALESCE(${digest_section ?? null}, digest_section),
+          workflow_status = 'reviewed',
+          reviewed_at = NOW()
+        WHERE id = ${emailId}
+        RETURNING *
+      `;
+      if (!email) return reply.status(404).send({ error: 'Email not found' });
+      return { ...email, analysis: parseJsonField(email.analysis) };
+    });
+
+    // POST /google/emails/execute - confirm-to-execute the staged plans
+    // Body: { email_ids: number[], apply_labels?, apply_gmail_action? }
+    fastify.post<{
+      Body: {
+        email_ids: number[];
+        apply_labels?: boolean;
+        apply_gmail_action?: boolean;
+      };
+    }>('/google/emails/execute', async (request, reply) => {
+      if (!executorService) {
+        return reply
+          .status(503)
+          .send({ error: 'Executor not available (email actions disabled)' });
+      }
+      const { email_ids, apply_labels, apply_gmail_action } = request.body || {};
+      if (!Array.isArray(email_ids) || email_ids.length === 0) {
+        return reply.status(400).send({ error: 'email_ids array required' });
+      }
+      const results = await executorService.executeEmails(email_ids, {
+        applyLabels: apply_labels,
+        applyGmailAction: apply_gmail_action,
+      });
+      const succeeded = results.filter((r) => r.success).length;
+      return {
+        requested: email_ids.length,
+        succeeded,
+        failed: results.length - succeeded,
+        results,
+      };
+    });
+
+    // GET /google/emails/digest - preview the daily confirm-to-execute digest
+    fastify.get('/google/emails/digest', async (_request, reply) => {
+      if (!digestService) {
+        return reply.status(503).send({ error: 'Digest not available (email actions disabled)' });
+      }
+      const rows = await digestService.loadDailyRows();
+      const { body, emailIds } = renderDailyDigest(rows);
+      return { count: rows.length, emailIds, body };
+    });
 
     // ==========================================
     // Bulk Actions

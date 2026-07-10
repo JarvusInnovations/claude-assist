@@ -10,13 +10,25 @@ import Anthropic from '@anthropic-ai/sdk';
 import pLimit from 'p-limit';
 import type postgres from 'postgres';
 import type { FastifyBaseLogger } from 'fastify';
+import type { NotifyDispatcher, HeartbeatRegistry } from '@jarvus/claude-assist-core';
 import type {
   EmailRecord,
   GoogleAccount,
   UserAlias,
   TriageResult,
   EmailAnalysis,
+  TriageRule,
+  GmailAction,
 } from '../types.js';
+import type { RulesService } from './rules.js';
+import type { WhitelistService } from './whitelist.js';
+import {
+  derivePlanFromAnalysis,
+  derivePlanFromRule,
+  type DerivedPlan,
+  type LabelPrefixes,
+} from './plan.js';
+import { classifyUrgency } from './urgency.js';
 
 /**
  * Error thrown when JSON parsing fails.
@@ -200,6 +212,22 @@ export interface TriageServiceConfig {
   disableEmailTriage?: boolean;
 }
 
+/**
+ * Optional collaborators wired in by the plugin. Kept separate from the API-key
+ * config so the service still works (rules/alerts simply no-op) when they're
+ * absent — e.g. in a unit test or before the notify module is loaded.
+ */
+export interface TriageServiceDeps {
+  rulesService?: RulesService;
+  whitelistService?: WhitelistService;
+  notify?: NotifyDispatcher;
+  heartbeats?: HeartbeatRegistry;
+  /** Team domains for the urgent-alert bar (default []; set via GOOGLE_TEAM_DOMAINS). */
+  teamDomains?: string[];
+  /** Disable the urgent-alert dispatch at triage completion. */
+  disableEmailAlerts?: boolean;
+}
+
 export interface TriageStatus {
   triaging: boolean;
   startedAt: Date | null;
@@ -227,6 +255,10 @@ export class TriageService {
    */
   static readonly MAX_TRIAGE_ATTEMPTS = 5;
 
+  /** How long a derived per-account whitelist is reused within triage batches. */
+  private static readonly WHITELIST_TTL_MS = 5 * 60 * 1000;
+  private whitelistCache = new Map<number, { set: Set<string>; at: number }>();
+
   private sql: postgres.Sql;
   private log: FastifyBaseLogger;
   private client: Anthropic;
@@ -236,10 +268,19 @@ export class TriageService {
   private disableEmailTriage: boolean;
   private activeTriages = new Map<number, { startedAt: Date; total: number; processed: number }>();
 
+  // Optional collaborators (rules matching + urgent-alert path).
+  private rulesService: RulesService | undefined;
+  private whitelistService: WhitelistService | undefined;
+  private notify: NotifyDispatcher | undefined;
+  private heartbeats: HeartbeatRegistry | undefined;
+  private teamDomains: string[];
+  private disableEmailAlerts: boolean;
+
   constructor(
     sql: postgres.Sql,
     log: FastifyBaseLogger,
-    config: TriageServiceConfig
+    config: TriageServiceConfig,
+    deps: TriageServiceDeps = {}
   ) {
     this.sql = sql;
     this.log = log;
@@ -248,6 +289,12 @@ export class TriageService {
     this.model = config.model ?? 'claude-haiku-4-5';
     this.maxTokens = config.maxTokens ?? 2048;
     this.disableEmailTriage = config.disableEmailTriage ?? false;
+    this.rulesService = deps.rulesService;
+    this.whitelistService = deps.whitelistService;
+    this.notify = deps.notify;
+    this.heartbeats = deps.heartbeats;
+    this.teamDomains = deps.teamDomains ?? [];
+    this.disableEmailAlerts = deps.disableEmailAlerts ?? false;
   }
 
   /**
@@ -371,22 +418,45 @@ export class TriageService {
         return { emailId, success: false, error: 'Email not found' };
       }
 
-      // Load account settings for dynamic prompt
+      // Load account settings for dynamic prompt + label prefixes.
       const settings = await this.getAccountSettings(email.account_id);
+      const prefixes = this.labelPrefixesFromSettings(settings);
+
+      // Step 1: deterministic pre-AI rules. A skip_ai_triage match applies a
+      // deterministic plan and spends no Haiku turn.
+      const rule = this.rulesService
+        ? await this.rulesService.matchRule(email)
+        : null;
+
+      if (rule?.skip_ai_triage) {
+        return this.applyRuleResult(emailId, rule, prefixes);
+      }
+
+      // Step 2: AI analysis (rule, if any, only pre-assigns hints).
       const aliases = await this.getUserAliases(email.account_id);
-
-      // Check thread context
       const threadContext = await this.getThreadContext(email);
-
-      // Haiku analysis with XML-structured prompts and retry
       const analysis = await this.runHaikuAnalysis(email, {
         threadContext,
         settings,
         aliases,
       });
 
-      // Apply analysis to database
-      return this.applyTriageResult(emailId, analysis);
+      // Step 3: derive the deterministic plan, guarded by the whitelist.
+      const whitelist = await this.getWhitelist(email.account_id);
+      const plan = this.guardPlan(
+        derivePlanFromAnalysis(analysis, rule, prefixes),
+        email,
+        analysis,
+        whitelist
+      );
+
+      // Step 4: persist analysis + plan (workflow_status -> 'triaged').
+      const result = await this.applyTriageResult(emailId, analysis, plan, rule);
+
+      // Step 5: urgent-alert path — earns an interrupt only if it clears the bar.
+      result.alerted = await this.maybeAlert(email, analysis, whitelist);
+
+      return result;
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
@@ -706,15 +776,24 @@ ${email.body_text || email.snippet || '(empty)'}
   }
 
   /**
-   * Apply triage analysis to database (single JSONB column)
+   * Apply AI analysis + derived plan to the database (workflow -> 'triaged').
+   * The plan columns (planned_labels / gmail_action / digest_section) are what
+   * the deterministic executor later consumes on confirm-to-execute.
    */
   private async applyTriageResult(
     emailId: number,
-    analysis: EmailAnalysis
+    analysis: EmailAnalysis,
+    plan: DerivedPlan,
+    rule: TriageRule | null
   ): Promise<TriageResult> {
     await this.sql`
       UPDATE google.emails SET
         analysis = ${analysis as any},
+        planned_labels = ${plan.plannedLabels},
+        gmail_action = ${plan.gmailAction},
+        digest_section = ${plan.digestSection},
+        triage_confidence = ${rule ? 0.9 : 0.75},
+        rule_matched_id = ${rule?.id ?? null},
         workflow_status = 'triaged',
         triaged_at = NOW(),
         last_error = NULL,
@@ -724,7 +803,14 @@ ${email.body_text || email.snippet || '(empty)'}
     `;
 
     this.log.info(
-      { emailId, overview: analysis.overview, messageType: analysis.message_type },
+      {
+        emailId,
+        overview: analysis.overview,
+        messageType: analysis.message_type,
+        gmailAction: plan.gmailAction,
+        digestSection: plan.digestSection,
+        ruleMatched: rule?.rule_id,
+      },
       'AI triage complete'
     );
 
@@ -732,6 +818,153 @@ ${email.body_text || email.snippet || '(empty)'}
       emailId,
       success: true,
       analysis,
+      ...(rule ? { ruleMatched: rule.rule_id } : {}),
+      confidence: rule ? 0.9 : 0.75,
     };
+  }
+
+  /**
+   * Apply a skip_ai_triage rule deterministically — no model call. Stages a
+   * plan derived purely from the rule (mirrors the deleted `applyRuleResult`,
+   * modernized onto the AI/* + TODO/* label tree).
+   */
+  private async applyRuleResult(
+    emailId: number,
+    rule: TriageRule,
+    prefixes: LabelPrefixes
+  ): Promise<TriageResult> {
+    const plan = derivePlanFromRule(rule, prefixes);
+
+    await this.sql`
+      UPDATE google.emails SET
+        planned_labels = ${plan.plannedLabels},
+        gmail_action = ${plan.gmailAction},
+        digest_section = ${plan.digestSection},
+        triage_confidence = 1.0,
+        rule_matched_id = ${rule.id},
+        workflow_status = 'triaged',
+        triaged_at = NOW(),
+        last_error = NULL,
+        last_error_at = NULL,
+        triage_attempts = 0
+      WHERE id = ${emailId}
+    `;
+
+    this.log.info(
+      { emailId, ruleId: rule.rule_id, gmailAction: plan.gmailAction },
+      'Applied rule-based triage (skip_ai_triage)'
+    );
+
+    return {
+      emailId,
+      success: true,
+      ruleMatched: rule.rule_id,
+      confidence: 1.0,
+    };
+  }
+
+  /** Read the AI/* and TODO/* label prefixes from account settings. */
+  private labelPrefixesFromSettings(
+    settings: AccountSettings | null
+  ): LabelPrefixes {
+    return {
+      ai: settings?.email_label_prefix || 'AI',
+      todo: settings?.email_label_prefix_todo || 'TODO',
+    };
+  }
+
+  /**
+   * Whitelist guardrail applied at plan time: never stage a `spam` move for a
+   * whitelisted sender's personal mail (the executor enforces the same rule at
+   * execute time as a backstop).
+   */
+  private guardPlan(
+    plan: DerivedPlan,
+    email: EmailRecord,
+    analysis: EmailAnalysis,
+    whitelist: Set<string>
+  ): DerivedPlan {
+    if (
+      plan.gmailAction === 'spam' &&
+      analysis.message_type === 'personal' &&
+      email.from_address &&
+      whitelist.has(email.from_address.toLowerCase())
+    ) {
+      const action: GmailAction = 'leave';
+      this.log.warn(
+        { emailId: email.id, from: email.from_address },
+        'Plan guardrail: downgrading spam->leave for whitelisted personal sender'
+      );
+      return { ...plan, gmailAction: action };
+    }
+    return plan;
+  }
+
+  /**
+   * Per-account whitelist with a short TTL cache so a triage batch doesn't
+   * re-derive it for every email. Empty set when no whitelist service is wired.
+   */
+  private async getWhitelist(accountId: number): Promise<Set<string>> {
+    if (!this.whitelistService) return new Set();
+    const cached = this.whitelistCache.get(accountId);
+    if (cached && Date.now() - cached.at < TriageService.WHITELIST_TTL_MS) {
+      return cached.set;
+    }
+    const set = await this.whitelistService.deriveWhitelist(accountId);
+    this.whitelistCache.set(accountId, { set, at: Date.now() });
+    return set;
+  }
+
+  /**
+   * The urgent-alert path. Fires a priority `interrupt` through the dispatcher
+   * only when the email clears the "interrupts are earned" bar (human + known
+   * sender + genuine time-sensitivity). Everything else stays digest material.
+   * Returns whether an alert was dispatched.
+   */
+  private async maybeAlert(
+    email: EmailRecord,
+    analysis: EmailAnalysis,
+    whitelist: Set<string>
+  ): Promise<boolean> {
+    if (this.disableEmailAlerts || !this.notify) return false;
+
+    const verdict = classifyUrgency({
+      senderAddress: email.from_address,
+      senderType: analysis.sender_type,
+      subject: email.subject,
+      bodyText: email.body_text,
+      snippet: email.snippet,
+      actionItems: analysis.potential_action_items,
+      whitelist,
+      teamDomains: this.teamDomains,
+    });
+
+    if (!verdict.urgent) return false;
+
+    const from = email.from_name
+      ? `${email.from_name} <${email.from_address ?? ''}>`
+      : email.from_address ?? 'unknown sender';
+    const actionLine = analysis.potential_action_items[0]
+      ? `\nAction: ${analysis.potential_action_items[0]}`
+      : '';
+
+    try {
+      await this.notify.notify({
+        priority: 'interrupt',
+        title: `Urgent email: ${email.from_name ?? email.from_address ?? 'sender'}`,
+        body: `From ${from}\nSubject: ${email.subject ?? '(no subject)'}\n${analysis.overview}${actionLine}`,
+      });
+      await this.sql`
+        UPDATE google.emails SET alerted_at = NOW() WHERE id = ${email.id}
+      `;
+      this.log.info(
+        { emailId: email.id, reason: verdict.reason },
+        'Urgent-alert dispatched (interrupt)'
+      );
+      return true;
+    } catch (error) {
+      this.log.error({ emailId: email.id, error }, 'Urgent-alert dispatch failed');
+      return false;
+    }
   }
 }
