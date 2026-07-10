@@ -50,6 +50,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body ?? {}),
     }),
+  put: <T>(endpoint: string, body?: unknown) =>
+    apiRequest<T>(endpoint, {
+      method: "PUT",
+      body: JSON.stringify(body ?? {}),
+    }),
   patch: <T>(endpoint: string, body: unknown) =>
     apiRequest<T>(endpoint, {
       method: "PATCH",
