@@ -15,20 +15,25 @@ import envPlugin from './plugins/env.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Create Fastify instance
-// Note: LOG_LEVEL and NODE_ENV read from process.env here since env plugin isn't loaded yet
+// Note: LOG_LEVEL read from process.env here since env plugin isn't loaded yet.
+// Pretty-print only for an interactive terminal (or an explicit opt-in via
+// LOG_PRETTY=1) - NODE_ENV=development is set in the live .env regardless of
+// how the process is run, so gating on it made pino-pretty (with ANSI color
+// codes) always fire, including under systemd where stdout goes straight to
+// journald. Raw ndjson is what journald/`journalctl -o cat` expect.
+const usePrettyLogs = Boolean(process.stdout.isTTY) || process.env.LOG_PRETTY === '1';
 const fastify = Fastify({
   logger: {
     level: process.env.LOG_LEVEL || 'info',
-    transport:
-      process.env.NODE_ENV === 'development'
-        ? {
-            target: 'pino-pretty',
-            options: {
-              translateTime: 'HH:MM:ss Z',
-              ignore: 'pid,hostname',
-            },
-          }
-        : undefined,
+    transport: usePrettyLogs
+      ? {
+          target: 'pino-pretty',
+          options: {
+            translateTime: 'HH:MM:ss Z',
+            ignore: 'pid,hostname',
+          },
+        }
+      : undefined,
   },
   // Allow large payloads for session transcript uploads (200MB)
   bodyLimit: 500 * 1024 * 1024,
