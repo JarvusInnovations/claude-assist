@@ -16,7 +16,7 @@ import type { GoogleAccount, SyncResult } from '../types.js';
 // Settings fields from GoogleAccount used for sync
 type AccountSettings = Pick<
   GoogleAccount,
-  'email_label_prefix' | 'email_sync_start_date'
+  'email' | 'email_label_prefix' | 'email_sync_start_date'
 >;
 
 interface ParsedEmail {
@@ -206,6 +206,17 @@ export class GmailSyncService {
     };
 
     try {
+      if (!settings) {
+        throw new Error(`Account ${accountId} not found`);
+      }
+
+      // Identity guard: verify the mailbox behind this Gmail client is the
+      // one this account row represents, before phase 1 discovers or
+      // persists anything. Also doubles as the profile fetch we need for
+      // historyId below, so it costs no extra API call.
+      const profile = await gmail.users.getProfile({ userId: 'me' });
+      this.assertMailboxIdentity(accountId, settings.email, profile.data.emailAddress);
+
       // Build query: inbox emails not yet triaged
       let query = `in:inbox -label:${labelPrefix}/Triaged`;
 
@@ -261,8 +272,9 @@ export class GmailSyncService {
         'Phase 2 complete: Messages fetched'
       );
 
-      // Update last sync timestamp and get latest historyId
-      const profile = await gmail.users.getProfile({ userId: 'me' });
+      // Update last sync timestamp using the historyId from the profile
+      // call fetched at the top of this run (identity guard above) rather
+      // than fetching the profile again.
       const historyId = profile.data.historyId;
 
       await this.sql`
@@ -346,6 +358,18 @@ export class GmailSyncService {
     };
 
     try {
+      const settings = await this.getAccountSettings(accountId);
+      if (!settings) {
+        throw new Error(`Account ${accountId} not found`);
+      }
+
+      // Identity guard: verify the mailbox behind this Gmail client is the
+      // one this account row represents, before any history changes are
+      // fetched or persisted. Also doubles as the profile fetch we need
+      // for the updated historyId below, so it costs no extra API call.
+      const profile = await gmail.users.getProfile({ userId: 'me' });
+      this.assertMailboxIdentity(accountId, settings.email, profile.data.emailAddress);
+
       // Get history since last sync
       const changedMessageIds = await this.getHistoryChanges(gmail, historyId);
       result.messagesScanned = changedMessageIds.length;
@@ -393,8 +417,8 @@ export class GmailSyncService {
         }
       }
 
-      // Update email_history_id
-      const profile = await gmail.users.getProfile({ userId: 'me' });
+      // Update email_history_id using the profile fetched at the top of
+      // this run (identity guard above) rather than fetching it again.
       const newHistoryId = profile.data.historyId;
 
       await this.sql`
@@ -981,9 +1005,42 @@ export class GmailSyncService {
     accountId: number
   ): Promise<AccountSettings | null> {
     const [account] = await this.sql<AccountSettings[]>`
-      SELECT email_label_prefix, email_sync_start_date
+      SELECT email, email_label_prefix, email_sync_start_date
       FROM google.accounts WHERE id = ${accountId}
     `;
     return account ?? null;
+  }
+
+  /**
+   * Verify the Gmail profile returned at the start of a sync run belongs to
+   * the mailbox this account row is supposed to represent, before any
+   * messages are discovered or persisted.
+   *
+   * A shared OAuth client made it possible for one account's sync to
+   * silently run with another account's credentials (see 6ec9c21) -
+   * account 3's sync ran against account 1's mailbox and ingested 859 rows
+   * into the wrong account before anyone noticed. This is the write-time
+   * invariant that makes that class of bug loud instead of silent: if the
+   * profile the API hands back doesn't match the account's configured
+   * email, we abort before writing anything rather than trusting the
+   * client we were constructed with.
+   */
+  private assertMailboxIdentity(
+    accountId: number,
+    expectedEmail: string,
+    profileEmail: string | null | undefined
+  ): void {
+    if (profileEmail && profileEmail.toLowerCase() === expectedEmail.toLowerCase()) {
+      return;
+    }
+
+    this.log.error(
+      { accountId, expectedEmail, profileEmail },
+      'Mailbox identity mismatch - aborting sync before writing any messages'
+    );
+
+    throw new Error(
+      `Mailbox identity mismatch for account ${accountId}: expected ${expectedEmail} but Gmail profile returned ${profileEmail ?? 'unknown'}`
+    );
   }
 }
