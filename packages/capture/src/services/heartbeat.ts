@@ -16,10 +16,10 @@
 import type { FastifyInstance } from 'fastify';
 
 export async function emitHeartbeat(fastify: FastifyInstance, pipeline: string): Promise<void> {
-  const heartbeat = (fastify as unknown as { heartbeat?: unknown }).heartbeat;
-  if (typeof heartbeat !== 'function') return;
+  const registry = (fastify as unknown as { heartbeats?: { beat?: unknown } }).heartbeats;
+  if (!registry || typeof registry.beat !== 'function') return;
   try {
-    await (heartbeat as (pipeline: string) => Promise<void>)(pipeline);
+    await (registry.beat as (pipeline: string) => Promise<void>).call(registry, pipeline);
   } catch (error) {
     fastify.log.warn({ pipeline, error }, 'Heartbeat emit failed (non-fatal)');
   }
