@@ -233,10 +233,17 @@ export function renderTanaPaste(b: Briefing): string {
 const EMAIL_OVERVIEW_MAX = 140;
 
 function emailLine(m: EmailBrief): string {
-  const head = `${m.fromName}: ${m.subject}`;
-  const overview = collapseWhitespace(m.overview);
-  if (!overview) return head;
-  return `${head} — ${truncate(overview, EMAIL_OVERVIEW_MAX)}`;
+  // Prominence markers: a quiet-held interrupt is the "you'd have wanted this
+  // overnight" case and leads; an opportunity match carries its reasoning line.
+  const marks: string[] = [];
+  if (m.quietHeld) marks.push('[HELD overnight]');
+  else if (m.tier === 'interrupt') marks.push('[interrupt]');
+  const prefix = marks.length > 0 ? `${marks.join(' ')} ` : '';
+
+  const head = `${prefix}${m.fromName}: ${m.subject}`;
+  const detail = collapseWhitespace(m.reason || m.overview);
+  if (!detail) return head;
+  return `${head} — ${truncate(detail, EMAIL_OVERVIEW_MAX)}`;
 }
 
 function collapseWhitespace(s: string): string {

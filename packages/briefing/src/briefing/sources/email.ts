@@ -3,10 +3,11 @@
  * claude-assist Postgres (its home). It is split into two clearly-separated
  * tiers so the briefing never cries wolf:
  *
- *   1. "Needs attention" — mail that actually earned an interrupt (the triage
- *      pipeline stamped `alerted_at` when it cleared the "interrupts are earned"
- *      bar). These are listed individually with sender + the stored one-line
- *      overview.
+ *   1. "Needs attention" — the two earned tiers from the urgency pipeline, read
+ *      from google.email_attention (INTERRUPT + ATTENTION, plus INTERRUPTs that
+ *      were HELD for quiet hours — shown prominently). Each is listed with
+ *      sender, the stored overview, and (for opportunity hits) the one-line
+ *      reasoning. This widens the old alerted_at-only source.
  *   2. Everything else recent + human (personal/alert message types) is rolled
  *      up into a calm aggregate: a count plus the busiest senders, with no
  *      per-message noise unless the bucket is small.
@@ -24,6 +25,12 @@ export interface EmailBrief {
   fromName: string;
   fromAddress: string | null;
   overview: string;
+  /** Urgency tier that earned the entry: 'interrupt' | 'attention'. */
+  tier?: string;
+  /** True when an INTERRUPT was held overnight for quiet hours (show prominently). */
+  quietHeld?: boolean;
+  /** One-line reasoning for an opportunity (RFP) match, when present. */
+  reason?: string | null;
 }
 
 export interface SenderTally {
@@ -59,12 +66,27 @@ interface BriefRow {
   overview: string | null;
 }
 
+interface AttentionBriefRow extends BriefRow {
+  tier: string | null;
+  quiet_held: boolean | null;
+  reason: string | null;
+}
+
 function toBrief(r: BriefRow): EmailBrief {
   return {
     subject: r.subject ?? '(no subject)',
     fromName: r.from_name ?? '(unknown)',
     fromAddress: r.from_address ?? null,
     overview: r.overview ?? '',
+  };
+}
+
+function toAttentionBrief(r: AttentionBriefRow): EmailBrief {
+  return {
+    ...toBrief(r),
+    tier: r.tier ?? undefined,
+    quietHeld: r.quiet_held ?? false,
+    reason: r.reason ?? null,
   };
 }
 
@@ -76,14 +98,22 @@ export async function fetchEmailSummary(
   const limit = opts.limit ?? 10;
 
   try {
-    // Tier 1: mail that actually cleared the interrupt bar (alerted_at stamped).
-    const attentionRows = await sql<BriefRow[]>`
-      SELECT subject, from_name, from_address, analysis->>'overview' AS overview
-      FROM google.emails
-      WHERE workflow_status = 'triaged'
-        AND date >= NOW() - (${windowHours} * INTERVAL '1 hour')
-        AND alerted_at IS NOT NULL
-      ORDER BY date DESC
+    // Tier 1: the two earned tiers from the urgency pipeline. Quiet-held
+    // interrupts sort first (shown prominently), then by recency.
+    const attentionRows = await sql<AttentionBriefRow[]>`
+      SELECT a.subject,
+             a.from_name,
+             a.from_address,
+             COALESCE(a.overview, e.analysis->>'overview') AS overview,
+             a.tier AS tier,
+             a.quiet_held AS quiet_held,
+             a.reason AS reason
+      FROM google.email_attention a
+      LEFT JOIN google.emails e ON e.id = a.email_id
+      WHERE a.message_date >= NOW() - (${windowHours} * INTERVAL '1 hour')
+      ORDER BY a.quiet_held DESC,
+               (a.tier = 'interrupt') DESC,
+               a.message_date DESC
       LIMIT ${limit}
     `;
 
@@ -93,7 +123,7 @@ export async function fetchEmailSummary(
       FROM google.emails
       WHERE workflow_status = 'triaged'
         AND date >= NOW() - (${windowHours} * INTERVAL '1 hour')
-        AND alerted_at IS NULL
+        AND id NOT IN (SELECT email_id FROM google.email_attention)
         AND analysis->>'sender_type' = 'human'
         AND analysis->>'message_type' IN ('personal', 'alert')
       ORDER BY date DESC
@@ -105,7 +135,7 @@ export async function fetchEmailSummary(
       FROM google.emails
       WHERE workflow_status = 'triaged'
         AND date >= NOW() - (${windowHours} * INTERVAL '1 hour')
-        AND alerted_at IS NULL
+        AND id NOT IN (SELECT email_id FROM google.email_attention)
         AND analysis->>'sender_type' = 'human'
         AND analysis->>'message_type' IN ('personal', 'alert')
     `;
@@ -115,7 +145,7 @@ export async function fetchEmailSummary(
       FROM google.emails
       WHERE workflow_status = 'triaged'
         AND date >= NOW() - (${windowHours} * INTERVAL '1 hour')
-        AND alerted_at IS NULL
+        AND id NOT IN (SELECT email_id FROM google.email_attention)
         AND analysis->>'sender_type' = 'human'
         AND analysis->>'message_type' IN ('personal', 'alert')
       GROUP BY from_name
@@ -130,7 +160,7 @@ export async function fetchEmailSummary(
     `;
 
     return {
-      needsAttention: attentionRows.map(toBrief),
+      needsAttention: attentionRows.map(toAttentionBrief),
       otherHuman: otherRows.map(toBrief),
       otherHumanCount,
       otherTopSenders: senderRows.map((s) => ({ name: s.name ?? '(unknown)', count: s.count })),
