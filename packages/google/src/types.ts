@@ -263,6 +263,23 @@ export interface EmailAnalysis {
   // prompt, so a best-effort unsubscribe-link lookup is visible from the
   // stored analysis alone.
   html_truncated?: boolean;
+
+  // Set by the email urgency pipeline (not the turn-1 model): the result of the
+  // owner-interest opportunity evaluation, when this was a solicitation-class
+  // email. Lets the briefing's attention entry show the one-line reasoning.
+  opportunity?: {
+    match: boolean;
+    high: boolean;
+    reasoning: string;
+  };
+
+  // Set by the email urgency pipeline: the tier this email earned + why, so the
+  // decision is visible from the stored analysis alone (mirrors html_truncated).
+  urgency?: {
+    tier: 'interrupt' | 'attention' | 'neither';
+    reason: string;
+    quiet_held?: boolean;
+  };
 }
 
 // ============================================
