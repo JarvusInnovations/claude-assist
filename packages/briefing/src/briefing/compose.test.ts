@@ -100,11 +100,11 @@ describe('composeBriefing', () => {
   it('passes through source errors without throwing', () => {
     const b = composeBriefing(
       baseInputs({
-        commitments: { commitments: [], error: 'hq-axi missing' },
+        commitments: { commitments: [], error: 'commitments source missing' },
         calendar: { events: [], error: 'gws-axi missing' },
       })
     );
-    expect(b.commitments.error).toBe('hq-axi missing');
+    expect(b.commitments.error).toBe('commitments source missing');
     expect(b.calendar.error).toBe('gws-axi missing');
     expect(b.headline).toContain('urgent email');
   });

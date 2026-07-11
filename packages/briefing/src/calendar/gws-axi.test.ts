@@ -9,7 +9,7 @@ import {
 // A verbatim-shaped gws-axi `calendar events --fields status,attendees,location,
 // description,hangoutLink` frame (columns reordered as the CLI emits them).
 const SAMPLE = [
-  'account: chris@jarv.us',
+  'account: user@example.com',
   'count: 3',
   'range: "2026-07-10T04:00:00.000Z → 2026-07-11T03:59:00.000Z"',
   'events[3]{id,summary,start,end,my_response,attendees,location,description,hangoutLink}:',

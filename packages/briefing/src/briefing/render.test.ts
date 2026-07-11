@@ -86,9 +86,9 @@ describe('renderTanaPaste', () => {
 
   it('shows a not-available line when a source errored', () => {
     const paste2 = renderTanaPaste(
-      sampleBriefing({ commitments: { overdue: [], dueToday: [], upcomingCount: 0, error: 'hq-axi missing' } })
+      sampleBriefing({ commitments: { overdue: [], dueToday: [], upcomingCount: 0, error: 'commitments source missing' } })
     );
-    expect(paste2).toContain('HQ commitments not available: hq-axi missing');
+    expect(paste2).toContain('Commitments not available: commitments source missing');
   });
 
   it('uses only bullets (no supertags, no numbered lists)', () => {

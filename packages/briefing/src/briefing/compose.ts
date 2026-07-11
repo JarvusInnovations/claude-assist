@@ -5,7 +5,7 @@
  * (render.ts) turns a `Briefing` into Tana Paste and writes the day node.
  *
  * Content contract (per plans/daily-briefing.md):
- *   today's calendar (with which events will alert), open HQ commitments,
+ *   today's calendar (with which events will alert), open commitments,
  *   urgent-email summary + counts, captures awaiting review, coverage staleness,
  *   pipeline health, and links out to richer claude-assist pages. Sources that
  *   aren't live render as "not-yet-available", never failing the whole briefing.

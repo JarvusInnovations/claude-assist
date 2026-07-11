@@ -140,7 +140,7 @@ export function renderTanaPaste(b: Briefing): string {
   // Commitments
   lines.push('  - Open commitments');
   if (b.commitments.error) {
-    lines.push(`    - HQ commitments not available: ${b.commitments.error}`);
+    lines.push(`    - Commitments not available: ${b.commitments.error}`);
   } else {
     if (b.commitments.overdue.length > 0) {
       lines.push(`    - Overdue (${b.commitments.overdue.length})`);

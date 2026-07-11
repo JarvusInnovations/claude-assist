@@ -13,7 +13,7 @@
 --
 -- The daily briefing and per-meeting briefings are stateless renderings and keep
 -- no tables of their own (one home per datum) — the briefing reads live from
--- calendar + HQ + email + the heartbeat registry each morning.
+-- calendar + commitments + email + the heartbeat registry each morning.
 
 CREATE TABLE briefing.series_overrides (
     series_id     TEXT PRIMARY KEY,
