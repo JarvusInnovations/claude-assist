@@ -56,7 +56,19 @@ function sampleBriefing(over: Partial<Briefing> = {}): Briefing {
       upcomingCount: 2,
       error: null,
     },
-    email: { urgent: [{ subject: 'Re: contract', fromName: 'Nate', overview: 'x' }], urgentCount: 1, untriagedCount: 4, error: null },
+    email: {
+      needsAttention: [
+        { subject: 'Re: contract', fromName: 'Nate', fromAddress: 'nate@example.com', overview: 'Wants sign-off before the 3pm call' },
+      ],
+      otherHuman: [],
+      otherHumanCount: 6,
+      otherTopSenders: [
+        { name: 'Dana', count: 2 },
+        { name: 'Sam', count: 1 },
+      ],
+      untriagedCount: 4,
+      error: null,
+    },
     captures: { awaitingReview: 2, awaitingExecutor: 1, error: null },
     coverage: { pipelines: [{ name: 'email-sync', ageHours: 30, thresholdHours: 12, ratio: 2.5, stale: true }], staleCount: 1, error: null },
     links: [{ label: 'Inbox', url: 'https://assist.example/inbox' }],
@@ -79,9 +91,57 @@ describe('renderTanaPaste', () => {
   });
 
   it('renders every contract section', () => {
-    for (const section of ['Today', 'Open commitments', 'Urgent email', 'Captures awaiting review', 'Pipeline health']) {
+    for (const section of ['Today', 'Open commitments', 'Email', 'Captures awaiting review', 'Pipeline health']) {
       expect(paste).toContain(section);
     }
+  });
+
+  it('lists needs-attention email with sender + overview, and rolls up the rest', () => {
+    expect(paste).toContain('Needs attention (1)');
+    expect(paste).toContain('Nate: Re: contract — Wants sign-off before the 3pm call');
+    expect(paste).toContain('Other human mail (6)');
+    expect(paste).toContain('Top senders: Dana (2), Sam');
+  });
+
+  it('lists other human mail individually when the bucket is small', () => {
+    const paste2 = renderTanaPaste(
+      sampleBriefing({
+        email: {
+          needsAttention: [],
+          otherHuman: [
+            { subject: 'lunch?', fromName: 'Pat', fromAddress: 'pat@example.com', overview: 'Asking about lunch Thursday' },
+          ],
+          otherHumanCount: 1,
+          otherTopSenders: [{ name: 'Pat', count: 1 }],
+          untriagedCount: 0,
+          error: null,
+        },
+      })
+    );
+    expect(paste2).toContain('Needs attention: none');
+    expect(paste2).toContain('Other human mail (1)');
+    expect(paste2).toContain('Pat: lunch? — Asking about lunch Thursday');
+  });
+
+  it('truncates an oversized email overview', () => {
+    const long = 'x'.repeat(400);
+    const paste2 = renderTanaPaste(
+      sampleBriefing({
+        email: {
+          needsAttention: [
+            { subject: 'big', fromName: 'Lee', fromAddress: 'lee@example.com', overview: long },
+          ],
+          otherHuman: [],
+          otherHumanCount: 0,
+          otherTopSenders: [],
+          untriagedCount: 0,
+          error: null,
+        },
+      })
+    );
+    const emailLine = paste2.split('\n').find((l) => l.includes('Lee: big'))!;
+    expect(emailLine.length).toBeLessThan(200);
+    expect(emailLine).toContain('…');
   });
 
   it('shows a not-available line when a source errored', () => {

@@ -56,7 +56,16 @@ function baseInputs(over: Partial<BriefingInputs> = {}): BriefingInputs {
       ],
       error: null,
     },
-    email: { urgent: [{ subject: 'Re: contract', fromName: 'Nate', overview: 'needs sign-off' }], urgentCount: 1, untriagedCount: 4, error: null },
+    email: {
+      needsAttention: [
+        { subject: 'Re: contract', fromName: 'Nate', fromAddress: 'nate@example.com', overview: 'needs sign-off' },
+      ],
+      otherHuman: [],
+      otherHumanCount: 6,
+      otherTopSenders: [{ name: 'Dana', count: 2 }],
+      untriagedCount: 4,
+      error: null,
+    },
     captures: { awaitingReview: 2, awaitingExecutor: 0, error: null },
     coverage: {
       pipelines: [
@@ -89,7 +98,7 @@ describe('composeBriefing', () => {
     const b = composeBriefing(baseInputs());
     expect(b.headline).toContain('1 to join');
     expect(b.headline).toContain('1 overdue');
-    expect(b.headline).toContain('1 urgent email');
+    expect(b.headline).toContain('1 email needs attention');
   });
 
   it('emits links only when a base url is given', () => {
@@ -106,18 +115,18 @@ describe('composeBriefing', () => {
     );
     expect(b.commitments.error).toBe('commitments source missing');
     expect(b.calendar.error).toBe('gws-axi missing');
-    expect(b.headline).toContain('urgent email');
+    expect(b.headline).toContain('email needs attention');
   });
 });
 
 describe('buildHeadline', () => {
   it('falls back to a clear-day message', () => {
     expect(
-      buildHeadline({ timedMeetings: 0, alertingCount: 0, overdueCount: 0, dueTodayCount: 0, urgentEmailCount: 0 })
+      buildHeadline({ timedMeetings: 0, alertingCount: 0, overdueCount: 0, dueTodayCount: 0, needsAttentionCount: 0 })
     ).toContain('Clear day');
   });
   it('caps at three parts', () => {
-    const h = buildHeadline({ timedMeetings: 5, alertingCount: 2, overdueCount: 3, dueTodayCount: 1, urgentEmailCount: 4 });
+    const h = buildHeadline({ timedMeetings: 5, alertingCount: 2, overdueCount: 3, dueTodayCount: 1, needsAttentionCount: 4 });
     expect(h.split(' · ').length).toBeLessThanOrEqual(3);
   });
 });

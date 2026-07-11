@@ -16,6 +16,7 @@ import type { FastifyBaseLogger } from 'fastify';
 import type { TanaMcpClient } from '@jarvus/claude-assist-core';
 import type { Briefing } from './compose.js';
 import type { OpenCommitment } from './sources/commitments.js';
+import type { EmailBrief } from './sources/email.js';
 import type { AlertPlanItem } from '../types.js';
 
 /** Stable marker so a per-date briefing block is found + not duplicated. */
@@ -162,14 +163,33 @@ export function renderTanaPaste(b: Briefing): string {
     }
   }
 
-  // Email
-  lines.push('  - Urgent email');
+  // Email — two tiers: what earned attention, then a calm aggregate.
+  lines.push('  - Email');
   if (b.email.error) {
     lines.push(`    - Email summary not available: ${b.email.error}`);
   } else {
-    lines.push(`    - ${b.email.urgentCount} urgent · ${b.email.untriagedCount} awaiting triage`);
-    for (const m of b.email.urgent) {
-      lines.push(`    - ${m.fromName}: ${m.subject}`);
+    if (b.email.needsAttention.length > 0) {
+      lines.push(`    - Needs attention (${b.email.needsAttention.length})`);
+      for (const m of b.email.needsAttention) lines.push(`      - ${emailLine(m)}`);
+    } else {
+      lines.push('    - Needs attention: none');
+    }
+
+    if (b.email.otherHumanCount > 0) {
+      lines.push(`    - Other human mail (${b.email.otherHumanCount})`);
+      // List individually only when the bucket is small; otherwise roll up.
+      if (b.email.otherHumanCount <= 3 && b.email.otherHuman.length > 0) {
+        for (const m of b.email.otherHuman) lines.push(`      - ${emailLine(m)}`);
+      } else if (b.email.otherTopSenders.length > 0) {
+        const top = b.email.otherTopSenders
+          .map((s) => (s.count > 1 ? `${s.name} (${s.count})` : s.name))
+          .join(', ');
+        lines.push(`      - Top senders: ${top}`);
+      }
+    }
+
+    if (b.email.untriagedCount > 0) {
+      lines.push(`    - ${b.email.untriagedCount} awaiting triage`);
     }
   }
 
@@ -207,6 +227,25 @@ export function renderTanaPaste(b: Briefing): string {
   }
 
   return lines.join('\n');
+}
+
+/** Max chars of the stored overview embedded per email (keeps bullets tidy). */
+const EMAIL_OVERVIEW_MAX = 140;
+
+function emailLine(m: EmailBrief): string {
+  const head = `${m.fromName}: ${m.subject}`;
+  const overview = collapseWhitespace(m.overview);
+  if (!overview) return head;
+  return `${head} — ${truncate(overview, EMAIL_OVERVIEW_MAX)}`;
+}
+
+function collapseWhitespace(s: string): string {
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+function truncate(s: string, max: number): string {
+  if (s.length <= max) return s;
+  return `${s.slice(0, max - 1).trimEnd()}…`;
 }
 
 function commitmentLine(c: OpenCommitment): string {
