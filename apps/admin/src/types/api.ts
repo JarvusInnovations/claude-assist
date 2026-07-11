@@ -487,3 +487,59 @@ export interface SynthesisReport {
   event_count: number;
   created_at: string;
 }
+
+// ============================================
+// Email Digest (interactive confirm-to-execute) Types
+// ============================================
+
+// Deterministic action the executor takes in Gmail. 'spam' quarantines (moves
+// to the Spam folder) — it is NEVER deleted/trashed.
+export type GmailAction = "leave" | "archive" | "spam";
+
+export interface DigestEmail {
+  id: number;
+  account_identifier: string;
+  from_address: string | null;
+  from_name: string | null;
+  subject: string | null;
+  date: string | null;
+  digest_section: string | null;
+  gmail_action: GmailAction | null;
+  planned_labels: string[] | null;
+  workflow_status: string;
+  analysis: EmailAnalysis | null;
+}
+
+export interface DigestSectionGroup {
+  section: string;
+  count: number;
+  emails: DigestEmail[];
+}
+
+export interface DigestPendingResponse {
+  count: number;
+  sections: DigestSectionGroup[];
+}
+
+export interface DigestHistoryResponse {
+  count: number;
+  days: number;
+  emails: DigestEmail[];
+}
+
+export interface ExecuteResult {
+  emailId: number;
+  success: boolean;
+  appliedLabels?: string[];
+  appliedGmailAction?: GmailAction | null;
+  skipped?: boolean;
+  reason?: string;
+  error?: string;
+}
+
+export interface ExecuteResponse {
+  requested: number;
+  succeeded: number;
+  failed: number;
+  results: ExecuteResult[];
+}
