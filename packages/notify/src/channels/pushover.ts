@@ -19,6 +19,8 @@ export interface PushoverMessage {
   message: string;
   priority: PushoverPriority;
   url?: string;
+  /** Label for the tappable action link. Defaults to "Open" when `url` is set. */
+  urlTitle?: string;
 }
 
 export interface PushoverChannel {
@@ -27,7 +29,7 @@ export interface PushoverChannel {
 
 export function createPushoverChannel(config: PushoverConfig): PushoverChannel {
   return {
-    async send({ title, message, priority, url }) {
+    async send({ title, message, priority, url, urlTitle }) {
       const form = new URLSearchParams();
       form.set('token', config.token);
       form.set('user', config.user);
@@ -36,7 +38,7 @@ export function createPushoverChannel(config: PushoverConfig): PushoverChannel {
       form.set('priority', String(priority));
       if (url) {
         form.set('url', url);
-        form.set('url_title', 'Open');
+        form.set('url_title', urlTitle || 'Open');
       }
 
       const res = await fetch(PUSHOVER_API, {

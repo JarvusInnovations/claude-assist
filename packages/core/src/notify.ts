@@ -32,6 +32,12 @@ export interface NotifyInput {
    */
   url?: string;
   /**
+   * Label for `url`'s tappable action (Pushover's `url_title`). Only meaningful
+   * alongside `url`; channels that don't support a labeled action link ignore it.
+   * Defaults to "Open" when `url` is set and this is omitted.
+   */
+  urlTitle?: string;
+  /**
    * Force a specific channel set, overriding the priority default. Lets a
    * caller (or a test) fan a single dispatch out to both channels at once.
    */
