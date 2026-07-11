@@ -4,6 +4,7 @@ import {
   DEFAULT_PHYSICAL_LEAD_MINUTES,
   DEFAULT_VIDEO_LEAD_MINUTES,
   classifyEvent,
+  conferencingUrl,
   detectVenue,
   isAmbiguous,
   leadMinutesFor,
@@ -144,6 +145,38 @@ describe('lead times', () => {
 describe('detectVenue', () => {
   it('classifies a bare URL location as video, not physical', () => {
     expect(detectVenue(mkEvent({ hangoutLink: '', location: 'https://zoom.us/j/1' }))).toBe('video');
+  });
+});
+
+describe('conferencingUrl', () => {
+  it('prefers hangoutLink when present', () => {
+    expect(conferencingUrl(mkEvent())).toBe('https://meet.google.com/abc-defg-hij');
+  });
+
+  it('falls back to an http(s) URL in the location', () => {
+    expect(
+      conferencingUrl(mkEvent({ hangoutLink: '', location: 'https://zoom.us/j/1' }))
+    ).toBe('https://zoom.us/j/1');
+  });
+
+  it('falls back to an http(s) URL buried in the description', () => {
+    expect(
+      conferencingUrl(
+        mkEvent({ hangoutLink: '', location: '', description: 'Join: https://zoom.us/j/123.' })
+      )
+    ).toBe('https://zoom.us/j/123');
+  });
+
+  it('returns null for a bare domain with no scheme (not trivially safe to link)', () => {
+    expect(
+      conferencingUrl(mkEvent({ hangoutLink: '', location: 'meet.google.com/abc', description: '' }))
+    ).toBeNull();
+  });
+
+  it('returns null for a physical location with no conferencing link', () => {
+    expect(
+      conferencingUrl(mkEvent({ hangoutLink: '', location: '1234 Market St, 5th Floor', description: '' }))
+    ).toBeNull();
   });
 });
 

@@ -55,6 +55,7 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
       title: input.title,
       body: input.body,
       url: realUrl ?? null,
+      urlTitle: input.urlTitle ?? null,
       channels,
     });
     const titleRedacted = redactText(input.title);
@@ -76,6 +77,7 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
               title: input.title,
               message: input.body,
               url: realUrl,
+              urlTitle: input.urlTitle,
               priority: input.priority === 'interrupt' ? 1 : 0,
             });
           } else if (ch === 'slack') {

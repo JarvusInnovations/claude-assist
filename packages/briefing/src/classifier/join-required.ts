@@ -102,6 +102,26 @@ export function detectVenue(event: CalendarEvent): VenueKind {
   return 'none';
 }
 
+/** An explicit http(s) URL, trimmed of trailing punctuation a sentence might add. */
+const HTTP_URL_RE = /https?:\/\/[^\s<>"')]+/i;
+
+/**
+ * The clickable link for a "Join" action on an alert, checked in the same
+ * priority order as `detectVenue`: hangoutLink, then location, then
+ * description. Returns null when none of those hold an explicit http(s) link —
+ * a bare domain mention (e.g. "zoom.us/j/1" with no scheme, which still counts
+ * toward `detectVenue`'s conferencing check) isn't trivially safe to turn into
+ * a link, so it's left out rather than guessed at.
+ */
+export function conferencingUrl(event: CalendarEvent): string | null {
+  if (event.hangoutLink) return event.hangoutLink;
+  return (
+    event.location.match(HTTP_URL_RE)?.[0].replace(/[.,;:]+$/, '') ??
+    event.description.match(HTTP_URL_RE)?.[0].replace(/[.,;:]+$/, '') ??
+    null
+  );
+}
+
 /**
  * Classify one event. Returns a resolved `JoinClassification`, or one with
  * `joinRequired`/reason `ambiguous` when the model should decide. An override
