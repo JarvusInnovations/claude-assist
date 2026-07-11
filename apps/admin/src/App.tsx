@@ -18,6 +18,7 @@ import { InboxPage } from "@/pages/InboxPage";
 import { CapturesPage } from "@/pages/CapturesPage";
 import { NotificationsPage } from "@/pages/NotificationsPage";
 import { BriefingPage } from "@/pages/BriefingPage";
+import { DigestPage } from "@/pages/DigestPage";
 import { UrgencyPage } from "@/pages/UrgencyPage";
 import { ClassificationPage } from "@/pages/ClassificationPage";
 
@@ -37,6 +38,7 @@ function App() {
           <Route index element={<DashboardPage />} />
           <Route path="inbox" element={<InboxPage />} />
           <Route path="captures" element={<CapturesPage />} />
+          <Route path="digest" element={<DigestPage />} />
           <Route path="notifications" element={<NotificationsPage />} />
           <Route path="briefing" element={<BriefingPage />} />
           <Route path="urgency" element={<UrgencyPage />} />
