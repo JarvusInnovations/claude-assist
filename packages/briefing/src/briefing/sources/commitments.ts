@@ -1,10 +1,18 @@
 /**
  * Open-commitments source for the briefing.
  *
- * Reads HQ (the system of record) read-only via the `hq-axi` skill CLI —
- * `hq-axi commitment list` emits the same TOON table format the calendar reader
- * parses. Absent or failing, the section degrades to omission (error flagged)
- * rather than failing the whole briefing.
+ * Pluggable: shells out (read-only) to any configured commitments CLI and
+ * parses its stdout. The CLI is expected to emit a TOON table named
+ * `commitments` with these columns (extra columns are ignored):
+ *
+ *   commitments[N]{slug,title,due_date,assignee,made_to,deadline_firmness}:
+ *     acme-launch,Ship the launch,2026-07-15,alex,dana,firm
+ *     ...
+ *
+ * `due_date` is an ISO date (YYYY-MM-DD) or the literal `null` when undated.
+ * When no commitments source is configured the section is simply omitted; when
+ * a configured source is absent or fails, the section degrades to omission
+ * (error flagged) rather than failing the whole briefing.
  */
 
 import { execFile } from 'node:child_process';
@@ -33,8 +41,10 @@ export interface CommitmentsResult {
 }
 
 export interface FetchCommitmentsOptions {
-  /** Path to the hq-axi CLI (default: `hq-axi` on PATH). */
+  /** Path to the commitments CLI. When unset, the source is skipped cleanly. */
   bin?: string;
+  /** Args passed to the CLI (default: ['commitment', 'list']). */
+  args?: string[];
   /** YYYY-MM-DD used to flag overdue / due-today. */
   todayIso: string;
   timeoutMs?: number;
@@ -43,20 +53,25 @@ export interface FetchCommitmentsOptions {
 export async function fetchOpenCommitments(
   opts: FetchCommitmentsOptions
 ): Promise<CommitmentsResult> {
-  const bin = opts.bin ?? 'hq-axi';
+  const bin = opts.bin;
+  // No commitments source configured — omit the section without flagging an error.
+  if (!bin) {
+    return { commitments: [], error: null };
+  }
+  const args = opts.args && opts.args.length > 0 ? opts.args : ['commitment', 'list'];
   try {
-    const { stdout } = await execFileAsync(bin, ['commitment', 'list'], {
+    const { stdout } = await execFileAsync(bin, args, {
       timeout: opts.timeoutMs ?? 30_000,
       maxBuffer: 8 * 1024 * 1024,
     });
     return { commitments: parseCommitments(stdout, opts.todayIso), error: null };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return { commitments: [], error: `hq-axi commitment read failed: ${message}` };
+    return { commitments: [], error: `commitments source read failed: ${message}` };
   }
 }
 
-/** Parse `hq-axi commitment list` output, annotating overdue/due-today. */
+/** Parse the commitments CLI's TOON output, annotating overdue/due-today. */
 export function parseCommitments(output: string, todayIso: string): OpenCommitment[] {
   const table = parseToonTable(output, 'commitments');
   if (!table) return [];

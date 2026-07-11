@@ -3,7 +3,7 @@
  * calendar-read path and one join-required classifier:
  *
  *   1. Daily briefing — a morning job that composes today's briefing (calendar +
- *      alert plan, HQ commitments, urgent email, captures, coverage) and renders
+ *      alert plan, open commitments, urgent email, captures, coverage) and renders
  *      it into the Tana day node, then dispatches a `notice` ping. Heartbeat:
  *      `daily-briefing`.
  *
@@ -12,8 +12,8 @@
  *      deduped so restarts never double-fire. Heartbeat: `meeting-alerts`.
  *
  * Both degrade gracefully: no Anthropic key → deterministic-only classifier; no
- * Tana → briefing composed but not rendered; missing gws-axi/hq-axi → those
- * sections flag "not available" instead of failing.
+ * Tana → briefing composed but not rendered; missing gws-axi or commitments
+ * source → those sections flag "not available" instead of failing.
  */
 
 import type { FastifyInstance } from 'fastify';
@@ -113,7 +113,8 @@ export default createPlugin('briefing', async (fastify: FastifyInstance, options
           notify: fastify.notify,
           log: fastify.log,
           timeZone,
-          hqAxiBin: config.hqAxiBin,
+          commitmentsBin: config.commitmentsBin,
+          commitmentsArgs: config.commitmentsArgs,
           pageBaseUrl: config.pageBaseUrl ?? null,
         });
         fastify.log.info(

@@ -93,9 +93,15 @@ export interface BriefingPluginConfig {
   timeZone?: string;
   /** gws-axi binary path (default: `gws-axi` on PATH). */
   gwsAxiBin?: string;
-  /** hq-axi binary path (default: `hq-axi` on PATH). */
-  hqAxiBin?: string;
-  /** Calendar account override (default: the CLI's default chris@jarv.us). */
+  /**
+   * Optional "open commitments" source: path to any CLI that emits the
+   * documented TOON commitments table. When unset, the commitments section is
+   * omitted from the briefing.
+   */
+  commitmentsBin?: string;
+  /** Args passed to the commitments CLI (default: ['commitment', 'list']). */
+  commitmentsArgs?: string[];
+  /** Calendar account override (default: the calendar CLI's own default account). */
   calendarAccount?: string;
   /** tana-local MCP endpoint (default: http://127.0.0.1:8262/mcp). */
   tanaMcpUrl?: string;

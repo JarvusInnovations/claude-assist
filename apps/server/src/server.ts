@@ -266,7 +266,13 @@ await fastify.register(
           classifierModel: fastify.config.CAPTURE_CLASSIFIER_MODEL,
           timeZone: fastify.config.BRIEFING_TIMEZONE,
           gwsAxiBin: fastify.config.BRIEFING_GWS_AXI_BIN,
-          hqAxiBin: fastify.config.BRIEFING_HQ_AXI_BIN,
+          // BRIEFING_HQ_AXI_BIN is a deprecated alias, honored only when the
+          // generic var is unset so existing deployments keep working.
+          commitmentsBin:
+            fastify.config.BRIEFING_COMMITMENTS_BIN ?? fastify.config.BRIEFING_HQ_AXI_BIN,
+          commitmentsArgs: fastify.config.BRIEFING_COMMITMENTS_ARGS.split(' ')
+            .map((a) => a.trim())
+            .filter(Boolean),
           calendarAccount: fastify.config.BRIEFING_CALENDAR_ACCOUNT,
           tanaMcpUrl: fastify.config.TANA_MCP_URL,
           tanaMcpToken: fastify.config.TANA_MCP_TOKEN,

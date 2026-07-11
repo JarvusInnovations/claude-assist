@@ -5,8 +5,9 @@
  * (render.ts) turns a `Briefing` into Tana Paste and writes the day node.
  *
  * Content contract (per plans/daily-briefing.md):
- *   today's calendar (with which events will alert), open HQ commitments,
- *   urgent-email summary + counts, captures awaiting review, coverage staleness,
+ *   today's calendar (with which events will alert), open commitments,
+ *   email split into a "needs attention" tier + a calm aggregate, captures
+ *   awaiting review, coverage staleness,
  *   pipeline health, and links out to richer claude-assist pages. Sources that
  *   aren't live render as "not-yet-available", never failing the whole briefing.
  */
@@ -73,7 +74,7 @@ export function composeBriefing(inputs: BriefingInputs): Briefing {
       alertingCount: alerting.length,
       overdueCount: overdue.length,
       dueTodayCount: dueToday.length,
-      urgentEmailCount: inputs.email.urgentCount,
+      needsAttentionCount: inputs.email.needsAttention.length,
     }),
     calendar: {
       events: inputs.calendar.events,
@@ -98,7 +99,7 @@ interface HeadlineInputs {
   alertingCount: number;
   overdueCount: number;
   dueTodayCount: number;
-  urgentEmailCount: number;
+  needsAttentionCount: number;
 }
 
 /** 2–3 salient items for the delivery ping title. */
@@ -108,7 +109,7 @@ export function buildHeadline(h: HeadlineInputs): string {
   else if (h.timedMeetings > 0) parts.push(`${h.timedMeetings} mtg${h.timedMeetings === 1 ? '' : 's'}`);
   if (h.overdueCount > 0) parts.push(`${h.overdueCount} overdue`);
   else if (h.dueTodayCount > 0) parts.push(`${h.dueTodayCount} due today`);
-  if (h.urgentEmailCount > 0) parts.push(`${h.urgentEmailCount} urgent email`);
+  if (h.needsAttentionCount > 0) parts.push(`${h.needsAttentionCount} email needs attention`);
 
   if (parts.length === 0) return 'Clear day — no meetings, nothing overdue';
   return parts.slice(0, 3).join(' · ');

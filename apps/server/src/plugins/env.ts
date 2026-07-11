@@ -102,11 +102,19 @@ const schema = {
     BRIEFING_ALERT_WINDOW_MINUTES: { type: 'number', default: 60 },
     // CLI binaries (shelled out CLI-as-library); default to PATH.
     BRIEFING_GWS_AXI_BIN: { type: 'string', default: 'gws-axi' },
-    BRIEFING_HQ_AXI_BIN: { type: 'string', default: 'hq-axi' },
+    // Optional pluggable "open commitments" source: any CLI that emits the
+    // documented TOON commitments table (see sources/commitments.ts). When
+    // unset, the briefing simply omits the commitments section.
+    BRIEFING_COMMITMENTS_BIN: { type: 'string' },
+    // Space-separated args passed to the commitments CLI (default 'commitment list').
+    BRIEFING_COMMITMENTS_ARGS: { type: 'string', default: 'commitment list' },
+    // DEPRECATED alias for BRIEFING_COMMITMENTS_BIN. Read only when the new var
+    // is unset, so existing deployments keep working; remove after they migrate.
+    BRIEFING_HQ_AXI_BIN: { type: 'string' },
     BRIEFING_CALENDAR_ACCOUNT: { type: 'string' },
     // Tana render target (reuses the capture module's TANA_* if unset — wired in server.ts).
     BRIEFING_TANA_WORKSPACE_ID: { type: 'string' },
-    // Links out to richer claude-assist pages (e.g. https://assist.jarv.us).
+    // Links out to richer claude-assist pages (e.g. https://assist.example.com).
     BRIEFING_PAGE_BASE_URL: { type: 'string' },
 
     // Chat module
@@ -229,7 +237,10 @@ declare module 'fastify' {
       BRIEFING_ALERT_CRON: string;
       BRIEFING_ALERT_WINDOW_MINUTES: number;
       BRIEFING_GWS_AXI_BIN: string;
-      BRIEFING_HQ_AXI_BIN: string;
+      BRIEFING_COMMITMENTS_BIN?: string;
+      BRIEFING_COMMITMENTS_ARGS: string;
+      /** @deprecated alias for BRIEFING_COMMITMENTS_BIN; used only when it is unset. */
+      BRIEFING_HQ_AXI_BIN?: string;
       BRIEFING_CALENDAR_ACCOUNT?: string;
       BRIEFING_TANA_WORKSPACE_ID?: string;
       BRIEFING_PAGE_BASE_URL?: string;

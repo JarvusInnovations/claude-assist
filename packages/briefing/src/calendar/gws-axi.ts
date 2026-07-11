@@ -1,9 +1,10 @@
 /**
  * Calendar read path, shared by both pipelines.
  *
- * `gws-axi calendar events` is the house CLI-as-library boundary to Chris's
- * Google Calendar (token-authed, headless, default account chris@jarv.us). We
- * shell out and parse its TOON-ish output into `CalendarEvent`s. The CLI's
+ * `gws-axi calendar events` is the CLI-as-library boundary to Google Calendar
+ * (token-authed, headless; the account defaults to the CLI's own configured
+ * default, overridable via `--account`). We shell out and parse its TOON-ish
+ * output into `CalendarEvent`s. The CLI's
  * absence (or a non-zero exit) degrades to an empty list with a flagged error
  * rather than throwing the whole briefing/alert cycle down.
  */

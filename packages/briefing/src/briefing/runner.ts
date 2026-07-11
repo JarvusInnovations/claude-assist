@@ -2,7 +2,7 @@
  * Daily-briefing runner — the scheduled orchestration.
  *
  * Gathers every content-contract section (calendar + alert plan from the shared
- * PlanProvider, HQ commitments, urgent email, captures, coverage), composes the
+ * PlanProvider, open commitments, urgent email, captures, coverage), composes the
  * briefing, renders it into the Tana day node (when Tana is configured), and
  * dispatches a `notice`-priority ping whose title is the 2–3 headline items and
  * whose link points at the day node. Each section degrades independently; a
@@ -11,7 +11,7 @@
 
 import type { FastifyBaseLogger } from 'fastify';
 import type postgres from 'postgres';
-import type { NotifyDispatcher } from '@jarvus/claude-assist-core';
+import type { NotifyDispatcher, NotifyInput } from '@jarvus/claude-assist-core';
 import type { PlanProvider } from '../alerts/plan-provider.js';
 import type { BriefingRenderer } from './render.js';
 import { composeBriefing, type Briefing } from './compose.js';
@@ -27,7 +27,8 @@ export interface BriefingRunnerDeps {
   notify: NotifyDispatcher | undefined;
   log: FastifyBaseLogger;
   timeZone: string;
-  hqAxiBin?: string;
+  commitmentsBin?: string;
+  commitmentsArgs?: string[];
   pageBaseUrl?: string | null;
 }
 
@@ -45,7 +46,7 @@ export async function runDailyBriefing(deps: BriefingRunnerDeps): Promise<Briefi
   // Gather the remaining sources in parallel; each returns a flagged error
   // rather than throwing, so one outage doesn't sink the briefing.
   const [commitments, email, captures, coverage] = await Promise.all([
-    fetchOpenCommitments({ bin: deps.hqAxiBin, todayIso: dateIso }),
+    fetchOpenCommitments({ bin: deps.commitmentsBin, args: deps.commitmentsArgs, todayIso: dateIso }),
     fetchEmailSummary(deps.sql),
     fetchCapturesSummary(deps.sql),
     fetchCoverageSummary(deps.sql),
@@ -81,14 +82,10 @@ export async function runDailyBriefing(deps: BriefingRunnerDeps): Promise<Briefi
   // Dispatch the "briefing ready" ping through the one dispatcher.
   let notified = false;
   if (deps.notify) {
-    const url = dayNodeLink(dayNodeId) ?? deps.pageBaseUrl ?? undefined;
     try {
-      const result = await deps.notify.notify({
-        priority: 'notice',
-        title: `Briefing · ${briefing.headline}`,
-        body: briefingBodyLine(briefing),
-        url,
-      });
+      const result = await deps.notify.notify(
+        buildBriefingNotification(briefing, dayNodeId, deps.pageBaseUrl)
+      );
       notified = result.status !== 'error';
     } catch (err) {
       deps.log.error({ err }, 'Briefing notification dispatch failed');
@@ -104,12 +101,33 @@ export function dayNodeLink(dayNodeId: string | null): string | undefined {
   return `https://app.tana.inc/?nodeid=${encodeURIComponent(dayNodeId)}`;
 }
 
+/**
+ * Build the briefing's `notice`-priority ping payload. The tappable action link
+ * prefers the Tana day node (the briefing's surface); when Tana didn't render,
+ * it falls back to a configured page-base URL, and omits the link (and its
+ * label) entirely when neither is available.
+ */
+export function buildBriefingNotification(
+  briefing: Briefing,
+  dayNodeId: string | null,
+  pageBaseUrl?: string | null
+): NotifyInput {
+  const url = dayNodeLink(dayNodeId) ?? pageBaseUrl ?? undefined;
+  return {
+    priority: 'notice',
+    title: `Briefing · ${briefing.headline}`,
+    body: briefingBodyLine(briefing),
+    url,
+    urlTitle: url ? 'Open briefing' : undefined,
+  };
+}
+
 function briefingBodyLine(b: Briefing): string {
   const bits: string[] = [];
   const timed = b.calendar.events.filter((e) => !e.allDay).length;
   bits.push(`${timed} meeting${timed === 1 ? '' : 's'}`);
   bits.push(`${b.calendar.alerting.length} join alert${b.calendar.alerting.length === 1 ? '' : 's'}`);
   bits.push(`${b.commitments.overdue.length} overdue`);
-  bits.push(`${b.email.urgentCount} urgent email`);
+  bits.push(`${b.email.needsAttention.length} email needing attention`);
   return bits.join(', ') + '.';
 }
