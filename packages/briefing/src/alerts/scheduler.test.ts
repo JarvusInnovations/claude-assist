@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import type { FastifyBaseLogger } from 'fastify';
 import type { NotifyDispatcher, NotifyInput, NotifyResult } from '@jarvus/claude-assist-core';
 import type { AlertPlanItem, CalendarEvent } from '../types.js';
-import { FIRE_GRACE_MS, isDue, runAlertCycle } from './scheduler.js';
+import { FIRE_GRACE_MS, alertUrl, isDue, runAlertCycle } from './scheduler.js';
 import { MemoryDispatchLedger } from './dispatch-ledger.js';
 
 const NOW = Date.parse('2026-07-10T14:58:00-04:00'); // 2 min before a 15:00 start
@@ -131,5 +131,69 @@ describe('runAlertCycle dedup', () => {
     });
     expect(result.fired).toBe(0);
     expect(sent).toHaveLength(0);
+  });
+
+  it('carries the conferencing link as a "Join" action on the dispatch', async () => {
+    const ledger = new MemoryDispatchLedger();
+    const { dispatcher, sent } = fakeNotify();
+    await runAlertCycle({
+      events: [mkEvent()], // hangoutLink: https://meet.google.com/abc
+      overrides: new Map(),
+      ledger,
+      notify: dispatcher,
+      log,
+      nowMs: NOW,
+    });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.url).toBe('https://meet.google.com/abc');
+    expect(sent[0]!.urlTitle).toBe('Join');
+  });
+
+  it('carries a maps link as a "Map" action for a physical meeting with no conferencing link', async () => {
+    const ledger = new MemoryDispatchLedger();
+    const { dispatcher, sent } = fakeNotify();
+    // Physical venue defaults to a 15-min lead, so fire-at is START-15min here.
+    const physicalNow = START - 14 * 60_000;
+    await runAlertCycle({
+      events: [mkEvent({ hangoutLink: '', location: '1234 Market St, 5th Floor' })],
+      overrides: new Map(),
+      ledger,
+      notify: dispatcher,
+      log,
+      nowMs: physicalNow,
+    });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.url).toBe('https://maps.google.com/?q=1234%20Market%20St%2C%205th%20Floor');
+    expect(sent[0]!.urlTitle).toBe('Map');
+  });
+});
+
+describe('alertUrl', () => {
+  it('prefers the conferencing link and labels it "Join"', () => {
+    expect(alertUrl(mkItem())).toEqual({
+      url: 'https://meet.google.com/abc',
+      urlTitle: 'Join',
+    });
+  });
+
+  it('falls back to a maps link for a physical venue with no conferencing link', () => {
+    const item = mkItem({ hangoutLink: '', location: '1234 Market St, 5th Floor' });
+    item.classification = { ...item.classification, venue: 'physical' };
+    expect(alertUrl(item)).toEqual({
+      url: 'https://maps.google.com/?q=1234%20Market%20St%2C%205th%20Floor',
+      urlTitle: 'Map',
+    });
+  });
+
+  it('returns no url for a physical venue with no location text', () => {
+    const item = mkItem({ hangoutLink: '', location: '' });
+    item.classification = { ...item.classification, venue: 'physical' };
+    expect(alertUrl(item)).toEqual({});
+  });
+
+  it('returns no url when there is no venue at all', () => {
+    const item = mkItem({ hangoutLink: '', location: '' });
+    item.classification = { ...item.classification, venue: 'none' };
+    expect(alertUrl(item)).toEqual({});
   });
 });

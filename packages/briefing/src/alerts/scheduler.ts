@@ -15,6 +15,7 @@ import type { FastifyBaseLogger } from 'fastify';
 import type { NotifyDispatcher } from '@jarvus/claude-assist-core';
 import type { AlertPlanItem, CalendarEvent, SeriesOverride } from '../types.js';
 import type { JoinRequiredModel } from '../classifier/llm.js';
+import { conferencingUrl } from '../classifier/join-required.js';
 import { alertingItems, resolveAlertPlan } from './plan.js';
 import type { DispatchLedger } from './dispatch-ledger.js';
 
@@ -76,6 +77,7 @@ export async function runAlertCycle(deps: AlertCycleDeps): Promise<AlertCycleRes
         priority: 'interrupt',
         title: alertTitle(item),
         body: alertBody(item),
+        ...alertUrl(item),
       });
       await ledger.recordNotify(item.event.id, result.id);
       fired++;
@@ -105,4 +107,24 @@ export function alertBody(item: AlertPlanItem): string {
   if (item.event.hangoutLink) parts.push(item.event.hangoutLink);
   else if (item.event.location) parts.push(item.event.location);
   return parts.join(' ');
+}
+
+/**
+ * The tappable action link for a meeting alert. A conferencing URL wins and
+ * gets a "Join" label. A physical-venue meeting with no conferencing link (and
+ * no bare-domain fallback) gets a maps search link instead — trivially
+ * derivable from the location string, no geocoding needed. Otherwise no link.
+ */
+export function alertUrl(item: AlertPlanItem): { url?: string; urlTitle?: string } {
+  const join = conferencingUrl(item.event);
+  if (join) return { url: join, urlTitle: 'Join' };
+
+  if (item.classification.venue === 'physical' && item.event.location.trim()) {
+    return {
+      url: `https://maps.google.com/?q=${encodeURIComponent(item.event.location.trim())}`,
+      urlTitle: 'Map',
+    };
+  }
+
+  return {};
 }
