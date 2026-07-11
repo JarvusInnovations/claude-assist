@@ -20,6 +20,7 @@
 import type postgres from 'postgres';
 import type { FastifyBaseLogger } from 'fastify';
 import type { NotifyDispatcher } from '@jarvus/claude-assist-core';
+import type { EmailAnalysis, GmailAction } from '../types.js';
 
 export interface DigestEmailRow {
   id: number;
@@ -29,6 +30,34 @@ export interface DigestEmailRow {
   subject: string | null;
   digest_section: string | null;
   gmail_action: string | null;
+}
+
+/**
+ * Richer per-email shape for the interactive digest page — carries the
+ * one-line overview (`analysis.overview`), the staged label plan, and the
+ * workflow status so the page can render a review row and a per-row action
+ * override. `analysis` comes back as raw JSONB (string or object) from
+ * postgres.js; callers parse it before serializing.
+ */
+export interface DigestEmailDetail {
+  id: number;
+  account_identifier: string;
+  from_address: string | null;
+  from_name: string | null;
+  subject: string | null;
+  date: Date | null;
+  digest_section: string | null;
+  gmail_action: GmailAction | null;
+  planned_labels: string[] | null;
+  workflow_status: string;
+  analysis: EmailAnalysis | string | null;
+}
+
+/** One digest section with its emails, in canonical section order. */
+export interface DigestSectionGroup<T> {
+  section: string;
+  count: number;
+  emails: T[];
 }
 
 const DIGEST_SECTION_ORDER = [
@@ -44,6 +73,30 @@ const DIGEST_SECTION_ORDER = [
 function sectionRank(section: string): number {
   const i = DIGEST_SECTION_ORDER.indexOf(section);
   return i === -1 ? DIGEST_SECTION_ORDER.length : i;
+}
+
+/**
+ * Pure: bucket rows by `digest_section` (null → "other") into groups ordered
+ * by the canonical DIGEST_SECTION_ORDER, then alphabetically. Shared by the
+ * digest page's pending + history endpoints so section ordering is identical
+ * everywhere.
+ */
+export function groupDigestBySection<T extends { digest_section: string | null }>(
+  rows: T[]
+): DigestSectionGroup<T>[] {
+  const bySection = new Map<string, T[]>();
+  for (const row of rows) {
+    const section = row.digest_section ?? 'other';
+    const list = bySection.get(section) ?? [];
+    list.push(row);
+    bySection.set(section, list);
+  }
+  return [...bySection.keys()]
+    .sort((a, b) => sectionRank(a) - sectionRank(b) || a.localeCompare(b))
+    .map((section) => {
+      const emails = bySection.get(section)!;
+      return { section, count: emails.length, emails };
+    });
 }
 
 /** Pure: render the grouped daily-digest body + the id list to confirm. */
@@ -131,6 +184,47 @@ export class DigestService {
       WHERE e.workflow_status = 'triaged'
         AND e.gmail_action IS NOT NULL
       ORDER BY e.digest_section NULLS LAST, e.date DESC
+    `;
+  }
+
+  /**
+   * Detailed pending rows for the interactive digest page: everything
+   * triaged-or-reviewed but not yet executed that has a planned action.
+   * Includes `reviewed` so a row the owner just modified (PATCH flips the
+   * status to `reviewed`) stays visible until it is actually executed.
+   */
+  async loadPendingDetailed(): Promise<DigestEmailDetail[]> {
+    return this.sql<DigestEmailDetail[]>`
+      SELECT e.id, a.identifier AS account_identifier,
+             e.from_address, e.from_name, e.subject, e.date,
+             e.digest_section, e.gmail_action, e.planned_labels,
+             e.workflow_status, e.analysis
+      FROM google.emails e
+      JOIN google.accounts a ON e.account_id = a.id
+      WHERE e.workflow_status IN ('triaged', 'reviewed')
+        AND e.gmail_action IS NOT NULL
+      ORDER BY e.digest_section NULLS LAST, e.date DESC
+    `;
+  }
+
+  /**
+   * Recently executed rows (applied_* columns), newest first, for the page's
+   * confidence-building "executed" list.
+   */
+  async loadRecentExecuted(days = 7): Promise<DigestEmailDetail[]> {
+    const daysNum = Number.isFinite(days) && days > 0 ? Math.floor(days) : 7;
+    return this.sql<DigestEmailDetail[]>`
+      SELECT e.id, a.identifier AS account_identifier,
+             e.from_address, e.from_name, e.subject, e.executed_at AS date,
+             e.digest_section, e.applied_gmail_action AS gmail_action,
+             e.applied_labels AS planned_labels,
+             e.workflow_status, e.analysis
+      FROM google.emails e
+      JOIN google.accounts a ON e.account_id = a.id
+      WHERE e.workflow_status = 'executed'
+        AND e.executed_at > NOW() - INTERVAL '1 day' * ${daysNum}
+      ORDER BY e.executed_at DESC
+      LIMIT 100
     `;
   }
 

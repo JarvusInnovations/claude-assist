@@ -12,8 +12,8 @@ import type { Scheduler } from '@jarvus/claude-assist-core';
 import type { GmailSyncService } from '../services/gmail-sync.js';
 import { TriageService } from '../services/triage.js';
 import type { GmailExecutorService } from '../services/gmail-executor.js';
-import type { DigestService } from '../services/digest.js';
-import { renderDailyDigest } from '../services/digest.js';
+import type { DigestService, DigestEmailDetail } from '../services/digest.js';
+import { renderDailyDigest, groupDigestBySection } from '../services/digest.js';
 import type {
   EmailRecord,
   WorkflowStatus,
@@ -444,6 +444,41 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
       const { body, emailIds } = renderDailyDigest(rows);
       return { count: rows.length, emailIds, body };
     });
+
+    // GET /google/emails/digest/pending - structured pending digest for the
+    // interactive page: emails grouped by digest_section, each carrying its
+    // one-line overview + staged action so the page can render review rows.
+    fastify.get('/google/emails/digest/pending', async (_request, reply) => {
+      if (!digestService) {
+        return reply
+          .status(503)
+          .send({ error: 'Digest not available (email actions disabled)' });
+      }
+      const rows = (await digestService.loadPendingDetailed()).map((r) => ({
+        ...r,
+        analysis: parseJsonField(r.analysis),
+      })) as DigestEmailDetail[];
+      return { count: rows.length, sections: groupDigestBySection(rows) };
+    });
+
+    // GET /google/emails/digest/history - recently executed actions (applied_*
+    // columns) for the page's confidence list. ?days=7 by default.
+    fastify.get<{ Querystring: { days?: string } }>(
+      '/google/emails/digest/history',
+      async (request, reply) => {
+        if (!digestService) {
+          return reply
+            .status(503)
+            .send({ error: 'Digest not available (email actions disabled)' });
+        }
+        const days = parseInt(request.query.days ?? '7', 10) || 7;
+        const rows = (await digestService.loadRecentExecuted(days)).map((r) => ({
+          ...r,
+          analysis: parseJsonField(r.analysis),
+        })) as DigestEmailDetail[];
+        return { count: rows.length, days, emails: rows };
+      }
+    );
 
     // ==========================================
     // Bulk Actions
