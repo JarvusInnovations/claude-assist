@@ -151,6 +151,25 @@ export interface BriefingPluginConfig {
   disableBriefing?: boolean;
   /** Skip the meeting-alert schedule. */
   disableAlerts?: boolean;
+
+  // ── Per-meeting briefings (preps on the virtuous cycle) ──────────────────
+  /** Skip the per-meeting briefing (prep) cycle. */
+  disableMeetingBriefings?: boolean;
+  /** Sonnet-class prep composer model (default: claude-sonnet-5). */
+  meetingPrepModel?: string;
+  /**
+   * Optional pluggable prior-occurrence context source: a CLI that receives
+   * occurrence metadata as JSON on stdin (+ --series-key/--occurrence-key args)
+   * and returns context text (HQ timelines, transcripts, Slack) on stdout.
+   * Unset → the prior-context section is simply omitted.
+   */
+  meetingContextBin?: string;
+  /** Args passed to the context CLI before the derived flags. */
+  meetingContextArgs?: string[];
+  /** Cron for the meeting-cycle pass (server local / UTC). Default every 30 min. */
+  meetingCron?: string;
+  /** Refresh occurrences starting within this many hours (the ~24h trigger). Default 26. */
+  meetingRefreshAheadHours?: number;
 }
 
 /**

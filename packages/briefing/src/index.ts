@@ -34,6 +34,10 @@ import { registerBriefingRoutes } from './alerts/routes.js';
 import { JoinRequiredModel } from './classifier/llm.js';
 import { BriefingRenderer } from './briefing/render.js';
 import { runDailyBriefing } from './briefing/runner.js';
+import { PgMeetingPrepStore } from './meetings/prep-store.js';
+import { AnthropicPrepComposer } from './meetings/model.js';
+import { MeetingPrepRenderer } from './meetings/render.js';
+import { runMeetingCycle } from './meetings/cycle.js';
 
 // Module augmentation for fastify decorators
 declare module 'fastify' {
@@ -47,6 +51,7 @@ declare module 'fastify' {
 
 export const DAILY_BRIEFING_PIPELINE = 'daily-briefing';
 export const MEETING_ALERTS_PIPELINE = 'meeting-alerts';
+export const MEETING_BRIEFINGS_PIPELINE = 'meeting-briefings';
 
 const DEFAULT_TIMEZONE = 'America/New_York';
 
@@ -79,8 +84,9 @@ export default createPlugin('briefing', async (fastify: FastifyInstance, options
 
   await fastify.register(registerBriefingRoutes, { overrides, planProvider });
 
-  // --- Tana renderer (optional) ----------------------------------------------
+  // --- Tana renderers (optional) ---------------------------------------------
   let renderer: BriefingRenderer | null = null;
+  let meetingRenderer: MeetingPrepRenderer | null = null;
   if (config.tanaMcpToken && config.tanaWorkspaceId) {
     const tanaClient = new TanaMcpClient({
       url: config.tanaMcpUrl ?? 'http://127.0.0.1:8262/mcp',
@@ -88,15 +94,30 @@ export default createPlugin('briefing', async (fastify: FastifyInstance, options
       clientName: 'claude-assist-briefing',
     });
     renderer = new BriefingRenderer(tanaClient, config.tanaWorkspaceId, fastify.log);
+    meetingRenderer = new MeetingPrepRenderer(tanaClient, config.tanaWorkspaceId, fastify.log);
   } else {
     fastify.log.warn(
       'Briefing: TANA_MCP_TOKEN/TANA_WORKSPACE_ID not set — briefing will compose but not render'
     );
   }
 
+  // --- Meeting-prep composer (optional; Sonnet-class single invoker) ----------
+  const prepComposer = config.anthropicApiKey
+    ? new AnthropicPrepComposer(
+        { apiKey: config.anthropicApiKey, model: config.meetingPrepModel },
+        fastify.log
+      )
+    : null;
+  if (!prepComposer) {
+    fastify.log.warn('Briefing: anthropicApiKey not set — meeting preps use the deterministic composer');
+  }
+
   // --- Heartbeats: register up-front so absence pages even before first run ---
   await fastify.heartbeats?.register({ name: DAILY_BRIEFING_PIPELINE, threshold: '25 hours' });
   await fastify.heartbeats?.register({ name: MEETING_ALERTS_PIPELINE, threshold: '1 hour' });
+  if (!config.disableMeetingBriefings) {
+    await fastify.heartbeats?.register({ name: MEETING_BRIEFINGS_PIPELINE, threshold: '2 hours' });
+  }
 
   // --- Pipeline 1: morning briefing ------------------------------------------
   if (!config.disableBriefing) {
@@ -164,7 +185,40 @@ export default createPlugin('briefing', async (fastify: FastifyInstance, options
     fastify.log.info('Briefing: meeting-alert schedule disabled via config');
   }
 
-  fastify.log.info('Briefing module loaded (daily briefing + meeting alerts)');
+  // --- Pipeline 3: per-meeting briefings (preps) -----------------------------
+  if (!config.disableMeetingBriefings) {
+    const prepStore = new PgMeetingPrepStore(fastify.sql);
+    fastify.scheduler.register({
+      name: 'briefing:meetings',
+      schedule: config.meetingCron ?? '*/30 * * * *',
+      runOnStartup: false,
+      handler: async () => {
+        const result = await runMeetingCycle({
+          prepStore,
+          planProvider,
+          sql: fastify.sql,
+          composer: prepComposer,
+          renderer: meetingRenderer,
+          log: fastify.log,
+          nowMs: Date.now(),
+          gwsBin: config.gwsAxiBin,
+          account: config.calendarAccount,
+          contextBin: config.meetingContextBin,
+          contextArgs: config.meetingContextArgs,
+          refreshAheadHours: config.meetingRefreshAheadHours,
+          pageBaseUrl: config.pageBaseUrl ?? null,
+        });
+        if (result.generated > 0 || result.refreshed > 0 || result.calendarError) {
+          fastify.log.info({ ...result }, 'Meeting-briefing cycle complete');
+        }
+        await fastify.heartbeats?.beat(MEETING_BRIEFINGS_PIPELINE, { threshold: '2 hours' });
+      },
+    });
+  } else {
+    fastify.log.info('Briefing: per-meeting briefing cycle disabled via config');
+  }
+
+  fastify.log.info('Briefing module loaded (daily briefing + meeting alerts + per-meeting briefings)');
 });
 
 // Re-exports for tests + external use.
@@ -231,3 +285,55 @@ export {
   tzOffsetMinutes,
   priorDateIso,
 } from './time.js';
+
+// --- Per-meeting briefings (preps) -------------------------------------------
+export type {
+  MeetingPrep,
+  MeetingPrepStatus,
+  OccurrenceIdentity,
+} from './meetings/types.js';
+export {
+  occurrenceIdentity,
+  occurrenceEndMs,
+  nextOccurrence,
+  decodeOriginalStart,
+} from './meetings/occurrence.js';
+export {
+  PgMeetingPrepStore,
+  MemoryMeetingPrepStore,
+  type MeetingPrepStore,
+  type PrepUpsert,
+} from './meetings/prep-store.js';
+export {
+  fetchMeetingContext,
+  type MeetingContextRequest,
+  type MeetingContextResult,
+} from './meetings/context-source.js';
+export {
+  fetchMeetingCaptures,
+  meetingTag,
+  type MeetingCapture,
+  type MeetingCapturesResult,
+} from './meetings/captures-source.js';
+export {
+  inputsDigest,
+  buildPrepPrompt,
+  deterministicPrep,
+  type PrepInputs,
+} from './meetings/compose.js';
+export { AnthropicPrepComposer, normalizeBullets, type PrepComposer } from './meetings/model.js';
+export {
+  MeetingPrepRenderer,
+  renderPrepPaste,
+  prepHeading,
+  prepDateIso,
+  findChildIdByHeading,
+  PREP_MARKER,
+} from './meetings/render.js';
+export {
+  runMeetingCycle,
+  generateNextPrep,
+  buildAndStorePrep,
+  type MeetingCycleDeps,
+  type MeetingCycleResult,
+} from './meetings/cycle.js';
