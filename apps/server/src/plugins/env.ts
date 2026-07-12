@@ -77,6 +77,19 @@ const schema = {
     // bootstrap deterministic triage rules + topics of interest at first boot.
     // When unset, a few generic example rules are seeded instead.
     GOOGLE_TRIAGE_SEED_FILE: { type: 'string' },
+    // Two-tier urgency quiet hours (owner TZ). INTERRUPTs raised inside the
+    // window are HELD and shown in the morning briefing; emergencies pierce.
+    GOOGLE_URGENCY_TZ: { type: 'string', default: 'America/New_York' },
+    GOOGLE_URGENCY_QUIET_START: { type: 'number', default: 22 },
+    GOOGLE_URGENCY_QUIET_END: { type: 'number', default: 7 },
+    // Individual client contacts (get standing in the ATTENTION bar). Point at a
+    // newline-delimited file of addresses, or a CLI that prints them to stdout.
+    GOOGLE_CONTACTS_FILE: { type: 'string' },
+    GOOGLE_CONTACTS_BIN: { type: 'string' },
+    GOOGLE_CONTACTS_ARGS: { type: 'string', default: '' },
+    // Owner-maintained interest spec for solicitation-class (RFP/RFQ) mail.
+    // Unset = opportunity path off. Instance data; contents never enter the repo.
+    GOOGLE_OPPORTUNITY_PROMPT_FILE: { type: 'string' },
     GOOGLE_EMAIL_DIGEST_CRON: { type: 'string', default: '0 12 * * *' },
     GOOGLE_SPAM_QUARANTINE_CRON: { type: 'string', default: '0 13 * * 1' },
 
@@ -216,6 +229,13 @@ declare module 'fastify' {
       GOOGLE_DISABLE_EMAIL_ALERTS: boolean;
       GOOGLE_TEAM_DOMAINS: string;
       GOOGLE_TRIAGE_SEED_FILE?: string;
+      GOOGLE_URGENCY_TZ: string;
+      GOOGLE_URGENCY_QUIET_START: number;
+      GOOGLE_URGENCY_QUIET_END: number;
+      GOOGLE_CONTACTS_FILE?: string;
+      GOOGLE_CONTACTS_BIN?: string;
+      GOOGLE_CONTACTS_ARGS: string;
+      GOOGLE_OPPORTUNITY_PROMPT_FILE?: string;
       GOOGLE_EMAIL_DIGEST_CRON: string;
       GOOGLE_SPAM_QUARANTINE_CRON: string;
 

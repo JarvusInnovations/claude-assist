@@ -21,6 +21,10 @@ import { RulesService } from './services/rules.js';
 import { WhitelistService } from './services/whitelist.js';
 import { GmailExecutorService } from './services/gmail-executor.js';
 import { DigestService } from './services/digest.js';
+import { PgEmailAttentionStore } from './services/attention-store.js';
+import { EmailResidueClassifier } from './services/email-residue.js';
+import { OpportunityEvaluator, loadOpportunityPrompt } from './services/opportunity.js';
+import { loadClientContacts } from './services/contacts.js';
 import { seedAccountRules, resolveSeedContent, EXAMPLE_SEED_CONTENT } from './services/seed-rules.js';
 import { registerAccountRoutes } from './routes/accounts.js';
 import { registerEmailRoutes } from './routes/emails.js';
@@ -55,9 +59,59 @@ export default createPlugin('google', async (fastify: FastifyInstance, options: 
     disableEmailSync: config.disableEmailSync,
   });
 
+  // Individual client contacts (pluggable source) get standing in the ATTENTION
+  // bar. Load once at boot; a failed/absent source degrades to none (never fatal).
+  let clientContacts: string[] = [];
+  if (config.contactsFile || config.contactsBin) {
+    try {
+      const set = await loadClientContacts({
+        file: config.contactsFile,
+        bin: config.contactsBin,
+        args: config.contactsArgs,
+      });
+      clientContacts = [...set];
+      fastify.log.info(
+        { count: clientContacts.length, source: config.contactsFile ?? config.contactsBin },
+        'Loaded client contacts for the urgency bar'
+      );
+    } catch (error) {
+      fastify.log.error({ error }, 'Failed to load client contacts source; continuing with none');
+    }
+  }
+
   // Deterministic collaborators for the action layer.
   const rulesService = new RulesService(fastify.sql);
-  const whitelistService = new WhitelistService(fastify.sql);
+  const whitelistService = new WhitelistService(fastify.sql, { clientContacts });
+
+  // Two-tier urgency collaborators (attention store + cheap-model judges).
+  const attentionStore = new PgEmailAttentionStore(fastify.sql);
+  const residueJudge = config.anthropicApiKey
+    ? new EmailResidueClassifier({ apiKey: config.anthropicApiKey }, fastify.log)
+    : undefined;
+
+  // Owner-interest opportunity evaluator for solicitation-class mail. Off unless
+  // an interest-spec file is configured (instance data).
+  let opportunityEvaluator: OpportunityEvaluator | undefined;
+  if (config.anthropicApiKey && config.opportunityPromptFile) {
+    try {
+      const interestSpec = loadOpportunityPrompt(config.opportunityPromptFile);
+      if (interestSpec) {
+        opportunityEvaluator = new OpportunityEvaluator(
+          { apiKey: config.anthropicApiKey, interestSpec },
+          fastify.log
+        );
+        fastify.log.info(
+          { source: config.opportunityPromptFile },
+          'Loaded opportunity interest spec (RFP/solicitation evaluation enabled)'
+        );
+      }
+    } catch (error) {
+      fastify.log.error(
+        { error, file: config.opportunityPromptFile },
+        'Failed to load GOOGLE_OPPORTUNITY_PROMPT_FILE; opportunity evaluation disabled'
+      );
+    }
+  }
 
   // Initialize Triage service (optional - requires anthropicApiKey)
   let triageService: TriageService | null = null;
@@ -77,6 +131,14 @@ export default createPlugin('google', async (fastify: FastifyInstance, options: 
         heartbeats: fastify.heartbeats,
         teamDomains: config.teamDomains,
         disableEmailAlerts: config.disableEmailAlerts || !actionsEnabled,
+        attentionStore,
+        residueJudge,
+        opportunityEvaluator,
+        quietHours: {
+          timeZone: config.urgencyTimeZone ?? 'America/New_York',
+          startHour: config.urgencyQuietStartHour ?? 22,
+          endHour: config.urgencyQuietEndHour ?? 7,
+        },
       }
     );
     fastify.log.info('Triage service enabled');

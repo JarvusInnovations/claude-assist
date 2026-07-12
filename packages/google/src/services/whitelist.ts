@@ -38,15 +38,31 @@ export function buildWhitelist(addresses: Iterable<string | null | undefined>): 
 export interface WhitelistServiceConfig {
   /** Extra contact addresses (e.g. an external contacts sync); merged into the set. */
   externalContacts?: string[];
+  /**
+   * Individual client contacts (from the pluggable contacts source). These are a
+   * SUBSET of the whitelist that also carries "individual standing" in the
+   * urgency bar — substantive mail from them can reach the ATTENTION tier even
+   * without an explicit deadline phrase. Exposed separately via
+   * `getClientContacts` so the urgency pipeline can distinguish them.
+   */
+  clientContacts?: string[];
 }
 
 export class WhitelistService {
   private sql: postgres.Sql;
   private externalContacts: string[];
+  private clientContacts: Set<string>;
 
   constructor(sql: postgres.Sql, config: WhitelistServiceConfig = {}) {
     this.sql = sql;
-    this.externalContacts = config.externalContacts ?? [];
+    // Client contacts are also whitelisted (they're people the owner deals with).
+    this.externalContacts = [...(config.externalContacts ?? []), ...(config.clientContacts ?? [])];
+    this.clientContacts = buildWhitelist(config.clientContacts ?? []);
+  }
+
+  /** The individual client contacts with standing (lowercased, validated). */
+  getClientContacts(): Set<string> {
+    return new Set(this.clientContacts);
   }
 
   /**

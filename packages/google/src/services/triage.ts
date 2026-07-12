@@ -29,7 +29,17 @@ import {
   type DerivedPlan,
   type LabelPrefixes,
 } from './plan.js';
-import { classifyUrgency } from './urgency.js';
+import type { QuietHoursConfig } from './urgency.js';
+import {
+  EmailUrgencyPipeline,
+  type EmailInterruptNotifier,
+  type EmailUrgencyDecision,
+  type EvalContext,
+} from './urgency-pipeline.js';
+import type { EmailAttentionStore } from './attention-store.js';
+import type { EmailResidueJudge } from './email-residue.js';
+import type { OpportunityEvaluator } from './opportunity.js';
+import type { ColdOutreachConfig } from './cold-outreach.js';
 
 /**
  * Error thrown when JSON parsing fails.
@@ -227,6 +237,18 @@ export interface TriageServiceDeps {
   teamDomains?: string[];
   /** Disable the urgent-alert dispatch at triage completion. */
   disableEmailAlerts?: boolean;
+
+  // ── Two-tier email urgency collaborators ─────────────────────────────────
+  /** Durable store for the INTERRUPT + ATTENTION tiers (google.email_attention). */
+  attentionStore?: EmailAttentionStore;
+  /** Cheap-model residue judge for the un-keyworded "can't wait an hour?" call. */
+  residueJudge?: EmailResidueJudge;
+  /** Owner-interest evaluator for solicitation-class (RFP/RFQ) mail. */
+  opportunityEvaluator?: OpportunityEvaluator;
+  /** Quiet-hours window (default 22:00–07:00 America/New_York). */
+  quietHours?: QuietHoursConfig;
+  /** Cold-outreach heuristic parameters (defaults are generic). */
+  coldOutreach?: ColdOutreachConfig;
 }
 
 export interface TriageStatus {
@@ -277,6 +299,12 @@ export class TriageService {
   private teamDomains: string[];
   private disableEmailAlerts: boolean;
 
+  // Two-tier email urgency.
+  private attentionStore: EmailAttentionStore | undefined;
+  private urgencyPipeline: EmailUrgencyPipeline | undefined;
+  /** All owner addresses (every account); cached with the whitelist TTL. */
+  private ownerAddressCache: { set: Set<string>; at: number } | null = null;
+
   constructor(
     sql: postgres.Sql,
     log: FastifyBaseLogger,
@@ -296,6 +324,41 @@ export class TriageService {
     this.heartbeats = deps.heartbeats;
     this.teamDomains = deps.teamDomains ?? [];
     this.disableEmailAlerts = deps.disableEmailAlerts ?? false;
+    this.attentionStore = deps.attentionStore;
+
+    // Build the urgency pipeline when a store is wired (the interrupt/attention
+    // path). The interrupt notifier delivers through the single dispatcher.
+    if (deps.attentionStore) {
+      const notifier: EmailInterruptNotifier = {
+        fire: async (decision, email) => {
+          if (!this.notify) return null;
+          const from = email.from_name
+            ? `${email.from_name} <${email.from_address ?? ''}>`
+            : email.from_address ?? 'unknown sender';
+          const result = await this.notify.notify({
+            priority: 'interrupt',
+            title: `Urgent email: ${email.from_name ?? email.from_address ?? 'sender'}`,
+            body: `From ${from}\nSubject: ${email.subject ?? '(no subject)'}\n${decision.gist}`,
+          });
+          return result.id;
+        },
+      };
+      this.urgencyPipeline = new EmailUrgencyPipeline(
+        deps.attentionStore,
+        deps.residueJudge ?? null,
+        deps.opportunityEvaluator ?? null,
+        notifier,
+        log,
+        {
+          quietHours: deps.quietHours ?? {
+            timeZone: 'America/New_York',
+            startHour: 22,
+            endHour: 7,
+          },
+          coldOutreach: deps.coldOutreach,
+        }
+      );
+    }
   }
 
   /**
@@ -927,55 +990,147 @@ ${email.body_text || email.snippet || '(empty)'}
   }
 
   /**
-   * The urgent-alert path. Fires a priority `interrupt` through the dispatcher
-   * only when the email clears the "interrupts are earned" bar (human + known
-   * sender + genuine time-sensitivity). Everything else stays digest material.
-   * Returns whether an alert was dispatched.
+   * The two-tier urgency path. Runs the urgency pipeline, which sorts the email
+   * into INTERRUPT (dispatched now, or held for quiet hours), ATTENTION (surfaced
+   * in the morning briefing), or neither. Persists the tier decision + any
+   * opportunity evaluation onto the analysis JSONB, and stamps `alerted_at` when
+   * an interrupt actually dispatched (kept for back-compat with existing views).
+   * Returns whether an interrupt was dispatched.
    */
   private async maybeAlert(
     email: EmailRecord,
     analysis: EmailAnalysis,
     whitelist: Set<string>
   ): Promise<boolean> {
-    if (this.disableEmailAlerts || !this.notify) return false;
-
-    const verdict = classifyUrgency({
-      senderAddress: email.from_address,
-      senderType: analysis.sender_type,
-      subject: email.subject,
-      bodyText: email.body_text,
-      snippet: email.snippet,
-      actionItems: analysis.potential_action_items,
-      whitelist,
-      teamDomains: this.teamDomains,
-    });
-
-    if (!verdict.urgent) return false;
-
-    const from = email.from_name
-      ? `${email.from_name} <${email.from_address ?? ''}>`
-      : email.from_address ?? 'unknown sender';
-    const actionLine = analysis.potential_action_items[0]
-      ? `\nAction: ${analysis.potential_action_items[0]}`
-      : '';
+    if (this.disableEmailAlerts || !this.urgencyPipeline) return false;
 
     try {
-      await this.notify.notify({
-        priority: 'interrupt',
-        title: `Urgent email: ${email.from_name ?? email.from_address ?? 'sender'}`,
-        body: `From ${from}\nSubject: ${email.subject ?? '(no subject)'}\n${analysis.overview}${actionLine}`,
-      });
-      await this.sql`
-        UPDATE google.emails SET alerted_at = NOW() WHERE id = ${email.id}
-      `;
-      this.log.info(
-        { emailId: email.id, reason: verdict.reason },
-        'Urgent-alert dispatched (interrupt)'
+      const ownerAddresses = await this.getOwnerAddresses();
+      const clientContacts = this.whitelistService?.getClientContacts() ?? new Set<string>();
+      const aliases = await this.getUserAliases(email.account_id);
+      const recipientNames = aliases
+        .filter((a) => a.is_owner)
+        .map((a) => a.alias)
+        .filter(Boolean);
+      const ownerLabel = recipientNames[0] ?? 'the owner';
+      const threadHasOwnerParticipation = await this.queryThreadOwnerParticipation(
+        email,
+        ownerAddresses
       );
-      return true;
+      const threadContext = await this.getThreadContext(email);
+
+      const ctx: EvalContext = {
+        ownerAddresses,
+        ownerLabel,
+        whitelist,
+        clientContacts,
+        teamDomains: this.teamDomains,
+        threadHasOwnerParticipation,
+        recipientNames,
+        threadSummary: threadContext?.parentSummary ?? null,
+      };
+
+      const decision = await this.urgencyPipeline.process(email, analysis, ctx);
+
+      // Persist the decision + any opportunity evaluation onto the analysis JSONB
+      // so the briefing + admin views can read them, and stamp alerted_at when an
+      // interrupt actually fired.
+      const enriched: EmailAnalysis = {
+        ...analysis,
+        urgency: {
+          tier: decision.tier,
+          reason: decision.reason,
+          ...(decision.quietHeld ? { quiet_held: true } : {}),
+        },
+        ...(decision.opportunity
+          ? {
+              opportunity: {
+                match: decision.opportunity.match,
+                high: decision.opportunity.high,
+                reasoning: decision.opportunity.reasoning,
+              },
+            }
+          : {}),
+      };
+      if (decision.interrupted) {
+        await this.sql`
+          UPDATE google.emails
+          SET analysis = ${enriched as any}, alerted_at = NOW()
+          WHERE id = ${email.id}
+        `;
+      } else {
+        await this.sql`
+          UPDATE google.emails SET analysis = ${enriched as any} WHERE id = ${email.id}
+        `;
+      }
+
+      this.log.info(
+        {
+          emailId: email.id,
+          tier: decision.tier,
+          verdict: decision.verdict,
+          interrupted: decision.interrupted,
+          quietHeld: decision.quietHeld,
+          spamSuggested: decision.spamSuggested,
+        },
+        'Email urgency evaluated'
+      );
+      return decision.interrupted;
     } catch (error) {
-      this.log.error({ emailId: email.id, error }, 'Urgent-alert dispatch failed');
+      this.log.error({ emailId: email.id, error }, 'Email urgency evaluation failed');
       return false;
     }
+  }
+
+  /**
+   * All owner addresses across every account (self-send boundary + directed
+   * gate). Cached with the same TTL as the per-account whitelist.
+   */
+  private async getOwnerAddresses(): Promise<Set<string>> {
+    const cached = this.ownerAddressCache;
+    if (cached && Date.now() - cached.at < TriageService.WHITELIST_TTL_MS) {
+      return cached.set;
+    }
+    const rows = await this.sql<{ email: string }[]>`
+      SELECT email FROM google.accounts WHERE email IS NOT NULL
+    `;
+    const set = new Set(rows.map((r) => r.email.trim().toLowerCase()));
+    this.ownerAddressCache = { set, at: Date.now() };
+    return set;
+  }
+
+  /**
+   * Thread lookback: has any owner address appeared EARLIER in this thread — as a
+   * sender, or in a prior message's To/CC? True means the owner is a participant
+   * on the thread, so an external reply is an ATTENTION candidate even when the
+   * owner is only copied. Scans prior messages in the same thread by date.
+   */
+  private async queryThreadOwnerParticipation(
+    email: EmailRecord,
+    ownerAddresses: Set<string>
+  ): Promise<boolean> {
+    if (!email.thread_id) return false;
+    const owners = [...ownerAddresses];
+    if (owners.length === 0) return false;
+    const [row] = await this.sql<{ one: number }[]>`
+      SELECT 1 AS one
+      FROM google.emails e
+      WHERE e.account_id = ${email.account_id}
+        AND e.thread_id = ${email.thread_id}
+        AND e.id <> ${email.id}
+        AND (
+          lower(e.from_address) = ANY(${owners})
+          OR EXISTS (
+            SELECT 1 FROM unnest(coalesce(e.to_addresses, '{}')) AS t
+            WHERE lower(t) = ANY(${owners})
+          )
+          OR EXISTS (
+            SELECT 1 FROM unnest(coalesce(e.cc_addresses, '{}')) AS c
+            WHERE lower(c) = ANY(${owners})
+          )
+        )
+      LIMIT 1
+    `;
+    return Boolean(row);
   }
 }

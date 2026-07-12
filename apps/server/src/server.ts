@@ -179,6 +179,15 @@ await fastify.register(
               .map((d) => d.trim())
               .filter(Boolean),
             triageSeedFile: fastify.config.GOOGLE_TRIAGE_SEED_FILE,
+            urgencyTimeZone: fastify.config.GOOGLE_URGENCY_TZ,
+            urgencyQuietStartHour: fastify.config.GOOGLE_URGENCY_QUIET_START,
+            urgencyQuietEndHour: fastify.config.GOOGLE_URGENCY_QUIET_END,
+            contactsFile: fastify.config.GOOGLE_CONTACTS_FILE,
+            contactsBin: fastify.config.GOOGLE_CONTACTS_BIN,
+            contactsArgs: fastify.config.GOOGLE_CONTACTS_ARGS.split(' ')
+              .map((a) => a.trim())
+              .filter(Boolean),
+            opportunityPromptFile: fastify.config.GOOGLE_OPPORTUNITY_PROMPT_FILE,
             emailDigestCron: fastify.config.GOOGLE_EMAIL_DIGEST_CRON,
             spamQuarantineDigestCron: fastify.config.GOOGLE_SPAM_QUARANTINE_CRON,
           },

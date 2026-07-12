@@ -271,6 +271,28 @@ export interface GooglePluginConfig {
   disableEmailActions?: boolean;
   /** Disable only the urgent-alert dispatch at triage completion. */
   disableEmailAlerts?: boolean;
+  /** IANA time zone for the urgency quiet-hours window (default America/New_York). */
+  urgencyTimeZone?: string;
+  /** Quiet-hours window start hour 0–23 (default 22). INTERRUPTs inside it are held. */
+  urgencyQuietStartHour?: number;
+  /** Quiet-hours window end hour 0–23 (default 7). */
+  urgencyQuietEndHour?: number;
+  /**
+   * Path to a newline-delimited file of individual client-contact addresses. These
+   * get "individual standing" in the urgency bar (substantive mail from them can
+   * reach ATTENTION). Instance data — the toolkit only knows "a list of emails".
+   */
+  contactsFile?: string;
+  /** Alternatively, a CLI that prints contact addresses (one per line) to stdout. */
+  contactsBin?: string;
+  /** Args for the contacts CLI. */
+  contactsArgs?: string[];
+  /**
+   * Path to an owner-maintained interest specification used to evaluate
+   * solicitation-class (RFP/RFQ/RFI) mail. When unset, the opportunity path is
+   * off. Instance data — its contents never enter the toolkit.
+   */
+  opportunityPromptFile?: string;
   /** Cron for the daily confirm-to-execute digest (default '0 12 * * *' ~08:00 ET). */
   emailDigestCron?: string;
   /** Cron for the weekly spam-quarantine review digest (default '0 13 * * 1'). */
