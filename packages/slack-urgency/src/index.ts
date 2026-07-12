@@ -116,6 +116,7 @@ export default createPlugin('slack-urgency', async (fastify: FastifyInstance, op
     ownerId: config.ownerId,
     watchChannels: config.watchChannels ?? [],
     historyLimit: config.historyLimit,
+    cycleIntervalMs: config.cycleIntervalMs,
   });
 
   await fastify.register(registerUrgencyRoutes, { store });
@@ -128,7 +129,9 @@ export default createPlugin('slack-urgency', async (fastify: FastifyInstance, op
   if (!config.disablePolling) {
     fastify.scheduler.register({
       name: 'slack-urgency:poll',
-      schedule: config.pollCron ?? '* * * * *', // every minute (cron's finest); ~1-2 min p95 latency
+      schedule: config.pollCron ?? '* * * * *', // every minute (cron's finest) — a tick just
+      // attempts a cycle; the poller itself staggers calls across cycleIntervalMs, so most
+      // ticks land mid-cycle and no-op (see UrgencyPoller.pollOnce)
       runOnStartup: true,
       handler: async () => {
         const result = await poller.pollOnce();
