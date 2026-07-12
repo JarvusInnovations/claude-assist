@@ -6,7 +6,10 @@ import {
   hasActionTag,
   sectionForRow,
   fallbackSummary,
+  summaryCacheKey,
+  CachingSummarizer,
   type DigestEmailDetail,
+  type DigestItem,
   type DigestSummarizer,
 } from './digest.js';
 
@@ -210,5 +213,118 @@ describe('fillSummaries', () => {
     const calendar = sections.find((s) => s.key === 'calendar')!;
     expect(calendar.summary).toEqual(fallbackSummary(calendar.items));
     expect(calendar.summary!.length).toBe(1);
+  });
+});
+
+/** A counting summarizer so cache hits vs regenerations are observable. */
+function countingSummarizer(): DigestSummarizer & { calls: number } {
+  const s = {
+    calls: 0,
+    async summarize(section: string, items: DigestItem[]) {
+      s.calls++;
+      return [`${section} v${s.calls}: ${items.map((i) => i.id).join(',')}`];
+    },
+  };
+  return s;
+}
+
+/** Items straight out of the bucketer for a given set of financial email ids. */
+function financialItems(ids: number[]): DigestItem[] {
+  return bucketDigestSections(
+    ids.map((id) => row({ id, gmail_action: 'archive', digest_section: 'financial' })),
+    NOW
+  )[0]!.items;
+}
+
+describe('summaryCacheKey', () => {
+  it('is stable across item ordering', () => {
+    const [a, b] = financialItems([1, 2]);
+    expect(summaryCacheKey('financial', [a!, b!])).toBe(
+      summaryCacheKey('financial', [b!, a!])
+    );
+  });
+
+  it('changes when membership or section changes', () => {
+    const items = financialItems([1, 2]);
+    expect(summaryCacheKey('financial', items)).not.toBe(
+      summaryCacheKey('financial', financialItems([1, 2, 3]))
+    );
+    expect(summaryCacheKey('financial', items)).not.toBe(
+      summaryCacheKey('calendar', items)
+    );
+  });
+});
+
+describe('CachingSummarizer', () => {
+  it('calls the inner summarizer once for an unchanged set', async () => {
+    const inner = countingSummarizer();
+    const cached = new CachingSummarizer(inner);
+    const items = financialItems([1, 2]);
+
+    const first = await cached.summarize('financial', items);
+    const second = await cached.summarize('financial', items);
+    const third = await cached.summarize('financial', items);
+
+    expect(inner.calls).toBe(1);
+    expect(second).toEqual(first);
+    expect(third).toEqual(first);
+  });
+
+  it('regenerates when the item membership changes', async () => {
+    const inner = countingSummarizer();
+    const cached = new CachingSummarizer(inner);
+
+    const a = await cached.summarize('financial', financialItems([1, 2]));
+    const b = await cached.summarize('financial', financialItems([1, 2, 3]));
+
+    expect(inner.calls).toBe(2);
+    expect(b).not.toEqual(a);
+    // Back to the original set → served from cache, no third call.
+    await cached.summarize('financial', financialItems([1, 2]));
+    expect(inner.calls).toBe(2);
+  });
+
+  it('keys per section — same items, different section regenerate', async () => {
+    const inner = countingSummarizer();
+    const cached = new CachingSummarizer(inner);
+    const items = financialItems([7]);
+
+    await cached.summarize('financial', items);
+    await cached.summarize('calendar', items);
+    expect(inner.calls).toBe(2);
+  });
+
+  it('evicts least-recently-used entries beyond the cap', async () => {
+    const inner = countingSummarizer();
+    const cached = new CachingSummarizer(inner, 2);
+
+    await cached.summarize('financial', financialItems([1])); // A
+    await cached.summarize('financial', financialItems([2])); // B
+    await cached.summarize('financial', financialItems([1])); // A hit (refreshes recency)
+    await cached.summarize('financial', financialItems([3])); // C — evicts B
+    expect(inner.calls).toBe(3);
+
+    await cached.summarize('financial', financialItems([1])); // A still cached
+    expect(inner.calls).toBe(3);
+    await cached.summarize('financial', financialItems([2])); // B evicted → regenerate
+    expect(inner.calls).toBe(4);
+  });
+
+  it('composes with fillSummaries: repeat assembly of the same set costs zero calls', async () => {
+    const inner = countingSummarizer();
+    const cached = new CachingSummarizer(inner);
+    const rows = [
+      row({ id: 1, gmail_action: 'archive', digest_section: 'financial' }),
+      row({ id: 2, gmail_action: 'archive', digest_section: 'calendar' }),
+    ];
+
+    const first = bucketDigestSections(rows, NOW);
+    await fillSummaries(first, cached);
+    expect(inner.calls).toBe(2); // one per summary section
+
+    const second = bucketDigestSections(rows, NOW);
+    await fillSummaries(second, cached);
+    expect(inner.calls).toBe(2); // fully served from cache
+    expect(second.map((s) => s.summary)).toEqual(first.map((s) => s.summary));
   });
 });

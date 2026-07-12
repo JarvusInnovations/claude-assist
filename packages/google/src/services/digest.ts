@@ -27,6 +27,7 @@
  * second Pushover notice.
  */
 
+import { createHash } from 'node:crypto';
 import Anthropic from '@anthropic-ai/sdk';
 import type postgres from 'postgres';
 import type { FastifyBaseLogger } from 'fastify';
@@ -286,6 +287,55 @@ export function fallbackSummary(items: DigestItem[]): string[] {
 /** Injected model summarizer for summary-mode sections. */
 export interface DigestSummarizer {
   summarize(section: string, items: DigestItem[]): Promise<string[]>;
+}
+
+/**
+ * Stable cache key for a section's summary: the section key + the sorted item
+ * membership. Membership (ids) is what the summary is *of* — a set that hasn't
+ * changed should reuse its bullets rather than re-spend a model call and
+ * pick up rephrasing jitter on every page load.
+ */
+export function summaryCacheKey(section: string, items: DigestItem[]): string {
+  const ids = items.map((i) => i.id).sort((a, b) => a - b);
+  return createHash('sha256')
+    .update(`${section}:${ids.join(',')}`)
+    .digest('hex');
+}
+
+/**
+ * Decorator: caches any DigestSummarizer's bullets keyed on section + item
+ * membership, so an unchanged set costs zero model calls on repeat assembly
+ * (the pending page re-assembles on every request). Small bounded LRU —
+ * in-memory only; a server restart cold-starts it, which is fine (the next
+ * assembly just regenerates). The deterministic fallback path in
+ * `fillSummaries` bypasses this entirely (no summarizer → no cache).
+ */
+export class CachingSummarizer implements DigestSummarizer {
+  /** insertion-ordered Map used as an LRU: get re-inserts, evict from front. */
+  private cache = new Map<string, string[]>();
+
+  constructor(
+    private inner: DigestSummarizer,
+    private maxEntries = 32
+  ) {}
+
+  async summarize(section: string, items: DigestItem[]): Promise<string[]> {
+    const key = summaryCacheKey(section, items);
+    const hit = this.cache.get(key);
+    if (hit) {
+      // Refresh recency.
+      this.cache.delete(key);
+      this.cache.set(key, hit);
+      return hit;
+    }
+    const bullets = await this.inner.summarize(section, items);
+    this.cache.set(key, bullets);
+    while (this.cache.size > this.maxEntries) {
+      const oldest = this.cache.keys().next().value as string;
+      this.cache.delete(oldest);
+    }
+    return bullets;
+  }
 }
 
 /**

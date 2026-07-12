@@ -20,7 +20,11 @@ import { TriageService } from './services/triage.js';
 import { RulesService } from './services/rules.js';
 import { WhitelistService } from './services/whitelist.js';
 import { GmailExecutorService } from './services/gmail-executor.js';
-import { DigestService, AnthropicDigestSummarizer } from './services/digest.js';
+import {
+  DigestService,
+  AnthropicDigestSummarizer,
+  CachingSummarizer,
+} from './services/digest.js';
 import { SenderStandingStore, RefinementStore } from './services/standing.js';
 import { PgEmailAttentionStore } from './services/attention-store.js';
 import { EmailResidueClassifier } from './services/email-residue.js';
@@ -166,9 +170,13 @@ export default createPlugin('google', async (fastify: FastifyInstance, options: 
     );
     // Haiku-class summarizer for the digest-category content summaries (reuses
     // the triage API key; summarizing, not judging). Absent → deterministic
-    // fallback bullets.
+    // fallback bullets. Wrapped in a membership-keyed cache so re-assembling an
+    // unchanged pending set (every page load hits /digest/pending) costs zero
+    // model calls and doesn't rephrase-jitter the bullets.
     const summarizer = config.anthropicApiKey
-      ? new AnthropicDigestSummarizer({ apiKey: config.anthropicApiKey })
+      ? new CachingSummarizer(
+          new AnthropicDigestSummarizer({ apiKey: config.anthropicApiKey })
+        )
       : undefined;
     digestService = new DigestService(fastify.sql, fastify.log, fastify.notify, {
       summarizer,
@@ -371,5 +379,9 @@ export { TriageService, type TriageStatus } from './services/triage.js';
 export { RulesService } from './services/rules.js';
 export { WhitelistService } from './services/whitelist.js';
 export { GmailExecutorService } from './services/gmail-executor.js';
-export { DigestService, AnthropicDigestSummarizer } from './services/digest.js';
+export {
+  DigestService,
+  AnthropicDigestSummarizer,
+  CachingSummarizer,
+} from './services/digest.js';
 export { SenderStandingStore, RefinementStore } from './services/standing.js';
