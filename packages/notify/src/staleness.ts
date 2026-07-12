@@ -43,14 +43,77 @@ export function evaluateStaleness(input: StalenessInput): StalenessResult {
 }
 
 /**
- * Extract the coverage watermark date from a Hari coverage-ledger file. Both
- * ledgers state it on a line containing "through":
+ * Hand-parse a leading frontmatter block into flat `key: value` scalars. No
+ * YAML/TOML dependency — ledgers only ever need simple scalars, and two
+ * dialects are in play depending on how the ledger was authored:
+ *   - gitsheets content-typed markdown: TOML fenced in `+++`, e.g.
+ *     `analyzed_through = 2026-06-29`.
+ *   - Plain YAML fenced in `---`, e.g. `analyzed_through: 2026-06-29`.
+ * Both accept a bare date or a quoted string containing one. Returns null if
+ * the text doesn't open with a recognized fence line, or the block is never
+ * closed (malformed), so callers can fall back cleanly.
+ */
+function parseFrontmatter(text: string): Record<string, string> | null {
+  const lines = text.split('\n');
+  const fence = lines[0]?.trim();
+  if (fence !== '---' && fence !== '+++') return null;
+
+  const frontmatter: Record<string, string> = {};
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i] ?? '';
+    if (line.trim() === fence) return frontmatter;
+
+    const kv = line.match(/^([A-Za-z0-9_-]+)\s*[:=]\s*(.*)$/);
+    if (!kv) continue;
+    const key = kv[1] ?? '';
+    let value = (kv[2] ?? '').trim();
+    if (
+      value.length >= 2 &&
+      ((value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'")))
+    ) {
+      value = value.slice(1, -1);
+    }
+    if (key) frontmatter[key] = value;
+  }
+
+  // Never found a closing fence — malformed, treat as absent.
+  return null;
+}
+
+/**
+ * Extract the coverage watermark date from a Hari coverage-ledger file.
+ *
+ * New-style ledgers carry it as frontmatter, either gitsheets TOML (`+++`)
+ * or plain YAML (`---`):
+ *   +++
+ *   analyzed_through = 2026-06-29
+ *   partial = "AM only, resumed after outage"
+ *   +++
+ * or:
+ *   ---
+ *   analyzed_through: 2026-06-29
+ *   partial: "AM only, resumed after outage"
+ *   ---
+ * Older ledgers state it on a line containing "through" instead:
  *   "**Thoroughly analyzed through: 2026-06-29 end-of-day ET.**"
  *   "**Complete through:** 2026-06-29 (full day; closed out 6:15pm EDT)"
  * Returns the date at end-of-day UTC, or null if none is found.
  */
 export function parseWatermarkDate(text: string): Date | null {
   const dateRe = /(\d{4})-(\d{2})-(\d{2})/;
+
+  const frontmatter = parseFrontmatter(text);
+  const analyzedThrough = frontmatter?.analyzed_through;
+  if (analyzedThrough) {
+    const m = analyzedThrough.match(dateRe);
+    if (m) {
+      const parsed = new Date(`${m[1]}-${m[2]}-${m[3]}T23:59:59Z`);
+      if (!Number.isNaN(parsed.getTime())) return parsed;
+    }
+    // analyzed_through present but unparseable — fall through to legacy scan.
+  }
+
   const lines = text.split('\n');
 
   const fromThroughLine = lines

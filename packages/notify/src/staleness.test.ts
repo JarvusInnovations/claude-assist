@@ -62,6 +62,90 @@ describe('parseWatermarkDate', () => {
   it('returns null when no date is present', () => {
     expect(parseWatermarkDate('no dates here')).toBeNull();
   });
+
+  it('prefers the analyzed_through frontmatter key when present (YAML --- fence)', () => {
+    const text = [
+      '---',
+      'analyzed_through: 2026-06-29',
+      '---',
+      '# HQ Analysis Coverage Ledger',
+      'Complete through: 2020-01-01 (stale placeholder body text)',
+    ].join('\n');
+    const d = parseWatermarkDate(text);
+    expect(d?.toISOString().slice(0, 10)).toBe('2026-06-29');
+  });
+
+  it('prefers the analyzed_through frontmatter key when present (TOML +++ fence)', () => {
+    const text = [
+      '+++',
+      'analyzed_through = 2026-06-29',
+      '+++',
+      '# HQ Analysis Coverage Ledger',
+      'Complete through: 2020-01-01 (stale placeholder body text)',
+    ].join('\n');
+    const d = parseWatermarkDate(text);
+    expect(d?.toISOString().slice(0, 10)).toBe('2026-06-29');
+  });
+
+  it('falls back to the "through"-line scan when frontmatter is absent', () => {
+    const text = [
+      '# HQ Analysis Coverage Ledger',
+      '**Complete through:** 2026-07-05',
+    ].join('\n');
+    const d = parseWatermarkDate(text);
+    expect(d?.toISOString().slice(0, 10)).toBe('2026-07-05');
+  });
+
+  it('accepts a quoted analyzed_through value (YAML --- fence)', () => {
+    const text = ['---', 'analyzed_through: "2026-06-29"', '---', 'body'].join('\n');
+    const d = parseWatermarkDate(text);
+    expect(d?.toISOString().slice(0, 10)).toBe('2026-06-29');
+  });
+
+  it('accepts a quoted analyzed_through value with trailing annotation (TOML +++ fence)', () => {
+    const text = [
+      '+++',
+      'analyzed_through = "2026-06-29 end-of-day ET"',
+      '+++',
+      'body',
+    ].join('\n');
+    const d = parseWatermarkDate(text);
+    expect(d?.toISOString().slice(0, 10)).toBe('2026-06-29');
+  });
+
+  it('reads the optional partial companion key without affecting the watermark', () => {
+    const text = [
+      '+++',
+      'analyzed_through = 2026-06-29',
+      'partial = "AM only, resumed after outage"',
+      '+++',
+      'body',
+    ].join('\n');
+    const d = parseWatermarkDate(text);
+    expect(d?.toISOString().slice(0, 10)).toBe('2026-06-29');
+  });
+
+  it('falls through to the legacy scan when YAML frontmatter is malformed (unclosed)', () => {
+    const text = [
+      '---',
+      'status: draft',
+      '# no closing delimiter, body follows',
+      'Complete through: 2026-07-05',
+    ].join('\n');
+    const d = parseWatermarkDate(text);
+    expect(d?.toISOString().slice(0, 10)).toBe('2026-07-05');
+  });
+
+  it('falls through to the legacy scan when TOML frontmatter is malformed (unclosed)', () => {
+    const text = [
+      '+++',
+      'status = "draft"',
+      '# no closing delimiter, body follows',
+      'Complete through: 2026-07-05',
+    ].join('\n');
+    const d = parseWatermarkDate(text);
+    expect(d?.toISOString().slice(0, 10)).toBe('2026-07-05');
+  });
 });
 
 describe('evaluateDiskHealth', () => {
