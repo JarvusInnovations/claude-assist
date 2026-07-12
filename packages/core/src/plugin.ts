@@ -124,6 +124,19 @@ export interface BriefingPluginConfig {
 }
 
 /**
+ * One external coverage ledger the staleness monitor watches: a markdown file
+ * in the agent repo whose "through <date>" line is the coverage watermark.
+ */
+export interface CoverageLedgerConfig {
+  /** Pipeline name the ledger registers as (e.g. `harvest-coverage`). */
+  name: string;
+  /** Postgres interval string — alert when the watermark is older (e.g. `14 days`). */
+  threshold: string;
+  /** Ledger file path relative to `hariRepoPath`. */
+  path: string;
+}
+
+/**
  * Configuration for the notify (notification dispatcher + heartbeat) plugin
  */
 export interface NotifyPluginConfig {
@@ -137,6 +150,11 @@ export interface NotifyPluginConfig {
   slackOwnerUserId?: string;
   /** Absolute path to the Hari repo clone (for manual coverage-ledger files). */
   hariRepoPath?: string;
+  /**
+   * External coverage ledgers to watch (instance data — from
+   * NOTIFY_COVERAGE_LEDGERS). Paths are relative to `hariRepoPath`.
+   */
+  coverageLedgers?: CoverageLedgerConfig[];
   /** Filesystem path whose free space the host-health check watches (default `/`). */
   diskCheckPath?: string;
   /** Alert when free space drops below this many bytes (default 20 GiB). */

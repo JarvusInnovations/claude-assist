@@ -29,6 +29,7 @@ export {
   type GooglePluginConfig,
   type ChatPluginConfig,
   type NotifyPluginConfig,
+  type CoverageLedgerConfig,
   type CapturePluginConfig,
   type SlackUrgencyPluginConfig,
   type BriefingPluginConfig,

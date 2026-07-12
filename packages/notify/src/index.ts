@@ -71,21 +71,20 @@ export default createPlugin('notify', async (fastify: FastifyInstance, options: 
   await heartbeats.register({ name: 'outline', threshold: '24 hours' });
   await heartbeats.register({ name: 'triage', threshold: '6 hours' });
 
-  // External coverage ledgers in the Hari repo — read via filesystem path.
-  if (config.hariRepoPath) {
-    await heartbeats.register({
-      name: 'hq-coverage',
-      threshold: '9 days',
-      source: 'manual',
-      ledgerPath: 'knowledge/hq-coverage.md',
-    });
-    await heartbeats.register({
-      name: 'harvest-coverage',
-      threshold: '14 days',
-      source: 'manual',
-      ledgerPath: 'knowledge/harvest-coverage.md',
-    });
-  } else {
+  // External coverage ledgers in the agent repo — read via filesystem path.
+  // WHICH ledgers exist (names, thresholds, repo-relative paths) is instance
+  // data, so it comes from config (NOTIFY_COVERAGE_LEDGERS) rather than code.
+  const coverageLedgers = config.coverageLedgers ?? [];
+  if (config.hariRepoPath && coverageLedgers.length > 0) {
+    for (const ledger of coverageLedgers) {
+      await heartbeats.register({
+        name: ledger.name,
+        threshold: ledger.threshold,
+        source: 'manual',
+        ledgerPath: ledger.path,
+      });
+    }
+  } else if (coverageLedgers.length > 0) {
     fastify.log.warn('Notify: hariRepoPath not set — external coverage ledgers not registered');
   }
 
