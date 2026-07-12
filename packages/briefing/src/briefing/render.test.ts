@@ -71,6 +71,7 @@ function sampleBriefing(over: Partial<Briefing> = {}): Briefing {
     },
     captures: { awaitingReview: 2, awaitingExecutor: 1, error: null },
     coverage: { pipelines: [{ name: 'email-sync', ageHours: 30, thresholdHours: 12, ratio: 2.5, stale: true }], staleCount: 1, error: null },
+    ledger: { totalCount: 0, groups: [], error: null },
     links: [{ label: 'Inbox', url: 'https://assist.example/inbox' }],
     ...over,
   };
@@ -156,6 +157,46 @@ describe('renderTanaPaste', () => {
       expect(line.trimStart().startsWith('- ')).toBe(true);
       expect(line).not.toContain('#');
     }
+  });
+
+  it("omits Yesterday's actions entirely on a quiet day", () => {
+    expect(paste).not.toContain("Yesterday's actions");
+  });
+
+  it("renders Yesterday's actions with a headline count and per-group lines", () => {
+    const paste2 = renderTanaPaste(
+      sampleBriefing({
+        ledger: {
+          totalCount: 12,
+          groups: [
+            {
+              actionType: 'repo-write',
+              targetSystem: 'github',
+              count: 5,
+              summaries: ['merged PR #67', 'opened PR #70'],
+            },
+            {
+              actionType: 'team-record-write',
+              targetSystem: 'hq',
+              count: 3,
+              summaries: ['logged meeting'],
+            },
+          ],
+          error: null,
+        },
+      })
+    );
+    expect(paste2).toContain("Yesterday's actions");
+    expect(paste2).toContain('12 external actions');
+    expect(paste2).toContain('repo-write:github ×5 — merged PR #67, opened PR #70');
+    expect(paste2).toContain('team-record-write:hq ×3 — logged meeting');
+  });
+
+  it("shows a not-available line when the ledger read fails", () => {
+    const paste2 = renderTanaPaste(
+      sampleBriefing({ ledger: { totalCount: 0, groups: [], error: 'ledger schema missing' } })
+    );
+    expect(paste2).toContain('Ledger not available: ledger schema missing');
   });
 });
 

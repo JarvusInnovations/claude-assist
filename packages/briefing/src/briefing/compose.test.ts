@@ -75,6 +75,7 @@ function baseInputs(over: Partial<BriefingInputs> = {}): BriefingInputs {
       staleCount: 1,
       error: null,
     },
+    ledger: { totalCount: 0, groups: [], error: null },
     pageBaseUrl: 'https://assist.example',
     ...over,
   };

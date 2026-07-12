@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { todayIsoInTz, zonedDayStartMs, zonedDayWindow } from './time.js';
+import { priorDateIso, todayIsoInTz, zonedDayStartMs, zonedDayWindow } from './time.js';
 
 describe('todayIsoInTz', () => {
   it('rolls the date back for a late-UTC instant that is still "yesterday" in ET', () => {
@@ -25,5 +25,19 @@ describe('zonedDayWindow (America/New_York)', () => {
   it('handles a standard-time (EST, UTC-5) date', () => {
     const { fromIso } = zonedDayWindow('2026-01-15', 'America/New_York');
     expect(fromIso).toBe('2026-01-15T05:00:00.000Z');
+  });
+});
+
+describe('priorDateIso', () => {
+  it('steps back one calendar day', () => {
+    expect(priorDateIso('2026-07-10')).toBe('2026-07-09');
+  });
+
+  it('crosses a month boundary', () => {
+    expect(priorDateIso('2026-08-01')).toBe('2026-07-31');
+  });
+
+  it('crosses a year boundary', () => {
+    expect(priorDateIso('2026-01-01')).toBe('2025-12-31');
   });
 });

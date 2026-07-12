@@ -8,8 +8,10 @@
  *   today's calendar (with which events will alert), open commitments,
  *   email split into a "needs attention" tier + a calm aggregate, captures
  *   awaiting review, coverage staleness,
- *   pipeline health, and links out to richer claude-assist pages. Sources that
- *   aren't live render as "not-yet-available", never failing the whole briefing.
+ *   pipeline health, yesterday's ledger actions (a narrative summary of what
+ *   the assistant did on Chris's behalf — omitted entirely on a quiet day),
+ *   and links out to richer claude-assist pages. Sources that aren't live
+ *   render as "not-yet-available", never failing the whole briefing.
  */
 
 import type { AlertPlanItem, CalendarEvent } from '../types.js';
@@ -19,6 +21,7 @@ import type { CommitmentsResult, OpenCommitment } from './sources/commitments.js
 import type { EmailSummary } from './sources/email.js';
 import type { CapturesSummary } from './sources/captures.js';
 import type { CoverageSummary } from './sources/coverage.js';
+import type { LedgerNarrative } from './sources/ledger.js';
 
 export interface BriefingLink {
   label: string;
@@ -33,6 +36,7 @@ export interface BriefingInputs {
   email: EmailSummary;
   captures: CapturesSummary;
   coverage: CoverageSummary;
+  ledger: LedgerNarrative;
   /** Base URL for links out to richer claude-assist pages (optional). */
   pageBaseUrl?: string | null;
 }
@@ -55,6 +59,7 @@ export interface Briefing {
   email: EmailSummary;
   captures: CapturesSummary;
   coverage: CoverageSummary;
+  ledger: LedgerNarrative;
   links: BriefingLink[];
 }
 
@@ -90,6 +95,7 @@ export function composeBriefing(inputs: BriefingInputs): Briefing {
     email: inputs.email,
     captures: inputs.captures,
     coverage: inputs.coverage,
+    ledger: inputs.ledger,
     links,
   };
 }

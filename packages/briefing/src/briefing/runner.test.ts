@@ -18,6 +18,7 @@ function sampleBriefing(over: Partial<Briefing> = {}): Briefing {
     },
     captures: { awaitingReview: 0, awaitingExecutor: 0, error: null },
     coverage: { pipelines: [], staleCount: 0, error: null },
+    ledger: { totalCount: 0, groups: [], error: null },
     links: [],
     ...over,
   };
@@ -56,5 +57,19 @@ describe('buildBriefingNotification', () => {
     const n = buildBriefingNotification(sampleBriefing(), null, null);
     expect(n.url).toBeUndefined();
     expect(n.urlTitle).toBeUndefined();
+  });
+
+  it('mentions yesterday\'s ledger actions in the body when there are any', () => {
+    const n = buildBriefingNotification(
+      sampleBriefing({ ledger: { totalCount: 7, groups: [], error: null } }),
+      null,
+      null
+    );
+    expect(n.body).toContain('7 external actions yesterday');
+  });
+
+  it('omits the ledger mention from the body on a quiet day', () => {
+    const n = buildBriefingNotification(sampleBriefing(), null, null);
+    expect(n.body).not.toContain('external action');
   });
 });
