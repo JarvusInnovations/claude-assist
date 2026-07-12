@@ -12,6 +12,7 @@ import slackUrgencyPlugin from '@jarvus/claude-assist-slack-urgency';
 import briefingPlugin from '@jarvus/claude-assist-briefing';
 import chatPlugin from '@jarvus/claude-assist-chat';
 import notifyPlugin from '@jarvus/claude-assist-notify';
+import pagesPlugin, { registerPagesPublicRoutes } from '@jarvus/claude-assist-pages';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import envPlugin from './plugins/env.js';
@@ -249,6 +250,24 @@ await fastify.register(
       api.log.info('Capture module disabled');
     }
 
+    // Pages module — publish + collect interactive HTML pages. Registered
+    // after notify (needs fastify.notify for the response-notify dispatch).
+    // Only the /api/pages/* API surface is under this prefix; the public
+    // serving routes (GET /pages, GET /pages/:slug, GET /pages/_helper.js)
+    // are registered separately below, outside /api.
+    if (fastify.config.ENABLE_PAGES) {
+      api.log.info('Pages module enabled');
+      await api.register(pagesPlugin, {
+        migrationsDir: join(__dirname, '../../../packages/pages/migrations'),
+        disableMigrations: fastify.config.DISABLE_MIGRATIONS,
+        pagesConfig: {
+          baseUrl: fastify.config.PAGES_BASE_URL,
+        },
+      });
+    } else {
+      api.log.info('Pages module disabled');
+    }
+
     // Slack urgency module — read-only listener over Chris's Slack; interrupts
     // (via the notify dispatcher, registered above) only for what can't wait.
     // Reads AS Chris via a user token, so it's independent of the chat bot.
@@ -370,6 +389,13 @@ if (fastify.config.ENABLE_CHAT) {
 
 // Public share routes — bypass Caddy basic-auth via /share/* path pattern
 await fastify.register(registerPublicShareRoutes);
+
+// Pages public serving surface — GET /pages, /pages/:slug, /pages/_helper.js.
+// Same auth posture as the rest of the app (Tailscale-reachable only, no
+// bypass); registered outside /api since these serve HTML, not JSON.
+if (fastify.config.ENABLE_PAGES) {
+  await fastify.register(registerPagesPublicRoutes, { baseUrl: fastify.config.PAGES_BASE_URL });
+}
 
 // Serve admin frontend static files
 await fastify.register(fastifyStatic, {

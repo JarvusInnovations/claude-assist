@@ -60,6 +60,14 @@
 !packages/briefing/migrations/
 !packages/briefing/migrations/**
 
+# packages/pages
+!packages/pages/package.json
+!packages/pages/tsconfig.json
+!packages/pages/src/**
+!packages/pages/bin/**
+!packages/pages/migrations/
+!packages/pages/migrations/**
+
 # apps/server
 !apps/server/package.json
 !apps/server/tsconfig.json

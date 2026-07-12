@@ -47,6 +47,8 @@ export interface PluginOptions {
   slackUrgencyConfig?: SlackUrgencyPluginConfig;
   /** Configuration for briefing plugin */
   briefingConfig?: BriefingPluginConfig;
+  /** Configuration for pages plugin */
+  pagesConfig?: PagesPluginConfig;
 }
 
 /**
@@ -327,6 +329,17 @@ export interface GooglePluginConfig {
   emailDigestPageUrl?: string;
 }
 
+/**
+ * Configuration for the pages plugin (publish + collect interactive HTML pages).
+ */
+export interface PagesPluginConfig {
+  /**
+   * Override for the base URL used in publish responses + notify links
+   * (default: derived from the request's forwarded-proto/host headers).
+   */
+  baseUrl?: string;
+}
+
 export interface ModulePlugin {
   plugin: FastifyPluginAsync<PluginOptions>;
   options: PluginOptions;
@@ -363,6 +376,7 @@ export function createPlugin(
       captureConfig: opts.captureConfig,
       slackUrgencyConfig: opts.slackUrgencyConfig,
       briefingConfig: opts.briefingConfig,
+      pagesConfig: opts.pagesConfig,
     };
 
     fastify.log.info(`Loading plugin: ${name}`);

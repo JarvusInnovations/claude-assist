@@ -33,6 +33,7 @@ export {
   type CapturePluginConfig,
   type SlackUrgencyPluginConfig,
   type BriefingPluginConfig,
+  type PagesPluginConfig,
 } from './plugin.js';
 
 // Tana MCP client (shared by capture's inbox executor + the briefing render)
