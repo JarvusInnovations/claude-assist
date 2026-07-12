@@ -67,6 +67,12 @@
 !packages/pages/bin/**
 !packages/pages/migrations/
 !packages/pages/migrations/**
+# packages/ledger
+!packages/ledger/package.json
+!packages/ledger/tsconfig.json
+!packages/ledger/src/**
+!packages/ledger/migrations/
+!packages/ledger/migrations/**
 
 # apps/server
 !apps/server/package.json

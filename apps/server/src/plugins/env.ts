@@ -171,6 +171,15 @@ const schema = {
     NOTIFY_STALENESS_CRON: { type: 'string' },
     NOTIFY_DIGEST_FLUSH_CRON: { type: 'string' },
 
+    // Ledger module (derived audit ledger + direct-write surface)
+    ENABLE_LEDGER: { type: 'boolean', default: true },
+    // Cron for the incremental derivation pass (default every 15 minutes).
+    LEDGER_DERIVE_CRON: { type: 'string', default: '*/15 * * * *' },
+    // Tool calls scanned + classified per derivation batch.
+    LEDGER_DERIVE_BATCH_SIZE: { type: 'number', default: 1000 },
+    // Disable the scheduled derivation (direct writes + queries still work).
+    LEDGER_DISABLE_DERIVE: { type: 'boolean', default: false },
+
     // Slack urgency module (read-only urgency listener over Chris's Slack)
     ENABLE_SLACK_URGENCY: { type: 'boolean', default: false },
     // User token (xoxp-…) — reads AS Chris (same token slack-axi stores).
@@ -310,6 +319,12 @@ declare module 'fastify' {
       NOTIFY_DISABLE_STALENESS: boolean;
       NOTIFY_STALENESS_CRON?: string;
       NOTIFY_DIGEST_FLUSH_CRON?: string;
+
+      // Ledger module
+      ENABLE_LEDGER: boolean;
+      LEDGER_DERIVE_CRON: string;
+      LEDGER_DERIVE_BATCH_SIZE: number;
+      LEDGER_DISABLE_DERIVE: boolean;
 
       // Slack urgency module
       ENABLE_SLACK_URGENCY: boolean;

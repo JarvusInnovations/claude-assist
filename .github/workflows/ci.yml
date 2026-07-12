@@ -59,6 +59,8 @@ jobs:
 
       - name: Build pages
         run: bun run --filter @jarvus/claude-assist-pages build
+      - name: Build ledger
+        run: bun run --filter @jarvus/claude-assist-ledger build
 
       - name: Build server
         run: bun run --filter @jarvus/claude-assist-server build

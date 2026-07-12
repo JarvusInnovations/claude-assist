@@ -66,6 +66,7 @@
         "@jarvus/claude-assist-chat": "workspace:*",
         "@jarvus/claude-assist-core": "workspace:*",
         "@jarvus/claude-assist-google": "workspace:*",
+        "@jarvus/claude-assist-ledger": "workspace:*",
         "@jarvus/claude-assist-notify": "workspace:*",
         "@jarvus/claude-assist-pages": "workspace:*",
         "@jarvus/claude-assist-sessions": "workspace:*",
@@ -167,6 +168,20 @@
       },
       "devDependencies": {
         "@types/node": "^25.0.10",
+      },
+    },
+    "packages/ledger": {
+      "name": "@jarvus/claude-assist-ledger",
+      "version": "0.1.0",
+      "dependencies": {
+        "@jarvus/claude-assist-core": "workspace:*",
+        "fastify": "^5.7.1",
+        "fastify-plugin": "^5.1.0",
+        "postgres": "^3.4.8",
+      },
+      "devDependencies": {
+        "@types/node": "^25.0.10",
+        "typescript": "^5.9.3",
       },
     },
     "packages/notify": {
@@ -368,6 +383,8 @@
     "@jarvus/claude-assist-core": ["@jarvus/claude-assist-core@workspace:packages/core"],
 
     "@jarvus/claude-assist-google": ["@jarvus/claude-assist-google@workspace:packages/google"],
+
+    "@jarvus/claude-assist-ledger": ["@jarvus/claude-assist-ledger@workspace:packages/ledger"],
 
     "@jarvus/claude-assist-notify": ["@jarvus/claude-assist-notify@workspace:packages/notify"],
 
@@ -1079,6 +1096,8 @@
 
     "@jarvus/claude-assist-google/@types/node": ["@types/node@25.0.10", "", { "dependencies": { "undici-types": "~7.16.0" } }, "sha512-zWW5KPngR/yvakJgGOmZ5vTBemDoSqF3AcV/LrO5u5wTWyEAVVh+IT39G4gtyAkh3CtTZs8aX/yRM82OfzHJRg=="],
 
+    "@jarvus/claude-assist-ledger/@types/node": ["@types/node@25.0.10", "", { "dependencies": { "undici-types": "~7.16.0" } }, "sha512-zWW5KPngR/yvakJgGOmZ5vTBemDoSqF3AcV/LrO5u5wTWyEAVVh+IT39G4gtyAkh3CtTZs8aX/yRM82OfzHJRg=="],
+
     "@jarvus/claude-assist-notify/@types/node": ["@types/node@25.0.10", "", { "dependencies": { "undici-types": "~7.16.0" } }, "sha512-zWW5KPngR/yvakJgGOmZ5vTBemDoSqF3AcV/LrO5u5wTWyEAVVh+IT39G4gtyAkh3CtTZs8aX/yRM82OfzHJRg=="],
 
     "@jarvus/claude-assist-pages/@types/node": ["@types/node@25.0.10", "", { "dependencies": { "undici-types": "~7.16.0" } }, "sha512-zWW5KPngR/yvakJgGOmZ5vTBemDoSqF3AcV/LrO5u5wTWyEAVVh+IT39G4gtyAkh3CtTZs8aX/yRM82OfzHJRg=="],
@@ -1170,6 +1189,8 @@
     "@jarvus/claude-assist-core/@types/node/undici-types": ["undici-types@7.16.0", "", {}, "sha512-Zz+aZWSj8LE6zoxD+xrjh4VfkIG8Ya6LvYkZqtUQGJPZjYl53ypCaUwWqo7eI0x66KBGeRo+mlBEkMSeSZ38Nw=="],
 
     "@jarvus/claude-assist-google/@types/node/undici-types": ["undici-types@7.16.0", "", {}, "sha512-Zz+aZWSj8LE6zoxD+xrjh4VfkIG8Ya6LvYkZqtUQGJPZjYl53ypCaUwWqo7eI0x66KBGeRo+mlBEkMSeSZ38Nw=="],
+
+    "@jarvus/claude-assist-ledger/@types/node/undici-types": ["undici-types@7.16.0", "", {}, "sha512-Zz+aZWSj8LE6zoxD+xrjh4VfkIG8Ya6LvYkZqtUQGJPZjYl53ypCaUwWqo7eI0x66KBGeRo+mlBEkMSeSZ38Nw=="],
 
     "@jarvus/claude-assist-notify/@types/node/undici-types": ["undici-types@7.16.0", "", {}, "sha512-Zz+aZWSj8LE6zoxD+xrjh4VfkIG8Ya6LvYkZqtUQGJPZjYl53ypCaUwWqo7eI0x66KBGeRo+mlBEkMSeSZ38Nw=="],
 
