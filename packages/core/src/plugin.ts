@@ -3,6 +3,7 @@ import fp from 'fastify-plugin';
 import type postgres from 'postgres';
 import type { Scheduler } from './scheduler.js';
 import type { NotifyDispatcher, HeartbeatRegistry } from './notify.js';
+import type { Ledger } from './ledger.js';
 
 /**
  * Extended Fastify instance with claude-assist decorators
@@ -21,6 +22,12 @@ declare module 'fastify' {
      * on a successful run so the daily monitor can alert on absence of success.
      */
     heartbeats?: HeartbeatRegistry;
+    /**
+     * Audit-ledger direct-write surface. Present only when the ledger module is
+     * loaded; transcript-less services call `fastify.ledger?.record(...)` to log
+     * an action they perform at execution time.
+     */
+    ledger?: Ledger;
   }
 }
 
@@ -49,6 +56,20 @@ export interface PluginOptions {
   briefingConfig?: BriefingPluginConfig;
   /** Configuration for pages plugin */
   pagesConfig?: PagesPluginConfig;
+  /** Configuration for ledger plugin */
+  ledgerConfig?: LedgerPluginConfig;
+}
+
+/**
+ * Configuration for the ledger plugin (derived audit ledger + direct writes).
+ */
+export interface LedgerPluginConfig {
+  /** Cron for the incremental derivation pass (default every 15 min). */
+  deriveCron?: string;
+  /** Tool-calls scanned per derivation batch (default 1000). */
+  batchSize?: number;
+  /** Skip the scheduled derivation pass (direct writes + queries still work). */
+  disableDerivation?: boolean;
 }
 
 /**
@@ -377,6 +398,7 @@ export function createPlugin(
       slackUrgencyConfig: opts.slackUrgencyConfig,
       briefingConfig: opts.briefingConfig,
       pagesConfig: opts.pagesConfig,
+      ledgerConfig: opts.ledgerConfig,
     };
 
     fastify.log.info(`Loading plugin: ${name}`);

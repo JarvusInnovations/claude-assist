@@ -13,6 +13,7 @@ import briefingPlugin from '@jarvus/claude-assist-briefing';
 import chatPlugin from '@jarvus/claude-assist-chat';
 import notifyPlugin from '@jarvus/claude-assist-notify';
 import pagesPlugin, { registerPagesPublicRoutes } from '@jarvus/claude-assist-pages';
+import ledgerPlugin from '@jarvus/claude-assist-ledger';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import envPlugin from './plugins/env.js';
@@ -109,8 +110,27 @@ await fastify.register(
       }
     );
 
-    // Notify module — registered FIRST so its fastify.notify / fastify.heartbeats
-    // decorators are available to the sessions + google pipelines below.
+    // Ledger module — registered FIRST so its fastify.ledger decorator is
+    // available to the notify dispatcher + google email executor below, both of
+    // which write direct ledger rows at execution time.
+    if (fastify.config.ENABLE_LEDGER) {
+      api.log.info('Ledger module enabled');
+      await api.register(ledgerPlugin, {
+        migrationsDir: join(__dirname, '../../../packages/ledger/migrations'),
+        disableMigrations: fastify.config.DISABLE_MIGRATIONS,
+        ledgerConfig: {
+          deriveCron: fastify.config.LEDGER_DERIVE_CRON,
+          batchSize: fastify.config.LEDGER_DERIVE_BATCH_SIZE,
+          disableDerivation:
+            fastify.config.DISABLE_SYNCS || fastify.config.LEDGER_DISABLE_DERIVE,
+        },
+      });
+    } else {
+      api.log.info('Ledger module disabled');
+    }
+
+    // Notify module — registered before the sessions + google pipelines so its
+    // fastify.notify / fastify.heartbeats decorators are available to them.
     if (fastify.config.ENABLE_NOTIFY) {
       api.log.info('Notify module enabled');
       await api.register(notifyPlugin, {

@@ -18,6 +18,7 @@ import type {
   NotifyInput,
   NotifyResult,
   NotificationChannel,
+  Ledger,
 } from '@jarvus/claude-assist-core';
 import type { PushoverChannel } from './channels/pushover.js';
 import { hashPayload, redactText, redactUrl } from './redact.js';
@@ -26,6 +27,12 @@ export interface DispatcherDeps {
   sql: postgres.Sql;
   log: FastifyBaseLogger;
   pushover: PushoverChannel | null;
+  /**
+   * Audit-ledger direct-write surface. When present, each delivered
+   * notification is recorded as a `direct` outbound action. Best-effort — a
+   * ledger failure never blocks delivery.
+   */
+  ledger?: Ledger;
 }
 
 export interface Dispatcher extends NotifyDispatcher {
@@ -41,7 +48,7 @@ function defaultChannels(input: NotifyInput): NotificationChannel[] {
 }
 
 export function createDispatcher(deps: DispatcherDeps): Dispatcher {
-  const { sql, log, pushover } = deps;
+  const { sql, log, pushover, ledger } = deps;
 
   async function notify(input: NotifyInput): Promise<NotifyResult> {
     const channels = defaultChannels(input);
@@ -110,6 +117,28 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
       RETURNING id
     `;
     const id = rows[0]!.id;
+
+    // Audit-ledger direct row for an outbound notification that actually
+    // reached a channel. The stored title is already redacted. Best-effort:
+    // a ledger failure must never break notification delivery.
+    if (status === 'sent') {
+      try {
+        await ledger?.record({
+          actor: { kind: 'service', service: 'notify' },
+          actionType: 'outbound',
+          targetSystem: 'notification',
+          targetId: String(id),
+          summary: titleRedacted,
+          context: {
+            notification_id: id,
+            priority: input.priority,
+            channels: deliveredVia,
+          },
+        });
+      } catch (err) {
+        log.error({ err, notificationId: id }, 'Notify: ledger record failed (non-fatal)');
+      }
+    }
 
     return {
       id,

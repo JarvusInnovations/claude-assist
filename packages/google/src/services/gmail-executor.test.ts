@@ -79,14 +79,27 @@ function mockSql(selectRows: unknown[]): { sql: postgres.Sql; updates: string[] 
   return { sql, updates };
 }
 
-function makeService(sql: postgres.Sql, gmail: gmail_v1.Gmail, whitelist: Set<string>) {
+function makeService(
+  sql: postgres.Sql,
+  gmail: gmail_v1.Gmail,
+  whitelist: Set<string>,
+  ledger?: { record: ReturnType<typeof mock> }
+) {
   const authService = {
     getGmailClient: mock(async () => gmail),
   } as unknown as GmailAuthService;
   const whitelistService = {
     deriveWhitelist: mock(async () => whitelist),
   } as unknown as WhitelistService;
-  return new GmailExecutorService(sql, makeLogger(), authService, whitelistService);
+  return new GmailExecutorService(
+    sql,
+    makeLogger(),
+    authService,
+    whitelistService,
+    {},
+    undefined,
+    ledger as never
+  );
 }
 
 describe('GmailExecutorService.executeEmails — planning', () => {
@@ -168,6 +181,53 @@ describe('GmailExecutorService.executeEmails — planning', () => {
     // No SPAM add, no INBOX removal — just the label.
     expect(modifyCalls[0]!.requestBody.addLabelIds).not.toContain('SPAM');
     expect(modifyCalls[0]!.requestBody.removeLabelIds ?? []).toEqual([]);
+  });
+
+  it('records a direct ledger row for a spam move (destructive action)', async () => {
+    const row = {
+      id: 9,
+      account_id: 7,
+      message_id: 'msg-9',
+      from_address: 'cold@outreach.io',
+      planned_labels: ['AI/Triaged'],
+      gmail_action: 'spam',
+      analysis: { message_type: 'spam', sender_type: 'human' },
+      workflow_status: 'triaged',
+    };
+    const { sql } = mockSql([row]);
+    const { gmail } = makeGmail();
+    const record = mock(async (_input: Record<string, unknown>) => ({ id: 1 }));
+    const svc = makeService(sql, gmail, new Set(), { record });
+
+    await svc.executeEmails([9]);
+
+    expect(record).toHaveBeenCalledTimes(1);
+    const arg = record.mock.calls[0]![0];
+    expect(arg.actionType).toBe('email-action');
+    expect(arg.targetSystem).toBe('gmail');
+    expect(arg.targetId).toBe('msg-9');
+    expect((arg.actor as Record<string, unknown>).kind).toBe('service');
+  });
+
+  it('does NOT record a ledger row when the action is label-only (leave)', async () => {
+    const row = {
+      id: 10,
+      account_id: 7,
+      message_id: 'msg-10',
+      from_address: 'colleague@example.com',
+      planned_labels: ['AI/Triaged'],
+      gmail_action: 'leave',
+      analysis: { message_type: 'personal', sender_type: 'human' },
+      workflow_status: 'triaged',
+    };
+    const { sql } = mockSql([row]);
+    const { gmail } = makeGmail();
+    const record = mock(async (_input: Record<string, unknown>) => ({ id: 1 }));
+    const svc = makeService(sql, gmail, new Set(), { record });
+
+    await svc.executeEmails([10]);
+
+    expect(record).not.toHaveBeenCalled();
   });
 
   it('apply_gmail_action=false stages labels but leaves the message in place', async () => {
