@@ -102,6 +102,12 @@ const schema = {
     TANA_MCP_TOKEN: { type: 'string' },
     TANA_WORKSPACE_ID: { type: 'string' },
 
+    // Pages module (publish + collect interactive HTML pages)
+    ENABLE_PAGES: { type: 'boolean', default: true },
+    // Override for links in publish responses + notify dispatch (default:
+    // derived from the request's forwarded-proto/host headers).
+    PAGES_BASE_URL: { type: 'string' },
+
     // Briefing module (daily briefing + join-required meeting alerts)
     ENABLE_BRIEFING: { type: 'boolean', default: true },
     BRIEFING_DISABLE: { type: 'boolean', default: false },
@@ -255,6 +261,10 @@ declare module 'fastify' {
       TANA_MCP_URL: string;
       TANA_MCP_TOKEN?: string;
       TANA_WORKSPACE_ID?: string;
+
+      // Pages module
+      ENABLE_PAGES: boolean;
+      PAGES_BASE_URL?: string;
 
       // Briefing module
       ENABLE_BRIEFING: boolean;

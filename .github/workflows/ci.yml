@@ -57,6 +57,9 @@ jobs:
       - name: Build briefing
         run: bun run --filter @jarvus/claude-assist-briefing build
 
+      - name: Build pages
+        run: bun run --filter @jarvus/claude-assist-pages build
+
       - name: Build server
         run: bun run --filter @jarvus/claude-assist-server build
 
