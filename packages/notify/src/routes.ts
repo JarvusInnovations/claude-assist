@@ -38,7 +38,7 @@ export interface NotifyRoutesConfig {
 }
 
 const VALID_PRIORITIES: NotificationPriority[] = ['interrupt', 'notice', 'digest'];
-const VALID_CHANNELS: NotificationChannel[] = ['pushover', 'slack'];
+const VALID_CHANNELS: NotificationChannel[] = ['pushover'];
 
 interface NotifyBody {
   priority?: string;

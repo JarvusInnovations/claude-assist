@@ -12,12 +12,19 @@
  *   - `interrupt` — Pushover high-priority (reaches phone + watch); only for
  *     things that genuinely can't wait.
  *   - `notice`    — Pushover normal priority.
- *   - `digest`    — Slack DM, batched and flushed on a schedule.
+ *   - `digest`    — Pushover normal priority, batched and flushed on a schedule
+ *     into a single summarizing notice. (The daily email digest itself is sent
+ *     as a `notice` with a page link; the `digest` tier is for lower-value
+ *     batch dispatches from other pipelines.)
+ *
+ * Delivery is Pushover-only. The former Slack DM digest channel was retired: a
+ * text rendering short enough for a notification shade adds nothing over the
+ * ping, and the interactive page absorbs the churn a longer one would recreate.
  */
 
 export type NotificationPriority = 'interrupt' | 'notice' | 'digest';
 
-export type NotificationChannel = 'pushover' | 'slack';
+export type NotificationChannel = 'pushover';
 
 export interface NotifyInput {
   /** Priority tier — governs channel + delivery urgency. */

@@ -2,7 +2,7 @@
  * Notify module — the single notification dispatcher + coverage-ledger registry.
  *
  * Provides:
- * - `fastify.notify`      — dispatch spine fanning out to Pushover + Slack DM
+ * - `fastify.notify`      — dispatch spine delivering through Pushover
  * - `fastify.heartbeats`  — pipeline heartbeat / coverage-ledger registry
  * - a daily staleness + host-health check that pages on absence of success
  * - internal HTTP routes (POST /notify, POST /heartbeat/:pipeline)
@@ -19,7 +19,6 @@ import {
   type NotifyPluginConfig,
 } from '@jarvus/claude-assist-core';
 import { createPushoverChannel } from './channels/pushover.js';
-import { createSlackChannel } from './channels/slack.js';
 import { createDispatcher } from './dispatcher.js';
 import { createHeartbeatRegistry } from './heartbeats.js';
 import { runStalenessCheck } from './staleness.js';
@@ -44,18 +43,10 @@ export default createPlugin('notify', async (fastify: FastifyInstance, options: 
       ? createPushoverChannel({ token: config.pushoverToken, user: config.pushoverUser })
       : null;
   if (!pushover) {
-    fastify.log.warn('Notify: PUSHOVER_TOKEN/USER not set — interrupt/notice delivery disabled');
+    fastify.log.warn('Notify: PUSHOVER_TOKEN/USER not set — all notification delivery disabled');
   }
 
-  const slack =
-    config.slackBotToken && config.slackOwnerUserId
-      ? createSlackChannel({ botToken: config.slackBotToken, ownerUserId: config.slackOwnerUserId })
-      : null;
-  if (!slack) {
-    fastify.log.warn('Notify: SLACK_BOT_TOKEN/OWNER not set — digest (Slack DM) delivery disabled');
-  }
-
-  const dispatcher = createDispatcher({ sql: fastify.sql, log: fastify.log, pushover, slack });
+  const dispatcher = createDispatcher({ sql: fastify.sql, log: fastify.log, pushover });
   const heartbeats = createHeartbeatRegistry(fastify.sql);
 
   // Decorate so every other module can deliver / beat through the one spine.
@@ -135,11 +126,6 @@ export {
   type PushoverChannel,
   type PushoverConfig,
 } from './channels/pushover.js';
-export {
-  createSlackChannel,
-  type SlackChannel,
-  type SlackDmConfig,
-} from './channels/slack.js';
 export {
   runStalenessCheck,
   evaluateStaleness,
