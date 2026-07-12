@@ -2,6 +2,7 @@
  * Pages API routes — registered under the server's /api prefix → /api/pages/*.
  *
  *   POST /pages                            - publish (republish = new version)
+ *   GET  /pages                             - JSON index of active pages (newest-first)
  *   POST /pages/:slug/responses            - append-only response ingest
  *   GET  /pages/:slug/responses             - read-back queue (since/unprocessed)
  *   POST /pages/:slug/responses/:id/processed - mark one response handled
@@ -86,6 +87,23 @@ export const registerPagesApiRoutes: FastifyPluginAsync<PagesApiRoutesConfig> = 
       url: pageUrl(request, page.slug, baseUrl),
       version: version.id,
       created,
+    };
+  });
+
+  // GET /pages - JSON index of active pages, newest-first (for agents/CLI;
+  // the human HTML index is the public GET /pages route outside /api).
+  fastify.get('/pages', async (request) => {
+    const pages = await store.listActive();
+    return {
+      pages: pages.map((p) => ({
+        slug: p.slug,
+        title: p.title,
+        url: pageUrl(request, p.slug, baseUrl),
+        digest_optin: p.digestOptin,
+        created_at: p.createdAt,
+        updated_at: p.updatedAt,
+      })),
+      count: pages.length,
     };
   });
 

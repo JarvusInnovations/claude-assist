@@ -80,6 +80,29 @@ describe('pages API routes', () => {
     });
   });
 
+  describe('GET /pages (JSON index)', () => {
+    it('lists active pages with urls and excludes archived ones', async () => {
+      await fastify.inject({
+        method: 'POST',
+        url: '/pages',
+        payload: { slug: 'active-page', title: 'Active', html: '<html/>' },
+      });
+      await fastify.inject({
+        method: 'POST',
+        url: '/pages',
+        payload: { slug: 'gone-page', title: 'Gone', html: '<html/>' },
+      });
+      await fastify.inject({ method: 'POST', url: '/pages/gone-page/archive' });
+
+      const response = await fastify.inject({ method: 'GET', url: '/pages' });
+      expect(response.statusCode).toBe(200);
+      const json = response.json();
+      expect(json.count).toBe(1);
+      expect(json.pages[0]).toMatchObject({ slug: 'active-page', title: 'Active' });
+      expect(json.pages[0].url).toContain('/pages/active-page');
+    });
+  });
+
   describe('POST /pages/:slug/responses', () => {
     it('appends a response and dispatches a notice-priority notify', async () => {
       await fastify.inject({

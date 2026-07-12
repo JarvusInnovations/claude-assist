@@ -64,6 +64,7 @@
 !packages/pages/package.json
 !packages/pages/tsconfig.json
 !packages/pages/src/**
+!packages/pages/bin/**
 !packages/pages/migrations/
 !packages/pages/migrations/**
 

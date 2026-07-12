@@ -4,6 +4,9 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "pages-axi": "./bin/pages-axi.ts"
+  },
   "publishConfig": {
     "access": "public"
   },
