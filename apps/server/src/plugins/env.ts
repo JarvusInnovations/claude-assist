@@ -139,6 +139,21 @@ const schema = {
     // Links out to richer claude-assist pages (e.g. https://assist.example.com).
     BRIEFING_PAGE_BASE_URL: { type: 'string' },
 
+    // Per-meeting briefings (preps on the virtuous cycle)
+    ENABLE_MEETING_BRIEFINGS: { type: 'boolean', default: true },
+    // Sonnet-class prep composer model.
+    MEETING_PREP_MODEL: { type: 'string', default: 'claude-sonnet-5' },
+    // Optional pluggable prior-occurrence context CLI (transcripts/HQ timelines/
+    // Slack). Receives occurrence metadata as JSON on stdin + --series-key/
+    // --occurrence-key args; prints context text on stdout. Unset → omitted.
+    MEETING_CONTEXT_BIN: { type: 'string' },
+    // Space-separated args passed to the context CLI before the derived flags.
+    MEETING_CONTEXT_ARGS: { type: 'string', default: '' },
+    // Cron for the meeting-cycle pass (server local / UTC); default every 30 min.
+    MEETING_CRON: { type: 'string', default: '*/30 * * * *' },
+    // Refresh occurrences starting within this many hours (the ~24h trigger).
+    MEETING_REFRESH_AHEAD_HOURS: { type: 'number', default: 26 },
+
     // Chat module
     ENABLE_CHAT: { type: 'boolean', default: false },
     SLACK_BOT_TOKEN: { type: 'string' },
@@ -296,6 +311,14 @@ declare module 'fastify' {
       BRIEFING_CALENDAR_ACCOUNT?: string;
       BRIEFING_TANA_WORKSPACE_ID?: string;
       BRIEFING_PAGE_BASE_URL?: string;
+
+      // Per-meeting briefings (preps)
+      ENABLE_MEETING_BRIEFINGS: boolean;
+      MEETING_PREP_MODEL: string;
+      MEETING_CONTEXT_BIN?: string;
+      MEETING_CONTEXT_ARGS: string;
+      MEETING_CRON: string;
+      MEETING_REFRESH_AHEAD_HOURS: number;
 
       // Chat module
       ENABLE_CHAT: boolean;

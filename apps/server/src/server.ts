@@ -364,6 +364,16 @@ await fastify.register(
           alertWindowMinutes: fastify.config.BRIEFING_ALERT_WINDOW_MINUTES,
           disableBriefing: fastify.config.DISABLE_SYNCS || fastify.config.BRIEFING_DISABLE,
           disableAlerts: fastify.config.DISABLE_SYNCS || fastify.config.BRIEFING_DISABLE_ALERTS,
+          // Per-meeting briefings (preps on the virtuous cycle)
+          disableMeetingBriefings:
+            fastify.config.DISABLE_SYNCS || !fastify.config.ENABLE_MEETING_BRIEFINGS,
+          meetingPrepModel: fastify.config.MEETING_PREP_MODEL,
+          meetingContextBin: fastify.config.MEETING_CONTEXT_BIN,
+          meetingContextArgs: fastify.config.MEETING_CONTEXT_ARGS.split(' ')
+            .map((a) => a.trim())
+            .filter(Boolean),
+          meetingCron: fastify.config.MEETING_CRON,
+          meetingRefreshAheadHours: fastify.config.MEETING_REFRESH_AHEAD_HOURS,
         },
       });
     } else {
