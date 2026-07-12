@@ -12,8 +12,13 @@ import type { Scheduler } from '@jarvus/claude-assist-core';
 import type { GmailSyncService } from '../services/gmail-sync.js';
 import { TriageService } from '../services/triage.js';
 import type { GmailExecutorService } from '../services/gmail-executor.js';
-import type { DigestService, DigestEmailDetail } from '../services/digest.js';
-import { renderDailyDigest, groupDigestBySection } from '../services/digest.js';
+import type { DigestService } from '../services/digest.js';
+import { digestHeadline } from '../services/digest.js';
+import type {
+  SenderStandingStore,
+  RefinementStore,
+  SenderStanding,
+} from '../services/standing.js';
 import type {
   EmailRecord,
   WorkflowStatus,
@@ -47,10 +52,22 @@ export interface EmailRoutesConfig {
   triageService: TriageService | null;
   executorService: GmailExecutorService | null;
   digestService: DigestService | null;
+  senderStandingStore: SenderStandingStore | null;
+  refinementStore: RefinementStore | null;
 }
 
 export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
-  async (fastify, { syncService, triageService, executorService, digestService }) => {
+  async (
+    fastify,
+    {
+      syncService,
+      triageService,
+      executorService,
+      digestService,
+      senderStandingStore,
+      refinementStore,
+    }
+  ) => {
     // ==========================================
     // Email Queries
     // ==========================================
@@ -435,30 +452,31 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
       };
     });
 
-    // GET /google/emails/digest - preview the daily confirm-to-execute digest
+    // GET /google/emails/digest - preview the assembled daily digest (the same
+    // priority-first sections the page renders + the notification headline).
     fastify.get('/google/emails/digest', async (_request, reply) => {
       if (!digestService) {
         return reply.status(503).send({ error: 'Digest not available (email actions disabled)' });
       }
-      const rows = await digestService.loadDailyRows();
-      const { body, emailIds } = renderDailyDigest(rows);
-      return { count: rows.length, emailIds, body };
+      const sections = await digestService.assemble();
+      const emailIds = sections.flatMap((s) => s.items.map((i) => i.id));
+      const { title, needResponse, toConfirm } = digestHeadline(sections);
+      return { count: emailIds.length, emailIds, headline: title, needResponse, toConfirm, sections };
     });
 
-    // GET /google/emails/digest/pending - structured pending digest for the
-    // interactive page: emails grouped by digest_section, each carrying its
-    // one-line overview + staged action so the page can render review rows.
+    // GET /google/emails/digest/pending - the priority-first assembled sections
+    // for the interactive page: actionable (listed) → digest categories
+    // (summarized, expandable) → archive → spam. Whitelisted senders are already
+    // filtered out by the service (they have standing, so they stop being asked).
     fastify.get('/google/emails/digest/pending', async (_request, reply) => {
       if (!digestService) {
         return reply
           .status(503)
           .send({ error: 'Digest not available (email actions disabled)' });
       }
-      const rows = (await digestService.loadPendingDetailed()).map((r) => ({
-        ...r,
-        analysis: parseJsonField(r.analysis),
-      })) as DigestEmailDetail[];
-      return { count: rows.length, sections: groupDigestBySection(rows) };
+      const sections = await digestService.assemble();
+      const count = sections.reduce((n, s) => n + s.count, 0);
+      return { count, sections };
     });
 
     // GET /google/emails/digest/history - recently executed actions (applied_*
@@ -475,10 +493,131 @@ export const registerEmailRoutes: FastifyPluginAsync<EmailRoutesConfig> =
         const rows = (await digestService.loadRecentExecuted(days)).map((r) => ({
           ...r,
           analysis: parseJsonField(r.analysis),
-        })) as DigestEmailDetail[];
+        }));
         return { count: rows.length, days, emails: rows };
       }
     );
+
+    // ==========================================
+    // Sender standing + classification refinements (digest v2 affordances)
+    // ==========================================
+
+    // GET /google/senders/standing - list sender standings (?standing=whitelist
+    // | unsubscribe_queue). The unsubscribe_queue list is the future
+    // unsubscribe automation's only source.
+    fastify.get<{ Querystring: { standing?: SenderStanding } }>(
+      '/google/senders/standing',
+      async (request, reply) => {
+        if (!senderStandingStore) {
+          return reply.status(503).send({ error: 'Sender standing not available' });
+        }
+        const rows = await senderStandingStore.list(request.query.standing);
+        return { count: rows.length, standings: rows };
+      }
+    );
+
+    // POST /google/senders/standing - set a sender's standing (whitelist stops
+    // asking about them; unsubscribe_queue feeds the unsubscribe automation).
+    fastify.post<{
+      Body: { sender_email?: string; standing?: SenderStanding; source?: string };
+    }>('/google/senders/standing', async (request, reply) => {
+      if (!senderStandingStore) {
+        return reply.status(503).send({ error: 'Sender standing not available' });
+      }
+      const { sender_email, standing, source } = request.body ?? {};
+      if (!sender_email || (standing !== 'whitelist' && standing !== 'unsubscribe_queue')) {
+        return reply
+          .status(400)
+          .send({ error: 'sender_email and standing (whitelist|unsubscribe_queue) required' });
+      }
+      const row = await senderStandingStore.set(sender_email, standing, source);
+      return row;
+    });
+
+    // POST /google/emails/:id/reclassify - reclassify one email + queue the
+    // correction. The reclassification takes effect for THIS email immediately
+    // (its digest placement / staged action is updated inline), but NO triage
+    // rule or prompt is modified — the refinement queue is drained separately in
+    // a deliberate interactive revision session.
+    fastify.post<{
+      Params: { id: string };
+      Body: { to_class: string; digest_section?: string; gmail_action?: string; note?: string };
+    }>('/google/emails/:id/reclassify', async (request, reply) => {
+      if (!refinementStore) {
+        return reply.status(503).send({ error: 'Refinements not available' });
+      }
+      const emailId = parseInt(request.params.id, 10);
+      const { to_class, digest_section, gmail_action, note } = request.body ?? {};
+      if (!to_class) {
+        return reply.status(400).send({ error: 'to_class required' });
+      }
+
+      // Capture the current placement for the from_class provenance.
+      const [current] = await fastify.sql<
+        { digest_section: string | null; gmail_action: string | null }[]
+      >`SELECT digest_section, gmail_action FROM google.emails WHERE id = ${emailId}`;
+      if (!current) return reply.status(404).send({ error: 'Email not found' });
+      const fromClass = current.digest_section ?? current.gmail_action ?? null;
+
+      // Append the correction (append-only; never mutates rules/prompts).
+      const refinement = await refinementStore.append({
+        emailId,
+        fromClass,
+        toClass: to_class,
+        note,
+      });
+
+      // Immediate single-email placement fix (digest_section / staged action).
+      const [email] = await fastify.sql<EmailRecord[]>`
+        UPDATE google.emails SET
+          digest_section = COALESCE(${digest_section ?? null}, digest_section),
+          gmail_action = COALESCE(${gmail_action ?? null}, gmail_action),
+          workflow_status = 'reviewed',
+          reviewed_at = NOW()
+        WHERE id = ${emailId}
+        RETURNING *
+      `;
+
+      return {
+        refinement,
+        email: email ? { ...email, analysis: parseJsonField(email.analysis) } : null,
+      };
+    });
+
+    // GET /google/refinements - pending classification refinements as clean
+    // JSON for an external interactive revision session. ?status=resolved to
+    // inspect drained entries.
+    fastify.get<{ Querystring: { status?: string } }>(
+      '/google/refinements',
+      async (request, reply) => {
+        if (!refinementStore) {
+          return reply.status(503).send({ error: 'Refinements not available' });
+        }
+        // Only 'pending' is a first-class list (the queue to drain); anything
+        // else returns an empty list rather than leaking the full history here.
+        const rows =
+          (request.query.status ?? 'pending') === 'pending'
+            ? await refinementStore.listPending()
+            : [];
+        return { count: rows.length, refinements: rows };
+      }
+    );
+
+    // PATCH /google/refinements/:id - resolve a refinement with what changed
+    // (the interactive session marks each entry done, incl. "noted, no change").
+    fastify.patch<{
+      Params: { id: string };
+      Body: { resolution?: string };
+    }>('/google/refinements/:id', async (request, reply) => {
+      if (!refinementStore) {
+        return reply.status(503).send({ error: 'Refinements not available' });
+      }
+      const id = parseInt(request.params.id, 10);
+      const resolution = request.body?.resolution ?? 'noted, no change';
+      const row = await refinementStore.resolve(id, resolution);
+      if (!row) return reply.status(404).send({ error: 'Refinement not found' });
+      return row;
+    });
 
     // ==========================================
     // Bulk Actions

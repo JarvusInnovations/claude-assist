@@ -20,7 +20,12 @@ import { TriageService } from './services/triage.js';
 import { RulesService } from './services/rules.js';
 import { WhitelistService } from './services/whitelist.js';
 import { GmailExecutorService } from './services/gmail-executor.js';
-import { DigestService } from './services/digest.js';
+import {
+  DigestService,
+  AnthropicDigestSummarizer,
+  CachingSummarizer,
+} from './services/digest.js';
+import { SenderStandingStore, RefinementStore } from './services/standing.js';
 import { PgEmailAttentionStore } from './services/attention-store.js';
 import { EmailResidueClassifier } from './services/email-residue.js';
 import { OpportunityEvaluator, loadOpportunityPrompt } from './services/opportunity.js';
@@ -147,6 +152,11 @@ export default createPlugin('google', async (fastify: FastifyInstance, options: 
   }
 
   // Executor + digest (the Gmail-mutating side; gated by disableEmailActions).
+  // Sender standing + refinement stores back the digest-page affordances; they
+  // exist whenever the schema does, independent of the action layer.
+  const senderStandingStore = new SenderStandingStore(fastify.sql);
+  const refinementStore = new RefinementStore(fastify.sql);
+
   let executorService: GmailExecutorService | null = null;
   let digestService: DigestService | null = null;
   if (actionsEnabled) {
@@ -158,7 +168,21 @@ export default createPlugin('google', async (fastify: FastifyInstance, options: 
       { disableEmailActions: false },
       fastify.heartbeats
     );
-    digestService = new DigestService(fastify.sql, fastify.log, fastify.notify);
+    // Haiku-class summarizer for the digest-category content summaries (reuses
+    // the triage API key; summarizing, not judging). Absent → deterministic
+    // fallback bullets. Wrapped in a membership-keyed cache so re-assembling an
+    // unchanged pending set (every page load hits /digest/pending) costs zero
+    // model calls and doesn't rephrase-jitter the bullets.
+    const summarizer = config.anthropicApiKey
+      ? new CachingSummarizer(
+          new AnthropicDigestSummarizer({ apiKey: config.anthropicApiKey })
+        )
+      : undefined;
+    digestService = new DigestService(fastify.sql, fastify.log, fastify.notify, {
+      summarizer,
+      standing: senderStandingStore,
+      pageUrl: config.emailDigestPageUrl,
+    });
     fastify.log.info('Email action layer enabled (executor + digests)');
   } else {
     fastify.log.info('Email action layer disabled via disableEmailActions config');
@@ -197,6 +221,8 @@ export default createPlugin('google', async (fastify: FastifyInstance, options: 
     triageService,
     executorService,
     digestService,
+    senderStandingStore,
+    refinementStore,
   });
   await fastify.register(registerRuleRoutes);
 
@@ -353,4 +379,9 @@ export { TriageService, type TriageStatus } from './services/triage.js';
 export { RulesService } from './services/rules.js';
 export { WhitelistService } from './services/whitelist.js';
 export { GmailExecutorService } from './services/gmail-executor.js';
-export { DigestService } from './services/digest.js';
+export {
+  DigestService,
+  AnthropicDigestSummarizer,
+  CachingSummarizer,
+} from './services/digest.js';
+export { SenderStandingStore, RefinementStore } from './services/standing.js';

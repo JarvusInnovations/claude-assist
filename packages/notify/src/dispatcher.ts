@@ -1,11 +1,11 @@
 /**
  * The single notification dispatcher. Every pipeline delivers through
- * `notify()`; no pipeline grows its own delivery code. Priority chooses the
- * default channel (interrupts-are-earned):
+ * `notify()`; no pipeline grows its own delivery code. Delivery is
+ * Pushover-only (the Slack DM digest channel was retired):
  *   interrupt → Pushover high-priority   notice → Pushover normal
- *   digest    → Slack DM (batched)
- * `channelHints` overrides the default set (e.g. fan a single dispatch out to
- * both channels).
+ *   digest    → batched, flushed on a schedule into one summarizing Pushover
+ *               notice
+ * `channelHints` can pin the channel set, but Pushover is the only channel.
  *
  * Every dispatch is logged to notify.notifications. Session-control links are
  * delivered but stored only in redacted form (see redact.ts).
@@ -20,18 +20,16 @@ import type {
   NotificationChannel,
 } from '@jarvus/claude-assist-core';
 import type { PushoverChannel } from './channels/pushover.js';
-import type { SlackChannel } from './channels/slack.js';
 import { hashPayload, redactText, redactUrl } from './redact.js';
 
 export interface DispatcherDeps {
   sql: postgres.Sql;
   log: FastifyBaseLogger;
   pushover: PushoverChannel | null;
-  slack: SlackChannel | null;
 }
 
 export interface Dispatcher extends NotifyDispatcher {
-  /** Flush batched digest notifications into one Slack DM. Returns count sent. */
+  /** Flush batched digest notifications into one Pushover notice. Returns count sent. */
   flushDigest(): Promise<number>;
 }
 
@@ -39,11 +37,11 @@ function defaultChannels(input: NotifyInput): NotificationChannel[] {
   if (input.channelHints && input.channelHints.length > 0) {
     return input.channelHints;
   }
-  return input.priority === 'digest' ? ['slack'] : ['pushover'];
+  return ['pushover'];
 }
 
 export function createDispatcher(deps: DispatcherDeps): Dispatcher {
-  const { sql, log, pushover, slack } = deps;
+  const { sql, log, pushover } = deps;
 
   async function notify(input: NotifyInput): Promise<NotifyResult> {
     const channels = defaultChannels(input);
@@ -80,9 +78,6 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
               urlTitle: input.urlTitle,
               priority: input.priority === 'interrupt' ? 1 : 0,
             });
-          } else if (ch === 'slack') {
-            if (!slack) throw new Error('slack channel not configured');
-            await slack.send({ title: input.title, body: input.body, url: realUrl });
           }
           deliveredVia.push(ch);
         } catch (err) {
@@ -136,26 +131,34 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
     if (pending.length === 0) return 0;
 
     // Nothing to deliver through — leave rows pending for a later flush.
-    if (!slack) {
-      log.warn('Digest flush skipped: slack channel not configured');
+    if (!pushover) {
+      log.warn('Digest flush skipped: pushover channel not configured');
       return 0;
     }
 
-    const items = pending.map((r) => {
-      const link = r.url_redacted ? `\n${r.url_redacted}` : '';
-      return `*${r.title}*\n${r.body}${link}`;
-    });
+    // One summarizing Pushover notice for the whole batch. The button links to
+    // the first pending item that carries one (the deep link is not a secret,
+    // so its stored `url_redacted` is the real URL — see redact.ts).
+    const title = `Digest · ${pending.length} update${pending.length === 1 ? '' : 's'}`;
+    const body = pending.map((r) => `• ${r.title}`).join('\n');
+    const linked = pending.find((r) => r.url_redacted)?.url_redacted ?? undefined;
 
-    await slack.sendDigest(items);
+    await pushover.send({
+      title,
+      message: body,
+      url: linked,
+      urlTitle: linked ? 'Open' : undefined,
+      priority: 0,
+    });
 
     const ids = pending.map((r) => r.id);
     await sql`
       UPDATE notify.notifications
-      SET status = 'sent', delivered_via = ${['slack'] as unknown as string[]}
+      SET status = 'sent', delivered_via = ${['pushover'] as unknown as string[]}
       WHERE id = ANY(${ids as unknown as number[]})
     `;
 
-    log.info({ count: pending.length }, 'Flushed digest notifications to Slack');
+    log.info({ count: pending.length }, 'Flushed digest notifications to Pushover');
     return pending.length;
   }
 

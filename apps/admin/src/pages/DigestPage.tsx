@@ -6,9 +6,13 @@ import {
   Inbox,
   Loader2,
   Mail,
+  MoreVertical,
   ShieldAlert,
+  ShieldCheck,
   Tag,
   CheckCircle2,
+  MailX,
+  Pencil,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -16,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Collapsible,
   CollapsibleContent,
@@ -28,31 +33,57 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { digestApi } from "@/api/digest";
 import type {
-  DigestEmail,
+  DigestItem,
+  DigestSectionPayload,
   DigestPendingResponse,
   GmailAction,
 } from "@/types/api";
 
 const ACTIONS: GmailAction[] = ["leave", "archive", "spam"];
 
-// The badge/label the row shows: an explicit gmail_action, or "label" when the
-// only staged effect is applying labels (action stays 'leave').
-function effectiveAction(email: DigestEmail, override?: GmailAction): GmailAction {
-  return override ?? email.gmail_action ?? "leave";
-}
+// The category/tier options a reclassify offers, mapped to the placement fields
+// the reclassify endpoint applies immediately for that one email.
+const RECLASS_TARGETS: {
+  value: string;
+  label: string;
+  digest_section?: string;
+  gmail_action: GmailAction;
+}[] = [
+  { value: "actionable", label: "Actionable (needs response)", digest_section: "personal", gmail_action: "leave" },
+  { value: "calendar", label: "Calendar", digest_section: "calendar", gmail_action: "archive" },
+  { value: "financial", label: "Financial", digest_section: "financial", gmail_action: "archive" },
+  { value: "opportunities", label: "Opportunities", digest_section: "opportunities", gmail_action: "archive" },
+  { value: "newsletters", label: "Newsletters", digest_section: "newsletters", gmail_action: "archive" },
+  { value: "archive", label: "Archive (routine)", digest_section: "notifications", gmail_action: "archive" },
+  { value: "spam", label: "Spam / quarantine", digest_section: "spam", gmail_action: "spam" },
+];
 
 function actionKind(
-  email: DigestEmail,
-  override?: GmailAction
+  action: GmailAction,
+  plannedLabels: string[] | null
 ): "archive" | "spam" | "label" | "leave" {
-  const action = effectiveAction(email, override);
   if (action === "archive") return "archive";
   if (action === "spam") return "spam";
-  if (email.planned_labels && email.planned_labels.length > 0) return "label";
+  if (plannedLabels && plannedLabels.length > 0) return "label";
   return "leave";
 }
 
@@ -78,7 +109,7 @@ function ActionBadge({ kind }: { kind: ReturnType<typeof actionKind> }) {
   return <Badge variant="ghost">Leave</Badge>;
 }
 
-function senderName(e: DigestEmail): string {
+function senderName(e: { from_name: string | null; from_address: string | null }): string {
   return e.from_name || e.from_address || "unknown sender";
 }
 
@@ -108,40 +139,42 @@ export function DigestPage() {
   const [approved, setApproved] = useState<Record<number, boolean>>({});
   const [overrides, setOverrides] = useState<Record<number, GmailAction>>({});
 
-  const allEmails = useMemo(
-    () => pending?.sections.flatMap((s) => s.emails) ?? [],
+  // Reclassify dialog state.
+  const [reclassItem, setReclassItem] = useState<DigestItem | null>(null);
+  const [reclassTarget, setReclassTarget] = useState<string>("archive");
+  const [reclassNote, setReclassNote] = useState("");
+
+  const allItems = useMemo(
+    () => pending?.sections.flatMap((s) => s.items) ?? [],
     [pending]
   );
 
-  // Seed newly-arrived ids to approved=true without clobbering user toggles,
-  // and prune ids that dropped out (executed elsewhere).
+  // Seed newly-arrived ids to approved=true without clobbering user toggles.
   useEffect(() => {
     setApproved((prev) => {
       const next: Record<number, boolean> = {};
-      for (const e of allEmails) next[e.id] = prev[e.id] ?? true;
+      for (const e of allItems) next[e.id] = prev[e.id] ?? true;
       return next;
     });
-  }, [allEmails]);
+  }, [allItems]);
 
   const approvedIds = useMemo(
-    () => allEmails.filter((e) => approved[e.id] !== false).map((e) => e.id),
-    [allEmails, approved]
+    () => allItems.filter((e) => approved[e.id] !== false).map((e) => e.id),
+    [allItems, approved]
   );
 
   const executeMutation = useMutation({
     mutationFn: async (ids: number[]) => {
-      // Apply per-row action overrides first (PATCH), then confirm-to-execute.
       const patches = ids
         .filter(
           (id) =>
             overrides[id] &&
-            overrides[id] !== allEmails.find((e) => e.id === id)?.gmail_action
+            overrides[id] !== allItems.find((e) => e.id === id)?.planned_action
         )
         .map((id) => digestApi.updateAction(id, overrides[id]!));
       await Promise.all(patches);
       return digestApi.execute(ids);
     },
-    // Optimistic: drop the approved rows from the pending view immediately.
     onMutate: async (ids: number[]) => {
       await queryClient.cancelQueries({ queryKey: ["digest-pending"] });
       const snapshot = queryClient.getQueryData<DigestPendingResponse>([
@@ -153,16 +186,10 @@ export function DigestPage() {
         (old) => {
           if (!old) return old;
           const sections = old.sections
-            .map((s) => ({
-              ...s,
-              emails: s.emails.filter((e) => !idSet.has(e.id)),
-            }))
-            .filter((s) => s.emails.length > 0)
-            .map((s) => ({ ...s, count: s.emails.length }));
-          return {
-            count: sections.reduce((n, s) => n + s.count, 0),
-            sections,
-          };
+            .map((s) => ({ ...s, items: s.items.filter((e) => !idSet.has(e.id)) }))
+            .filter((s) => s.items.length > 0)
+            .map((s) => ({ ...s, count: s.items.length }));
+          return { count: sections.reduce((n, s) => n + s.count, 0), sections };
         }
       );
       return { snapshot };
@@ -188,27 +215,211 @@ export function DigestPage() {
     },
   });
 
+  const standingMutation = useMutation({
+    mutationFn: ({
+      email,
+      standing,
+    }: {
+      email: string;
+      standing: "whitelist" | "unsubscribe_queue";
+    }) => digestApi.setSenderStanding(email, standing),
+    onSuccess: (_res, vars) => {
+      toast.success(
+        vars.standing === "whitelist"
+          ? "Whitelisted — you won't be asked about this sender again"
+          : "Queued for unsubscribe"
+      );
+      queryClient.invalidateQueries({ queryKey: ["digest-pending"] });
+    },
+    onError: (error) => toast.error(`Failed: ${(error as Error).message}`),
+  });
+
+  const reclassifyMutation = useMutation({
+    mutationFn: async () => {
+      if (!reclassItem) return;
+      const target = RECLASS_TARGETS.find((t) => t.value === reclassTarget)!;
+      return digestApi.reclassify(reclassItem.id, {
+        to_class: target.value,
+        digest_section: target.digest_section,
+        gmail_action: target.gmail_action,
+        note: reclassNote.trim() || undefined,
+      });
+    },
+    onSuccess: () => {
+      toast.success("Reclassified — correction queued for review");
+      setReclassItem(null);
+      setReclassNote("");
+      queryClient.invalidateQueries({ queryKey: ["digest-pending"] });
+    },
+    onError: (error) => toast.error(`Failed: ${(error as Error).message}`),
+  });
+
   const toggleRow = (id: number) =>
     setApproved((prev) => ({ ...prev, [id]: prev[id] === false }));
 
-  const setSectionApproval = (emails: DigestEmail[], value: boolean) =>
+  const setSectionApproval = (items: DigestItem[], value: boolean) =>
     setApproved((prev) => {
       const next = { ...prev };
-      for (const e of emails) next[e.id] = value;
+      for (const e of items) next[e.id] = value;
       return next;
     });
 
   const setOverride = (id: number, action: GmailAction) =>
     setOverrides((prev) => ({ ...prev, [id]: action }));
 
-  const pendingCount = allEmails.length;
+  const openReclassify = (item: DigestItem) => {
+    setReclassItem(item);
+    setReclassTarget(item.digest_section ?? "archive");
+    setReclassNote("");
+  };
+
+  const pendingCount = allItems.length;
+
+  const renderItemRow = (item: DigestItem) => {
+    const isApproved = approved[item.id] !== false;
+    const override = overrides[item.id];
+    const effective = override ?? item.planned_action;
+    return (
+      <div
+        key={item.id}
+        className={"px-3 py-3 transition-opacity " + (isApproved ? "" : "opacity-50")}
+      >
+        <div className="flex items-start gap-3">
+          <label className="flex cursor-pointer items-center pt-0.5">
+            <Checkbox
+              checked={isApproved}
+              onCheckedChange={() => toggleRow(item.id)}
+              className="h-5 w-5"
+              aria-label={isApproved ? `Skip ${senderName(item)}` : `Approve ${senderName(item)}`}
+            />
+          </label>
+
+          <div className="min-w-0 flex-1">
+            <div className="flex items-start justify-between gap-2">
+              <span className="truncate font-medium">
+                <span className="mr-1" aria-hidden>
+                  {item.sender_kind === "human" ? "👤" : "🤖"}
+                </span>
+                {senderName(item)}
+                {item.rolled_over && (
+                  <Badge variant="outline" className="ml-2 text-xs">
+                    {item.age_days}d old
+                  </Badge>
+                )}
+              </span>
+              <div className="flex shrink-0 items-center gap-1">
+                <ActionBadge kind={actionKind(effective, item.planned_labels)} />
+                <RowMenu
+                  item={item}
+                  onWhitelist={() =>
+                    item.from_address &&
+                    standingMutation.mutate({ email: item.from_address, standing: "whitelist" })
+                  }
+                  onUnsubscribe={() =>
+                    item.from_address &&
+                    standingMutation.mutate({ email: item.from_address, standing: "unsubscribe_queue" })
+                  }
+                  onReclassify={() => openReclassify(item)}
+                />
+              </div>
+            </div>
+            <div className="truncate text-sm">{item.subject || "(no subject)"}</div>
+            {item.gist && (
+              <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{item.gist}</p>
+            )}
+
+            <div className="mt-2 flex items-center gap-2">
+              <Select
+                value={effective}
+                onValueChange={(v) => setOverride(item.id, v as GmailAction)}
+              >
+                <SelectTrigger size="sm" className="h-8 w-[130px] text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {ACTIONS.map((a) => (
+                    <SelectItem key={a} value={a} className="capitalize">
+                      {a}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <span className="truncate text-xs text-muted-foreground">
+                {item.account_identifier}
+                {item.date ? ` · ${new Date(item.date).toLocaleDateString()}` : ""}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderSection = (section: DigestSectionPayload) => {
+    const allApproved = section.items.every((e) => approved[e.id] !== false);
+    const isSummary = section.render === "summary";
+    // Actionable stays open by default; summaries + disposables collapse.
+    const defaultOpen = section.key === "actionable";
+    return (
+      <Collapsible key={section.key} defaultOpen={defaultOpen} className="rounded-lg border">
+        <div className="flex items-center gap-2 px-3 py-2.5">
+          <CollapsibleTrigger className="flex flex-1 items-center gap-2 text-left [&[data-state=open]>svg]:rotate-180">
+            <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-transform" />
+            <span className="font-medium">{section.title}</span>
+            <Badge variant="secondary">{section.count}</Badge>
+            {isSummary && (
+              <Badge variant="outline" className="text-xs">
+                summary
+              </Badge>
+            )}
+          </CollapsibleTrigger>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="shrink-0 text-xs"
+            onClick={() => setSectionApproval(section.items, !allApproved)}
+          >
+            {allApproved ? "Skip all" : "Approve all"}
+          </Button>
+        </div>
+
+        <CollapsibleContent className="border-t">
+          {isSummary && section.summary && section.summary.length > 0 && (
+            <ul className="space-y-1 px-4 py-3 text-sm">
+              {section.summary.map((line, i) => (
+                <li key={i} className="flex gap-2">
+                  <span className="text-muted-foreground">•</span>
+                  <span>{line}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {isSummary ? (
+            // Summary sections expand to the underlying per-email detail.
+            <Collapsible className="border-t">
+              <CollapsibleTrigger className="flex w-full items-center gap-2 px-4 py-2 text-left text-xs text-muted-foreground [&[data-state=open]>svg]:rotate-180">
+                <ChevronDown className="h-3.5 w-3.5 transition-transform" />
+                Show {section.count} email{section.count === 1 ? "" : "s"}
+              </CollapsibleTrigger>
+              <CollapsibleContent className="divide-y border-t">
+                {section.items.map(renderItemRow)}
+              </CollapsibleContent>
+            </Collapsible>
+          ) : (
+            <div className="divide-y">{section.items.map(renderItemRow)}</div>
+          )}
+        </CollapsibleContent>
+      </Collapsible>
+    );
+  };
 
   return (
     <div className="flex flex-col min-h-svh">
       <div className="px-4 pt-4 pb-2 md:px-6">
         <h1 className="text-xl font-semibold md:text-2xl">Digest</h1>
         <p className="text-sm text-muted-foreground">
-          Confirm the planned email actions.
+          Actionable first, then summarized categories. Confirm to execute.
         </p>
       </div>
 
@@ -229,7 +440,6 @@ export function DigestPage() {
           </TabsList>
         </div>
 
-        {/* Pending — extra bottom padding leaves room for the sticky bar */}
         <TabsContent value="pending" className="px-4 md:px-6 pb-40 space-y-3">
           {isLoading ? (
             <div className="space-y-3 pt-2">
@@ -245,119 +455,7 @@ export function DigestPage() {
               </p>
             </div>
           ) : (
-            pending!.sections.map((section) => {
-              const allApproved = section.emails.every(
-                (e) => approved[e.id] !== false
-              );
-              return (
-                <Collapsible
-                  key={section.section}
-                  defaultOpen
-                  className="rounded-lg border"
-                >
-                  <div className="flex items-center gap-2 px-3 py-2.5">
-                    <CollapsibleTrigger className="flex flex-1 items-center gap-2 text-left [&[data-state=open]>svg]:rotate-180">
-                      <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-transform" />
-                      <span className="font-medium capitalize">
-                        {section.section}
-                      </span>
-                      <Badge variant="secondary">{section.count}</Badge>
-                    </CollapsibleTrigger>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="shrink-0 text-xs"
-                      onClick={() =>
-                        setSectionApproval(section.emails, !allApproved)
-                      }
-                    >
-                      {allApproved ? "Skip all" : "Approve all"}
-                    </Button>
-                  </div>
-
-                  <CollapsibleContent className="divide-y border-t">
-                    {section.emails.map((email) => {
-                      const isApproved = approved[email.id] !== false;
-                      const override = overrides[email.id];
-                      return (
-                        <div
-                          key={email.id}
-                          className={
-                            "px-3 py-3 transition-opacity " +
-                            (isApproved ? "" : "opacity-50")
-                          }
-                        >
-                          <div className="flex items-start gap-3">
-                            {/* Large touch target: checkbox with padded label */}
-                            <label className="flex cursor-pointer items-center pt-0.5">
-                              <Checkbox
-                                checked={isApproved}
-                                onCheckedChange={() => toggleRow(email.id)}
-                                className="h-5 w-5"
-                                aria-label={
-                                  isApproved
-                                    ? `Skip ${senderName(email)}`
-                                    : `Approve ${senderName(email)}`
-                                }
-                              />
-                            </label>
-
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-start justify-between gap-2">
-                                <span className="truncate font-medium">
-                                  {senderName(email)}
-                                </span>
-                                <ActionBadge
-                                  kind={actionKind(email, override)}
-                                />
-                              </div>
-                              <div className="truncate text-sm">
-                                {email.subject || "(no subject)"}
-                              </div>
-                              {email.analysis?.overview && (
-                                <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
-                                  {email.analysis.overview}
-                                </p>
-                              )}
-
-                              <div className="mt-2 flex items-center gap-2">
-                                <Select
-                                  value={effectiveAction(email, override)}
-                                  onValueChange={(v) =>
-                                    setOverride(email.id, v as GmailAction)
-                                  }
-                                >
-                                  <SelectTrigger
-                                    size="sm"
-                                    className="h-8 w-[130px] text-xs"
-                                  >
-                                    <SelectValue />
-                                  </SelectTrigger>
-                                  <SelectContent>
-                                    {ACTIONS.map((a) => (
-                                      <SelectItem
-                                        key={a}
-                                        value={a}
-                                        className="capitalize"
-                                      >
-                                        {a}
-                                      </SelectItem>
-                                    ))}
-                                  </SelectContent>
-                                </Select>
-                                <span className="truncate text-xs text-muted-foreground">
-                                  {email.account_identifier}
-                                </span>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </CollapsibleContent>
-                </Collapsible>
-              );
-            })
+            pending!.sections.map(renderSection)
           )}
         </TabsContent>
 
@@ -372,8 +470,7 @@ export function DigestPage() {
           ) : (
             <>
               <p className="pt-1 text-xs text-muted-foreground">
-                {history.count} action(s) executed in the last {history.days}{" "}
-                days
+                {history.count} action(s) executed in the last {history.days} days
               </p>
               {history.emails.map((email) => (
                 <div
@@ -386,7 +483,9 @@ export function DigestPage() {
                       <span className="truncate text-sm font-medium">
                         {senderName(email)}
                       </span>
-                      <ActionBadge kind={actionKind(email)} />
+                      <ActionBadge
+                        kind={actionKind(email.gmail_action ?? "leave", email.planned_labels)}
+                      />
                     </div>
                     <div className="truncate text-sm text-muted-foreground">
                       {email.subject || "(no subject)"}
@@ -402,7 +501,6 @@ export function DigestPage() {
         </TabsContent>
       </Tabs>
 
-      {/* Sticky action bar — only meaningful on the Pending tab */}
       {tab === "pending" && pendingCount > 0 && (
         <div className="sticky bottom-0 z-10 border-t bg-background/95 px-4 py-3 backdrop-blur md:px-6 [padding-bottom:calc(0.75rem+env(safe-area-inset-bottom))]">
           <Button
@@ -417,13 +515,102 @@ export function DigestPage() {
             ) : (
               <>
                 <Inbox className="h-5 w-5" />
-                Execute {approvedIds.length} action
-                {approvedIds.length === 1 ? "" : "s"}
+                Execute {approvedIds.length} action{approvedIds.length === 1 ? "" : "s"}
               </>
             )}
           </Button>
         </div>
       )}
+
+      {/* Reclassify dialog */}
+      <Dialog open={!!reclassItem} onOpenChange={(o) => !o && setReclassItem(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Reclassify</DialogTitle>
+            <DialogDescription>
+              Corrects this one email now and queues the change for a review
+              session. Triage rules are not modified.
+            </DialogDescription>
+          </DialogHeader>
+          {reclassItem && (
+            <p className="truncate text-sm text-muted-foreground">
+              {senderName(reclassItem)} — {reclassItem.subject || "(no subject)"}
+            </p>
+          )}
+          <div className="space-y-3">
+            <Select value={reclassTarget} onValueChange={setReclassTarget}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {RECLASS_TARGETS.map((t) => (
+                  <SelectItem key={t.value} value={t.value}>
+                    {t.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Textarea
+              placeholder="Optional note — why this is misclassified (helps the review session)"
+              value={reclassNote}
+              onChange={(e) => setReclassNote(e.target.value)}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setReclassItem(null)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => reclassifyMutation.mutate()}
+              disabled={reclassifyMutation.isPending}
+            >
+              {reclassifyMutation.isPending && (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              )}
+              Reclassify
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
+  );
+}
+
+/** Per-row overflow menu: newsletter standing + reclassify. */
+function RowMenu({
+  item,
+  onWhitelist,
+  onUnsubscribe,
+  onReclassify,
+}: {
+  item: DigestItem;
+  onWhitelist: () => void;
+  onUnsubscribe: () => void;
+  onReclassify: () => void;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="More actions">
+          <MoreVertical className="h-4 w-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        {item.is_newsletter && (
+          <>
+            <DropdownMenuItem onClick={onWhitelist} disabled={!item.from_address}>
+              <ShieldCheck className="h-4 w-4" /> Whitelist sender
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={onUnsubscribe} disabled={!item.from_address}>
+              <MailX className="h-4 w-4" /> Queue unsubscribe
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+          </>
+        )}
+        <DropdownMenuItem onClick={onReclassify}>
+          <Pencil className="h-4 w-4" /> Reclassify…
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

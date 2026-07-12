@@ -147,14 +147,10 @@ export interface CoverageLedgerConfig {
  * Configuration for the notify (notification dispatcher + heartbeat) plugin
  */
 export interface NotifyPluginConfig {
-  /** Pushover application API token (interrupt + notice channel). */
+  /** Pushover application API token (the sole delivery channel). */
   pushoverToken?: string;
   /** Pushover user/group key (recipient). */
   pushoverUser?: string;
-  /** Slack bot token (xoxb-…) reused from the chat module for the digest DM. */
-  slackBotToken?: string;
-  /** Slack user id of the owner — the digest DM recipient. */
-  slackOwnerUserId?: string;
   /** Absolute path to the Hari repo clone (for manual coverage-ledger files). */
   hariRepoPath?: string;
   /**
@@ -322,6 +318,13 @@ export interface GooglePluginConfig {
   emailDigestCron?: string;
   /** Cron for the weekly spam-quarantine review digest (default '0 13 * * 1'). */
   spamQuarantineDigestCron?: string;
+  /**
+   * Absolute URL of the interactive digest page — carried in the daily digest
+   * Pushover notice's button slot so the ping opens the dashboard. Instance
+   * data (e.g. https://assist.example.com/digest); the ping omits the button
+   * when unset.
+   */
+  emailDigestPageUrl?: string;
 }
 
 export interface ModulePlugin {
