@@ -166,7 +166,8 @@ export default createPlugin('google', async (fastify: FastifyInstance, options: 
       authService,
       whitelistService,
       { disableEmailActions: false },
-      fastify.heartbeats
+      fastify.heartbeats,
+      fastify.ledger
     );
     // Haiku-class summarizer for the digest-category content summaries (reuses
     // the triage API key; summarizing, not judging). Absent → deterministic

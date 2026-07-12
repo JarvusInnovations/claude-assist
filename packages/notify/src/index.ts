@@ -46,7 +46,12 @@ export default createPlugin('notify', async (fastify: FastifyInstance, options: 
     fastify.log.warn('Notify: PUSHOVER_TOKEN/USER not set — all notification delivery disabled');
   }
 
-  const dispatcher = createDispatcher({ sql: fastify.sql, log: fastify.log, pushover });
+  const dispatcher = createDispatcher({
+    sql: fastify.sql,
+    log: fastify.log,
+    pushover,
+    ledger: fastify.ledger,
+  });
   const heartbeats = createHeartbeatRegistry(fastify.sql);
 
   // Decorate so every other module can deliver / beat through the one spine.

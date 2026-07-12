@@ -17,7 +17,7 @@
 import type { gmail_v1 } from 'googleapis';
 import type postgres from 'postgres';
 import type { FastifyBaseLogger } from 'fastify';
-import type { HeartbeatRegistry } from '@jarvus/claude-assist-core';
+import type { HeartbeatRegistry, Ledger } from '@jarvus/claude-assist-core';
 import type { GmailAuthService } from './gmail-auth.js';
 import type { WhitelistService } from './whitelist.js';
 import type { EmailAnalysis, ExecuteResult, GmailAction } from '../types.js';
@@ -77,6 +77,7 @@ export class GmailExecutorService {
   private authService: GmailAuthService;
   private whitelistService: WhitelistService;
   private heartbeats: HeartbeatRegistry | undefined;
+  private ledger: Ledger | undefined;
   private disableEmailActions: boolean;
 
   /** Per-account label name → id cache, populated lazily from labels.list. */
@@ -88,13 +89,15 @@ export class GmailExecutorService {
     authService: GmailAuthService,
     whitelistService: WhitelistService,
     config: GmailExecutorConfig = {},
-    heartbeats?: HeartbeatRegistry
+    heartbeats?: HeartbeatRegistry,
+    ledger?: Ledger
   ) {
     this.sql = sql;
     this.log = log;
     this.authService = authService;
     this.whitelistService = whitelistService;
     this.heartbeats = heartbeats;
+    this.ledger = ledger;
     this.disableEmailActions = config.disableEmailActions ?? false;
   }
 
@@ -232,6 +235,29 @@ export class GmailExecutorService {
         { emailId: row.id, appliedLabels, gmailAction: effectiveAction },
         'Executor applied plan'
       );
+
+      // Direct ledger row for the destructive/irreversible moves (archive / spam).
+      // Label-only application is routine and not ledger-worthy. A ledger write
+      // must never break execution, so it is best-effort.
+      if (effectiveAction === 'archive' || effectiveAction === 'spam') {
+        try {
+          await this.ledger?.record({
+            actor: { kind: 'service', service: 'email-executor' },
+            actionType: 'email-action',
+            targetSystem: 'gmail',
+            targetId: row.message_id,
+            summary: `${effectiveAction} Gmail message`,
+            context: {
+              email_id: row.id,
+              account_id: accountId,
+              action: effectiveAction,
+              applied_labels: appliedLabels,
+            },
+          });
+        } catch (err) {
+          this.log.error({ err, emailId: row.id }, 'Executor: ledger record failed (non-fatal)');
+        }
+      }
 
       return {
         emailId: row.id,
