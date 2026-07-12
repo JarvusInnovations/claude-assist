@@ -58,3 +58,15 @@ export function zonedDayWindow(dateIso: string, timeZone: string): { fromIso: st
     toIso: new Date(endMs).toISOString(),
   };
 }
+
+/**
+ * `YYYY-MM-DD` for the calendar day immediately before `dateIso`. Plain date
+ * arithmetic on the date string itself (noon-anchored to dodge DST edge cases
+ * in `setUTCDate`) — `dateIso` is already framed as a "local day" by its
+ * caller, so no timezone parameter is needed here.
+ */
+export function priorDateIso(dateIso: string): string {
+  const d = new Date(`${dateIso}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
+}

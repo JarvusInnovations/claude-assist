@@ -19,6 +19,8 @@ import { fetchOpenCommitments } from './sources/commitments.js';
 import { fetchEmailSummary } from './sources/email.js';
 import { fetchCapturesSummary } from './sources/captures.js';
 import { fetchCoverageSummary } from './sources/coverage.js';
+import { fetchLedgerNarrative } from './sources/ledger.js';
+import { priorDateIso } from '../time.js';
 
 export interface BriefingRunnerDeps {
   sql: postgres.Sql;
@@ -45,11 +47,12 @@ export async function runDailyBriefing(deps: BriefingRunnerDeps): Promise<Briefi
 
   // Gather the remaining sources in parallel; each returns a flagged error
   // rather than throwing, so one outage doesn't sink the briefing.
-  const [commitments, email, captures, coverage] = await Promise.all([
+  const [commitments, email, captures, coverage, ledger] = await Promise.all([
     fetchOpenCommitments({ bin: deps.commitmentsBin, args: deps.commitmentsArgs, todayIso: dateIso }),
     fetchEmailSummary(deps.sql),
     fetchCapturesSummary(deps.sql),
     fetchCoverageSummary(deps.sql),
+    fetchLedgerNarrative(deps.sql, { dateIso: priorDateIso(dateIso), timeZone: deps.timeZone }),
   ]);
 
   const events = dayPlan.items.map((item) => item.event);
@@ -61,6 +64,7 @@ export async function runDailyBriefing(deps: BriefingRunnerDeps): Promise<Briefi
     email,
     captures,
     coverage,
+    ledger,
     pageBaseUrl: deps.pageBaseUrl ?? null,
   });
 
@@ -129,5 +133,8 @@ function briefingBodyLine(b: Briefing): string {
   bits.push(`${b.calendar.alerting.length} join alert${b.calendar.alerting.length === 1 ? '' : 's'}`);
   bits.push(`${b.commitments.overdue.length} overdue`);
   bits.push(`${b.email.needsAttention.length} email needing attention`);
+  if (b.ledger.totalCount > 0) {
+    bits.push(`${b.ledger.totalCount} external action${b.ledger.totalCount === 1 ? '' : 's'} yesterday`);
+  }
   return bits.join(', ') + '.';
 }

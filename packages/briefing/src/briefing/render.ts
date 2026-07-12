@@ -17,6 +17,7 @@ import type { TanaMcpClient } from '@jarvus/claude-assist-core';
 import type { Briefing } from './compose.js';
 import type { OpenCommitment } from './sources/commitments.js';
 import type { EmailBrief } from './sources/email.js';
+import type { LedgerActionGroup } from './sources/ledger.js';
 import type { AlertPlanItem } from '../types.js';
 
 /** Stable marker so a per-date briefing block is found + not duplicated. */
@@ -220,6 +221,19 @@ export function renderTanaPaste(b: Briefing): string {
     }
   }
 
+  // Yesterday's actions — a narrative summary of the ledger, omitted entirely
+  // on a quiet day (a read failure still surfaces, degrading like the rest).
+  if (b.ledger.error) {
+    lines.push("  - Yesterday's actions");
+    lines.push(`    - Ledger not available: ${b.ledger.error}`);
+  } else if (b.ledger.totalCount > 0) {
+    lines.push("  - Yesterday's actions");
+    lines.push(`    - ${b.ledger.totalCount} external action${b.ledger.totalCount === 1 ? '' : 's'}`);
+    for (const g of b.ledger.groups) {
+      lines.push(`      - ${ledgerGroupLine(g)}`);
+    }
+  }
+
   // Links out
   if (b.links.length > 0) {
     lines.push('  - More');
@@ -259,6 +273,10 @@ function commitmentLine(c: OpenCommitment): string {
   const due = c.dueDate ? c.dueDate : 'undated';
   const to = c.madeTo ? ` → ${c.madeTo}` : '';
   return `${c.title} (${due})${to}`;
+}
+
+function ledgerGroupLine(g: LedgerActionGroup): string {
+  return `${g.actionType}:${g.targetSystem} ×${g.count} — ${g.summaries.join(', ')}`;
 }
 
 function alertLine(item: AlertPlanItem): string {
