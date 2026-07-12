@@ -34,6 +34,7 @@ export {
   type SlackUrgencyPluginConfig,
   type BriefingPluginConfig,
   type PagesPluginConfig,
+  type LedgerPluginConfig,
 } from './plugin.js';
 
 // Tana MCP client (shared by capture's inbox executor + the briefing render)
@@ -56,3 +57,6 @@ export type {
   HeartbeatRow,
   HeartbeatRegistry,
 } from './notify.js';
+
+// Audit-ledger contract (direct-write surface)
+export type { Ledger, LedgerActor, LedgerRecordInput } from './ledger.js';
