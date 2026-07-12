@@ -496,6 +496,7 @@ export interface SynthesisReport {
 // to the Spam folder) — it is NEVER deleted/trashed.
 export type GmailAction = "leave" | "archive" | "spam";
 
+// Legacy history-row shape (raw email detail as returned by the history route).
 export interface DigestEmail {
   id: number;
   account_identifier: string;
@@ -510,21 +511,68 @@ export interface DigestEmail {
   analysis: EmailAnalysis | null;
 }
 
-export interface DigestSectionGroup {
-  section: string;
+export type DigestRenderMode = "summary" | "listed";
+export type SenderKind = "human" | "automated";
+
+// One assembled email in a section (digest v2 payload).
+export interface DigestItem {
+  id: number;
+  account_identifier: string;
+  from_address: string | null;
+  from_name: string | null;
+  subject: string | null;
+  date: string | null;
+  gist: string | null;
+  sender_kind: SenderKind;
+  planned_action: GmailAction;
+  planned_labels: string[] | null;
+  digest_section: string | null;
+  workflow_status: string;
+  is_newsletter: boolean;
+  age_days: number | null;
+  rolled_over: boolean;
+}
+
+export interface DigestSectionPayload {
+  key: string;
+  title: string;
+  render: DigestRenderMode;
   count: number;
-  emails: DigestEmail[];
+  summary: string[] | null;
+  items: DigestItem[];
 }
 
 export interface DigestPendingResponse {
   count: number;
-  sections: DigestSectionGroup[];
+  sections: DigestSectionPayload[];
 }
 
 export interface DigestHistoryResponse {
   count: number;
   days: number;
   emails: DigestEmail[];
+}
+
+// Sender standing + classification refinements (digest v2 affordances).
+export type SenderStanding = "whitelist" | "unsubscribe_queue";
+
+export interface SenderStandingRow {
+  sender_email: string;
+  standing: SenderStanding;
+  set_at: string;
+  source: string | null;
+}
+
+export interface ClassificationRefinement {
+  id: number;
+  email_id: number;
+  from_class: string | null;
+  to_class: string;
+  note: string | null;
+  status: "pending" | "resolved";
+  resolution: string | null;
+  created_at: string;
+  resolved_at: string | null;
 }
 
 export interface ExecuteResult {
