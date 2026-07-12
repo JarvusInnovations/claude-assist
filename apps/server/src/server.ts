@@ -243,6 +243,7 @@ await fastify.register(
             cooldownMinutes: fastify.config.SLACK_URGENCY_COOLDOWN_MIN,
             historyLimit: fastify.config.SLACK_URGENCY_HISTORY_LIMIT,
             pollCron: fastify.config.SLACK_URGENCY_POLL_CRON,
+            cycleIntervalMs: fastify.config.SLACK_URGENCY_POLL_INTERVAL_MS,
             disablePolling:
               fastify.config.DISABLE_SYNCS || fastify.config.SLACK_URGENCY_DISABLE_POLL,
           },

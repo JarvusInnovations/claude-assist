@@ -160,6 +160,10 @@ const schema = {
     SLACK_URGENCY_COOLDOWN_MIN: { type: 'number', default: 30 },
     SLACK_URGENCY_HISTORY_LIMIT: { type: 'number', default: 50 },
     SLACK_URGENCY_POLL_CRON: { type: 'string' },
+    // Full-sweep target across every DM + watch channel; history calls are
+    // staggered evenly across this window (not fired all at once) to stay
+    // well under Slack's history rate limits. Default: 5 minutes.
+    SLACK_URGENCY_POLL_INTERVAL_MS: { type: 'number', default: 300_000 },
     SLACK_URGENCY_DISABLE_POLL: { type: 'boolean', default: false },
   },
 } as const;
@@ -279,6 +283,7 @@ declare module 'fastify' {
       SLACK_URGENCY_COOLDOWN_MIN: number;
       SLACK_URGENCY_HISTORY_LIMIT: number;
       SLACK_URGENCY_POLL_CRON?: string;
+      SLACK_URGENCY_POLL_INTERVAL_MS: number;
       SLACK_URGENCY_DISABLE_POLL: boolean;
     };
   }

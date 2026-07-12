@@ -9,9 +9,13 @@
  * which reads exactly what Chris sees.
  *
  * Rate-limit posture: per-conversation cursors make every poll incremental —
- * we only ask for messages newer than the last ts we saw. Calls are issued
- * sequentially (natural pacing) and DM enumeration is cached across cycles.
- * See the reader implementation and the PR body for the tier budget.
+ * we only ask for messages newer than the last ts we saw. `conversations.history`
+ * calls are issued strictly one at a time (never concurrent) and staggered
+ * evenly (+ small jitter) across a configurable cycle window, so a ~20-30
+ * conversation watch list never bursts a minute's worth of calls at once — it
+ * was doing exactly that before, and production showed the per-token history
+ * budget is far tighter than the original Tier-3 (~50/min) assumption. DM
+ * enumeration is cached across cycles.
  *
  * READ-ONLY: this module calls only conversations.list / conversations.history
  * / conversations.replies / users.info / chat.getPermalink. It never posts,
@@ -59,10 +63,26 @@ export interface PollerConfig {
   historyLimit?: number;
   /** Preceding thread lines handed to the model. */
   contextLines?: number;
+  /**
+   * Target wall-clock time (ms) to sweep every watched conversation once.
+   * `conversations.history` calls are spaced evenly across this window
+   * (+ jitter) instead of firing back-to-back, so the effective request rate
+   * stays conservative regardless of how many DMs + watch channels are live.
+   * Default keeps a ~20-30 conversation set to a handful of calls/min.
+   */
+  cycleIntervalMs?: number;
 }
 
 const DEFAULT_HISTORY_LIMIT = 50;
 const DEFAULT_CONTEXT_LINES = 4;
+/** Full-sweep target: conservative even for Slack's tightened non-Marketplace
+ *  history tiers, not just the legacy Tier 3 (~50/min) the module launched with. */
+const DEFAULT_CYCLE_INTERVAL_MS = 5 * 60_000;
+/** Floor spacing between calls regardless of conversation count, so a small
+ *  watch list (or a misconfigured short cycle) can't still burst. */
+const MIN_STAGGER_MS = 2_000;
+/** ± this fraction of the base stagger, so cycles don't lock into an exact cadence. */
+const JITTER_RATIO = 0.2;
 
 /**
  * Build the candidate + evaluation context list from one conversation's fresh
@@ -139,6 +159,7 @@ export function buildCandidates(
 export class UrgencyPoller {
   private historyLimit: number;
   private contextLines: number;
+  private cycleIntervalMs: number;
   private dmCache: Conversation[] | null = null;
   private running = false;
 
@@ -151,12 +172,19 @@ export class UrgencyPoller {
   ) {
     this.historyLimit = config.historyLimit ?? DEFAULT_HISTORY_LIMIT;
     this.contextLines = config.contextLines ?? DEFAULT_CONTEXT_LINES;
+    this.cycleIntervalMs = config.cycleIntervalMs ?? DEFAULT_CYCLE_INTERVAL_MS;
   }
 
-  /** One poll cycle over every DM + watched channel. Returns messages processed. */
+  /**
+   * One poll cycle over every DM + watched channel. `conversations.history`
+   * calls are issued strictly one at a time, staggered evenly (+ jitter)
+   * across `cycleIntervalMs` — a full cycle takes roughly that long by
+   * design, so most scheduler ticks land mid-cycle and skip below (routine,
+   * not a sign of trouble). Returns messages processed.
+   */
   async pollOnce(now = new Date()): Promise<{ processed: number; interrupts: number }> {
     if (this.running) {
-      this.log.info('Slack urgency poll already in progress - skipping');
+      this.log.debug('Slack urgency poll already in progress - skipping');
       return { processed: 0, interrupts: 0 };
     }
     this.running = true;
@@ -164,8 +192,11 @@ export class UrgencyPoller {
       const conversations = await this.conversationsToPoll();
       let processed = 0;
       let interrupts = 0;
+      const staggerMs = Math.max(MIN_STAGGER_MS, this.cycleIntervalMs / Math.max(conversations.length, 1));
 
-      for (const conv of conversations) {
+      for (let i = 0; i < conversations.length; i++) {
+        const conv = conversations[i]!;
+        if (i > 0) await sleep(staggerMs + jitter(staggerMs));
         try {
           const result = await this.pollConversation(conv, now);
           processed += result.processed;
@@ -236,4 +267,13 @@ export class UrgencyPoller {
 
 function nowTs(now: Date): string {
   return (now.getTime() / 1000).toFixed(6);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** A random offset in [-base*JITTER_RATIO, +base*JITTER_RATIO]. */
+function jitter(base: number): number {
+  return (Math.random() * 2 - 1) * JITTER_RATIO * base;
 }

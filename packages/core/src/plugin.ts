@@ -77,6 +77,13 @@ export interface SlackUrgencyPluginConfig {
   historyLimit?: number;
   /** Cron for the poll loop (default every minute). */
   pollCron?: string;
+  /**
+   * Target wall-clock time (ms) to sweep every DM + watch channel once.
+   * `conversations.history` calls are staggered evenly across this window
+   * instead of bursting, to stay under Slack's history rate limits
+   * (SLACK_URGENCY_POLL_INTERVAL_MS; default 5 minutes).
+   */
+  cycleIntervalMs?: number;
   /** Disable the poll loop. */
   disablePolling?: boolean;
 }
