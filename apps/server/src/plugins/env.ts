@@ -92,6 +92,9 @@ const schema = {
     GOOGLE_OPPORTUNITY_PROMPT_FILE: { type: 'string' },
     GOOGLE_EMAIL_DIGEST_CRON: { type: 'string', default: '0 12 * * *' },
     GOOGLE_SPAM_QUARANTINE_CRON: { type: 'string', default: '0 13 * * 1' },
+    // Absolute URL of the interactive digest page — carried in the daily digest
+    // Pushover notice's button slot (e.g. https://assist.example.com/digest).
+    GOOGLE_DIGEST_PAGE_URL: { type: 'string' },
 
     // Capture module
     ENABLE_CAPTURE: { type: 'boolean', default: true },
@@ -142,10 +145,11 @@ const schema = {
 
     // Notify module (notification dispatcher + heartbeat registry)
     ENABLE_NOTIFY: { type: 'boolean', default: true },
-    // Pushover (interrupt + notice channel). Values live in the pushover MCP config.
+    // Pushover — the sole notification channel (interrupt + notice + batched
+    // digest flush). Values live in the pushover MCP config. The former Slack DM
+    // digest channel was retired; notify no longer reads any SLACK_* var.
     PUSHOVER_TOKEN: { type: 'string' },
     PUSHOVER_USER: { type: 'string' },
-    // Slack DM (digest channel) reuses SLACK_BOT_TOKEN + SLACK_OWNER_USER_ID above.
     // Absolute path to the Hari repo clone (for manual coverage-ledger files).
     // Defaults to AGENT_REPO_PATH when unset.
     NOTIFY_HARI_REPO_PATH: { type: 'string' },
@@ -246,6 +250,7 @@ declare module 'fastify' {
       GOOGLE_OPPORTUNITY_PROMPT_FILE?: string;
       GOOGLE_EMAIL_DIGEST_CRON: string;
       GOOGLE_SPAM_QUARANTINE_CRON: string;
+      GOOGLE_DIGEST_PAGE_URL?: string;
 
       // Capture module
       ENABLE_CAPTURE: boolean;

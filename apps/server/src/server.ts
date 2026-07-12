@@ -118,8 +118,6 @@ await fastify.register(
         notifyConfig: {
           pushoverToken: fastify.config.PUSHOVER_TOKEN,
           pushoverUser: fastify.config.PUSHOVER_USER,
-          slackBotToken: fastify.config.SLACK_BOT_TOKEN,
-          slackOwnerUserId: fastify.config.SLACK_OWNER_USER_ID,
           hariRepoPath:
             fastify.config.NOTIFY_HARI_REPO_PATH ?? fastify.config.AGENT_REPO_PATH,
           coverageLedgers: parseCoverageLedgers(
@@ -222,6 +220,7 @@ await fastify.register(
             opportunityPromptFile: fastify.config.GOOGLE_OPPORTUNITY_PROMPT_FILE,
             emailDigestCron: fastify.config.GOOGLE_EMAIL_DIGEST_CRON,
             spamQuarantineDigestCron: fastify.config.GOOGLE_SPAM_QUARANTINE_CRON,
+            emailDigestPageUrl: fastify.config.GOOGLE_DIGEST_PAGE_URL,
           },
         });
       }
