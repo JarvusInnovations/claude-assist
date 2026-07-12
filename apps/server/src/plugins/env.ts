@@ -149,6 +149,10 @@ const schema = {
     // Absolute path to the Hari repo clone (for manual coverage-ledger files).
     // Defaults to AGENT_REPO_PATH when unset.
     NOTIFY_HARI_REPO_PATH: { type: 'string' },
+    // External coverage ledgers to watch — JSON array of
+    // {"name": "...", "threshold": "<pg interval>", "path": "<repo-relative>"}.
+    // Which ledgers exist is instance data; none are registered when unset.
+    NOTIFY_COVERAGE_LEDGERS: { type: 'string' },
     // Host disk health.
     NOTIFY_DISK_PATH: { type: 'string', default: '/' },
     NOTIFY_DISK_MIN_FREE_GB: { type: 'number', default: 20 },
@@ -284,6 +288,7 @@ declare module 'fastify' {
       PUSHOVER_TOKEN?: string;
       PUSHOVER_USER?: string;
       NOTIFY_HARI_REPO_PATH?: string;
+      NOTIFY_COVERAGE_LEDGERS?: string;
       NOTIFY_DISK_PATH: string;
       NOTIFY_DISK_MIN_FREE_GB: number;
       NOTIFY_DISK_MIN_FREE_PCT: number;

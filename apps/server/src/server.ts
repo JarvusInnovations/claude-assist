@@ -15,8 +15,36 @@ import notifyPlugin from '@jarvus/claude-assist-notify';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import envPlugin from './plugins/env.js';
+import type { CoverageLedgerConfig } from '@jarvus/claude-assist-core';
+import type { FastifyBaseLogger } from 'fastify';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Parse NOTIFY_COVERAGE_LEDGERS — a JSON array of
+ * `{name, threshold, path}` — into ledger registrations. Malformed config is
+ * logged and treated as empty rather than failing boot.
+ */
+function parseCoverageLedgers(
+  raw: string | undefined,
+  log: FastifyBaseLogger,
+): CoverageLedgerConfig[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) throw new Error('expected a JSON array');
+    return parsed.map((entry) => {
+      const { name, threshold, path } = entry as Record<string, unknown>;
+      if (typeof name !== 'string' || typeof threshold !== 'string' || typeof path !== 'string') {
+        throw new Error('each ledger needs string name, threshold, and path');
+      }
+      return { name, threshold, path };
+    });
+  } catch (err) {
+    log.error({ err }, 'NOTIFY_COVERAGE_LEDGERS is malformed — no coverage ledgers registered');
+    return [];
+  }
+}
 
 // Create Fastify instance
 // Note: LOG_LEVEL read from process.env here since env plugin isn't loaded yet.
@@ -94,6 +122,10 @@ await fastify.register(
           slackOwnerUserId: fastify.config.SLACK_OWNER_USER_ID,
           hariRepoPath:
             fastify.config.NOTIFY_HARI_REPO_PATH ?? fastify.config.AGENT_REPO_PATH,
+          coverageLedgers: parseCoverageLedgers(
+            fastify.config.NOTIFY_COVERAGE_LEDGERS,
+            fastify.log,
+          ),
           diskCheckPath: fastify.config.NOTIFY_DISK_PATH,
           diskMinFreeBytes: fastify.config.NOTIFY_DISK_MIN_FREE_GB * 1024 ** 3,
           diskMinFreePct: fastify.config.NOTIFY_DISK_MIN_FREE_PCT / 100,
