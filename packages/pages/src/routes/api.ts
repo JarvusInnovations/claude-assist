@@ -4,7 +4,7 @@
  *   POST /pages                            - publish (republish = new version)
  *   GET  /pages                             - JSON index of active pages (newest-first)
  *   POST /pages/:slug/responses            - append-only response ingest
- *   GET  /pages/:slug/responses             - read-back queue (since/unprocessed)
+ *   GET  /pages/:slug/responses             - read-back queue (since/unprocessed/latest)
  *   POST /pages/:slug/responses/:id/processed - mark one response handled
  *   POST /pages/:slug/archive               - remove from index, keep storage
  *
@@ -147,9 +147,14 @@ export const registerPagesApiRoutes: FastifyPluginAsync<PagesApiRoutesConfig> = 
   );
 
   // GET /pages/:slug/responses - read-back queue for any session/agent.
+  // `?latest=1` short-circuits since/unprocessed and returns just the single
+  // newest response (still wrapped in `responses`, 0 or 1 items — same shape
+  // as the unfiltered list, so callers don't need a second response format).
+  // This backs `window.pagesLastResponse()` in the served helper script,
+  // which pages use to discover + restore their own last submission on load.
   fastify.get<{
     Params: { slug: string };
-    Querystring: { since?: string; unprocessed?: string };
+    Querystring: { since?: string; unprocessed?: string; latest?: string };
   }>(
     '/pages/:slug/responses',
     {
@@ -160,16 +165,19 @@ export const registerPagesApiRoutes: FastifyPluginAsync<PagesApiRoutesConfig> = 
           properties: {
             since: { type: 'string', format: 'date-time' },
             unprocessed: { type: 'string', enum: ['true', 'false'] },
+            latest: { type: 'string', enum: ['1', 'true'] },
           },
         },
       },
     },
     async (request, reply) => {
       const { slug } = request.params;
-      const { since, unprocessed } = request.query;
+      const { since, unprocessed, latest } = request.query;
+      const latestOnly = latest === '1' || latest === 'true';
       const responses = await store.listResponses(slug, {
         since: since ? new Date(since) : undefined,
         unprocessedOnly: unprocessed === 'true',
+        latestOnly,
       });
       if (responses === null) {
         reply.status(404);

@@ -8,6 +8,12 @@
  *   GET /pages/:slug          - serve the current version's HTML
  *   GET /pages/_helper.js     - the response-helper script pages embed
  *
+ * The helper exposes `window.pagesRespond(payload, { anchor, note })` to
+ * submit and `window.pagesLastResponse()` to read back the most recent
+ * submission (or `null`). Convention: pages that collect submissions SHOULD
+ * call `pagesLastResponse()` on load and offer a restore affordance built
+ * from the result, so a reload doesn't lose the visitor's last answer.
+ *
  * Same auth posture as the rest of claude-assist: Tailscale-reachable only,
  * no public exposure, no bypass of the reverse proxy's basic-auth gate (that
  * bypass is reserved for /share/*, which is meant for recipients outside the

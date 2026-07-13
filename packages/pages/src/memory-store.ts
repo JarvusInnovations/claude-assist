@@ -128,6 +128,13 @@ export class MemoryPagesStore implements PagesStore {
     const page = this.pages.get(slug);
     if (!page) return null;
 
+    if (filter.latestOnly) {
+      const newest = this.responses
+        .filter((r) => r.pageId === page.id)
+        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
+      return newest ? [{ ...newest }] : [];
+    }
+
     return this.responses
       .filter((r) => r.pageId === page.id)
       .filter((r) => !filter.since || r.createdAt.getTime() > filter.since.getTime())

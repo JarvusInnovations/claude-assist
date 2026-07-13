@@ -59,6 +59,8 @@ export interface NewResponseInput {
 export interface ListResponsesFilter {
   since?: Date;
   unprocessedOnly?: boolean;
+  /** When true, return only the single newest-first response (see PagesStore.listResponses). */
+  latestOnly?: boolean;
 }
 
 /** Slugs: lowercase kebab-case, matching the rest of the toolkit's URL-safe ids. */
