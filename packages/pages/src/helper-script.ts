@@ -4,6 +4,14 @@
  * `window.pagesRespond(payload, { anchor, note })` to post a structured
  * response back to the page it's embedded in.
  *
+ * `window.pagesLastResponse()` is the read-back counterpart: it resolves to
+ * the most recent response this page has recorded (or `null` if none), so a
+ * page can restore its last submission on reload. Convention: pages that
+ * collect submissions SHOULD call `pagesLastResponse()` on load and offer a
+ * restore affordance (e.g. pre-filling the form, or a "restore previous
+ * answer" prompt) built from the result. Errors resolve to `null` rather
+ * than rejecting — a restore affordance must never break the page.
+ *
  * The current slug is inferred from `location.pathname` (`/pages/<slug>...`)
  * rather than injected at serve time, so GET /pages/:slug can return the
  * published HTML byte-for-byte unmodified.
@@ -47,6 +55,26 @@ export const HELPER_SCRIPT = `(function () {
     });
   }
 
+  function pagesLastResponse() {
+    var slug = currentSlug();
+    if (!slug) {
+      return Promise.resolve(null);
+    }
+    return fetch('/api/pages/' + encodeURIComponent(slug) + '/responses?latest=1')
+      .then(function (res) {
+        if (!res.ok) return null;
+        return res.json();
+      })
+      .then(function (json) {
+        if (!json || !json.responses || json.responses.length === 0) return null;
+        return json.responses[0];
+      })
+      .catch(function () {
+        return null;
+      });
+  }
+
   window.pagesRespond = pagesRespond;
+  window.pagesLastResponse = pagesLastResponse;
 })();
 `;

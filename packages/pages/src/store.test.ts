@@ -164,6 +164,24 @@ describe('PagesStore responses: append-only + processed semantics', () => {
     const store = new MemoryPagesStore();
     expect(await store.listResponses('missing', {})).toBeNull();
   });
+
+  it('listResponses with latestOnly returns just the newest response, wrapped in an array', async () => {
+    const store = new MemoryPagesStore();
+    await store.publish({ slug: 'p', title: 'P', html: '<html/>' });
+
+    expect(await store.listResponses('p', { latestOnly: true })).toEqual([]);
+
+    const r1 = (await store.addResponse('p', { payload: { n: 1 } }))!.response;
+    const r2 = (await store.addResponse('p', { payload: { n: 2 } }))!.response;
+    const r3 = (await store.addResponse('p', { payload: { n: 3 } }))!.response;
+    // Force a deterministic order regardless of same-millisecond inserts.
+    store.responses.find((r) => r.id === r1.id)!.createdAt = new Date(2020, 0, 1);
+    store.responses.find((r) => r.id === r2.id)!.createdAt = new Date(2020, 0, 2);
+    store.responses.find((r) => r.id === r3.id)!.createdAt = new Date(2020, 0, 3);
+
+    const latest = (await store.listResponses('p', { latestOnly: true }))!;
+    expect(latest.map((r) => r.id)).toEqual([r3.id]);
+  });
 });
 
 describe('PagesStore archive', () => {

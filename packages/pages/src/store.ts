@@ -43,7 +43,11 @@ export interface PagesStore {
     input: NewResponseInput
   ): Promise<{ page: PageRecord; response: PageResponseRecord } | null>;
 
-  /** Oldest-first (processing order), or null if the slug is unknown. */
+  /**
+   * Oldest-first (processing order), or null if the slug is unknown.
+   * When `filter.latestOnly` is set, returns at most one response — the
+   * newest — still wrapped in an array so callers share one shape.
+   */
   listResponses(slug: string, filter: ListResponsesFilter): Promise<PageResponseRecord[] | null>;
 
   /** Marks one response processed; returns it, or null if slug/id don't match. */
@@ -246,6 +250,16 @@ export class PgPagesStore implements PagesStore {
   ): Promise<PageResponseRecord[] | null> {
     const page = await this.getPage(slug);
     if (!page) return null;
+
+    if (filter.latestOnly) {
+      const rows = await this.sql<ResponseRow[]>`
+        SELECT * FROM pages.responses
+        WHERE page_id = ${page.id}
+        ORDER BY created_at DESC
+        LIMIT 1
+      `;
+      return rows.map(rowToResponse);
+    }
 
     const rows = await this.sql<ResponseRow[]>`
       SELECT * FROM pages.responses

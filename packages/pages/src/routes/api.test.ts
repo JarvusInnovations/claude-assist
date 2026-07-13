@@ -214,6 +214,53 @@ describe('pages API routes', () => {
       const response = await fastify.inject({ method: 'GET', url: '/pages/missing/responses' });
       expect(response.statusCode).toBe(404);
     });
+
+    describe('?latest=1', () => {
+      it('returns an empty list when there are no responses', async () => {
+        const response = await fastify.inject({ method: 'GET', url: '/pages/p/responses?latest=1' });
+        expect(response.statusCode).toBe(200);
+        const json = response.json();
+        expect(json.count).toBe(0);
+        expect(json.responses).toEqual([]);
+      });
+
+      it('returns the single response when there is exactly one', async () => {
+        await fastify.inject({ method: 'POST', url: '/pages/p/responses', payload: { payload: { n: 1 } } });
+
+        const response = await fastify.inject({ method: 'GET', url: '/pages/p/responses?latest=1' });
+        const json = response.json();
+        expect(json.count).toBe(1);
+        expect(json.responses[0].payload).toEqual({ n: 1 });
+      });
+
+      it('returns only the newest of several responses', async () => {
+        const r1 = await fastify.inject({ method: 'POST', url: '/pages/p/responses', payload: { payload: { n: 1 } } });
+        const r2 = await fastify.inject({ method: 'POST', url: '/pages/p/responses', payload: { payload: { n: 2 } } });
+        const r3 = await fastify.inject({ method: 'POST', url: '/pages/p/responses', payload: { payload: { n: 3 } } });
+        // Requests inserted back-to-back can land in the same millisecond;
+        // force a deterministic order like the store-level `since` test does.
+        store.responses.find((r) => r.id === r1.json().id)!.createdAt = new Date(2020, 0, 1);
+        store.responses.find((r) => r.id === r2.json().id)!.createdAt = new Date(2020, 0, 2);
+        store.responses.find((r) => r.id === r3.json().id)!.createdAt = new Date(2020, 0, 3);
+
+        const response = await fastify.inject({ method: 'GET', url: '/pages/p/responses?latest=1' });
+        const json = response.json();
+        expect(json.count).toBe(1);
+        expect(json.responses[0].payload).toEqual({ n: 3 });
+      });
+
+      it('also accepts ?latest=true', async () => {
+        await fastify.inject({ method: 'POST', url: '/pages/p/responses', payload: { payload: { n: 1 } } });
+
+        const response = await fastify.inject({ method: 'GET', url: '/pages/p/responses?latest=true' });
+        expect(response.json().count).toBe(1);
+      });
+
+      it('404s for an unknown slug', async () => {
+        const response = await fastify.inject({ method: 'GET', url: '/pages/missing/responses?latest=1' });
+        expect(response.statusCode).toBe(404);
+      });
+    });
   });
 
   describe('POST /pages/:slug/responses/:id/processed', () => {
