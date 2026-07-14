@@ -277,6 +277,11 @@ export interface ChatPluginConfig {
   claudeOauthToken?: string;
   /** MCP server configurations */
   mcpServers?: Record<string, { command: string; args: string[] }>;
+  /**
+   * Commands (argv arrays) whose stdout is injected as live context on every
+   * agent turn via a UserPromptSubmit hook. Run with cwd = agentRepoPath.
+   */
+  contextCommands?: string[][];
 }
 
 /**
