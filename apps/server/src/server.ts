@@ -414,6 +414,7 @@ if (fastify.config.ENABLE_CHAT) {
           fastify.config.CHAT_CONTEXT_COMMANDS,
           fastify.log,
         ),
+        maxTurns: fastify.config.CHAT_MAX_TURNS,
       },
     });
   }

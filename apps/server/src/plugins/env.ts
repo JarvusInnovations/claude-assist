@@ -167,6 +167,7 @@ const schema = {
     // command string or an argv array of strings, run in AGENT_REPO_PATH on
     // every chat turn (UserPromptSubmit hook). Which commands is instance data.
     CHAT_CONTEXT_COMMANDS: { type: 'string' },
+    CHAT_MAX_TURNS: { type: 'number' },
 
     // Notify module (notification dispatcher + heartbeat registry)
     ENABLE_NOTIFY: { type: 'boolean', default: true },
@@ -334,6 +335,7 @@ declare module 'fastify' {
       BOT_USERNAME?: string;
       CLAUDE_CODE_OAUTH_TOKEN?: string;
       CHAT_CONTEXT_COMMANDS?: string;
+      CHAT_MAX_TURNS?: number;
 
       // Notify module
       ENABLE_NOTIFY: boolean;

@@ -129,7 +129,7 @@ export function createAgentHandler(config: ChatPluginConfig, log: FastifyBaseLog
             'mcp__*',  // Allow all MCP tools (deny list in settings.json still applies)
           ],
           permissionMode: 'bypassPermissions',
-          maxTurns: 30,
+          maxTurns: config.maxTurns ?? 30,
           ...(resumeSessionId ? { resume: resumeSessionId } : {}),
           ...(config.mcpServers ? { mcpServers: config.mcpServers } : {}),
           // Inject live context (dashboards, status views) on every turn.
