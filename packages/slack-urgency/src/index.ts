@@ -188,9 +188,11 @@ export {
 export {
   UrgencyPoller,
   buildCandidates,
+  MENTION_SWEEP_CURSOR_ID,
   type SlackReader,
   type RawSlackMessage,
   type Conversation,
+  type MentionHit,
   type PollerConfig,
 } from './poller.js';
 export { WebApiSlackReader, asChannelType, type WebReaderConfig } from './web-reader.js';
