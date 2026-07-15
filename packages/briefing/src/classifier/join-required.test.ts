@@ -130,10 +130,17 @@ describe('override precedence', () => {
 });
 
 describe('lead times', () => {
-  it('video default 3 min, physical default 15 min', () => {
-    expect(leadMinutesFor(classifyEvent(mkEvent()))).toBe(DEFAULT_VIDEO_LEAD_MINUTES);
+  it('video default 1 min, physical default 15 min', () => {
+    expect(DEFAULT_VIDEO_LEAD_MINUTES).toBe(1);
+    expect(DEFAULT_PHYSICAL_LEAD_MINUTES).toBe(15);
+    expect(leadMinutesFor(classifyEvent(mkEvent()))).toBe(1);
     const physical = classifyEvent(mkEvent({ hangoutLink: '', location: '100 Main St' }));
-    expect(leadMinutesFor(physical)).toBe(DEFAULT_PHYSICAL_LEAD_MINUTES);
+    expect(leadMinutesFor(physical)).toBe(15);
+  });
+
+  it('a name-only conferencing location gets the video lead, not the physical one', () => {
+    const c = classifyEvent(mkEvent({ hangoutLink: '', location: 'Microsoft Teams Meeting' }));
+    expect(leadMinutesFor(c)).toBe(DEFAULT_VIDEO_LEAD_MINUTES);
   });
 
   it('override custom lead wins', () => {
@@ -145,6 +152,44 @@ describe('lead times', () => {
 describe('detectVenue', () => {
   it('classifies a bare URL location as video, not physical', () => {
     expect(detectVenue(mkEvent({ hangoutLink: '', location: 'https://zoom.us/j/1' }))).toBe('video');
+  });
+
+  // The Outlook-invite shape: location holds the conferencing service NAME and
+  // no URL anywhere on the event. Still a video meeting.
+  it.each([
+    ['Microsoft Teams Meeting'],
+    ['Teams Meeting'],
+    ['Zoom Meeting'],
+    ['Zoom'],
+    ['Google Meet'],
+    ['meet.google.com/abc-defg-hij'],
+    ['Webex'],
+    ['GoToMeeting'],
+    ['Hangout'],
+    ['Hangouts'],
+    ['Microsoft Teams Meeting; conference ID 123 456 789#'],
+  ])('name-only conferencing location → video: %s', (location) => {
+    const event = mkEvent({ hangoutLink: '', location, description: '' });
+    expect(detectVenue(event)).toBe('video');
+    const c = classifyEvent(event);
+    expect(c.venue).toBe('video');
+    expect(c.joinRequired).toBe(true);
+    expect(c.reason).toBe('conferencing+attendees');
+  });
+
+  it('a street address stays physical', () => {
+    const event = mkEvent({ hangoutLink: '', location: '1234 Market St, 5th Floor', description: '' });
+    expect(detectVenue(event)).toBe('physical');
+  });
+
+  it('an explicit conferencing URL in the location is still video', () => {
+    expect(
+      detectVenue(mkEvent({ hangoutLink: '', location: 'https://teams.microsoft.com/l/meetup-join/xyz' }))
+    ).toBe('video');
+  });
+
+  it('a conferencing URL still wins even alongside a physical-looking location', () => {
+    expect(detectVenue(mkEvent({ location: '1234 Market St, 5th Floor' }))).toBe('video');
   });
 });
 
@@ -176,6 +221,12 @@ describe('conferencingUrl', () => {
   it('returns null for a physical location with no conferencing link', () => {
     expect(
       conferencingUrl(mkEvent({ hangoutLink: '', location: '1234 Market St, 5th Floor', description: '' }))
+    ).toBeNull();
+  });
+
+  it('returns null for a name-only conferencing location (video venue, but no link to join)', () => {
+    expect(
+      conferencingUrl(mkEvent({ hangoutLink: '', location: 'Microsoft Teams Meeting', description: '' }))
     ).toBeNull();
   });
 });
