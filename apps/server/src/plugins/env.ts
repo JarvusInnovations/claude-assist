@@ -119,8 +119,10 @@ const schema = {
     BRIEFING_TIMEZONE: { type: 'string', default: 'America/New_York' },
     // Cron in BRIEFING_TIMEZONE; default 06:30 local.
     BRIEFING_CRON: { type: 'string', default: '30 6 * * *' },
-    // Alert evaluation cadence (server local / UTC); default every 2 min.
-    BRIEFING_ALERT_CRON: { type: 'string', default: '*/2 * * * *' },
+    // Alert evaluation cadence (server local / UTC). Every minute: 1-minute
+    // video leads have a ~150s firing window (start-grace included) and must
+    // never fall between scans.
+    BRIEFING_ALERT_CRON: { type: 'string', default: '* * * * *' },
     BRIEFING_ALERT_WINDOW_MINUTES: { type: 'number', default: 60 },
     // CLI binaries (shelled out CLI-as-library); default to PATH.
     BRIEFING_GWS_AXI_BIN: { type: 'string', default: 'gws-axi' },
