@@ -24,28 +24,65 @@ export class WebApiSlackReader implements SlackReader {
   private nameCache = new Map<string, string | null>();
   private maxDms: number;
 
-  constructor(config: WebReaderConfig, private log: FastifyBaseLogger) {
-    this.client = new WebClient(config.userToken);
+  constructor(config: WebReaderConfig, private log: FastifyBaseLogger, client?: WebClient) {
+    this.client = client ?? new WebClient(config.userToken);
     this.maxDms = config.maxDmConversations ?? 200;
   }
 
+  /**
+   * Enumerate DM conversations, 1:1 ims first.
+   *
+   * A combined `types: 'im,mpim'` request is a trap: Slack returns every mpim
+   * before any im, so a workspace with more mpims than `maxDms` would hit the
+   * cap without a single 1:1 DM in the poll set. We therefore fetch ims and
+   * mpims as separate fully-paginated passes:
+   *
+   *   1. ims — ALL of them, always. 1:1 DMs are the core of urgency polling
+   *      and are never dropped to satisfy the cap. DMs whose counterpart
+   *      account is deactivated (`is_user_deleted`) are skipped; nobody can
+   *      write into those again, so polling them is pure waste.
+   *   2. mpims — appended only into whatever budget `maxDms` leaves after the
+   *      ims. The cap bounds mpim spend, never im coverage.
+   *
+   * Conversations are typed by which request produced them (mpims can carry
+   * C-prefixed ids these days, so id prefixes prove nothing).
+   */
   async listDmConversations(): Promise<Conversation[]> {
     const out: Conversation[] = [];
+
     let cursor: string | undefined;
     do {
       const res = await this.client.conversations.list({
-        types: 'im,mpim',
+        types: 'im',
+        exclude_archived: true,
+        limit: 200,
+        cursor,
+      });
+      for (const c of res.channels ?? []) {
+        if (!c.id || c.is_user_deleted) continue;
+        out.push({ id: c.id, type: 'im' });
+      }
+      cursor = res.response_metadata?.next_cursor || undefined;
+    } while (cursor);
+
+    if (out.length >= this.maxDms) return out;
+
+    cursor = undefined;
+    do {
+      const res = await this.client.conversations.list({
+        types: 'mpim',
         exclude_archived: true,
         limit: 200,
         cursor,
       });
       for (const c of res.channels ?? []) {
         if (!c.id) continue;
-        out.push({ id: c.id, type: c.is_mpim ? 'mpim' : 'im' });
+        out.push({ id: c.id, type: 'mpim' });
         if (out.length >= this.maxDms) return out;
       }
       cursor = res.response_metadata?.next_cursor || undefined;
     } while (cursor);
+
     return out;
   }
 
