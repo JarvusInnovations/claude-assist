@@ -73,6 +73,9 @@ export default createPlugin('briefing', async (fastify: FastifyInstance, options
   // --- Shared stores + plan provider -----------------------------------------
   const overrides = new PgOverrideStore(fastify.sql);
   const ledger = new PgDispatchLedger(fastify.sql);
+  // Shared by the meeting-briefing cycle (writes) and the alert cycle (reads a
+  // delivered prep's Tana node id to link it from the alert).
+  const prepStore = new PgMeetingPrepStore(fastify.sql);
   const planProvider = new PlanProvider({
     overrides,
     model,
@@ -172,6 +175,7 @@ export default createPlugin('briefing', async (fastify: FastifyInstance, options
           notify: fastify.notify,
           log: fastify.log,
           nowMs: now,
+          prepStore,
         });
         if (result.fired > 0 || result.due > 0) {
           fastify.log.info({ ...result, calendarError: plan.calendarError }, 'Alert cycle complete');
@@ -187,7 +191,6 @@ export default createPlugin('briefing', async (fastify: FastifyInstance, options
 
   // --- Pipeline 3: per-meeting briefings (preps) -----------------------------
   if (!config.disableMeetingBriefings) {
-    const prepStore = new PgMeetingPrepStore(fastify.sql);
     fastify.scheduler.register({
       name: 'briefing:meetings',
       schedule: config.meetingCron ?? '*/30 * * * *',
@@ -240,6 +243,7 @@ export {
   matchNoisePattern,
   hasPhysicalLocation,
   locationHasUrl,
+  locationIsConferencingName,
   DEFAULT_VIDEO_LEAD_MINUTES,
   DEFAULT_PHYSICAL_LEAD_MINUTES,
 } from './classifier/join-required.js';
@@ -251,7 +255,15 @@ export {
   MemoryDispatchLedger,
   type DispatchLedger,
 } from './alerts/dispatch-ledger.js';
-export { runAlertCycle, isDue, alertTitle, alertBody, FIRE_GRACE_MS } from './alerts/scheduler.js';
+export {
+  runAlertCycle,
+  isDue,
+  alertTitle,
+  alertBody,
+  buildAlertPayload,
+  prepNodeLink,
+  FIRE_GRACE_MS,
+} from './alerts/scheduler.js';
 export { PlanProvider, type CalendarFetcher, type DayPlan } from './alerts/plan-provider.js';
 export { registerBriefingRoutes, type BriefingRoutesConfig } from './alerts/routes.js';
 export { composeBriefing, buildHeadline, type Briefing, type BriefingInputs } from './briefing/compose.js';

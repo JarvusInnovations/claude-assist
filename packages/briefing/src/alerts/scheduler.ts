@@ -15,6 +15,8 @@ import type { FastifyBaseLogger } from 'fastify';
 import type { NotifyDispatcher } from '@jarvus/claude-assist-core';
 import type { AlertPlanItem, CalendarEvent, SeriesOverride } from '../types.js';
 import type { JoinRequiredModel } from '../classifier/llm.js';
+import type { MeetingPrep } from '../meetings/types.js';
+import type { MeetingPrepStore } from '../meetings/prep-store.js';
 import { conferencingUrl } from '../classifier/join-required.js';
 import { alertingItems, resolveAlertPlan } from './plan.js';
 import type { DispatchLedger } from './dispatch-ledger.js';
@@ -33,6 +35,14 @@ export interface AlertCycleDeps {
   notify: NotifyDispatcher | undefined;
   log: FastifyBaseLogger;
   nowMs: number;
+  /**
+   * Optional prep lookup: when the occurrence has a delivered meeting prep,
+   * the alert carries a link to its Tana node. The alert's event id IS the
+   * prep store's occurrence_key (both are the calendar instance id — see
+   * meetings/occurrence.ts), so the lookup is a direct get. Absent store, no
+   * prep, or a lookup failure → alert unchanged.
+   */
+  prepStore?: MeetingPrepStore | null;
 }
 
 export interface AlertCycleResult {
@@ -53,7 +63,7 @@ export function isDue(item: AlertPlanItem, nowMs: number, graceMs = FIRE_GRACE_M
 }
 
 export async function runAlertCycle(deps: AlertCycleDeps): Promise<AlertCycleResult> {
-  const { events, overrides, model, ledger, notify, log, nowMs } = deps;
+  const { events, overrides, model, ledger, notify, log, nowMs, prepStore } = deps;
 
   const plan = await resolveAlertPlan({ events, overrides, model });
   const alerting = alertingItems(plan);
@@ -72,12 +82,20 @@ export async function runAlertCycle(deps: AlertCycleDeps): Promise<AlertCycleRes
       continue;
     }
 
+    // Fail-soft prep lookup — a broken prep store must never block the alert.
+    let prep: MeetingPrep | null = null;
+    if (prepStore) {
+      try {
+        prep = await prepStore.get(item.event.id);
+      } catch (err) {
+        log.warn({ err, eventId: item.event.id }, 'Prep lookup failed; alert fires without prep link');
+      }
+    }
+
     try {
       const result = await notify.notify({
         priority: 'interrupt',
-        title: alertTitle(item),
-        body: alertBody(item),
-        ...alertUrl(item),
+        ...buildAlertPayload(item, prep),
       });
       await ledger.recordNotify(item.event.id, result.id);
       fired++;
@@ -127,4 +145,32 @@ export function alertUrl(item: AlertPlanItem): { url?: string; urlTitle?: string
   }
 
   return {};
+}
+
+/** Deep link to a Tana node (same format the daily briefing's day-node link uses). */
+export function prepNodeLink(nodeId: string): string {
+  return `https://app.tana.inc/?nodeid=${encodeURIComponent(nodeId)}`;
+}
+
+/**
+ * Assemble the dispatch payload for one due alert, folding in the occurrence's
+ * meeting prep when one has been delivered to Tana.
+ *
+ * The URL slot is the alert's single tappable action, and tap-to-join is its
+ * primary job — so an action link from `alertUrl` (Join/Map) always keeps the
+ * slot, and the prep link rides in the body text instead. Only when the alert
+ * has no action link does the prep link take the URL slot (labeled "Prep").
+ * No prep, or a prep never rendered to Tana (no node id) → payload unchanged.
+ */
+export function buildAlertPayload(
+  item: AlertPlanItem,
+  prep?: MeetingPrep | null
+): { title: string; body: string; url?: string; urlTitle?: string } {
+  const title = alertTitle(item);
+  const action = alertUrl(item);
+  const prepUrl = prep?.deliveredNodeId ? prepNodeLink(prep.deliveredNodeId) : null;
+
+  if (!prepUrl) return { title, body: alertBody(item), ...action };
+  if (action.url) return { title, body: `${alertBody(item)} Prep: ${prepUrl}`, ...action };
+  return { title, body: alertBody(item), url: prepUrl, urlTitle: 'Prep' };
 }

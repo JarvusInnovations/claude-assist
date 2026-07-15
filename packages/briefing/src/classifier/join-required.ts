@@ -8,8 +8,9 @@
  * (`joinRequired: null`) is handed to the Haiku pass (llm.ts). A per-series
  * override always wins — that's the one-tap correction path.
  *
- * Lead times: video calls alert 3 min out (just enough to surface + tab-over);
- * physical locations alert 15 min out (travel). An override's custom lead wins.
+ * Lead times: video calls alert 1 min out (just enough to tab over — alerts
+ * landing earlier than that get dismissed and forgotten); physical locations
+ * alert 15 min out (travel). An override's custom lead wins.
  */
 
 import type {
@@ -19,7 +20,11 @@ import type {
   VenueKind,
 } from '../types.js';
 
-export const DEFAULT_VIDEO_LEAD_MINUTES = 3;
+/**
+ * Video lead is 1 minute: just enough to tab over to the call. Anything earlier
+ * lands while you're still mid-task, gets dismissed, and is forgotten by start.
+ */
+export const DEFAULT_VIDEO_LEAD_MINUTES = 1;
 export const DEFAULT_PHYSICAL_LEAD_MINUTES = 15;
 
 /**
@@ -67,6 +72,27 @@ const SOFT_AMBIGUOUS = [
 
 const URL_RE = /https?:\/\/|meet\.google\.com|zoom\.us|teams\.microsoft|webex\.|whereby\.com/i;
 
+/**
+ * Conferencing-service NAMES that show up as the entire substance of a location
+ * field with no URL at all — the signature of an Outlook-originated invite
+ * ("Microsoft Teams Meeting", "Zoom Meeting", …), where the synced description
+ * often carries no link either. These are virtual meetings; without this check
+ * they'd fall through to the physical branch and get a travel-sized lead.
+ * Word-boundary matched so "Zoom Meeting" or "Microsoft Teams Meeting;
+ * conference ID 123" hit but a street address never does.
+ */
+const CONFERENCING_NAME_RE =
+  /\b(?:microsoft teams|teams meeting|zoom|google meet|meet\.google|webex|gotomeeting|hangouts?)\b/i;
+
+/**
+ * True when the location text names a conferencing service (no URL required).
+ * This classifies venue only — it never yields a join link (there's no URL to
+ * extract), which `conferencingUrl` handles correctly by returning null.
+ */
+export function locationIsConferencingName(location: string): boolean {
+  return CONFERENCING_NAME_RE.test(location);
+}
+
 export function matchNoisePattern(summary: string): RegExp | null {
   return HARD_NOISE.find((re) => re.test(summary)) ?? null;
 }
@@ -98,6 +124,9 @@ export function detectVenue(event: CalendarEvent): VenueKind {
   // Physical wins for lead-time purposes when travel is implied; but a Meet link
   // on a physically-located event still reads as attendable remotely → video.
   if (conferencing) return 'video';
+  // No URL anywhere, but the location names a conferencing service — the
+  // Outlook-invite shape. Virtual, despite the populated location field.
+  if (locationIsConferencingName(event.location)) return 'video';
   if (physical) return 'physical';
   return 'none';
 }

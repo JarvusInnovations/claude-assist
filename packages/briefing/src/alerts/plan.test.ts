@@ -48,11 +48,11 @@ describe('computeFireAtMs', () => {
 });
 
 describe('resolveAlertPlan', () => {
-  it('fires a clean video meeting with a 3-min lead', async () => {
+  it('fires a clean video meeting with a 1-min lead', async () => {
     const plan = await resolveAlertPlan({ events: [mkEvent()], overrides: new Map() });
     expect(plan[0]!.classification.joinRequired).toBe(true);
-    expect(plan[0]!.leadMinutes).toBe(3);
-    expect(plan[0]!.fireAtMs).toBe(mkEvent().startMs! - 3 * 60_000);
+    expect(plan[0]!.leadMinutes).toBe(1);
+    expect(plan[0]!.fireAtMs).toBe(mkEvent().startMs! - 1 * 60_000);
   });
 
   it('resolves ambiguous events via the model when present', async () => {
