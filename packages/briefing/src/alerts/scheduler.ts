@@ -1,11 +1,12 @@
 /**
  * Alert scheduler cycle.
  *
- * Runs every couple of minutes: resolve the alert plan for the near-term window,
- * then fire exactly one `interrupt`-priority dispatch per qualifying occurrence
- * once its lead time arrives. "Due" = the fire-at instant has passed and the
- * meeting hasn't started yet (a small grace covers a restart landing just after
- * fire-at). The dedup ledger's atomic claim is what makes it exactly-once.
+ * Runs every minute: resolve the alert plan for the near-term window, then fire
+ * exactly one `interrupt`-priority dispatch per qualifying occurrence once its
+ * lead time arrives. "Due" = the fire-at instant has passed and we're at most a
+ * short grace past the meeting start (a second grace after fire-at covers a
+ * restart landing just after fire-at). The dedup ledger's atomic claim is what
+ * makes it exactly-once.
  *
  * `runAlertCycle` takes already-fetched events so it stays pure + testable; the
  * plugin owns the gws-axi read and the heartbeat beat.
@@ -26,6 +27,15 @@ import type { DispatchLedger } from './dispatch-ledger.js';
  * a slow tick). Kept short so a stale alert never lands well after the meeting.
  */
 export const FIRE_GRACE_MS = 5 * 60_000;
+
+/**
+ * Grace after the meeting *start* during which an alert may still fire. With a
+ * short lead (1 min) the due window is barely wider than the scan cadence, so a
+ * cycle can legitimately land seconds past start — and a "just started" alert
+ * beats silence. Kept under two minutes so a genuinely stale alert never fires
+ * well into a meeting.
+ */
+export const STARTED_GRACE_MS = 90_000;
 
 export interface AlertCycleDeps {
   events: CalendarEvent[];
@@ -52,13 +62,24 @@ export interface AlertCycleResult {
   fired: number;
 }
 
-/** True when `now` is within [fireAt, min(start, fireAt+grace)] — i.e. due to fire. */
-export function isDue(item: AlertPlanItem, nowMs: number, graceMs = FIRE_GRACE_MS): boolean {
+/**
+ * True when `now` is within [fireAt, min(start+startedGrace, fireAt+grace)] —
+ * i.e. due to fire. Firing shortly *after* start is deliberate: the scan
+ * cadence can land a cycle seconds past start, and a late-by-seconds "meeting
+ * just started" alert is still actionable where silence is not. Both caps stay
+ * short so a stale alert never lands well into (or well after) the meeting.
+ */
+export function isDue(
+  item: AlertPlanItem,
+  nowMs: number,
+  graceMs = FIRE_GRACE_MS,
+  startedGraceMs = STARTED_GRACE_MS
+): boolean {
   if (item.fireAtMs == null) return false;
   if (nowMs < item.fireAtMs) return false;
-  // Don't fire once the meeting has started.
-  if (item.event.startMs != null && nowMs > item.event.startMs) return false;
-  // And don't fire absurdly late (missed the window entirely).
+  // Don't fire once the meeting is more than briefly underway.
+  if (item.event.startMs != null && nowMs > item.event.startMs + startedGraceMs) return false;
+  // And don't fire absurdly late relative to fire-at (missed the window entirely).
   return nowMs <= item.fireAtMs + graceMs;
 }
 

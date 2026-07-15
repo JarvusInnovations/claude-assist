@@ -4,7 +4,15 @@ import type { NotifyDispatcher, NotifyInput, NotifyResult } from '@jarvus/claude
 import type { AlertPlanItem, CalendarEvent } from '../types.js';
 import type { MeetingPrep } from '../meetings/types.js';
 import { MemoryMeetingPrepStore } from '../meetings/prep-store.js';
-import { FIRE_GRACE_MS, alertUrl, buildAlertPayload, isDue, prepNodeLink, runAlertCycle } from './scheduler.js';
+import {
+  FIRE_GRACE_MS,
+  STARTED_GRACE_MS,
+  alertUrl,
+  buildAlertPayload,
+  isDue,
+  prepNodeLink,
+  runAlertCycle,
+} from './scheduler.js';
 import { MemoryDispatchLedger } from './dispatch-ledger.js';
 
 const NOW = Date.parse('2026-07-10T14:59:30-04:00'); // 30s before a 15:00 start (inside the 1-min video lead)
@@ -79,12 +87,21 @@ describe('isDue', () => {
   it('is not due before fire-at', () => {
     expect(isDue(mkItem({}, START - 10 * 60_000), Date.parse('2026-07-10T14:49:00-04:00'))).toBe(false);
   });
-  it('is not due once the meeting has started', () => {
-    expect(isDue(mkItem(), START + 60_000)).toBe(false);
+  it('is still due shortly after start (a scan can land just past start)', () => {
+    expect(isDue(mkItem(), START + 30_000)).toBe(true);
+    expect(isDue(mkItem(), START + STARTED_GRACE_MS)).toBe(true);
   });
-  it('is not due once past the grace window', () => {
-    const fireAt = START - 3 * 60_000;
+  it('is not due once the meeting is more than briefly underway', () => {
+    expect(isDue(mkItem(), START + STARTED_GRACE_MS + 1)).toBe(false);
+  });
+  it('is not due once past the fire-at grace window', () => {
+    const fireAt = START - 10 * 60_000;
     expect(isDue(mkItem({}, fireAt), fireAt + FIRE_GRACE_MS + 1)).toBe(false);
+  });
+  it('a 15-min physical lead still cannot fire near start (fire-at grace caps it)', () => {
+    const fireAt = START - 15 * 60_000;
+    expect(isDue(mkItem({}, fireAt), fireAt + FIRE_GRACE_MS)).toBe(true); // start-10min: fine
+    expect(isDue(mkItem({}, fireAt), START - 60_000)).toBe(false); // way past fire-at grace
   });
 });
 
