@@ -10,7 +10,7 @@ import googlePlugin from '@jarvus/claude-assist-google';
 import capturePlugin from '@jarvus/claude-assist-capture';
 import slackUrgencyPlugin from '@jarvus/claude-assist-slack-urgency';
 import briefingPlugin from '@jarvus/claude-assist-briefing';
-import chatPlugin from '@jarvus/claude-assist-chat';
+import chatPlugin, { parseContextCommands } from '@jarvus/claude-assist-chat';
 import notifyPlugin from '@jarvus/claude-assist-notify';
 import pagesPlugin, { registerPagesPublicRoutes } from '@jarvus/claude-assist-pages';
 import ledgerPlugin from '@jarvus/claude-assist-ledger';
@@ -410,6 +410,10 @@ if (fastify.config.ENABLE_CHAT) {
         agentRepoPath: fastify.config.AGENT_REPO_PATH!,
         botUsername: fastify.config.BOT_USERNAME,
         claudeOauthToken: fastify.config.CLAUDE_CODE_OAUTH_TOKEN,
+        contextCommands: parseContextCommands(
+          fastify.config.CHAT_CONTEXT_COMMANDS,
+          fastify.log,
+        ),
       },
     });
   }

@@ -1,6 +1,7 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { buildContextHook } from './context.js';
 import type { FastifyBaseLogger } from 'fastify';
 import type { ChatPluginConfig } from '@jarvus/claude-assist-core';
 
@@ -131,6 +132,18 @@ export function createAgentHandler(config: ChatPluginConfig, log: FastifyBaseLog
           maxTurns: 30,
           ...(resumeSessionId ? { resume: resumeSessionId } : {}),
           ...(config.mcpServers ? { mcpServers: config.mcpServers } : {}),
+          // Inject live context (dashboards, status views) on every turn.
+          // cwd matters here: context commands run in the agent repo so
+          // version-manager shims resolve tool versions per-directory.
+          ...(config.contextCommands && config.contextCommands.length > 0
+            ? {
+                hooks: {
+                  UserPromptSubmit: [
+                    buildContextHook(config.contextCommands, agentEnv, config.agentRepoPath),
+                  ],
+                },
+              }
+            : {}),
         },
       })) {
         // Capture session ID from init message

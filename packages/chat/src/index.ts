@@ -7,6 +7,7 @@ import { SessionStore } from './sessions.js';
 import type { ChatPluginConfig } from '@jarvus/claude-assist-core';
 
 export type { ChatPluginConfig } from '@jarvus/claude-assist-core';
+export { buildContextHook, parseContextCommands } from './context.js';
 
 const THREAD_TITLE_MAX = 60;
 

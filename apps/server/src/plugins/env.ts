@@ -163,6 +163,10 @@ const schema = {
     AGENT_REPO_PATH: { type: 'string' },
     BOT_USERNAME: { type: 'string' },
     CLAUDE_CODE_OAUTH_TOKEN: { type: 'string' },
+    // Live per-turn context commands — JSON array whose elements are each a
+    // command string or an argv array of strings, run in AGENT_REPO_PATH on
+    // every chat turn (UserPromptSubmit hook). Which commands is instance data.
+    CHAT_CONTEXT_COMMANDS: { type: 'string' },
 
     // Notify module (notification dispatcher + heartbeat registry)
     ENABLE_NOTIFY: { type: 'boolean', default: true },
@@ -329,6 +333,7 @@ declare module 'fastify' {
       AGENT_REPO_PATH?: string;
       BOT_USERNAME?: string;
       CLAUDE_CODE_OAUTH_TOKEN?: string;
+      CHAT_CONTEXT_COMMANDS?: string;
 
       // Notify module
       ENABLE_NOTIFY: boolean;
