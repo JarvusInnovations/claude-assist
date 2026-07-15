@@ -157,7 +157,9 @@ export default createPlugin('briefing', async (fastify: FastifyInstance, options
     const windowMinutes = config.alertWindowMinutes ?? 60;
     fastify.scheduler.register({
       name: 'briefing:alerts',
-      schedule: config.alertCron ?? '*/2 * * * *',
+      // Every minute: the shortest lead (1 min) makes a due window of only
+      // ~60s + started-grace, which a 2-minute cadence can skip entirely.
+      schedule: config.alertCron ?? '* * * * *',
       runOnStartup: true,
       handler: async () => {
         const now = Date.now();
