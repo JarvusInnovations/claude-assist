@@ -282,6 +282,12 @@ export interface ChatPluginConfig {
    * agent turn via a UserPromptSubmit hook. Run with cwd = agentRepoPath.
    */
   contextCommands?: string[][];
+  /**
+   * Maximum agent turns per query before the SDK aborts the run. Working
+   * sessions that drive CLIs burn a turn per tool round, so size this to the
+   * longest workflow the agent should finish, not to a chat-length exchange.
+   */
+  maxTurns?: number;
 }
 
 /**
