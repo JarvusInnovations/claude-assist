@@ -72,8 +72,17 @@ export class UrgencyPipeline {
     this.cooldownMs = config.cooldownMs ?? DEFAULT_COOLDOWN_MS;
   }
 
-  /** Full pipeline for one candidate: evaluate, (maybe) dispatch, persist. */
-  async process(candidate: SlackCandidate, ctx: EvalContext, now = new Date()): Promise<Decision> {
+  /**
+   * Full pipeline for one candidate: evaluate, (maybe) dispatch, persist.
+   * `knownPermalink` lets a caller that already holds the message's permalink
+   * (e.g. the mention sweep — search results carry one) skip the resolver call.
+   */
+  async process(
+    candidate: SlackCandidate,
+    ctx: EvalContext,
+    now = new Date(),
+    knownPermalink?: string | null
+  ): Promise<Decision> {
     const decision = await this.evaluate(candidate, ctx, now);
 
     // A boundary suppression or pure drop is noise — don't even persist the drop
@@ -87,8 +96,12 @@ export class UrgencyPipeline {
     }
 
     // A deep link rides along on both interrupts and near-misses (the digest
-    // wants it too). We only pay the API call when there's something to link to.
-    const permalink = await this.permalinks.resolve(candidate.channel, candidate.ts);
+    // wants it too). We only pay the API call when there's something to link to
+    // and the caller didn't already have one.
+    const permalink =
+      knownPermalink !== undefined && knownPermalink !== null
+        ? knownPermalink
+        : await this.permalinks.resolve(candidate.channel, candidate.ts);
 
     let notificationId: number | null = null;
     if (decision.interrupted) {

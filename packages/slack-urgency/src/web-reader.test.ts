@@ -136,3 +136,49 @@ describe('WebApiSlackReader.listDmConversations', () => {
     expect(calls.map((c) => c.types)).toEqual(['im', 'mpim']);
   });
 });
+
+describe('WebApiSlackReader.searchMentions', () => {
+  it('queries the owner mention (first page only) and maps matches by channel flags', async () => {
+    const searchCalls: Array<Record<string, unknown>> = [];
+    const client = {
+      search: {
+        messages: mock(async (args: Record<string, unknown>) => {
+          searchCalls.push(args);
+          return {
+            ok: true,
+            messages: {
+              matches: [
+                {
+                  channel: { id: 'D9', is_im: true },
+                  ts: '400.000100',
+                  user: 'U_A',
+                  text: '<@U_OWNER> quick one',
+                  permalink: 'https://slack.example/p1',
+                },
+                { channel: { id: 'G9', is_mpim: true }, ts: '400.000200', user: 'U_B', text: 'x' },
+                { channel: { id: 'P9', is_group: true }, ts: '400.000300', user: 'U_C', text: 'y' },
+                { channel: { id: 'C9', is_channel: true }, ts: '400.000400', user: 'U_D', text: 'z' },
+                { channel: { id: 'C_NO_TS' }, user: 'U_E', text: 'dropped' },
+                { ts: '400.000500', user: 'U_F', text: 'no channel — dropped' },
+              ],
+            },
+          };
+        }),
+      },
+    } as unknown as WebClient;
+    const reader = new WebApiSlackReader({ userToken: 'xoxp-test' }, makeLogger(), client);
+
+    const hits = await reader.searchMentions('U_OWNER', 25);
+    expect(searchCalls).toEqual([
+      { query: '<@U_OWNER>', sort: 'timestamp', sort_dir: 'desc', count: 25 },
+    ]);
+    expect(hits.map((h) => [h.channel, h.channelType])).toEqual([
+      ['D9', 'im'],
+      ['G9', 'mpim'],
+      ['P9', 'group'],
+      ['C9', 'channel'],
+    ]);
+    expect(hits[0]!.permalink).toBe('https://slack.example/p1');
+    expect(hits[1]!.permalink).toBeNull();
+  });
+});

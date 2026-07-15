@@ -2,16 +2,18 @@
  * Slack Web API reader over a USER token (xoxp-…), reading AS Chris.
  *
  * This is the production `SlackReader`. It wraps only read endpoints:
- *   conversations.list · conversations.history · users.info · chat.getPermalink
+ *   conversations.list · conversations.history · search.messages · users.info
+ *   · chat.getPermalink
  * The same user token the `slack-axi` CLI stores works here; supply it as
- * SLACK_URGENCY_USER_TOKEN. A user display name cache keeps users.info calls
+ * SLACK_URGENCY_USER_TOKEN (search.messages additionally needs the
+ * `search:read` user scope). A user display name cache keeps users.info calls
  * off the hot path.
  */
 
 import { WebClient } from '@slack/web-api';
 import type { FastifyBaseLogger } from 'fastify';
 import type { ChannelType } from './types.js';
-import type { Conversation, RawSlackMessage, SlackReader } from './poller.js';
+import type { Conversation, MentionHit, RawSlackMessage, SlackReader } from './poller.js';
 
 export interface WebReaderConfig {
   userToken: string;
@@ -102,6 +104,44 @@ export class WebApiSlackReader implements SlackReader {
       bot_id: (m as { bot_id?: string }).bot_id,
       subtype: (m as { subtype?: string }).subtype,
     }));
+  }
+
+  /**
+   * Workspace-wide @mention lookup via `search.messages` (needs the
+   * `search:read` user scope). One call, first page only, newest first — the
+   * sweep cursor upstream bounds what's actually new, so paginating deeper
+   * would only re-fetch mentions we've already seen. Search matches carry
+   * their own permalink, so no chat.getPermalink round-trip is needed later.
+   */
+  async searchMentions(ownerId: string, count: number): Promise<MentionHit[]> {
+    const res = await this.client.search.messages({
+      query: `<@${ownerId}>`,
+      sort: 'timestamp',
+      sort_dir: 'desc',
+      count,
+    });
+    const out: MentionHit[] = [];
+    for (const m of res.messages?.matches ?? []) {
+      const ch = m.channel;
+      if (!ch?.id || !m.ts) continue;
+      const channelType: ChannelType = ch.is_im
+        ? 'im'
+        : ch.is_mpim
+          ? 'mpim'
+          : ch.is_group
+            ? 'group'
+            : 'channel';
+      out.push({
+        channel: ch.id,
+        channelType,
+        ts: m.ts,
+        user: m.user,
+        text: m.text,
+        bot_id: (m as { bot_id?: string }).bot_id,
+        permalink: m.permalink ?? null,
+      });
+    }
+    return out;
   }
 
   async permalink(channel: string, ts: string): Promise<string | null> {

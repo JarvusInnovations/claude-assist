@@ -17,9 +17,15 @@
  * budget is far tighter than the original Tier-3 (~50/min) assumption. DM
  * enumeration is cached across cycles.
  *
+ * Coverage has two legs. The conversation loop above covers DMs + a small
+ * watch-channel list; a directed @mention anywhere else in the workspace would
+ * be invisible to it, and polling every channel is impossible under rate
+ * limits. So each cycle also runs ONE `search.messages` sweep for the owner's
+ * @mentions workspace-wide (see sweepMentions) before the conversation loop.
+ *
  * READ-ONLY: this module calls only conversations.list / conversations.history
- * / conversations.replies / users.info / chat.getPermalink. It never posts,
- * reacts, or marks anything read.
+ * / conversations.replies / search.messages / users.info / chat.getPermalink.
+ * It never posts, reacts, or marks anything read.
  */
 
 import type { FastifyBaseLogger } from 'fastify';
@@ -43,14 +49,28 @@ export interface Conversation {
   type: ChannelType;
 }
 
+/** One `search.messages` match of an owner @mention, normalized. */
+export interface MentionHit {
+  channel: string;
+  channelType: ChannelType;
+  ts: string;
+  user?: string;
+  text?: string;
+  bot_id?: string;
+  /** Search results carry their own permalink — no extra API call needed. */
+  permalink: string | null;
+}
+
 /**
  * The Slack read surface, abstracted so the poll loop is testable without a
  * live workspace. `history` returns messages strictly newer than `oldestTs`
- * (exclusive), ascending by ts.
+ * (exclusive), ascending by ts. `searchMentions` returns the newest @mentions
+ * of `ownerId` workspace-wide (first search page only), newest first.
  */
 export interface SlackReader {
   listDmConversations(): Promise<Conversation[]>;
   history(channel: string, oldestTs: string | null, limit: number): Promise<RawSlackMessage[]>;
+  searchMentions(ownerId: string, count: number): Promise<MentionHit[]>;
   permalink(channel: string, ts: string): Promise<string | null>;
   userName(userId: string): Promise<string | null>;
 }
@@ -71,10 +91,15 @@ export interface PollerConfig {
    * Default keeps a ~20-30 conversation set to a handful of calls/min.
    */
   cycleIntervalMs?: number;
+  /** Max search matches pulled per mention sweep (first page only). */
+  mentionSweepCount?: number;
 }
 
 const DEFAULT_HISTORY_LIMIT = 50;
 const DEFAULT_CONTEXT_LINES = 4;
+const DEFAULT_MENTION_SWEEP_COUNT = 50;
+/** Synthetic conversation id the mention-sweep cursor is stored under. */
+export const MENTION_SWEEP_CURSOR_ID = 'mention-sweep';
 /** Full-sweep target: conservative even for Slack's tightened non-Marketplace
  *  history tiers, not just the legacy Tier 3 (~50/min) the module launched with. */
 const DEFAULT_CYCLE_INTERVAL_MS = 5 * 60_000;
@@ -160,6 +185,7 @@ export class UrgencyPoller {
   private historyLimit: number;
   private contextLines: number;
   private cycleIntervalMs: number;
+  private mentionSweepCount: number;
   private dmCache: Conversation[] | null = null;
   private running = false;
 
@@ -173,6 +199,7 @@ export class UrgencyPoller {
     this.historyLimit = config.historyLimit ?? DEFAULT_HISTORY_LIMIT;
     this.contextLines = config.contextLines ?? DEFAULT_CONTEXT_LINES;
     this.cycleIntervalMs = config.cycleIntervalMs ?? DEFAULT_CYCLE_INTERVAL_MS;
+    this.mentionSweepCount = config.mentionSweepCount ?? DEFAULT_MENTION_SWEEP_COUNT;
   }
 
   /**
@@ -189,9 +216,21 @@ export class UrgencyPoller {
     }
     this.running = true;
     try {
-      const conversations = await this.conversationsToPoll();
       let processed = 0;
       let interrupts = 0;
+
+      // Mention sweep first: it's a single API call covering the whole
+      // workspace, so it must not queue behind a stagger sweep that can take
+      // minutes. A sweep failure never sinks the conversation cycle.
+      try {
+        const sweep = await this.sweepMentions(now);
+        processed += sweep.processed;
+        interrupts += sweep.interrupts;
+      } catch (err) {
+        this.log.warn({ err }, 'Slack urgency: mention sweep failed');
+      }
+
+      const conversations = await this.conversationsToPoll();
       const staggerMs = Math.max(MIN_STAGGER_MS, this.cycleIntervalMs / Math.max(conversations.length, 1));
 
       for (let i = 0; i < conversations.length; i++) {
@@ -233,6 +272,80 @@ export class UrgencyPoller {
   /** Force a refresh of the DM conversation cache on the next cycle. */
   invalidateDmCache(): void {
     this.dmCache = null;
+  }
+
+  /**
+   * Workspace-wide @mention sweep — the coverage leg for every channel the
+   * conversation loop does NOT watch. One `search.messages` call per cycle;
+   * its cursor lives in the store under a synthetic conversation id.
+   *
+   * Rules mirrored from pollConversation:
+   *   - First sight (no cursor): seed to the newest mention and process
+   *     nothing, so booting never storms alerts with historical mentions.
+   *   - Only matches strictly newer than the cursor are processed; the cursor
+   *     then advances to the newest ts seen.
+   *   - The owner's own messages and bot messages never become candidates.
+   *
+   * Dedup with the conversation loop: a mention in a DM or watched channel is
+   * seen by both legs. Recorded candidates are keyed on (channel, ts), so the
+   * sweep skips anything already in the store; anything the sweep records
+   * first is folded/overwritten idempotently if the conversation loop
+   * re-evaluates it (recordCandidate upserts, thread cooldown blocks a second
+   * interrupt).
+   */
+  async sweepMentions(now = new Date()): Promise<{ processed: number; interrupts: number }> {
+    const hits = await this.reader.searchMentions(this.config.ownerId, this.mentionSweepCount);
+    const cursor = await this.store.getCursor(MENTION_SWEEP_CURSOR_ID);
+    const newestTs = hits.reduce<string | null>(
+      (max, h) => (max === null || Number(h.ts) > Number(max) ? h.ts : max),
+      null
+    );
+
+    if (cursor === null) {
+      await this.store.setCursor(MENTION_SWEEP_CURSOR_ID, newestTs ?? nowTs(now));
+      return { processed: 0, interrupts: 0 };
+    }
+
+    const fresh = hits
+      .filter((h) => Number(h.ts) > Number(cursor))
+      .sort((a, b) => Number(a.ts) - Number(b.ts));
+
+    let processed = 0;
+    let interrupts = 0;
+    for (const hit of fresh) {
+      if (!hit.user || hit.user === this.config.ownerId || hit.bot_id) continue;
+      // Already pipelined by the conversation loop (or a prior sweep).
+      if (await this.store.getCandidate(hit.channel, hit.ts)) continue;
+
+      const senderName = await this.reader.userName(hit.user);
+      const candidate: SlackCandidate = {
+        channel: hit.channel,
+        ts: hit.ts,
+        threadTs: null,
+        channelType: hit.channelType,
+        sender: hit.user,
+        senderName,
+        text: hit.text ?? '',
+        isBot: false,
+      };
+      // Search returns lone matches with no surrounding history, so thread
+      // context is empty and ownerRepliedAfter can't be derived here — the
+      // pipeline's thread cooldown still folds rapid followups.
+      const ctx: EvalContext = {
+        isDirectMessage: hit.channelType === 'im' || hit.channelType === 'mpim',
+        mentionsOwner: true,
+        ownerRepliedAfter: false,
+        threadContext: [],
+      };
+      const decision = await this.pipeline.process(candidate, ctx, now, hit.permalink);
+      processed++;
+      if (decision.interrupted) interrupts++;
+    }
+
+    if (newestTs !== null && Number(newestTs) > Number(cursor)) {
+      await this.store.setCursor(MENTION_SWEEP_CURSOR_ID, newestTs);
+    }
+    return { processed, interrupts };
   }
 
   private async pollConversation(
