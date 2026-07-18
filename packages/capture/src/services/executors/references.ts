@@ -3,7 +3,7 @@
  * capture.references table (the open-tabs-graveyard replacement).
  *
  * The record shape mirrors the future `.gitsheets/references` sheet in the
- * Hari repo (see migrations/002-references.sql); the gitsheet export is a
+ * owner's agent repo (see migrations/002-references.sql); the gitsheet export is a
  * documented follow-on once that repo restructure lands.
  */
 

@@ -178,8 +178,12 @@ const schema = {
     // digest channel was retired; notify no longer reads any SLACK_* var.
     PUSHOVER_TOKEN: { type: 'string' },
     PUSHOVER_USER: { type: 'string' },
-    // Absolute path to the Hari repo clone (for manual coverage-ledger files).
-    // Defaults to AGENT_REPO_PATH when unset.
+    // Absolute path to the owner's agent repo clone (for manual
+    // coverage-ledger files). Defaults to AGENT_REPO_PATH when unset.
+    NOTIFY_AGENT_REPO_PATH: { type: 'string' },
+    // Deprecated alias for NOTIFY_AGENT_REPO_PATH — still honored (with a
+    // startup warning) so existing deploys keep working until their env is
+    // updated. Remove once no deploy sets it.
     NOTIFY_HARI_REPO_PATH: { type: 'string' },
     // External coverage ledgers to watch — JSON array of
     // {"name": "...", "threshold": "<pg interval>", "path": "<repo-relative>"}.
@@ -343,6 +347,8 @@ declare module 'fastify' {
       ENABLE_NOTIFY: boolean;
       PUSHOVER_TOKEN?: string;
       PUSHOVER_USER?: string;
+      NOTIFY_AGENT_REPO_PATH?: string;
+      /** @deprecated use NOTIFY_AGENT_REPO_PATH */
       NOTIFY_HARI_REPO_PATH?: string;
       NOTIFY_COVERAGE_LEDGERS?: string;
       NOTIFY_DISK_PATH: string;

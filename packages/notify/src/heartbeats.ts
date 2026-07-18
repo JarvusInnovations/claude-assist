@@ -2,7 +2,7 @@
  * Coverage-ledger registry, backed by notify.pipeline_heartbeats.
  *
  * `register()` declares a pipeline + staleness threshold (and, for external
- * ledgers, a `manual` source pointing at a file in the Hari repo). `beat()`
+ * ledgers, a `manual` source pointing at a file in the agent repo). `beat()`
  * records a successful run and auto-registers a not-yet-known pipeline so
  * per-account / per-machine names track without being pre-listed. The daily
  * monitor reads `list()`.

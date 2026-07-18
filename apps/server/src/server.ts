@@ -18,7 +18,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import envPlugin from './plugins/env.js';
 import type { CoverageLedgerConfig } from '@jarvus/claude-assist-core';
-import type { FastifyBaseLogger } from 'fastify';
+import type { FastifyBaseLogger, FastifyInstance } from 'fastify';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -46,6 +46,23 @@ function parseCoverageLedgers(
     log.error({ err }, 'NOTIFY_COVERAGE_LEDGERS is malformed — no coverage ledgers registered');
     return [];
   }
+}
+
+/**
+ * Resolve the owner's agent-repo path for the notify module. Prefers
+ * NOTIFY_AGENT_REPO_PATH, honors the deprecated NOTIFY_HARI_REPO_PATH alias
+ * (with a startup warning) so existing deploys keep working, and finally falls
+ * back to AGENT_REPO_PATH.
+ */
+function resolveAgentRepoPath(app: FastifyInstance): string | undefined {
+  if (app.config.NOTIFY_AGENT_REPO_PATH) return app.config.NOTIFY_AGENT_REPO_PATH;
+  if (app.config.NOTIFY_HARI_REPO_PATH) {
+    app.log.warn(
+      'NOTIFY_HARI_REPO_PATH is deprecated — rename it to NOTIFY_AGENT_REPO_PATH; the old name will be removed in a future release',
+    );
+    return app.config.NOTIFY_HARI_REPO_PATH;
+  }
+  return app.config.AGENT_REPO_PATH;
 }
 
 // Create Fastify instance
@@ -139,8 +156,7 @@ await fastify.register(
         notifyConfig: {
           pushoverToken: fastify.config.PUSHOVER_TOKEN,
           pushoverUser: fastify.config.PUSHOVER_USER,
-          hariRepoPath:
-            fastify.config.NOTIFY_HARI_REPO_PATH ?? fastify.config.AGENT_REPO_PATH,
+          agentRepoPath: resolveAgentRepoPath(fastify),
           coverageLedgers: parseCoverageLedgers(
             fastify.config.NOTIFY_COVERAGE_LEDGERS,
             fastify.log,

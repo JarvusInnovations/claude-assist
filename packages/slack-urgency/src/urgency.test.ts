@@ -36,7 +36,7 @@ function input(text: string, over: Partial<DeterministicInput> = {}): Determinis
 
 describe('classifyDeterministic — earned interrupts', () => {
   it('teammate DM with a question → urgent', () => {
-    expect(classifyDeterministic(input('can you review the SEPTA scope today?')).tier).toBe('urgent');
+    expect(classifyDeterministic(input('can you review the Acme Transit scope today?')).tier).toBe('urgent');
   });
 
   it('teammate DM signaling blockage → urgent', () => {

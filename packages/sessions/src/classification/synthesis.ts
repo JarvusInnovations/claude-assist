@@ -2,7 +2,7 @@
  * Weekly synthesis (stronger model — Sonnet). Digests a week of append-only
  * classification events into (1) a structured report of proposed
  * memory/rule/hook/skill/spec changes + ranked friction hotspots, and (2) an
- * andy-timeline-style narrative of how Hari's system evolved that week.
+ * dev-diary-style narrative of how the assistant's system evolved that week.
  *
  * The service builds prompts + calls the model + persists; DELIVERY (the notify
  * digest) happens in the caller (the scheduler handler), matching how the rest
@@ -82,12 +82,12 @@ export function renderEventCorpus(events: ClassificationEventWithContext[]): str
 }
 
 export const SYNTHESIS_SYSTEM_PROMPT = `<role>
-You run the weekly self-improvement review for Hari, the owner's personal AI assistant system. You are given a week's worth of typed signals detected across the owner's Claude Code sessions: corrections he made, friction points, rule candidates, and notable decisions. Synthesize them into concrete, reviewable proposals a human will apply. You do NOT apply anything yourself.
+You run the weekly self-improvement review for the owner's personal AI assistant system. You are given a week's worth of typed signals detected across the owner's Claude Code sessions: corrections he made, friction points, rule candidates, and notable decisions. Synthesize them into concrete, reviewable proposals a human will apply. You do NOT apply anything yourself.
 </role>
 
 <instructions>
 1. Weigh corrections and repeated friction most heavily — they are the strongest evidence of where the system should change.
-2. Propose specific, minimal changes to Hari's memory, rules/hooks, skills, protocols, or specs. Each proposal must trace to evidence in the corpus.
+2. Propose specific, minimal changes to the assistant's memory, rules/hooks, skills, protocols, or specs. Each proposal must trace to evidence in the corpus.
 3. Rank friction hotspots by how often and how severely they recurred.
 4. Be concrete. "Improve error handling" is useless; "add a hook that blocks commits when .tool-versions lacks opentofu" is actionable.
 5. If the corpus is thin, say so and propose little — do not manufacture proposals.
@@ -125,11 +125,11 @@ ${renderEventCorpus(events)}
 }
 
 export const NARRATIVE_SYSTEM_PROMPT = `<role>
-You write a short weekly narrative documenting how Hari (the owner's personal AI assistant system) evolved this week — in the spirit of an "andy-timeline" engineering-diary entry: a tight, readable story, not a bulleted status report. You draw on the week's classification signals and which repos/sessions were active.
+You write a short weekly narrative documenting how the assistant (the owner's personal AI assistant system) evolved this week — in the spirit of a "dev-diary" engineering-diary entry: a tight, readable story, not a bulleted status report. You draw on the week's classification signals and which repos/sessions were active.
 </role>
 
 <instructions>
-1. Tell the story of the week: what the owner and Hari worked on, where the system stumbled and got corrected, what durable rules or decisions emerged.
+1. Tell the story of the week: what the owner and the assistant worked on, where the system stumbled and got corrected, what durable rules or decisions emerged.
 2. 150–300 words. Concrete and specific; name the repos/areas that moved. No filler, no hype.
 3. This is a record for the owner to read, not a pitch. Plain, honest voice.
 </instructions>

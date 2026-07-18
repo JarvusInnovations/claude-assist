@@ -20,7 +20,7 @@ import type { CaptureStatus, CaptureType } from './types.js';
  * has no HQ write path. `actionable` and `team_relevant` route to `review`,
  * a hold-only executor — those captures surface to the owner (daily digest /
  * dashboard) and cross into team spaces only through his explicit
- * synthesis. See Hari specs/behaviors/personal-team-firewall.md.
+ * synthesis. See the owner's private personal↔team firewall spec.
  */
 export const ROUTING_TABLE: Record<CaptureType, string> = {
   stray_thought: 'tana-inbox',

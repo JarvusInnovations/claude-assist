@@ -6,7 +6,7 @@
  * no HQ client and no HQ write path anywhere; team-relevant material
  * surfaces to the owner (daily digest / dashboard reads status=awaiting_review)
  * and crosses into team spaces only through his explicit synthesis.
- * See Hari specs/behaviors/personal-team-firewall.md.
+ * See the owner's private personal↔team firewall spec.
  */
 
 import type { RoutingExecutor } from '../router.js';

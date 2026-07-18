@@ -8,7 +8,7 @@
  *   capture -t reading -t ai "url or thought"  # with tags
  *   echo "piped thought" | capture
  *
- * Server defaults to http://devbox:2529; override with CLAUDE_ASSIST_URL.
+ * Server defaults to http://localhost:2529; override with CLAUDE_ASSIST_URL.
  * Equivalent curl (the whole API contract):
  *
  *   curl -X POST $CLAUDE_ASSIST_URL/api/capture \
@@ -18,7 +18,7 @@
 
 import { generateUlid } from '../src/ulid.js';
 
-const server = process.env.CLAUDE_ASSIST_URL ?? 'http://devbox:2529';
+const server = process.env.CLAUDE_ASSIST_URL ?? 'http://localhost:2529';
 
 const args = process.argv.slice(2);
 const tags: string[] = [];

@@ -24,7 +24,7 @@ export default createPlugin('sessions', async (fastify, options) => {
   const config = options.sessionsConfig ?? {};
 
   // Initialize sync service with optional path mapping for Docker
-  // originalClaudeDir: The original path on host (e.g., /Users/chris/.claude)
+  // originalClaudeDir: The original path on host (e.g., /Users/<user>/.claude)
   // This allows the scanner to translate transcript paths when running in Docker
   const syncService = new SyncService(fastify.sql, fastify.log, {
     originalClaudeDir: config.originalClaudeDir,
@@ -184,7 +184,7 @@ export default createPlugin('sessions', async (fastify, options) => {
         const narrative = await synthesisService!.narrateWeek(period);
         await fastify.notify?.notify({
           priority: 'digest',
-          title: `Hari weekly evolution narrative (${period.startLabel} → ${period.endLabel})`,
+          title: `Assistant weekly evolution narrative (${period.startLabel} → ${period.endLabel})`,
           body: truncate(narrative.narrative, 1500),
         });
 

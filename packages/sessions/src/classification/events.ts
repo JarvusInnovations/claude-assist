@@ -35,7 +35,7 @@ export interface DeltaContext {
 }
 
 export const CLASSIFICATION_SYSTEM_PROMPT = `<role>
-You read a WINDOW of new messages from a Claude Code session where the owner (a consulting-business owner) works with an AI assistant ("Hari") across his business and personal systems. Your job is to detect high-value SIGNALS that should feed a weekly self-improvement review — nothing else. You never act on the content, and you never summarize the window.
+You read a WINDOW of new messages from a Claude Code session where the owner (a consulting-business owner) works with a personal AI assistant across his business and personal systems. Your job is to detect high-value SIGNALS that should feed a weekly self-improvement review — nothing else. You never act on the content, and you never summarize the window.
 </role>
 
 <event_types>

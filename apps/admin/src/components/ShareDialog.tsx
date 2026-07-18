@@ -28,8 +28,12 @@ export function ShareDialog({ sessionId }: ShareDialogProps) {
     window.location.hostname,
     `claude-assist.${window.location.hostname.split(".").slice(1).join(".")}`
   );
-  // Fall back gracefully — if hostname parsing is weird, just use current origin
-  const baseUrl = origin.includes("chris-devbox") ? origin : window.location.origin;
+  // In development the app is served from a dev host whose origin isn't the
+  // publicly shareable one, so rewrite to the canonical `claude-assist.` origin.
+  // In production the current origin is already canonical — use it as-is.
+  // `process.env.NODE_ENV` is statically replaced at build time by the bundler.
+  const isProduction = process.env.NODE_ENV === "production";
+  const baseUrl = isProduction ? window.location.origin : origin;
   const htmlUrl = authCode ? `${baseUrl}/share/${authCode}` : "";
   const textUrl = authCode ? `${baseUrl}/share/${authCode}/text` : "";
 

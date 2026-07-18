@@ -4,7 +4,7 @@ Migrates the server from a manually-run `bun src/server.ts` process in a herdr
 terminal pane (no persisted logs, dies with the pane) to a supervised
 `systemd --user` service, matching the pattern already in use on this box for
 Tana (`~/.config/systemd/user/tana.service`, `xvfb.service`, `openbox.service`,
-`x11vnc.service`) and the Hari MCP proxy (`hari-mcp-proxy.service`).
+`x11vnc.service`) and an MCP proxy (`mcp-proxy.service`).
 
 Files here:
 
@@ -18,21 +18,21 @@ see "Install" below to do that manually when ready.
 
 ## Prerequisites (already verified on this box)
 
-**Lingering is enabled** for `chris`:
+**Lingering is enabled** for the deploy user (referred to below as `<user>`):
 
 ```
-$ loginctl show-user chris
+$ loginctl show-user <user>
 ...
 Linger=yes
 ```
 
-This means the `chris` user's systemd instance (and anything running under
+This means the `<user>` account's systemd instance (and anything running under
 it, including this unit once enabled) keeps running after logout / without an
 active session — same as it does today for Tana. No action needed here.
 
 `~/.config/systemd/user/` already holds the Tana units (`tana.service`,
 `xvfb.service`, `openbox.service`, `x11vnc.service`) plus
-`hari-mcp-proxy.service` and `anytype.service`, all `enabled` and
+`mcp-proxy.service` and `anytype.service`, all `enabled` and
 `WantedBy=default.target`. This unit follows the same convention.
 
 ## Surprises found while preparing this
@@ -57,7 +57,7 @@ active session — same as it does today for Tana. No action needed here.
   server's `src/plugins/env.ts` registers `@fastify/env` with `dotenv: true`,
   which loads `.env` relative to `process.cwd()`. There's no explicit path —
   it only works because the process's cwd is `apps/server`. The unit sets
-  `WorkingDirectory=/home/chris/claude-assist/apps/server` for exactly this
+  `WorkingDirectory=%h/claude-assist/apps/server` for exactly this
   reason; no `EnvironmentFile=` directive is used or needed, and the unit
   doesn't duplicate anything from `.env`.
 - **`server-postgres-1` is a plain docker container**, not docker-compose
@@ -85,7 +85,7 @@ active session — same as it does today for Tana. No action needed here.
 
 ```bash
 # 1. Symlink (preferred, keeps it in sync with the repo) or copy the unit
-ln -s /home/chris/claude-assist/deploy/systemd/claude-assist-server.service \
+ln -s ~/claude-assist/deploy/systemd/claude-assist-server.service \
   ~/.config/systemd/user/claude-assist-server.service
 
 # 2. Reload the user systemd instance so it picks up the new unit
@@ -142,5 +142,5 @@ values — `DATABASE_URL` is `required` in the `@fastify/env` schema).
 systemctl --user stop claude-assist-server.service
 systemctl --user disable claude-assist-server.service
 # then restart the old herdr-pane process manually:
-cd /home/chris/claude-assist/apps/server && bun src/server.ts
+cd ~/claude-assist/apps/server && bun src/server.ts
 ```

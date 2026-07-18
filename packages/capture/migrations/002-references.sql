@@ -4,12 +4,12 @@
 -- open-tabs graveyard. One row per captured reference with fully extracted
 -- metadata.
 --
--- Record shape is deliberately flat and export-ready: the Hari repo will
--- eventually own a `.gitsheets/references` sheet (markdown + TOML
+-- Record shape is deliberately flat and export-ready: the owner's agent repo
+-- will eventually own a `.gitsheets/references` sheet (markdown + TOML
 -- frontmatter, one record per file), and each row here maps 1:1 onto that
 -- record — frontmatter: url, title, site_name, tags, source, captured_at;
 -- body: description + notes. The gitsheet export is a documented follow-on
--- (the Hari repo-restructure creating that sheet hasn't run yet); until
+-- (the agent repo-restructure creating that sheet hasn't run yet); until
 -- then Postgres is the home.
 
 CREATE TABLE capture.references (

@@ -80,7 +80,7 @@ export interface HeartbeatOptions {
    * reads it from an external coverage-ledger file at `ledgerPath`.
    */
   source?: 'heartbeat' | 'manual';
-  /** For `manual` source: path to the ledger file, relative to the Hari repo. */
+  /** For `manual` source: path to the ledger file, relative to the agent repo. */
   ledgerPath?: string;
   metadata?: Record<string, unknown>;
 }

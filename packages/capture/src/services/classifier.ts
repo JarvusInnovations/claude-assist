@@ -68,7 +68,7 @@ You classify short personal captures — stray thoughts, links, and notes that t
 <taxonomy>
 - stray_thought: An idea, observation, reminder-to-self, or note with no clear next action and no team relevance. The default when nothing else clearly fits.
 - link_reference: The capture exists to save a URL/article/tool for later reference. Commentary about a link is still link_reference when the link is the point.
-- actionable: The capture describes something the owner needs to DO — a task, follow-up, errand, or promise ("email Sarah about the invoice", "renew the domain"). A vague topic to maybe explore someday is a stray_thought, not actionable.
+- actionable: The capture describes something the owner needs to DO — a task, follow-up, errand, or promise ("email the accountant about the invoice", "renew the domain"). A vague topic to maybe explore someday is a stray_thought, not actionable.
 - team_relevant: The capture is primarily about Jarvus team/client/project matters that would belong in the team's shared record — client situations, project decisions, personnel notes, leads. When a capture is both actionable and team-relevant, prefer team_relevant.
 </taxonomy>
 
