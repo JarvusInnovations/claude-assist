@@ -80,10 +80,13 @@ describe('transition', () => {
     );
   });
 
-  it('resolves held captures and rejects resolution elsewhere', () => {
+  it('resolves held and routed captures and rejects resolution elsewhere', () => {
     expect(transition('awaiting_review', { kind: 'resolved' })).toBe('resolved');
     expect(transition('awaiting_executor', { kind: 'resolved' })).toBe('resolved');
-    for (const status of ['queued', 'classified', 'routed', 'resolved'] as CaptureStatus[]) {
+    // routed = filed at a destination; resolved = a downstream consumer
+    // fully processed it and it needs no further attention
+    expect(transition('routed', { kind: 'resolved' })).toBe('resolved');
+    for (const status of ['queued', 'classified', 'resolved'] as CaptureStatus[]) {
       expect(() => transition(status, { kind: 'resolved' })).toThrow(InvalidTransitionError);
     }
   });
