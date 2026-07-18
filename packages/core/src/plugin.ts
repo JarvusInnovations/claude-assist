@@ -337,6 +337,12 @@ export interface CapturePluginConfig {
   tanaMcpToken?: string;
   /** Tana workspace whose {id}_CAPTURE_INBOX receives stray thoughts */
   tanaWorkspaceId?: string;
+  /**
+   * Object-store bucket for capture attachments. When unset, the attachment
+   * feature is disabled (sign endpoint 503s; attachment-bearing captures are
+   * rejected). Credentials come from Google Application Default Credentials.
+   */
+  attachmentsBucket?: string;
 }
 
 export interface GooglePluginConfig {

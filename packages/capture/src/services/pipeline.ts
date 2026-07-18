@@ -19,6 +19,13 @@ import type { CaptureClassifier } from './classifier.js';
 import { collectUrls, deterministicClassification } from './classifier.js';
 import { fetchAllLinkMetadata } from './link-metadata.js';
 import type { CaptureRouter } from './router.js';
+import type { AttachmentStorage } from './attachments/storage.js';
+import { objectKeyPrefix } from './attachments/storage.js';
+import {
+  AttachmentKeyMismatchError,
+  AttachmentStorageUnconfiguredError,
+  AttachmentVerificationError,
+} from './attachments/errors.js';
 
 export interface PipelineConfig {
   /** Parallelism for classification (default 3) */
@@ -27,6 +34,12 @@ export interface PipelineConfig {
   batchSize?: number;
   /** URL metadata fetcher override (tests; default fetchAllLinkMetadata) */
   fetchLinks?: (urls: string[]) => Promise<LinkMetadata[]>;
+  /**
+   * Object store for attachments. When null/omitted the attachment feature is
+   * off: attachment-bearing ingests are rejected (503), plain captures are
+   * unaffected.
+   */
+  storage?: AttachmentStorage | null;
 }
 
 export interface SweepResult {
@@ -49,6 +62,7 @@ export class CapturePipeline {
   private limit: ReturnType<typeof pLimit>;
   private batchSize: number;
   private fetchLinks: (urls: string[]) => Promise<LinkMetadata[]>;
+  private storage: AttachmentStorage | null;
   private sweeping = false;
 
   constructor(
@@ -61,11 +75,44 @@ export class CapturePipeline {
     this.limit = pLimit(config.concurrency ?? 3);
     this.batchSize = config.batchSize ?? 50;
     this.fetchLinks = config.fetchLinks ?? fetchAllLinkMetadata;
+    this.storage = config.storage ?? null;
   }
 
-  /** Endpoint-side: idempotent store-and-ack. Zero intelligence. */
+  /**
+   * Endpoint-side: idempotent store-and-ack. Zero intelligence — with one
+   * exception the design mandates: when a capture references attachments, the
+   * objects MUST be verified to exist in the bucket before the row is stored,
+   * so a capture never durably points at objects that aren't there.
+   */
   async ingest(input: CaptureInput): Promise<{ record: CaptureRecord; created: boolean }> {
-    return this.store.insertIfAbsent(normalizeInput(input));
+    const normalized = normalizeInput(input);
+    await this.verifyAttachments(normalized.ulid, normalized.attachments);
+    return this.store.insertIfAbsent(normalized);
+  }
+
+  private async verifyAttachments(
+    ulid: string,
+    attachments: CaptureRecord['attachments']
+  ): Promise<void> {
+    if (attachments.length === 0) return;
+    if (!this.storage) throw new AttachmentStorageUnconfiguredError();
+
+    // Keys must belong to this capture's ULID (no cross-capture references).
+    const prefix = objectKeyPrefix(ulid);
+    const mismatched = attachments
+      .map((a) => a.object_key)
+      .filter((key) => !key.startsWith(prefix));
+    if (mismatched.length > 0) throw new AttachmentKeyMismatchError(ulid, mismatched);
+
+    // Every referenced object must already be uploaded to the bucket.
+    const missing: string[] = [];
+    await Promise.all(
+      attachments.map(async (a) => {
+        const exists = await this.storage!.objectExists(a.object_key);
+        if (!exists) missing.push(a.object_key);
+      })
+    );
+    if (missing.length > 0) throw new AttachmentVerificationError(missing);
   }
 
   async get(ulid: string): Promise<CaptureRecord | null> {
