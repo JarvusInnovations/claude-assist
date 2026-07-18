@@ -82,7 +82,7 @@ function parseFrontmatter(text: string): Record<string, string> | null {
 }
 
 /**
- * Extract the coverage watermark date from a Hari coverage-ledger file.
+ * Extract the coverage watermark date from a coverage-ledger file.
  *
  * New-style ledgers carry it as frontmatter, either gitsheets TOML (`+++`)
  * or plain YAML (`---`):
@@ -147,7 +147,7 @@ export interface DiskHealthResult {
 
 /**
  * Alert when free space drops below an absolute floor OR a percentage floor.
- * (devbox root hit 100% / 12 MB free unnoticed — this is that backstop.)
+ * (a host's root filesystem hit 100% / 12 MB free unnoticed — this is that backstop.)
  */
 export function evaluateDiskHealth(input: DiskHealthInput): DiskHealthResult {
   const freePct = input.totalBytes > 0 ? input.freeBytes / input.totalBytes : 0;
@@ -189,7 +189,7 @@ export interface StalenessCheckDeps {
   sql: postgres.Sql;
   notify: NotifyDispatcher;
   log: FastifyBaseLogger;
-  hariRepoPath?: string;
+  agentRepoPath?: string;
   diskCheckPath: string;
   diskMinFreeBytes: number;
   diskMinFreePct: number;
@@ -235,7 +235,7 @@ export async function runStalenessCheck(
         log.warn({ pipeline: row.name }, 'Manual heartbeat has no ledger_path');
         continue;
       }
-      const abs = deps.hariRepoPath ? join(deps.hariRepoPath, rel) : rel;
+      const abs = deps.agentRepoPath ? join(deps.agentRepoPath, rel) : rel;
       try {
         const text = await readFile(abs, 'utf-8');
         const watermark = parseWatermarkDate(text);

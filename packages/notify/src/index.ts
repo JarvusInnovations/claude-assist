@@ -71,7 +71,7 @@ export default createPlugin('notify', async (fastify: FastifyInstance, options: 
   // WHICH ledgers exist (names, thresholds, repo-relative paths) is instance
   // data, so it comes from config (NOTIFY_COVERAGE_LEDGERS) rather than code.
   const coverageLedgers = config.coverageLedgers ?? [];
-  if (config.hariRepoPath && coverageLedgers.length > 0) {
+  if (config.agentRepoPath && coverageLedgers.length > 0) {
     for (const ledger of coverageLedgers) {
       await heartbeats.register({
         name: ledger.name,
@@ -81,7 +81,7 @@ export default createPlugin('notify', async (fastify: FastifyInstance, options: 
       });
     }
   } else if (coverageLedgers.length > 0) {
-    fastify.log.warn('Notify: hariRepoPath not set — external coverage ledgers not registered');
+    fastify.log.warn('Notify: agentRepoPath not set — external coverage ledgers not registered');
   }
 
   // --- Daily staleness + host-health check -----------------------------------
@@ -99,7 +99,7 @@ export default createPlugin('notify', async (fastify: FastifyInstance, options: 
           sql: fastify.sql,
           notify: dispatcher,
           log: fastify.log,
-          hariRepoPath: config.hariRepoPath,
+          agentRepoPath: config.agentRepoPath,
           diskCheckPath,
           diskMinFreeBytes,
           diskMinFreePct,

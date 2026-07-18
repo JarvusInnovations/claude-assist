@@ -181,7 +181,7 @@ export interface CoverageLedgerConfig {
   name: string;
   /** Postgres interval string — alert when the watermark is older (e.g. `14 days`). */
   threshold: string;
-  /** Ledger file path relative to `hariRepoPath`. */
+  /** Ledger file path relative to `agentRepoPath`. */
   path: string;
 }
 
@@ -193,11 +193,11 @@ export interface NotifyPluginConfig {
   pushoverToken?: string;
   /** Pushover user/group key (recipient). */
   pushoverUser?: string;
-  /** Absolute path to the Hari repo clone (for manual coverage-ledger files). */
-  hariRepoPath?: string;
+  /** Absolute path to the owner's agent repo clone (for manual coverage-ledger files). */
+  agentRepoPath?: string;
   /**
    * External coverage ledgers to watch (instance data — from
-   * NOTIFY_COVERAGE_LEDGERS). Paths are relative to `hariRepoPath`.
+   * NOTIFY_COVERAGE_LEDGERS). Paths are relative to `agentRepoPath`.
    */
   coverageLedgers?: CoverageLedgerConfig[];
   /** Filesystem path whose free space the host-health check watches (default `/`). */
