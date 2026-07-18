@@ -35,6 +35,7 @@ export {
   type BriefingPluginConfig,
   type PagesPluginConfig,
   type LedgerPluginConfig,
+  type KitchenPluginConfig,
 } from './plugin.js';
 
 // Tana MCP client (shared by capture's inbox executor + the briefing render)

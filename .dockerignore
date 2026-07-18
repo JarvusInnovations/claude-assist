@@ -74,6 +74,15 @@
 !packages/ledger/migrations/
 !packages/ledger/migrations/**
 
+# packages/kitchen
+!packages/kitchen/package.json
+!packages/kitchen/tsconfig.json
+!packages/kitchen/src/**
+!packages/kitchen/migrations/
+!packages/kitchen/migrations/**
+!packages/kitchen/contracts/
+!packages/kitchen/contracts/**
+
 # apps/server
 !apps/server/package.json
 !apps/server/tsconfig.json

@@ -105,6 +105,18 @@ const schema = {
     TANA_MCP_TOKEN: { type: 'string' },
     TANA_WORKSPACE_ID: { type: 'string' },
 
+    // Kitchen module (consumption journal — entries, estimation, recipes)
+    ENABLE_KITCHEN: { type: 'boolean', default: true },
+    KITCHEN_DISABLE_ESTIMATION: { type: 'boolean', default: false },
+    KITCHEN_CONCURRENCY: { type: 'number', default: 3 },
+    // Vision-capable estimation model; defaults to a strong vision tier (open-ended meal estimation).
+    KITCHEN_ESTIMATION_MODEL: { type: 'string', default: 'claude-fable-5' },
+    KITCHEN_MAX_PHOTO_BYTES: { type: 'number', default: 10_485_760 },
+    KITCHEN_MAX_PHOTOS: { type: 'number', default: 6 },
+    // Meal-bank gitsheet read (both optional — unset degrades to recents-only reselect).
+    KITCHEN_MEALBANK_REPO_PATH: { type: 'string' },
+    KITCHEN_MEALBANK_SHEET: { type: 'string' },
+
     // Pages module (publish + collect interactive HTML pages)
     ENABLE_PAGES: { type: 'boolean', default: true },
     // Override for links in publish responses + notify dispatch (default:
@@ -297,6 +309,16 @@ declare module 'fastify' {
       TANA_MCP_URL: string;
       TANA_MCP_TOKEN?: string;
       TANA_WORKSPACE_ID?: string;
+
+      // Kitchen module
+      ENABLE_KITCHEN: boolean;
+      KITCHEN_DISABLE_ESTIMATION: boolean;
+      KITCHEN_CONCURRENCY: number;
+      KITCHEN_ESTIMATION_MODEL: string;
+      KITCHEN_MAX_PHOTO_BYTES: number;
+      KITCHEN_MAX_PHOTOS: number;
+      KITCHEN_MEALBANK_REPO_PATH?: string;
+      KITCHEN_MEALBANK_SHEET?: string;
 
       // Pages module
       ENABLE_PAGES: boolean;
