@@ -62,6 +62,9 @@ jobs:
       - name: Build ledger
         run: bun run --filter @jarvus/claude-assist-ledger build
 
+      - name: Build kitchen
+        run: bun run --filter @jarvus/claude-assist-kitchen build
+
       - name: Build server
         run: bun run --filter @jarvus/claude-assist-server build
 

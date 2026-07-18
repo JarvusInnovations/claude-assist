@@ -22,6 +22,7 @@ import type { EmailSummary } from './sources/email.js';
 import type { CapturesSummary } from './sources/captures.js';
 import type { CoverageSummary } from './sources/coverage.js';
 import type { LedgerNarrative } from './sources/ledger.js';
+import type { KitchenSummary } from './sources/kitchen.js';
 
 export interface BriefingLink {
   label: string;
@@ -37,6 +38,7 @@ export interface BriefingInputs {
   captures: CapturesSummary;
   coverage: CoverageSummary;
   ledger: LedgerNarrative;
+  kitchen: KitchenSummary;
   /** Base URL for links out to richer claude-assist pages (optional). */
   pageBaseUrl?: string | null;
 }
@@ -60,6 +62,7 @@ export interface Briefing {
   captures: CapturesSummary;
   coverage: CoverageSummary;
   ledger: LedgerNarrative;
+  kitchen: KitchenSummary;
   links: BriefingLink[];
 }
 
@@ -96,6 +99,7 @@ export function composeBriefing(inputs: BriefingInputs): Briefing {
     captures: inputs.captures,
     coverage: inputs.coverage,
     ledger: inputs.ledger,
+    kitchen: inputs.kitchen,
     links,
   };
 }

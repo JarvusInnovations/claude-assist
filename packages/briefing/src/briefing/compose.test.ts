@@ -76,6 +76,7 @@ function baseInputs(over: Partial<BriefingInputs> = {}): BriefingInputs {
       error: null,
     },
     ledger: { totalCount: 0, groups: [], error: null },
+    kitchen: { calories: 1200, proteinG: 80, satFatG: 15, pendingCount: 1, error: null },
     pageBaseUrl: 'https://assist.example',
     ...over,
   };
@@ -105,6 +106,12 @@ describe('composeBriefing', () => {
   it('emits links only when a base url is given', () => {
     expect(composeBriefing(baseInputs()).links.length).toBeGreaterThan(0);
     expect(composeBriefing(baseInputs({ pageBaseUrl: null })).links).toHaveLength(0);
+  });
+
+  it('passes kitchen totals through unchanged', () => {
+    const b = composeBriefing(baseInputs());
+    expect(b.kitchen.calories).toBe(1200);
+    expect(b.kitchen.proteinG).toBe(80);
   });
 
   it('passes through source errors without throwing', () => {

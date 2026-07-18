@@ -8,6 +8,7 @@ import sessionsPlugin, {
 } from '@jarvus/claude-assist-sessions';
 import googlePlugin from '@jarvus/claude-assist-google';
 import capturePlugin from '@jarvus/claude-assist-capture';
+import kitchenPlugin from '@jarvus/claude-assist-kitchen';
 import slackUrgencyPlugin from '@jarvus/claude-assist-slack-urgency';
 import briefingPlugin from '@jarvus/claude-assist-briefing';
 import chatPlugin, { parseContextCommands } from '@jarvus/claude-assist-chat';
@@ -284,6 +285,27 @@ await fastify.register(
       });
     } else {
       api.log.info('Capture module disabled');
+    }
+
+    if (fastify.config.ENABLE_KITCHEN) {
+      api.log.info('Kitchen module enabled');
+      await api.register(kitchenPlugin, {
+        migrationsDir: join(__dirname, '../../../packages/kitchen/migrations'),
+        disableMigrations: fastify.config.DISABLE_MIGRATIONS,
+        kitchenConfig: {
+          anthropicApiKey: fastify.config.ANTHROPIC_API_KEY,
+          estimationModel: fastify.config.KITCHEN_ESTIMATION_MODEL,
+          concurrency: fastify.config.KITCHEN_CONCURRENCY,
+          disableEstimation:
+            fastify.config.DISABLE_SYNCS || fastify.config.KITCHEN_DISABLE_ESTIMATION,
+          maxPhotoBytes: fastify.config.KITCHEN_MAX_PHOTO_BYTES,
+          maxPhotos: fastify.config.KITCHEN_MAX_PHOTOS,
+          mealBankRepoPath: fastify.config.KITCHEN_MEALBANK_REPO_PATH,
+          mealBankSheet: fastify.config.KITCHEN_MEALBANK_SHEET,
+        },
+      });
+    } else {
+      api.log.info('Kitchen module disabled');
     }
 
     // Pages module — publish + collect interactive HTML pages. Registered

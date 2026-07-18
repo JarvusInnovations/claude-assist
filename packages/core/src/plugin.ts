@@ -58,6 +58,35 @@ export interface PluginOptions {
   pagesConfig?: PagesPluginConfig;
   /** Configuration for ledger plugin */
   ledgerConfig?: LedgerPluginConfig;
+  /** Configuration for kitchen plugin */
+  kitchenConfig?: KitchenPluginConfig;
+}
+
+/**
+ * Configuration for the kitchen plugin (consumption journal — entries,
+ * estimation, recipes).
+ */
+export interface KitchenPluginConfig {
+  /** Anthropic API key for the vision estimation call. */
+  anthropicApiKey?: string;
+  /** Estimation model (default: claude-fable-5 — a strong vision-capable tier). */
+  estimationModel?: string;
+  /** Parallelism for the estimation sweep (default 3). */
+  concurrency?: number;
+  /** Disable the scheduled estimation sweep. */
+  disableEstimation?: boolean;
+  /** Max bytes per uploaded photo (default 10 MiB). */
+  maxPhotoBytes?: number;
+  /** Max photo parts per entry (default 6). */
+  maxPhotos?: number;
+  /**
+   * Absolute path to the instance's own repo clone, for the meal-bank
+   * gitsheet read (KITCHEN_MEALBANK_REPO_PATH). Both this and
+   * `mealBankSheet` are optional — unset degrades to recents-only reselect.
+   */
+  mealBankRepoPath?: string;
+  /** Sheet name declared under that repo's .gitsheets/ (KITCHEN_MEALBANK_SHEET). */
+  mealBankSheet?: string;
 }
 
 /**
@@ -429,6 +458,7 @@ export function createPlugin(
       briefingConfig: opts.briefingConfig,
       pagesConfig: opts.pagesConfig,
       ledgerConfig: opts.ledgerConfig,
+      kitchenConfig: opts.kitchenConfig,
     };
 
     fastify.log.info(`Loading plugin: ${name}`);

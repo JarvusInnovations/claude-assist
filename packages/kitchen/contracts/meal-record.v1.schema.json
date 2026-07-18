@@ -1,0 +1,84 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://jarvus.dev/kitchen/meal-record/v1",
+  "title": "Kitchen meal-record v1",
+  "description": "The kitchen module's published meal-record interface (specs/modules/kitchen.md § Meal-bank sheet consumption). Any gitsheet satisfying this contract can back the module's meal-bank read — a sheet-sourced recipe projection. Self-contained, no external $ref. TOML data model: no null-bearing keywords (no 'null' type, no 'nullable'); an unknown field is simply absent, never null. Deliberately open (no additionalProperties: false anywhere) so producers can carry extra fields the module doesn't read yet.",
+  "type": "object",
+  "required": ["name"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Display name for the meal/recipe."
+    },
+    "tier": {
+      "type": "string",
+      "description": "Free-form categorization tier (e.g. 'staple', 'occasional', 'treat'). Instance-defined vocabulary."
+    },
+    "calories": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Flat single-item calorie count, when this record isn't broken into components."
+    },
+    "protein_g": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Flat single-item protein (grams), paired with calories."
+    },
+    "sat_fat_g": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Flat single-item saturated fat (grams), paired with calories."
+    },
+    "sodium_mg": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Flat single-item sodium (milligrams), paired with calories."
+    },
+    "components": {
+      "type": "array",
+      "description": "Per-ingredient breakdown, when this record is a multi-component recipe rather than a single flat item. When present, the module computes macros deterministically from components × logged quantities rather than the flat calorie fields above.",
+      "items": {
+        "type": "object",
+        "required": ["label", "default_qty_g", "per_100g"],
+        "properties": {
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Ingredient display label."
+          },
+          "default_qty_g": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Default quantity in grams, used when a logged entry doesn't specify its own quantity for this component."
+          },
+          "per_100g": {
+            "type": "object",
+            "required": ["calories", "protein_g", "sat_fat_g"],
+            "properties": {
+              "calories": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Calories per 100g of this ingredient."
+              },
+              "protein_g": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Protein (grams) per 100g of this ingredient."
+              },
+              "sat_fat_g": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Saturated fat (grams) per 100g of this ingredient."
+              }
+            }
+          }
+        }
+      }
+    },
+    "provenance": {
+      "type": "string",
+      "description": "Where this record's numbers came from (e.g. a label photo, a nutrition database lookup, a recipe calculator) — informational, not machine-checked."
+    }
+  }
+}

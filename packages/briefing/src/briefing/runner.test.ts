@@ -19,6 +19,7 @@ function sampleBriefing(over: Partial<Briefing> = {}): Briefing {
     captures: { awaitingReview: 0, awaitingExecutor: 0, error: null },
     coverage: { pipelines: [], staleCount: 0, error: null },
     ledger: { totalCount: 0, groups: [], error: null },
+    kitchen: { calories: 0, proteinG: 0, satFatG: 0, pendingCount: 0, error: null },
     links: [],
     ...over,
   };
