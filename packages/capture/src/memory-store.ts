@@ -35,6 +35,8 @@ export class MemoryCaptureStore implements CaptureStore {
       route_result: null,
       last_error: null,
       last_error_at: null,
+      resolution: null,
+      resolved_at: null,
     };
     this.records.set(capture.ulid, record);
     return { record: structuredClone(record), created: true };
@@ -146,6 +148,17 @@ export class MemoryCaptureStore implements CaptureStore {
     record.route_result = null;
     record.last_error = null;
     record.last_error_at = null;
+  }
+
+  async applyResolution(
+    ulid: string,
+    resolution: string | null,
+    nextStatus: CaptureStatus
+  ): Promise<void> {
+    const record = this.mustGet(ulid);
+    record.status = nextStatus;
+    record.resolution = resolution;
+    record.resolved_at = new Date();
   }
 }
 

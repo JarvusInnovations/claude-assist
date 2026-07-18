@@ -116,6 +116,16 @@ export class CapturePipeline {
     return this.store.get(ulid);
   }
 
+  /** Close out a held capture that was synthesized outside the executors. */
+  async resolve(ulid: string, resolution: string | null): Promise<CaptureRecord | null> {
+    const capture = await this.store.get(ulid);
+    if (!capture) return null;
+
+    const nextStatus = transition(capture.status, { kind: 'resolved' });
+    await this.store.applyResolution(ulid, resolution, nextStatus);
+    return this.store.get(ulid);
+  }
+
   /** Scheduler-side sweep: classify queued rows, then route routable rows. */
   async sweep(): Promise<SweepResult> {
     if (this.sweeping) {

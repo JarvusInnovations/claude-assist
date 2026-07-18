@@ -79,4 +79,19 @@ describe('transition', () => {
       InvalidTransitionError
     );
   });
+
+  it('resolves held captures and rejects resolution elsewhere', () => {
+    expect(transition('awaiting_review', { kind: 'resolved' })).toBe('resolved');
+    expect(transition('awaiting_executor', { kind: 'resolved' })).toBe('resolved');
+    for (const status of ['queued', 'classified', 'routed', 'resolved'] as CaptureStatus[]) {
+      expect(() => transition(status, { kind: 'resolved' })).toThrow(InvalidTransitionError);
+    }
+  });
+
+  it('still accepts corrections from resolved (reopen path)', () => {
+    // corrected is legal from any post-classification state; resolved is one
+    expect(transition('resolved', { kind: 'corrected', destination: 'references' })).toBe(
+      'classified'
+    );
+  });
 });

@@ -84,6 +84,9 @@ export interface CaptureStore {
     destination: string,
     nextStatus: CaptureStatus
   ): Promise<void>;
+
+  /** Terminal close-out for a held capture, with an optional note */
+  applyResolution(ulid: string, resolution: string | null, nextStatus: CaptureStatus): Promise<void>;
 }
 
 export interface ReferenceStore {
@@ -264,6 +267,20 @@ export class PgCaptureStore implements CaptureStore {
         route_result = NULL,
         last_error = NULL,
         last_error_at = NULL
+      WHERE ulid = ${ulid}
+    `;
+  }
+
+  async applyResolution(
+    ulid: string,
+    resolution: string | null,
+    nextStatus: CaptureStatus
+  ): Promise<void> {
+    await this.sql`
+      UPDATE capture.captures SET
+        status = ${nextStatus},
+        resolution = ${resolution},
+        resolved_at = NOW()
       WHERE ulid = ${ulid}
     `;
   }

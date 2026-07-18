@@ -256,7 +256,8 @@ export type CaptureStatus =
   | "classified"
   | "awaiting_executor"
   | "awaiting_review"
-  | "routed";
+  | "routed"
+  | "resolved";
 
 export type CaptureType =
   | "stray_thought"
@@ -303,6 +304,8 @@ export interface CaptureRecord {
   route_result: Record<string, unknown> | null;
   last_error: string | null;
   last_error_at: string | null;
+  resolution: string | null;
+  resolved_at: string | null;
 }
 
 export interface CaptureListResponse {
