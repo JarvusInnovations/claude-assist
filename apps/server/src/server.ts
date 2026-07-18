@@ -281,6 +281,7 @@ await fastify.register(
           tanaMcpUrl: fastify.config.TANA_MCP_URL,
           tanaMcpToken: fastify.config.TANA_MCP_TOKEN,
           tanaWorkspaceId: fastify.config.TANA_WORKSPACE_ID,
+          attachmentsBucket: fastify.config.CAPTURE_ATTACHMENTS_BUCKET,
         },
       });
     } else {

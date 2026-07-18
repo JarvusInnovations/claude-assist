@@ -9,6 +9,7 @@
 
 import type postgres from 'postgres';
 import type {
+  CaptureAttachment,
   CaptureInput,
   CaptureRecord,
   CaptureStatus,
@@ -26,6 +27,7 @@ export interface NewCapture {
   urls: string[];
   tags: string[];
   payload: Record<string, unknown>;
+  attachments: CaptureAttachment[];
   captured_at: Date;
 }
 
@@ -38,6 +40,7 @@ export function normalizeInput(input: CaptureInput, now = new Date()): NewCaptur
     urls: input.urls ?? [],
     tags: input.tags ?? [],
     payload: input.payload ?? {},
+    attachments: input.attachments ?? [],
     captured_at: input.captured_at ? new Date(input.captured_at) : now,
   };
 }
@@ -113,6 +116,10 @@ function rowToRecord(row: Record<string, unknown>): CaptureRecord {
     ...(row as unknown as CaptureRecord),
     classification: parseJsonField(row.classification as Classification | string | null),
     payload: parseJsonField(row.payload as Record<string, unknown> | string | null) ?? {},
+    attachments:
+      parseJsonField<CaptureAttachment[]>(
+        row.attachments as CaptureAttachment[] | string | null
+      ) ?? [],
     route_result: parseJsonField(row.route_result as Record<string, unknown> | string | null),
   };
 }
@@ -123,11 +130,11 @@ export class PgCaptureStore implements CaptureStore {
   async insertIfAbsent(capture: NewCapture): Promise<{ record: CaptureRecord; created: boolean }> {
     const inserted = await this.sql`
       INSERT INTO capture.captures
-        (ulid, source, text, type_hint, urls, tags, payload, captured_at)
+        (ulid, source, text, type_hint, urls, tags, payload, attachments, captured_at)
       VALUES (
         ${capture.ulid}, ${capture.source}, ${capture.text}, ${capture.type_hint},
         ${capture.urls}, ${capture.tags}, ${JSON.stringify(capture.payload)},
-        ${capture.captured_at}
+        ${JSON.stringify(capture.attachments)}, ${capture.captured_at}
       )
       ON CONFLICT (ulid) DO NOTHING
       RETURNING *

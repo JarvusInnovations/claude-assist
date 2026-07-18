@@ -60,6 +60,23 @@ export interface Classification {
   links?: LinkMetadata[];
 }
 
+/**
+ * A file/photo attachment carried by a capture. The bytes live in an
+ * object-store bucket; the capture only references them by object key plus
+ * client-declared metadata. Attachments are stored and referenced, never
+ * interpreted (no OCR/processing).
+ */
+export interface CaptureAttachment {
+  /** Object key in the bucket: captures/<ulid>/<n>-<filename> */
+  object_key: string;
+  /** Original client filename (display + link text) */
+  filename: string;
+  /** MIME type declared by the client at upload */
+  content_type: string;
+  /** Size in bytes declared at upload (also constrains the signed URL) */
+  bytes: number;
+}
+
 /** What clients POST to /api/capture */
 export interface CaptureInput {
   ulid: string;
@@ -71,6 +88,11 @@ export interface CaptureInput {
   tags?: string[];
   /** Type-specific extension data (future diet entries, share-sheet extras) */
   payload?: Record<string, unknown>;
+  /**
+   * Objects already uploaded to the bucket via signed URLs. Verified to
+   * exist at ingest; omitted/empty for captures without attachments.
+   */
+  attachments?: CaptureAttachment[];
   /** Client clock; defaults to receive time when omitted */
   captured_at?: string;
 }
@@ -84,6 +106,7 @@ export interface CaptureRecord {
   urls: string[];
   tags: string[];
   payload: Record<string, unknown>;
+  attachments: CaptureAttachment[];
   captured_at: Date;
   received_at: Date;
   status: CaptureStatus;

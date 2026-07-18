@@ -104,6 +104,10 @@ const schema = {
     TANA_MCP_URL: { type: 'string', default: 'http://127.0.0.1:8262/mcp' },
     TANA_MCP_TOKEN: { type: 'string' },
     TANA_WORKSPACE_ID: { type: 'string' },
+    // Object-store bucket for capture attachments. Unset → attachments
+    // disabled (sign endpoint 503s). Credentials via Google Application
+    // Default Credentials (GOOGLE_APPLICATION_CREDENTIALS or ambient identity).
+    CAPTURE_ATTACHMENTS_BUCKET: { type: 'string' },
 
     // Kitchen module (consumption journal — entries, estimation, recipes)
     ENABLE_KITCHEN: { type: 'boolean', default: true },
@@ -313,6 +317,7 @@ declare module 'fastify' {
       TANA_MCP_URL: string;
       TANA_MCP_TOKEN?: string;
       TANA_WORKSPACE_ID?: string;
+      CAPTURE_ATTACHMENTS_BUCKET?: string;
 
       // Kitchen module
       ENABLE_KITCHEN: boolean;

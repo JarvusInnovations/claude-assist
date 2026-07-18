@@ -30,6 +30,8 @@ import { ReferencesExecutor } from './services/executors/references.js';
 import { HoldExecutor } from './services/executors/hold.js';
 import { emitHeartbeat } from './services/heartbeat.js';
 import { registerCaptureRoutes } from './routes/capture.js';
+import type { AttachmentStorage } from './services/attachments/storage.js';
+import { GcsAttachmentStorage } from './services/attachments/storage-gcs.js';
 
 // Module augmentation for fastify decorators
 declare module 'fastify' {
@@ -46,6 +48,23 @@ export default createPlugin('capture', async (fastify: FastifyInstance, options:
 
   const store = new PgCaptureStore(fastify.sql);
   const referenceStore = new PgReferenceStore(fastify.sql);
+
+  // Attachment object store (optional). Configured only when a bucket is set;
+  // credentials come from Google Application Default Credentials. Without it,
+  // the sign endpoint 503s and attachment-bearing captures are rejected —
+  // plain captures are unaffected.
+  let attachmentStorage: AttachmentStorage | null = null;
+  if (config.attachmentsBucket) {
+    attachmentStorage = new GcsAttachmentStorage({ bucket: config.attachmentsBucket });
+    fastify.log.info(
+      { bucket: config.attachmentsBucket },
+      'Capture attachment storage enabled'
+    );
+  } else {
+    fastify.log.warn(
+      'CAPTURE_ATTACHMENTS_BUCKET not set - capture attachments disabled'
+    );
+  }
 
   // Classifier (optional - requires anthropicApiKey; without it only the
   // deterministic URL-only shortcut classifies, the rest queue up)
@@ -73,7 +92,9 @@ export default createPlugin('capture', async (fastify: FastifyInstance, options:
       url: config.tanaMcpUrl ?? 'http://127.0.0.1:8262/mcp',
       token: config.tanaMcpToken,
     });
-    router.register(new TanaInboxExecutor(tanaClient, config.tanaWorkspaceId));
+    router.register(
+      new TanaInboxExecutor(tanaClient, config.tanaWorkspaceId, attachmentStorage)
+    );
   } else {
     fastify.log.warn(
       'TANA_MCP_TOKEN/TANA_WORKSPACE_ID not set - stray thoughts will park in awaiting_executor'
@@ -82,9 +103,14 @@ export default createPlugin('capture', async (fastify: FastifyInstance, options:
 
   const pipeline = new CapturePipeline(store, classifier, router, fastify.log, {
     concurrency: config.concurrency,
+    storage: attachmentStorage,
   });
 
-  await fastify.register(registerCaptureRoutes, { pipeline, referenceStore });
+  await fastify.register(registerCaptureRoutes, {
+    pipeline,
+    referenceStore,
+    storage: attachmentStorage,
+  });
 
   if (!config.disableClassification) {
     fastify.scheduler.register({
@@ -119,7 +145,22 @@ export { CapturePipeline, type SweepResult } from './services/pipeline.js';
 export { CaptureRouter, type RoutingExecutor } from './services/router.js';
 export { CaptureClassifier, deterministicClassification, collectUrls } from './services/classifier.js';
 export { TanaMcpClient, parseMcpBody } from './services/tana-mcp.js';
-export { TanaInboxExecutor, formatTanaPaste } from './services/executors/tana-inbox.js';
+export { TanaInboxExecutor, formatTanaPaste, type AttachmentLink } from './services/executors/tana-inbox.js';
+export {
+  type AttachmentStorage,
+  type SignUploadParams,
+  buildObjectKey,
+  objectKeyPrefix,
+  sanitizeFilename,
+  SIGNED_URL_TTL_MS,
+} from './services/attachments/storage.js';
+export { GcsAttachmentStorage } from './services/attachments/storage-gcs.js';
+export { MemoryAttachmentStorage } from './services/attachments/storage-memory.js';
+export {
+  AttachmentStorageUnconfiguredError,
+  AttachmentVerificationError,
+  AttachmentKeyMismatchError,
+} from './services/attachments/errors.js';
 export { ReferencesExecutor, extractNotes } from './services/executors/references.js';
 export { HoldExecutor } from './services/executors/hold.js';
 export { registerCaptureRoutes, type CaptureRoutesConfig } from './routes/capture.js';
