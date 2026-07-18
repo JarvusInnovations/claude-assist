@@ -24,7 +24,7 @@ CREATE TABLE capture.references (
     description TEXT,
     site_name TEXT,
 
-    -- The capture text with the bare URL removed — Chris's own words about
+    -- The capture text with the bare URL removed — the owner's own words about
     -- why he saved it (empty for pure link-dropbox captures).
     notes TEXT NOT NULL DEFAULT '',
 

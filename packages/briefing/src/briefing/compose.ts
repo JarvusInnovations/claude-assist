@@ -9,7 +9,7 @@
  *   email split into a "needs attention" tier + a calm aggregate, captures
  *   awaiting review, coverage staleness,
  *   pipeline health, yesterday's ledger actions (a narrative summary of what
- *   the assistant did on Chris's behalf — omitted entirely on a quiet day),
+ *   the assistant did on the owner's behalf — omitted entirely on a quiet day),
  *   and links out to richer claude-assist pages. Sources that aren't live
  *   render as "not-yet-available", never failing the whole briefing.
  */

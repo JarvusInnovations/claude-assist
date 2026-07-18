@@ -1,5 +1,5 @@
 /**
- * Slack Web API reader over a USER token (xoxp-…), reading AS Chris.
+ * Slack Web API reader over a USER token (xoxp-…), reading AS the owner.
  *
  * This is the production `SlackReader`. It wraps only read endpoints:
  *   conversations.list · conversations.history · search.messages · users.info

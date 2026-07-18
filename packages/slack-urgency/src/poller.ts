@@ -1,12 +1,12 @@
 /**
- * Ingestion — a poll loop that reads Chris's incoming Slack AS CHRIS.
+ * Ingestion — a poll loop that reads the owner's incoming Slack AS THE OWNER.
  *
  * Why polling, not the bot socket: the chat bot's socket only receives
  * events for conversations the *bot* belongs to (its own DMs, its @mentions,
- * channels it was invited to). It never sees Chris's personal DMs from
- * teammates or @mentions of Chris the person. So urgency ingestion runs on a
+ * channels it was invited to). It never sees the owner's personal DMs from
+ * teammates or @mentions of the owner as a person. So urgency ingestion runs on a
  * user token (the same token the `slack-axi` CLI stores) via the Slack Web API,
- * which reads exactly what Chris sees.
+ * which reads exactly what the owner sees.
  *
  * Rate-limit posture: per-conversation cursors make every poll incremental —
  * we only ask for messages newer than the last ts we saw. `conversations.history`
@@ -77,7 +77,7 @@ export interface SlackReader {
 
 export interface PollerConfig {
   ownerId: string;
-  /** Channel ids to watch beyond Chris's DMs (a small, deliberate list). */
+  /** Channel ids to watch beyond the owner's DMs (a small, deliberate list). */
   watchChannels: string[];
   /** Max messages pulled per conversation per cycle (bounds a burst). */
   historyLimit?: number;
@@ -115,8 +115,8 @@ const JITTER_RATIO = 0.2;
  * to (the newest message seen, regardless of whether it produced a candidate).
  *
  * `mentionsOwner` and `ownerRepliedAfter` are derived from the batch: because a
- * poll pulls a window of messages at once, a teammate's ask and Chris's own
- * later reply usually land in the same slice — so "Chris already handled it" is
+ * poll pulls a window of messages at once, a teammate's ask and the owner's own
+ * later reply usually land in the same slice — so "the owner already handled it" is
  * catchable, killing the most annoying false positive.
  */
 export function buildCandidates(
@@ -138,13 +138,13 @@ export function buildCandidates(
     const isBot = Boolean(m.bot_id) || m.subtype === 'bot_message';
     const sender = m.user ?? '';
 
-    // Skip Chris's own messages and bots as *candidates* — but they still count
+    // Skip the owner's own messages and bots as *candidates* — but they still count
     // as context and as "owner replied after".
     if (!sender || sender === ownerId || isBot) continue;
 
     const threadKey = m.thread_ts ?? m.ts;
 
-    // Did Chris send a later message in the same thread within this slice?
+    // Did the owner send a later message in the same thread within this slice?
     const ownerRepliedAfter = ascending
       .slice(i + 1)
       .some((later) => later.user === ownerId && (later.thread_ts ?? later.ts) === threadKey);
@@ -155,7 +155,7 @@ export function buildCandidates(
       .filter((prev) => (prev.thread_ts ?? prev.ts) === threadKey && (prev.text ?? '').trim())
       .slice(-contextLines)
       .map((prev) => ({
-        who: prev.user === ownerId ? 'Chris' : (prev.user ?? 'someone'),
+        who: prev.user === ownerId ? 'the owner' : (prev.user ?? 'someone'),
         text: prev.text ?? '',
       }));
 

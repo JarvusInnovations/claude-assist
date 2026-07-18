@@ -26,11 +26,11 @@ CREATE TABLE google.accounts (
 );
 
 -- User aliases for name disambiguation in commitment extraction
--- Example: "Chris", "Chris Alfano" -> owner, "Christopher" alone -> different person
+-- Example: the owner's first name or full name -> owner; a similar-but-different name -> different person
 CREATE TABLE google.user_aliases (
     id SERIAL PRIMARY KEY,
     account_id INTEGER REFERENCES google.accounts(id) ON DELETE CASCADE,
-    alias TEXT NOT NULL,              -- "Chris", "Chris Alfano", etc.
+    alias TEXT NOT NULL,              -- e.g. the owner's first name, full name, etc.
     is_owner BOOLEAN DEFAULT true,    -- true = refers to account owner
     refers_to TEXT,                   -- If not owner, who does it refer to?
     notes TEXT,

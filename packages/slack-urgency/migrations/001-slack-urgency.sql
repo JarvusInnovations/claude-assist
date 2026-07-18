@@ -1,6 +1,6 @@
--- Slack urgency module: a read-only listener over Chris's incoming Slack that
+-- Slack urgency module: a read-only listener over the owner's incoming Slack that
 -- fires wrist-reaching interrupts ONLY for what genuinely can't wait (a blocked
--- teammate, a time-sensitive request, an explicit ask waiting on Chris) per the
+-- teammate, a time-sensitive request, an explicit ask waiting on the owner) per the
 -- "interrupts are earned" principle. Everything else batches to the digest.
 --
 -- Ingestion is a poll loop over a USER token (reads AS the owner): the chat

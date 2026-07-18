@@ -1148,9 +1148,9 @@ env: CLAUDE_ASSIST_SERVER (default http://localhost:2529)
 
 examples:
   ${CLI}
-  ${CLI} account create --identifier chris --email chris@example.com
+  ${CLI} account create --identifier owner --email owner@example.com
   ${CLI} account reauth 1
-  ${CLI} aliases add 1 --alias "Chris A"
+  ${CLI} aliases add 1 --alias "Owner A"
 `;
 var COMMAND_HELP = {
   accounts: ACCOUNTS_HELP,

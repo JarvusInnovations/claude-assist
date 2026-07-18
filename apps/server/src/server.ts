@@ -288,9 +288,9 @@ await fastify.register(
       api.log.info('Pages module disabled');
     }
 
-    // Slack urgency module — read-only listener over Chris's Slack; interrupts
+    // Slack urgency module — read-only listener over the owner's Slack; interrupts
     // (via the notify dispatcher, registered above) only for what can't wait.
-    // Reads AS Chris via a user token, so it's independent of the chat bot.
+    // Reads AS the owner via a user token, so it's independent of the chat bot.
     if (fastify.config.ENABLE_SLACK_URGENCY) {
       if (
         !fastify.config.SLACK_URGENCY_USER_TOKEN ||

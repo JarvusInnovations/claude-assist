@@ -5,7 +5,7 @@
  * Mirrors the email-triage / capture-classifier patterns exactly: XML-tagged
  * JSON output, one parse-correction retry, enum/shape validation. It sees the
  * candidate plus a few lines of preceding thread context and answers one
- * question — the principle's regret test: would Chris regret seeing this an
+ * question — the principle's regret test: would the owner regret seeing this an
  * hour later instead of now? If not, it's digest material.
  */
 
@@ -29,7 +29,7 @@ export interface ResidueClassifierConfig {
 
 /** A prior message in the thread, for context (oldest → newest). */
 export interface ThreadContextLine {
-  who: string; // "Chris" | sender display name | user id
+  who: string; // "the owner" | sender display name | user id
   text: string;
 }
 
@@ -43,16 +43,16 @@ export interface ResidueJudge {
 }
 
 const SYSTEM_PROMPT = `<role>
-You are the urgency gate for Chris, a consulting-business owner. A message from a teammate has reached you that simple rules could not decide. Your ONLY job: decide whether it earns a push notification to Chris's phone and watch RIGHT NOW, or whether it can wait for his next digest.
+You are the urgency gate for the owner, a consulting-business owner. A message from a teammate has reached you that simple rules could not decide. Your ONLY job: decide whether it earns a push notification to the owner's phone and watch RIGHT NOW, or whether it can wait for his next digest.
 </role>
 
 <bar>
-The bar is high on purpose. Silence must stay trustworthy — Chris relies on NOT being interrupted to mean nothing needs him. Fire ONLY for what genuinely can't wait:
-- a teammate is blocked and waiting on Chris specifically,
+The bar is high on purpose. Silence must stay trustworthy — the owner relies on NOT being interrupted to mean nothing needs him. Fire ONLY for what genuinely can't wait:
+- a teammate is blocked and waiting on the owner specifically,
 - a time-sensitive request with a real near-term deadline,
 - an explicit question or decision that is holding someone up.
 
-The decisive test: would Chris regret seeing this an hour from now instead of now? If yes → urgent. If it is FYI, social, a heads-up, "when you get a chance", status, or something with no near-term consequence → NOT urgent (it batches into a digest). When genuinely unsure, choose NOT urgent: a missed digest item is recoverable; an eroded interrupt bar is not.
+The decisive test: would the owner regret seeing this an hour from now instead of now? If yes → urgent. If it is FYI, social, a heads-up, "when you get a chance", status, or something with no near-term consequence → NOT urgent (it batches into a digest). When genuinely unsure, choose NOT urgent: a missed digest item is recoverable; an eroded interrupt bar is not.
 </bar>
 
 <instructions>

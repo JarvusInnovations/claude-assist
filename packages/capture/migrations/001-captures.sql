@@ -22,7 +22,7 @@ CREATE TYPE capture.capture_status AS ENUM (
     'queued',             -- stored, awaiting classification
     'classified',         -- classified, awaiting routing execution
     'awaiting_executor',  -- destination has no registered executor (e.g. Tana not configured)
-    'awaiting_review',    -- held for Chris's explicit review/synthesis (actionable, team_relevant)
+    'awaiting_review',    -- held for the owner's explicit review/synthesis (actionable, team_relevant)
     'routed'              -- destination write succeeded
 );
 

@@ -1,7 +1,7 @@
 /**
  * Capture Module Plugin Entry Point
  *
- * The single dumb-fast entry point for Chris's stray thoughts, links, and
+ * The single dumb-fast entry point for the owner's stray thoughts, links, and
  * (future) diet entries:
  * - POST /api/capture: idempotent store-and-ack, zero decisions at capture
  * - Async classification sweep (Haiku, mirrors email triage patterns)
@@ -9,7 +9,7 @@
  *   review hold (actionable / team_relevant)
  *
  * FIREWALL: this module has NO HQ write path — team-relevant material only
- * ever parks in awaiting_review for Chris's explicit synthesis
+ * ever parks in awaiting_review for the owner's explicit synthesis
  * (Hari specs/behaviors/personal-team-firewall.md).
  */
 

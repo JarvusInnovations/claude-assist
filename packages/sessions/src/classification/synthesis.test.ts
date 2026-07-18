@@ -16,7 +16,7 @@ function event(
     seq_start: 0,
     seq_end: 5,
     event_type: 'correction',
-    summary: 'Chris corrected the deploy target',
+    summary: 'the owner corrected the deploy target',
     confidence: 0.9,
     quote: 'no, deploy to devbox not prod',
     model: 'claude-haiku-4-5',

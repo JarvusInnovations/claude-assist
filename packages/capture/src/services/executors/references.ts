@@ -12,7 +12,7 @@ import type { ReferenceStore } from '../../store.js';
 import type { RoutingExecutor } from '../router.js';
 import { collectUrls } from '../classifier.js';
 
-/** The capture text with URLs removed = Chris's own note about the link */
+/** The capture text with URLs removed = the owner's own note about the link */
 export function extractNotes(text: string, urls: string[]): string {
   let notes = text;
   for (const url of urls) {

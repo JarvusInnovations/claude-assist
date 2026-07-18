@@ -1,10 +1,10 @@
 /**
  * Hold executor: the destination for capture types that must terminate in
- * Chris rather than in an automated write (actionable, team_relevant).
+ * the owner rather than in an automated write (actionable, team_relevant).
  *
  * FIREWALL: this executor is intentionally inert. The capture service has
  * no HQ client and no HQ write path anywhere; team-relevant material
- * surfaces to Chris (daily digest / dashboard reads status=awaiting_review)
+ * surfaces to the owner (daily digest / dashboard reads status=awaiting_review)
  * and crosses into team spaces only through his explicit synthesis.
  * See Hari specs/behaviors/personal-team-firewall.md.
  */

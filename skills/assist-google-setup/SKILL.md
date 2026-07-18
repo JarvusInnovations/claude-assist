@@ -28,7 +28,7 @@ defaults to `http://localhost:2529` (override with `CLAUDE_ASSIST_SERVER`).
 1. **Create** the account — returns an `authUrl`:
 
    ```bash
-   scripts/google-axi account create --identifier chris --email chris@example.com
+   scripts/google-axi account create --identifier owner --email owner@example.com
    ```
 
 2. **Authorize**: give the `authUrl` to the user to open in a browser and grant access.
@@ -36,8 +36,8 @@ defaults to `http://localhost:2529` (override with `CLAUDE_ASSIST_SERVER`).
    credentials and can sync.
 3. **Verify**: `scripts/google-axi accounts` — the account should show `authed: yes`.
 
-`identifier` is a short stable handle (e.g. `chris`) used everywhere else (e.g.
-`gmail-axi emails --account chris`). Use `account reauth <id>` to mint a fresh `authUrl`
+`identifier` is a short stable handle (e.g. `owner`) used everywhere else (e.g.
+`gmail-axi emails --account owner`). Use `account reauth <id>` to mint a fresh `authUrl`
 if tokens are revoked or expired.
 
 ## Name aliases

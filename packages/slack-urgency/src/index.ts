@@ -1,13 +1,13 @@
 /**
- * Slack urgency module — a read-only listener over Chris's incoming Slack that
+ * Slack urgency module — a read-only listener over the owner's incoming Slack that
  * interrupts (phone + watch, via the notification dispatcher) ONLY for what
  * genuinely can't wait, per the "interrupts are earned" principle.
  * Everything else batches to the digest; near-misses back-stop false negatives.
  *
- * Wiring: a user-token Web API reader (reads AS Chris) → a poll loop with
+ * Wiring: a user-token Web API reader (reads AS the owner) → a poll loop with
  * per-conversation cursors → the urgency pipeline (deterministic core + Haiku
  * residue + quiet hours + thread dedup) → fastify.notify at interrupt priority.
- * A per-cycle heartbeat means a silently-dead listener pages Chris — the exact
+ * A per-cycle heartbeat means a silently-dead listener pages the owner — the exact
  * failure mode this system exists to eliminate.
  *
  * FIREWALL / READ-ONLY: no write path to any external system of record, and the
@@ -49,12 +49,12 @@ export default createPlugin('slack-urgency', async (fastify: FastifyInstance, op
 
   if (!config.userToken) {
     fastify.log.warn(
-      'Slack urgency enabled but SLACK_URGENCY_USER_TOKEN not set — the poller reads AS Chris via a user token; skipping'
+      'Slack urgency enabled but SLACK_URGENCY_USER_TOKEN not set — the poller reads AS the owner via a user token; skipping'
     );
     return;
   }
   if (!config.ownerId) {
-    fastify.log.error('Slack urgency: SLACK_OWNER_USER_ID is required (never interrupt for Chris\'s own messages)');
+    fastify.log.error('Slack urgency: SLACK_OWNER_USER_ID is required (never interrupt for the owner\'s own messages)');
     return;
   }
 

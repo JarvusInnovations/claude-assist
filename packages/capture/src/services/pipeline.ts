@@ -101,7 +101,7 @@ export class CapturePipeline {
         type,
         confidence: 1,
         title: capture.classification?.title ?? null,
-        rationale: `Corrected by Chris (was: ${capture.classification?.type ?? 'unclassified'})`,
+        rationale: `Corrected by the owner (was: ${capture.classification?.type ?? 'unclassified'})`,
         classifier: 'correction',
         ...(capture.classification?.links ? { links: capture.classification.links } : {}),
       },

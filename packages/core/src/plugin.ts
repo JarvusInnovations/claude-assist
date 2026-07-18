@@ -76,9 +76,9 @@ export interface LedgerPluginConfig {
  * Configuration for the slack-urgency plugin (read-only urgency listener).
  */
 export interface SlackUrgencyPluginConfig {
-  /** Slack USER token (xoxp-…) — the poller reads AS Chris (same token slack-axi stores). */
+  /** Slack USER token (xoxp-…) — the poller reads AS the owner (same token slack-axi stores). */
   userToken?: string;
-  /** Slack user id of Chris. Messages from this id never interrupt. */
+  /** Slack user id of the owner. Messages from this id never interrupt. */
   ownerId?: string;
   /** Team roster: CSV/newline `id=Name` pairs (SLACK_URGENCY_ROSTER). */
   roster?: string;

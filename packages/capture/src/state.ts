@@ -18,7 +18,7 @@ import type { CaptureStatus, CaptureType } from './types.js';
  *
  * FIREWALL NOTE: there is deliberately no HQ destination and this module
  * has no HQ write path. `actionable` and `team_relevant` route to `review`,
- * a hold-only executor — those captures surface to Chris (daily digest /
+ * a hold-only executor — those captures surface to the owner (daily digest /
  * dashboard) and cross into team spaces only through his explicit
  * synthesis. See Hari specs/behaviors/personal-team-firewall.md.
  */
@@ -38,7 +38,7 @@ export type CaptureEvent =
   | { kind: 'route_succeeded' }
   /** No executor registered for the destination (e.g. Tana unconfigured) */
   | { kind: 'no_executor' }
-  /** Chris corrected the type; capture re-enters routing with a new destination */
+  /** the owner corrected the type; capture re-enters routing with a new destination */
   | { kind: 'corrected'; destination: string }
   /** A human (or their agent) synthesized the capture outside the executors */
   | { kind: 'resolved' };
