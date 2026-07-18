@@ -204,6 +204,22 @@ export function renderTanaPaste(b: Briefing): string {
     );
   }
 
+  // Kitchen — today's logged totals (calories/protein/sat fat), computed
+  // from the kitchen module's entries, never stored.
+  lines.push('  - Kitchen today');
+  if (b.kitchen.error) {
+    lines.push(`    - Kitchen summary not available: ${b.kitchen.error}`);
+  } else if (b.kitchen.calories === 0 && b.kitchen.pendingCount === 0) {
+    lines.push('    - Nothing logged yet');
+  } else {
+    lines.push(
+      `    - ${b.kitchen.calories} cal · ${b.kitchen.proteinG}g protein · ${b.kitchen.satFatG}g sat fat`
+    );
+    if (b.kitchen.pendingCount > 0) {
+      lines.push(`    - ${b.kitchen.pendingCount} entr${b.kitchen.pendingCount === 1 ? 'y' : 'ies'} still estimating`);
+    }
+  }
+
   // Coverage / pipeline health
   lines.push('  - Pipeline health');
   if (b.coverage.error) {

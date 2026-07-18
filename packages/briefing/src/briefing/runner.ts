@@ -20,6 +20,7 @@ import { fetchEmailSummary } from './sources/email.js';
 import { fetchCapturesSummary } from './sources/captures.js';
 import { fetchCoverageSummary } from './sources/coverage.js';
 import { fetchLedgerNarrative } from './sources/ledger.js';
+import { fetchKitchenSummary } from './sources/kitchen.js';
 import { priorDateIso } from '../time.js';
 
 export interface BriefingRunnerDeps {
@@ -47,12 +48,13 @@ export async function runDailyBriefing(deps: BriefingRunnerDeps): Promise<Briefi
 
   // Gather the remaining sources in parallel; each returns a flagged error
   // rather than throwing, so one outage doesn't sink the briefing.
-  const [commitments, email, captures, coverage, ledger] = await Promise.all([
+  const [commitments, email, captures, coverage, ledger, kitchen] = await Promise.all([
     fetchOpenCommitments({ bin: deps.commitmentsBin, args: deps.commitmentsArgs, todayIso: dateIso }),
     fetchEmailSummary(deps.sql),
     fetchCapturesSummary(deps.sql),
     fetchCoverageSummary(deps.sql),
     fetchLedgerNarrative(deps.sql, { dateIso: priorDateIso(dateIso), timeZone: deps.timeZone }),
+    fetchKitchenSummary(deps.sql, { dateIso, timeZone: deps.timeZone }),
   ]);
 
   const events = dayPlan.items.map((item) => item.event);
@@ -65,6 +67,7 @@ export async function runDailyBriefing(deps: BriefingRunnerDeps): Promise<Briefi
     captures,
     coverage,
     ledger,
+    kitchen,
     pageBaseUrl: deps.pageBaseUrl ?? null,
   });
 
