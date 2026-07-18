@@ -30,8 +30,8 @@ export interface SlackCandidate {
  *   emergency — explicit URGENT/emergency from a teammate; overrides quiet hours.
  *   urgent    — a directed teammate message carrying a question/blockage/deadline.
  *   residue   — a directed teammate message with no explicit signal; the model
- *               makes the call (would Chris regret seeing it an hour later?).
- *   drop      — not directed at Chris, or not from a teammate, with no ask;
+ *               makes the call (would the owner regret seeing it an hour later?).
+ *   drop      — not directed at the owner, or not from a teammate, with no ask;
  *               never an interrupt, never a near-miss (pure noise).
  */
 export type UrgencyTier = 'emergency' | 'urgent' | 'residue' | 'drop';

@@ -5,7 +5,7 @@
 
 /**
  * The typed event classes detected over each new message window. `correction`
- * is the highest-value class (Chris correcting the assistant's work or facts).
+ * is the highest-value class (the owner correcting the assistant's work or facts).
  */
 export const CLASSIFICATION_EVENT_TYPES = [
   'correction',

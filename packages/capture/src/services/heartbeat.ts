@@ -9,7 +9,7 @@
  *
  * Merge-time wire-up: once both branches are merged, verify the dispatcher
  * exposes `fastify.heartbeat` (or adapt this helper to its actual API) so
- * `capture-classification` staleness pages Chris per the
+ * `capture-classification` staleness pages the owner per the
  * every-pipeline-has-a-watermark principle.
  */
 

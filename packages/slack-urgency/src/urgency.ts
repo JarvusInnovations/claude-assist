@@ -6,7 +6,7 @@
  * per message — is this a directed ask from a teammate, and does it carry a
  * signal that it can't wait? — and assigns a tier. Anything it can't decide
  * confidently (a directed teammate message with no explicit signal) it hands to
- * the model as `residue`; everything not directed at Chris, or not from a
+ * the model as `residue`; everything not directed at the owner, or not from a
  * teammate with an ask, is `drop` (never an interrupt, never even a near-miss).
  *
  * The regexes are deliberately conservative on the promote-to-urgent side and
@@ -25,7 +25,7 @@ const EMERGENCY_RE =
 const QUESTION_RE =
   /\?|\b(can|could|would|will)\s+you\b|\bcan\s+u\b|\blet\s+me\s+know\b|\bthoughts\?*\b|\bwhat\s+do\s+you\s+think\b|\bneed\s+(your|you\s+to)\b/i;
 
-/** Blockage — someone is stuck on Chris. */
+/** Blockage — someone is stuck on the owner. */
 const BLOCKAGE_RE =
   /\b(blocked|blocker|stuck|waiting\s+on\s+you|waiting\s+for\s+you|can'?t\s+(proceed|move|continue|start)|cannot\s+proceed|held\s+up|holding\s+(us|me)\s+up|depends\s+on\s+you|need\s+this\s+from\s+you|on\s+hold)\b/i;
 
@@ -35,9 +35,9 @@ const DEADLINE_RE =
 
 export interface DeterministicInput {
   candidate: SlackCandidate;
-  /** true when the message is a DM to Chris (im/mpim). */
+  /** true when the message is a DM to the owner (im/mpim). */
   isDirectMessage: boolean;
-  /** true when the channel message @mentions Chris. */
+  /** true when the channel message @mentions the owner. */
   mentionsOwner: boolean;
   /** true when the sender is a known teammate (roster). */
   senderIsTeam: boolean;
@@ -75,13 +75,13 @@ export function classifyDeterministic(input: DeterministicInput): DeterministicR
 
   const gist = summarize(text);
 
-  // Not directed at Chris at all → pure noise. Channel chatter never interrupts.
+  // Not directed at the owner at all → pure noise. Channel chatter never interrupts.
   if (!directed) {
     return { tier: 'drop', signals, gist };
   }
 
   // Emergency tier: explicit emergency language from a teammate, directed at
-  // Chris. This is the only path that overrides quiet hours (gated downstream).
+  // the owner. This is the only path that overrides quiet hours (gated downstream).
   if (senderIsTeam && hasEmergency) {
     return { tier: 'emergency', signals, gist };
   }
@@ -101,9 +101,9 @@ export function classifyDeterministic(input: DeterministicInput): DeterministicR
     return { tier: 'residue', signals, gist };
   }
 
-  // Directed at Chris but NOT from a known teammate. A concrete ask (@mention
+  // Directed at the owner but NOT from a known teammate. A concrete ask (@mention
   // with a direct question/blockage/deadline) is worth a model look; otherwise
-  // it's cold/irrelevant → drop. A positive correction weight (Chris flagged
+  // it's cold/irrelevant → drop. A positive correction weight (the owner flagged
   // this sender/channel as interrupt-worthy) can lift a bare mention to residue.
   if (hasAsk || weight >= PROMOTE_AT) {
     return { tier: 'residue', signals, gist };

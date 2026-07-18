@@ -27,7 +27,7 @@ function mkCommitment(over: Partial<OpenCommitment>): OpenCommitment {
     slug: 's',
     title: 'Do a thing',
     dueDate: null,
-    assignee: 'Chris',
+    assignee: 'the owner',
     madeTo: 'Client',
     firmness: 'soft',
     overdue: false,

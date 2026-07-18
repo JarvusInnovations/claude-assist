@@ -202,9 +202,9 @@ const schema = {
     // Disable the scheduled derivation (direct writes + queries still work).
     LEDGER_DISABLE_DERIVE: { type: 'boolean', default: false },
 
-    // Slack urgency module (read-only urgency listener over Chris's Slack)
+    // Slack urgency module (read-only urgency listener over the owner's Slack)
     ENABLE_SLACK_URGENCY: { type: 'boolean', default: false },
-    // User token (xoxp-…) — reads AS Chris (same token slack-axi stores).
+    // User token (xoxp-…) — reads AS the owner (same token slack-axi stores).
     SLACK_URGENCY_USER_TOKEN: { type: 'string' },
     // Team roster: CSV/newline `U0123=Julia Stone` pairs. Owner id reuses SLACK_OWNER_USER_ID.
     SLACK_URGENCY_ROSTER: { type: 'string' },

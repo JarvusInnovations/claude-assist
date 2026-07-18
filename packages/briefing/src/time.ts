@@ -1,7 +1,7 @@
 /**
  * Timezone helpers. The claude-assist server runs in UTC (the notify staleness
  * cron `0 13 * * *` is commented "~09:00 ET"), so "today" and day boundaries
- * must be computed explicitly in Chris's zone rather than read off the machine
+ * must be computed explicitly in the owner's zone rather than read off the machine
  * clock. Pure Intl — no dependency.
  */
 

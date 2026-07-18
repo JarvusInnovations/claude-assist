@@ -8,7 +8,7 @@ describe('parseClassificationEvents', () => {
   it('parses a valid <events> array with all fields', () => {
     const text = `<events>
 [
-  { "type": "correction", "summary": "Chris fixed the branch name", "confidence": 0.9, "quote": "no, it's develop" },
+  { "type": "correction", "summary": "the owner fixed the branch name", "confidence": 0.9, "quote": "no, it's develop" },
   { "type": "friction", "summary": "tofu apply failed 3x", "confidence": 0.7, "quote": "error again" }
 ]
 </events>`;

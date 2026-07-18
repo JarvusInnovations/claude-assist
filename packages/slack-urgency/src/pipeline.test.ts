@@ -104,7 +104,7 @@ describe('UrgencyPipeline — earned interrupts', () => {
 });
 
 describe('UrgencyPipeline — boundaries (never interrupt)', () => {
-  it("suppresses Chris's own message", async () => {
+  it("suppresses the owner's own message", async () => {
     const { notifier, pipeline } = makePipeline();
     const d = await pipeline.process(candidate({ sender: OWNER, text: 'note to self' }), DM_CTX, DAY);
     expect(d.verdict).toBe('suppressed');
@@ -118,7 +118,7 @@ describe('UrgencyPipeline — boundaries (never interrupt)', () => {
     expect(notifier.fires).toHaveLength(0);
   });
 
-  it('suppresses a message Chris has already replied to after', async () => {
+  it('suppresses a message the owner has already replied to after', async () => {
     const { notifier, pipeline } = makePipeline();
     const d = await pipeline.process(
       candidate({ text: 'can you review this by EOD?' }),
@@ -213,7 +213,7 @@ describe('UrgencyPipeline — corrections change future classification', () => {
     );
     expect(before.verdict).toBe('interrupt');
 
-    // Chris corrects: this shouldn't have interrupted (two nudges past threshold).
+    // the owner corrects: this shouldn't have interrupted (two nudges past threshold).
     await store.adjustWeight('sender', TEAM, -0.5);
     await store.adjustWeight('sender', TEAM, -0.75);
 

@@ -3,8 +3,8 @@
  * one wrist-reaching interrupt.
  *
  * Order of operations, each a place the interrupt bar is defended:
- *   1. Boundaries — never interrupt for a message Chris sent, a bot message, or
- *      a message Chris has already replied to after (the poll interval makes the
+ *   1. Boundaries — never interrupt for a message the owner sent, a bot message, or
+ *      a message the owner has already replied to after (the poll interval makes the
  *      "already replied" check feasible and it kills the most annoying false
  *      positive).
  *   2. Deterministic tier (urgency.ts) — drop pure noise cheaply; promote clear
@@ -41,14 +41,14 @@ export interface PermalinkResolver {
 export interface EvalContext {
   isDirectMessage: boolean;
   mentionsOwner: boolean;
-  /** A later message in the same thread was sent by Chris → he's handled it. */
+  /** A later message in the same thread was sent by the owner → he's handled it. */
   ownerRepliedAfter: boolean;
   /** Preceding thread lines (oldest → newest) for the model's context. */
   threadContext: ThreadContextLine[];
 }
 
 export interface PipelineConfig {
-  /** Slack user id of Chris. Messages from this id never interrupt. */
+  /** Slack user id of the owner. Messages from this id never interrupt. */
   ownerId: string;
   quietHours: QuietHoursConfig;
   /** Per-thread interrupt cooldown in ms (default 30 min). */

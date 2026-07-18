@@ -37,7 +37,7 @@ describe('deterministic noise classes fire nothing', () => {
     expect(c.reason).toBe('all-day');
   });
 
-  it('declined by Chris', () => {
+  it('declined by the owner', () => {
     const c = classifyEvent(mkEvent({ myResponse: 'declined' }));
     expect(c.joinRequired).toBe(false);
     expect(c.reason).toBe('declined');

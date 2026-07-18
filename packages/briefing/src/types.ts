@@ -6,7 +6,7 @@
  * lists the day's alert plan so misclassifications are visible before they bite.
  */
 
-/** Chris's attendee response, straight from gws-axi's `my_response` column. */
+/** the owner's attendee response, straight from gws-axi's `my_response` column. */
 export type ResponseStatus =
   | '' // self-organized / no attendee list
   | 'accepted'
@@ -32,9 +32,9 @@ export interface CalendarEvent {
   allDay: boolean;
   /** Epoch ms of start, or null when unparseable. */
   startMs: number | null;
-  /** Chris's response on this event. */
+  /** the owner's response on this event. */
   myResponse: ResponseStatus;
-  /** Total attendees incl. Chris (0 when no attendee list). */
+  /** Total attendees incl. the owner (0 when no attendee list). */
   attendeeCount: number;
   /** Physical location, if any (may hold a conferencing URL — see hasUrl). */
   location: string;

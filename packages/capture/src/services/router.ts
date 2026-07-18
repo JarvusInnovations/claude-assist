@@ -5,7 +5,7 @@
  * it against a registry of executors at route time. Contract:
  *
  * - `hold` executors never write anywhere — the row parks in
- *   awaiting_review for Chris's explicit judgment (the firewall's
+ *   awaiting_review for the owner's explicit judgment (the firewall's
  *   capture-side enforcement: actionable/team_relevant NEVER auto-write).
  * - `write` executors move a row to `routed` only after the destination
  *   write succeeds; failures bump route_attempts and are retried by the

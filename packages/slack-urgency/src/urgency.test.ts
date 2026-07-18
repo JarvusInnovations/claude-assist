@@ -86,7 +86,7 @@ describe('classifyDeterministic — the model residue (ambiguous middle)', () =>
 });
 
 describe('classifyDeterministic — negatives (never interrupt)', () => {
-  it('channel chatter that does not mention Chris → drop', () => {
+  it('channel chatter that does not mention the owner → drop', () => {
     const r = classifyDeterministic(
       input('lunch anyone?', {
         candidate: candidate('lunch anyone?', { channelType: 'channel' }),

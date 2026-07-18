@@ -7,7 +7,7 @@ export const EMAILS_HELP = `gmail-axi emails [flags]
 
   Search and filter synced emails, most recent first.
 
-  --account ID      filter to one account (its identifier, e.g. chris)
+  --account ID      filter to one account (its identifier, e.g. owner)
   --status STATUS   workflow status: discovered | new | triaged
   --type a,b        analysis message_type(s), comma-separated (e.g. newsletter,alert)
   --search TEXT     full-text search over subject/body

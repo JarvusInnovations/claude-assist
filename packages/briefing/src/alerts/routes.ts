@@ -8,7 +8,7 @@
  *
  * The override endpoint is the "editable via a small endpoint" correction path;
  * the alert-plan endpoint backs the daily briefing's will-alert-today list and
- * lets Chris (or a review page) preview classification before it bites.
+ * lets the owner (or a review page) preview classification before it bites.
  */
 
 import type { FastifyPluginAsync } from 'fastify';

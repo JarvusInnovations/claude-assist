@@ -1,7 +1,7 @@
 /**
  * Captures-awaiting-review count for the briefing, read from the capture
  * module's table (claude-assist Postgres). These are the actionable /
- * team-relevant captures parked for Chris's explicit synthesis (the firewall
+ * team-relevant captures parked for the owner's explicit synthesis (the firewall
  * never auto-routes them). Degrades to omission if the capture schema is absent.
  */
 

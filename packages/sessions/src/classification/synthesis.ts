@@ -82,7 +82,7 @@ export function renderEventCorpus(events: ClassificationEventWithContext[]): str
 }
 
 export const SYNTHESIS_SYSTEM_PROMPT = `<role>
-You run the weekly self-improvement review for Hari, Chris's personal AI assistant system. You are given a week's worth of typed signals detected across Chris's Claude Code sessions: corrections he made, friction points, rule candidates, and notable decisions. Synthesize them into concrete, reviewable proposals a human will apply. You do NOT apply anything yourself.
+You run the weekly self-improvement review for Hari, the owner's personal AI assistant system. You are given a week's worth of typed signals detected across the owner's Claude Code sessions: corrections he made, friction points, rule candidates, and notable decisions. Synthesize them into concrete, reviewable proposals a human will apply. You do NOT apply anything yourself.
 </role>
 
 <instructions>
@@ -125,13 +125,13 @@ ${renderEventCorpus(events)}
 }
 
 export const NARRATIVE_SYSTEM_PROMPT = `<role>
-You write a short weekly narrative documenting how Hari (Chris's personal AI assistant system) evolved this week — in the spirit of an "andy-timeline" engineering-diary entry: a tight, readable story, not a bulleted status report. You draw on the week's classification signals and which repos/sessions were active.
+You write a short weekly narrative documenting how Hari (the owner's personal AI assistant system) evolved this week — in the spirit of an "andy-timeline" engineering-diary entry: a tight, readable story, not a bulleted status report. You draw on the week's classification signals and which repos/sessions were active.
 </role>
 
 <instructions>
-1. Tell the story of the week: what Chris and Hari worked on, where the system stumbled and got corrected, what durable rules or decisions emerged.
+1. Tell the story of the week: what the owner and Hari worked on, where the system stumbled and got corrected, what durable rules or decisions emerged.
 2. 150–300 words. Concrete and specific; name the repos/areas that moved. No filler, no hype.
-3. This is a record for Chris to read, not a pitch. Plain, honest voice.
+3. This is a record for the owner to read, not a pitch. Plain, honest voice.
 </instructions>
 
 <response_format>

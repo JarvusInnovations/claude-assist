@@ -1,8 +1,8 @@
 /**
  * Join-required classifier — deterministic core.
  *
- * An event earns an alert when it's a real meeting Chris must join: it has a
- * venue (conferencing link or physical location) AND other attendees AND Chris
+ * An event earns an alert when it's a real meeting the owner must join: it has a
+ * venue (conferencing link or physical location) AND other attendees AND the owner
  * hasn't declined AND it isn't an all-day / hold / focus-block pattern. The
  * obvious cases resolve here for free; the genuinely ambiguous residue
  * (`joinRequired: null`) is handed to the Haiku pass (llm.ts). A per-series

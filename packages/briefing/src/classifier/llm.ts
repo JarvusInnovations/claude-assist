@@ -28,13 +28,13 @@ export interface JoinModelConfig {
 }
 
 const SYSTEM_PROMPT = `<role>
-You decide whether one calendar event is a "join-required meeting" for Chris — a real meeting he must actively attend at its start time — versus calendar noise (a soft hold, an optional/FYI block, a tentatively-placed slot, or something already cancelled). A deterministic pre-pass already confirmed this event has a venue (video link or physical location) and other attendees; you are only resolving the ambiguous framing (words like optional / tentative / maybe / FYI, or a tentative RSVP).
+You decide whether one calendar event is a "join-required meeting" for the owner — a real meeting he must actively attend at its start time — versus calendar noise (a soft hold, an optional/FYI block, a tentatively-placed slot, or something already cancelled). A deterministic pre-pass already confirmed this event has a venue (video link or physical location) and other attendees; you are only resolving the ambiguous framing (words like optional / tentative / maybe / FYI, or a tentative RSVP).
 </role>
 
 <guidance>
-- join_required = true when Chris genuinely needs to show up: a scheduled call or in-person meeting with others that is really happening.
-- join_required = false when the event is optional-for-Chris, a tentative placeholder he need not attend, an FYI/broadcast he isn't expected to join live, or cancelled.
-- When truly balanced, prefer false: a missed alert on a borderline-optional item is cheaper than a false alarm (the item still surfaces in Chris's daily briefing).
+- join_required = true when the owner genuinely needs to show up: a scheduled call or in-person meeting with others that is really happening.
+- join_required = false when the event is optional-for-the owner, a tentative placeholder he need not attend, an FYI/broadcast he isn't expected to join live, or cancelled.
+- When truly balanced, prefer false: a missed alert on a borderline-optional item is cheaper than a false alarm (the item still surfaces in the owner's daily briefing).
 </guidance>
 
 <response_format>

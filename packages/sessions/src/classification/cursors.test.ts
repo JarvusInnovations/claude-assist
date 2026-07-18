@@ -126,7 +126,7 @@ function sessionRow(overrides: Partial<SessionForClassification> = {}): SessionF
 
 describe('ClassificationService.classifyOne (via classifyBatch)', () => {
   const detected: DetectedEvent[] = [
-    { type: 'correction', summary: 'Chris corrected the approach', confidence: 0.9, quote: 'no, do it this way' },
+    { type: 'correction', summary: 'the owner corrected the approach', confidence: 0.9, quote: 'no, do it this way' },
   ];
 
   it('classifies a fresh session, appends events, and advances the cursor to seqEnd', async () => {
@@ -185,7 +185,7 @@ describe('ClassificationService.classifyOne (via classifyBatch)', () => {
 });
 
 // ── Resumed old sessions ─────────────────────────────────────────────────────
-// Chris routinely resumes sessions long after they went quiet (e.g. the
+// the owner routinely resumes sessions long after they went quiet (e.g. the
 // invoicing session a month later). A session that was already final-passed
 // (cursor at seq 3, final_pass_done=true) must classify its resumed segment
 // fully — both a large delta and a small tail flushed by the next quiet pass —

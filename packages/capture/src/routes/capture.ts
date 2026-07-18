@@ -131,7 +131,7 @@ export const registerCaptureRoutes: FastifyPluginAsync<CaptureRoutesConfig> = as
     return capture;
   });
 
-  // POST /capture/:ulid/correct - Chris overrides the classified type; the
+  // POST /capture/:ulid/correct - the owner overrides the classified type; the
   // capture re-routes to the corrected destination immediately. Corrections
   // are recorded (classifier: 'correction') as tuning signal.
   fastify.post<{ Params: { ulid: string }; Body: { type: CaptureType } }>(

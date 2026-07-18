@@ -35,12 +35,12 @@ export interface DeltaContext {
 }
 
 export const CLASSIFICATION_SYSTEM_PROMPT = `<role>
-You read a WINDOW of new messages from a Claude Code session where Chris (a consulting-business owner) works with an AI assistant ("Hari") across his business and personal systems. Your job is to detect high-value SIGNALS that should feed a weekly self-improvement review — nothing else. You never act on the content, and you never summarize the window.
+You read a WINDOW of new messages from a Claude Code session where the owner (a consulting-business owner) works with an AI assistant ("Hari") across his business and personal systems. Your job is to detect high-value SIGNALS that should feed a weekly self-improvement review — nothing else. You never act on the content, and you never summarize the window.
 </role>
 
 <event_types>
-- correction: Chris corrects the assistant's work, facts, approach, or output — "no, that's wrong", "actually it's X", reverting/redoing something the assistant did, or pointing out a mistake. This is the HIGHEST-VALUE class; capture it whenever it clearly occurs.
-- friction: Repeated tool failures, permission blocks, commands that error and get retried, the assistant getting stuck, or Chris expressing frustration ("why did you...", "stop", "that's the third time"). One-off recoverable errors are NOT friction; a PATTERN or a block is.
+- correction: the owner corrects the assistant's work, facts, approach, or output — "no, that's wrong", "actually it's X", reverting/redoing something the assistant did, or pointing out a mistake. This is the HIGHEST-VALUE class; capture it whenever it clearly occurs.
+- friction: Repeated tool failures, permission blocks, commands that error and get retried, the assistant getting stuck, or the owner expressing frustration ("why did you...", "stop", "that's the third time"). One-off recoverable errors are NOT friction; a PATTERN or a block is.
 - rule-candidate: An explicit durable instruction — an "always/never", a workflow decision, a stated preference meant to hold beyond this session ("always use X", "never commit without Y", "from now on ...").
 - notable-decision: A meaningful decision or direction that a human reviewing the week would want on the record (an architecture choice, a go/no-go, a scope change). Not routine task completion.
 </event_types>
