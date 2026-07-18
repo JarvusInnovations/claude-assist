@@ -241,28 +241,81 @@ export class KitchenPipeline {
     }
 
     const name = nameOverride?.trim() || entry.label || entry.note || 'Promoted recipe';
-    // v1 simplification: a promoted recipe is a single synthetic component
-    // whose per-100g reference is the entry's own resolved macros (the
-    // entry's portion is treated as the 100g reference — a ballpark, per
-    // the module's "ballpark now beats precision later" principle). A
-    // richer promotion (reusing the original recipe's real components when
-    // the entry itself was recipe-computed) is left for a later pass — see
-    // plans/kitchen-module.md.
-    const component: RecipeComponent = {
-      label: name,
-      default_qty_g: 100,
-      per_100g: {
-        calories: entry.calories ?? 0,
-        protein_g: entry.protein_g ?? 0,
-        sat_fat_g: entry.sat_fat_g ?? 0,
+    // When the entry was itself logged from a component-bearing recipe,
+    // reconstruct the REAL component list (labels + per-100g bases from the
+    // source recipe, the logged quantities as the new defaults) so the
+    // promoted recipe stays quantity-adjustable on future re-logs. When
+    // that can't be done truthfully (see reconstructComponents), fall back
+    // to a single synthetic component whose per-100g reference is the
+    // entry's own resolved macros (the entry's portion is treated as the
+    // 100g reference — a ballpark, per the module's "ballpark now beats
+    // precision later" principle).
+    const components = (await this.reconstructComponents(entry)) ?? [
+      {
+        label: name,
+        default_qty_g: 100,
+        per_100g: {
+          calories: entry.calories ?? 0,
+          protein_g: entry.protein_g ?? 0,
+          sat_fat_g: entry.sat_fat_g ?? 0,
+        },
       },
-    };
+    ];
     return this.recipes.insert({
       ulid: generateUlid(),
       name,
-      components: [component],
+      components,
       source: 'promoted',
     });
+  }
+
+  /**
+   * Rebuild the source recipe's real component list for a promoted entry.
+   * Mirrors computeRecipeMacros's join semantics: every source component
+   * contributed to the entry's macros — at the logged quantity when one was
+   * recorded, at the source default otherwise — so every source component
+   * is carried, with the logged quantity_g becoming the new default_qty_g.
+   *
+   * Returns null (caller falls back to the synthetic-total component) when
+   * reconstruction wouldn't be truthful to the entry's resolved macros:
+   * - the entry wasn't recipe-computed (`source` !== 'reselect' — notably a
+   *   manual override is terminal, and the source recipe's components no
+   *   longer describe the corrected totals), or carries no recipe_ulid /
+   *   component_quantities;
+   * - the source recipe is gone (deleted DB row, or a sheet recipe that no
+   *   longer resolves) or has no components;
+   * - a logged quantity's label matches no source component. We can't
+   *   distinguish a stray quantity (which contributed nothing at ingest —
+   *   skipping it would be harmless) from source-recipe drift (the
+   *   component was renamed/removed after ingest, so it DID contribute —
+   *   skipping it would silently understate the meal). Under drift the
+   *   surviving labels' bases may be stale too, so the whole
+   *   reconstruction is abandoned: the synthetic-total fallback equals the
+   *   entry's resolved macros by construction, which is the truthful floor.
+   */
+  private async reconstructComponents(entry: EntryRecord): Promise<RecipeComponent[] | null> {
+    const quantities = entry.component_quantities;
+    if (entry.source !== 'reselect' || !entry.recipe_ulid || !quantities || quantities.length === 0) {
+      return null;
+    }
+
+    // Same resolution order as ingest: DB row first, then the read-through
+    // sheet projection.
+    const recipe =
+      (await this.recipes.get(entry.recipe_ulid)) ??
+      (await this.readSheetRecipes()).find((r) => r.ulid === entry.recipe_ulid) ??
+      null;
+    if (!recipe || recipe.components.length === 0) return null;
+
+    const sourceLabels = new Set(recipe.components.map((c) => c.label));
+    if (quantities.some((q) => !sourceLabels.has(q.label))) return null;
+
+    const qtyByLabel = new Map(quantities.map((q) => [q.label, q.quantity_g]));
+    return recipe.components.map((component) => ({
+      label: component.label,
+      default_qty_g: qtyByLabel.get(component.label) ?? component.default_qty_g,
+      per_100g: { ...component.per_100g },
+    }));
   }
 
   /** GET /reselect: recipes (sheet + pushed + promoted) merged with recent/frequent logged items. */
