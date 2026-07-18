@@ -1,10 +1,10 @@
-# Module: Diet & Kitchen
+# Module: Kitchen
 
 A generic consumption-journal and kitchen-inventory module for an individual
 agent's instance. Sibling of the capture module — same structural idioms
 (ULID-keyed idempotent upserts, status-as-work-queue, store interface with
 pg/memory implementations, sweep worker, Fastify routes) — with its own tables
-and its own `/api/diet/*` surface. Single-user by design: the module serves the
+and its own `/api/kitchen/*` surface. Single-user by design: the module serves the
 instance owner and exposes no sharing or multi-user surfaces.
 
 Phase 1 covers consumption entries, estimation, and recipes. Phase 2 (inventory:
@@ -52,7 +52,7 @@ The module reads a meal-bank gitsheet owned by the instance's own repo:
 
 ## API
 
-All endpoints under `/api/diet`. Error envelope and auth follow the server's
+All endpoints under `/api/kitchen`. Error envelope and auth follow the server's
 existing conventions.
 
 - `POST /entries` — multipart: entry JSON part (ULID, timestamp, note,
@@ -85,7 +85,7 @@ existing conventions.
 
 ## Integration seams
 
-- **Ambient remarks**: the capture module's classifier gains a `diet_event`
+- **Ambient remarks**: the capture module's classifier gains a `kitchen_event`
   type; its executor hands remark text to this module's event resolver
   (phase 2). Deliberate diet actions never route through the classifier.
 - **Renderings**: briefing/review sources read the module's rollup queries
