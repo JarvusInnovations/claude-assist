@@ -116,7 +116,12 @@ export class KitchenPipeline {
     const newEntry = normalizeNewEntry(input);
 
     if (input.recipe_ulid) {
-      const recipe = await this.recipes.get(input.recipe_ulid);
+      // Sheet-sourced recipes are read-through projections (deterministic
+      // seeded ULIDs, no DB row) — resolve DB first, then the sheet.
+      const recipe =
+        (await this.recipes.get(input.recipe_ulid)) ??
+        (await this.readSheetRecipes()).find((r) => r.ulid === input.recipe_ulid) ??
+        null;
       if (!recipe) throw new RecipeNotFoundError(input.recipe_ulid);
 
       const { record, created } = await this.entries.insertIfAbsent(newEntry);
