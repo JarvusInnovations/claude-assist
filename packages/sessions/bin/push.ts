@@ -23,7 +23,7 @@ Usage:
   bunx @jarvus/claude-assist-sessions push --machine <id> [options]
 
 Options:
-  -m, --machine <id>     Machine identifier (required, e.g., "laptop", "devbox")
+  -m, --machine <id>     Machine identifier (required, e.g., "laptop", "server")
   -s, --server <url>     Server URL (default: http://localhost:2529)
   --claude-dir <path>    Claude directory (default: ~/.claude)
   --dry-run              Scan but don't push
@@ -33,7 +33,7 @@ Options:
 
 Examples:
   bunx @jarvus/claude-assist-sessions push --machine laptop
-  bunx @jarvus/claude-assist-sessions push -m devbox -s https://my-server.com
+  bunx @jarvus/claude-assist-sessions push -m server -s https://my-server.com
   bunx @jarvus/claude-assist-sessions push -m laptop --dry-run -v
 `);
   process.exit(values.help ? 0 : 1);

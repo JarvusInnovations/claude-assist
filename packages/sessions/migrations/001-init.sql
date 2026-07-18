@@ -3,7 +3,7 @@
 
 CREATE SCHEMA IF NOT EXISTS sessions;
 
--- Track source machines (localhost, laptop, devbox, etc.)
+-- Track source machines (localhost, laptop, server, etc.)
 CREATE TABLE sessions.machines (
     id SERIAL PRIMARY KEY,
     machine_id VARCHAR(255) UNIQUE NOT NULL,

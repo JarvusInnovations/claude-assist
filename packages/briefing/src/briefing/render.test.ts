@@ -50,7 +50,7 @@ function sampleBriefing(over: Partial<Briefing> = {}): Briefing {
     },
     commitments: {
       overdue: [
-        { slug: 'a', title: 'Send quote', dueDate: '2026-07-01', assignee: 'the owner', madeTo: 'SEPTA', firmness: 'soft', overdue: true, dueToday: false },
+        { slug: 'a', title: 'Send quote', dueDate: '2026-07-01', assignee: 'the owner', madeTo: 'Acme Transit', firmness: 'soft', overdue: true, dueToday: false },
       ],
       dueToday: [],
       upcomingCount: 2,

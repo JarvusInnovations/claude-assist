@@ -1,6 +1,6 @@
 /**
  * Tana inbox executor: files stray thoughts into the Tana capture inbox
- * via the tana-local MCP server (devbox 127.0.0.1:8262).
+ * via the tana-local MCP server (e.g. http://127.0.0.1:8262/mcp).
  *
  * The workspace's inbox node has the deterministic id
  * `{workspaceId}_CAPTURE_INBOX`; writes use the `import_tana_paste` tool

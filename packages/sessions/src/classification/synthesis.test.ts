@@ -18,10 +18,10 @@ function event(
     event_type: 'correction',
     summary: 'the owner corrected the deploy target',
     confidence: 0.9,
-    quote: 'no, deploy to devbox not prod',
+    quote: 'no, deploy to staging not prod',
     model: 'claude-haiku-4-5',
     created_at: new Date('2026-07-05T12:00:00Z'),
-    project_path: '/home/chris/claude-assist',
+    project_path: '/home/user/claude-assist',
     git_branch: 'main',
     title: 'deploy work',
     ...over,
@@ -33,7 +33,7 @@ const FIXTURE: ClassificationEventWithContext[] = [
   event({ id: '2', event_type: 'friction', summary: 'tofu apply blocked on lock', confidence: 0.7, quote: 'still locked' }),
   event({ id: '3', event_type: 'friction', summary: 'permission prompt loop', confidence: 0.6, quote: null }),
   event({ id: '4', event_type: 'rule-candidate', summary: 'always use -concise on tofu', confidence: 0.95, quote: 'always add -concise' }),
-  event({ id: '5', event_type: 'notable-decision', summary: 'chose per-session cursors', confidence: 0.8, quote: null, project_path: '/home/chris/Hari' }),
+  event({ id: '5', event_type: 'notable-decision', summary: 'chose per-session cursors', confidence: 0.8, quote: null, project_path: '/home/user/agent-repo' }),
 ];
 
 describe('lastWeekPeriod', () => {
@@ -59,7 +59,7 @@ describe('renderEventCorpus', () => {
     expect(idxRule).toBeLessThan(idxDec);
     // Project basename label + verbatim quote surface.
     expect(rendered).toContain('[claude-assist]');
-    expect(rendered).toContain('no, deploy to devbox not prod');
+    expect(rendered).toContain('no, deploy to staging not prod');
   });
 
   it('handles an empty corpus', () => {
@@ -82,7 +82,7 @@ describe('buildNarrativePrompt', () => {
   const active: ActiveSessionSummary[] = [
     {
       id: 's1',
-      project_path: '/home/chris/claude-assist',
+      project_path: '/home/user/claude-assist',
       title: 'deploy work',
       session_name: null,
       started_at: new Date('2026-07-05T10:00:00Z'),

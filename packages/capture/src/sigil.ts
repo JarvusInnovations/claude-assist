@@ -1,7 +1,7 @@
 /**
  * Slack capture sigil.
  *
- * A Hari-DM message starting with `+ ` (plus, whitespace) is a capture, not
+ * A direct-message to the assistant starting with `+ ` (plus, whitespace) is a capture, not
  * a conversation: it gets POSTed to /api/capture with source=slack instead
  * of spawning an agent session. `+` was chosen over `.c` because it reads
  * as "add this" and never collides with prose — the required whitespace

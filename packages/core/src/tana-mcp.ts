@@ -4,7 +4,7 @@
  * Lives in core so any module (capture's inbox executor, the briefing's day-node
  * render) shares one verified client instead of maintaining a second copy.
  *
- * Protocol notes (verified against the running server on devbox:8262):
+ * Protocol notes (verified against a running tana-local server):
  * - Auth: `Authorization: Bearer <PAT>` (401 with OAuth metadata otherwise)
  * - Transport: single POST endpoint, JSON-RPC 2.0 bodies
  * - The server replies with `application/json` bodies and does NOT issue an

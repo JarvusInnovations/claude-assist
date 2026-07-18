@@ -82,9 +82,9 @@ describe('derivePlanFromAnalysis', () => {
   });
 
   it('respects a custom label prefix', () => {
-    const plan = derivePlanFromAnalysis(analysis(), null, { ai: 'Hari', todo: 'DO' });
-    expect(plan.plannedLabels).toContain('Hari/Triaged');
-    expect(plan.plannedLabels).toContain('Hari/Type/Newsletter');
+    const plan = derivePlanFromAnalysis(analysis(), null, { ai: 'Assistant', todo: 'DO' });
+    expect(plan.plannedLabels).toContain('Assistant/Triaged');
+    expect(plan.plannedLabels).toContain('Assistant/Type/Newsletter');
   });
 });
 

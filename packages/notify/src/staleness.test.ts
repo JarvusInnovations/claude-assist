@@ -161,7 +161,7 @@ describe('evaluateDiskHealth', () => {
     expect(r.alert).toBe(false);
   });
 
-  it('alerts on the absolute byte floor (the devbox 12MB-free case)', () => {
+  it('alerts on the absolute byte floor (the 12MB-free host case)', () => {
     const r = evaluateDiskHealth({
       freeBytes: 12 * 1024 * 1024, // 12 MiB
       totalBytes: 500 * GIB,

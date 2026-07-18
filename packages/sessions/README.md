@@ -231,7 +231,7 @@ all in `src/classification/`:
 3. **Weekly synthesis + narrative** (`synthesis_reports`). Once a week a stronger
    model (Sonnet) digests the events into a structured report — proposed
    memory/rule/hook/skill/spec changes and ranked friction hotspots — plus an
-   andy-timeline-style narrative of how the system evolved. Both are persisted
+   dev-diary-style narrative of how the system evolved. Both are persisted
    **and** delivered via the notify digest.
 
 The scheduled sweep beats a `session-classification` heartbeat; the weekly job

@@ -66,7 +66,7 @@ export class SessionScanner {
 
   /**
    * Translate a path from the original location to the current claudeDir
-   * This handles Docker path mapping (e.g., /Users/chris/.claude -> /root/.claude)
+   * This handles Docker path mapping (e.g., /Users/<user>/.claude -> /root/.claude)
    */
   private translatePath(originalPath: string): string {
     if (!this.originalClaudeDir) {

@@ -10,7 +10,7 @@
  *
  * FIREWALL: this module has NO HQ write path — team-relevant material only
  * ever parks in awaiting_review for the owner's explicit synthesis
- * (Hari specs/behaviors/personal-team-firewall.md).
+ * (per the owner's private personal↔team firewall spec).
  */
 
 import type { FastifyInstance } from 'fastify';
