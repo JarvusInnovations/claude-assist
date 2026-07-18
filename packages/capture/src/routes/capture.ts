@@ -13,6 +13,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import type { CaptureInput, CaptureStatus, CaptureType } from '../types.js';
 import { CAPTURE_SOURCES, CAPTURE_TYPES } from '../types.js';
 import { ULID_PATTERN } from '../ulid.js';
+import { InvalidTransitionError } from '../state.js';
 import type { CapturePipeline } from '../services/pipeline.js';
 import type { ReferenceStore } from '../store.js';
 
@@ -79,7 +80,7 @@ export const registerCaptureRoutes: FastifyPluginAsync<CaptureRoutesConfig> = as
           properties: {
             status: {
               type: 'string',
-              enum: ['queued', 'classified', 'awaiting_executor', 'awaiting_review', 'routed'],
+              enum: ['queued', 'classified', 'awaiting_executor', 'awaiting_review', 'routed', 'resolved'],
             },
             limit: { type: 'string', pattern: '^[0-9]+$' },
             offset: { type: 'string', pattern: '^[0-9]+$' },
@@ -159,6 +160,40 @@ export const registerCaptureRoutes: FastifyPluginAsync<CaptureRoutesConfig> = as
       }
       const updated = await pipeline.correct(request.params.ulid, request.body.type);
       return updated;
+    }
+  );
+
+  fastify.post<{ Params: { ulid: string }; Body: { resolution?: string } }>(
+    '/capture/:ulid/resolve',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            resolution: { type: 'string', maxLength: 2000 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      try {
+        const updated = await pipeline.resolve(
+          request.params.ulid,
+          request.body?.resolution ?? null
+        );
+        if (!updated) {
+          reply.status(404);
+          return { error: 'Capture not found' };
+        }
+        return updated;
+      } catch (err) {
+        if (err instanceof InvalidTransitionError) {
+          reply.status(409);
+          return { error: err.message };
+        }
+        throw err;
+      }
     }
   );
 };

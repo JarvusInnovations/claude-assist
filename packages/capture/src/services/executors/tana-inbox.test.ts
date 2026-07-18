@@ -23,6 +23,8 @@ function makeCapture(overrides: Partial<CaptureRecord> = {}): CaptureRecord {
     route_result: null,
     last_error: null,
     last_error_at: null,
+  resolution: null,
+  resolved_at: null,
     ...overrides,
   };
 }

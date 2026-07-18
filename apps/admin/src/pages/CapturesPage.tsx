@@ -40,6 +40,7 @@ const STATUSES: CaptureStatus[] = [
   "awaiting_review",
   "awaiting_executor",
   "routed",
+  "resolved",
 ];
 
 const CAPTURE_TYPES: CaptureType[] = [
@@ -58,6 +59,7 @@ const STATUS_VARIANT: Record<
   awaiting_review: "outline",
   awaiting_executor: "outline",
   routed: "secondary",
+  resolved: "secondary",
 };
 
 function fmt(dt: string | null): string {

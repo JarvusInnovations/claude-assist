@@ -33,7 +33,8 @@ export type CaptureStatus =
   | 'classified'
   | 'awaiting_executor'
   | 'awaiting_review'
-  | 'routed';
+  | 'routed'
+  | 'resolved';
 
 /** Metadata fetched for a captured URL */
 export interface LinkMetadata {
@@ -95,6 +96,8 @@ export interface CaptureRecord {
   route_result: Record<string, unknown> | null;
   last_error: string | null;
   last_error_at: Date | null;
+  resolution: string | null;
+  resolved_at: Date | null;
 }
 
 /** A row in capture.references */

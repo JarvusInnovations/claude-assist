@@ -39,7 +39,9 @@ export type CaptureEvent =
   /** No executor registered for the destination (e.g. Tana unconfigured) */
   | { kind: 'no_executor' }
   /** Chris corrected the type; capture re-enters routing with a new destination */
-  | { kind: 'corrected'; destination: string };
+  | { kind: 'corrected'; destination: string }
+  /** A human (or their agent) synthesized the capture outside the executors */
+  | { kind: 'resolved' };
 
 export class InvalidTransitionError extends Error {
   constructor(status: CaptureStatus, event: CaptureEvent) {
@@ -69,6 +71,12 @@ export function transition(status: CaptureStatus, event: CaptureEvent): CaptureS
 
     case 'no_executor':
       if (ROUTABLE.includes(status)) return 'awaiting_executor';
+      throw new InvalidTransitionError(status, event);
+
+    case 'resolved':
+      // Held items are the primary case; awaiting_executor rows that a
+      // human handled manually may also be closed out.
+      if (status === 'awaiting_review' || status === 'awaiting_executor') return 'resolved';
       throw new InvalidTransitionError(status, event);
 
     case 'corrected':
