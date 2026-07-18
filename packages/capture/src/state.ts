@@ -75,8 +75,12 @@ export function transition(status: CaptureStatus, event: CaptureEvent): CaptureS
 
     case 'resolved':
       // Held items are the primary case; awaiting_executor rows that a
-      // human handled manually may also be closed out.
-      if (status === 'awaiting_review' || status === 'awaiting_executor') return 'resolved';
+      // human handled manually may also be closed out. Routed captures are
+      // resolvable too: routing means "filed at a destination", while
+      // resolution records that a downstream consumer fully processed the
+      // item and it needs no further attention.
+      if (status === 'awaiting_review' || status === 'awaiting_executor' || status === 'routed')
+        return 'resolved';
       throw new InvalidTransitionError(status, event);
 
     case 'corrected':
