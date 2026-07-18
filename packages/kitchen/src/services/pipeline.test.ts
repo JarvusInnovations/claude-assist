@@ -99,7 +99,9 @@ describe('estimation queue (mocked model)', () => {
     const estimator = new ScriptedEstimator([mkModelEstimate()]);
     const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), estimator, log);
 
-    const { record } = await pipeline.ingest({ ulid: generateUlid(), note: 'chicken salad' }, []);
+    const ingested = await pipeline.ingest({ ulid: generateUlid(), note: 'chicken salad' }, []);
+    await ingested.estimation;
+    const record = (await pipeline.get(ingested.record.ulid))!;
 
     expect(record.status).toBe('estimated');
     expect(record.source).toBe('model');
@@ -112,7 +114,9 @@ describe('estimation queue (mocked model)', () => {
     const entries = new MemoryEntryStore();
     const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), null, log);
 
-    const { record } = await pipeline.ingest({ ulid: generateUlid(), note: 'mystery leftovers' }, []);
+    const ingested = await pipeline.ingest({ ulid: generateUlid(), note: 'mystery leftovers' }, []);
+    await ingested.estimation;
+    const record = (await pipeline.get(ingested.record.ulid))!;
 
     expect(record.status).toBe('estimating');
     expect(record.estimate_attempts).toBe(0);
@@ -123,7 +127,9 @@ describe('estimation queue (mocked model)', () => {
     const estimator = new ScriptedEstimator([new Error('rate limited')]);
     const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), estimator, log, { batchSize: 10 });
 
-    const { record } = await pipeline.ingest({ ulid: generateUlid(), note: 'unknown dish' }, []);
+    const ingested = await pipeline.ingest({ ulid: generateUlid(), note: 'unknown dish' }, []);
+    await ingested.estimation;
+    const record = (await pipeline.get(ingested.record.ulid))!;
     expect(record.status).toBe('estimating');
     expect(record.estimate_attempts).toBe(1);
 
@@ -144,16 +150,20 @@ describe('estimation queue (mocked model)', () => {
 
     const ulid = generateUlid();
     const first = await pipeline.ingest({ ulid, note: 'leftover pasta' }, []);
+    await first.estimation;
     expect(first.created).toBe(true);
-    expect(first.record.status).toBe('estimating');
-    expect(first.record.estimate_attempts).toBe(1);
+    const afterFirst = await pipeline.get(ulid);
+    expect(afterFirst!.status).toBe('estimating');
+    expect(afterFirst!.estimate_attempts).toBe(1);
 
     const replay = await pipeline.ingest({ ulid, note: 'leftover pasta' }, [
       { data: Buffer.from('fake-jpeg-bytes'), mimeType: 'image/jpeg' },
     ]);
+    await replay.estimation;
     expect(replay.created).toBe(false); // idempotent — not a new row
-    expect(replay.record.status).toBe('estimated');
-    expect(replay.record.source).toBe('model');
+    const afterReplay = await pipeline.get(ulid);
+    expect(afterReplay!.status).toBe('estimated');
+    expect(afterReplay!.source).toBe('model');
     expect(estimator.calls).toBe(2);
   });
 
@@ -163,7 +173,8 @@ describe('estimation queue (mocked model)', () => {
     const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), estimator, log);
 
     const ulid = generateUlid();
-    await pipeline.ingest({ ulid, note: 'chicken salad' }, []);
+    const first = await pipeline.ingest({ ulid, note: 'chicken salad' }, []);
+    await first.estimation;
     expect(estimator.calls).toBe(1);
 
     const replay = await pipeline.ingest({ ulid, note: 'drifted text should be ignored' }, []);
@@ -206,10 +217,13 @@ describe('manual override — terminal semantics', () => {
     const estimator = new ScriptedEstimator([mkModelEstimate({ label: 'first guess' }), mkModelEstimate({ label: 'second guess' })]);
     const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), estimator, log);
 
-    const { record } = await pipeline.ingest({ ulid: generateUlid(), note: 'something' }, []);
-    expect(record.label).toBe('first guess');
+    const ingested = await pipeline.ingest({ ulid: generateUlid(), note: 'something' }, []);
+    await ingested.estimation;
+    expect((await pipeline.get(ingested.record.ulid))!.label).toBe('first guess');
 
-    const updated = await pipeline.patch(record.ulid, { note: 'actually it was pizza' });
+    await pipeline.patch(ingested.record.ulid, { note: 'actually it was pizza' });
+    await pipeline.settle();
+    const updated = await pipeline.get(ingested.record.ulid);
     expect(updated!.status).toBe('estimated');
     expect(updated!.label).toBe('second guess');
     expect(updated!.note).toBe('actually it was pizza');

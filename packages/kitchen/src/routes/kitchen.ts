@@ -192,7 +192,12 @@ export const registerKitchenRoutes: FastifyPluginAsync<KitchenRoutesConfig> = as
     }
 
     try {
-      const { record, created } = await pipeline.ingest(validated.value, photos);
+      const { record, created, estimation } = await pipeline.ingest(validated.value, photos);
+      if (estimation) {
+        void estimation.catch((error) =>
+          request.log.error({ error }, 'Detached kitchen estimation rejected')
+        );
+      }
       reply.status(created ? 201 : 200);
       return record;
     } catch (err) {

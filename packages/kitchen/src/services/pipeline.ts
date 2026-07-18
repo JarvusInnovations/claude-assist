@@ -112,7 +112,7 @@ export class KitchenPipeline {
   async ingest(
     input: EntryInput,
     photos: PhotoPart[]
-  ): Promise<{ record: EntryRecord; created: boolean }> {
+  ): Promise<{ record: EntryRecord; created: boolean; estimation?: Promise<boolean> }> {
     const newEntry = normalizeNewEntry(input);
 
     if (input.recipe_ulid) {
@@ -129,10 +129,17 @@ export class KitchenPipeline {
     }
 
     const { record, created } = await this.entries.insertIfAbsent(newEntry);
+    let estimation: Promise<boolean> | undefined;
     if (created || (record.status === 'estimating' && record.source !== 'manual')) {
-      await this.attemptEstimate(record.ulid, record.note, photos);
+      // Spec: the entry posts immediately and is never blocked on a model
+      // call. Photos exist only in this request's memory (never persisted),
+      // so estimation must START here — but the response doesn't wait for
+      // it. attemptEstimate handles its own failures; callers may await the
+      // returned promise (tests) or detach it (routes).
+      estimation = this.attemptEstimate(record.ulid, record.note, photos);
+      this.detach(estimation);
     }
-    return { record: (await this.entries.get(record.ulid))!, created };
+    return { record: (await this.entries.get(record.ulid))!, created, estimation };
   }
 
   async get(ulid: string): Promise<EntryRecord | null> {
@@ -185,12 +192,30 @@ export class KitchenPipeline {
     transition(entry.status, { kind: 're_queue' });
     await this.entries.applyRequeue(ulid, { label: input.label, note: input.note });
 
-    // A correction is an explicit human action — route immediately rather
-    // than waiting for the next sweep (mirrors capture's correct() path).
-    // No photos are available on a PATCH (JSON body, not multipart).
+    // A correction is an explicit human action — estimation starts
+    // immediately rather than waiting for the next sweep, but the response
+    // doesn't block on the model call (same contract as ingest). No photos
+    // are available on a PATCH (JSON body, not multipart).
     const requeued = await this.entries.get(ulid);
-    await this.attemptEstimate(ulid, requeued!.note, []);
+    this.detach(this.attemptEstimate(ulid, requeued!.note, []));
     return this.entries.get(ulid);
+  }
+
+  /** Detach a floating estimation; only programming errors can reject. */
+  private detach(p: Promise<boolean>): void {
+    this.inflight.add(p);
+    void p
+      .catch((error) => this.log.error({ error }, 'Detached kitchen estimation rejected'))
+      .finally(() => this.inflight.delete(p));
+  }
+
+  private readonly inflight = new Set<Promise<boolean>>();
+
+  /** Await all in-flight detached estimations (tests, graceful shutdown). */
+  async settle(): Promise<void> {
+    while (this.inflight.size > 0) {
+      await Promise.allSettled([...this.inflight]);
+    }
   }
 
   async pushRecipe(input: { name: string; components?: RecipeComponent[] }): Promise<RecipeRecord> {

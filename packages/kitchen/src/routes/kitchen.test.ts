@@ -69,13 +69,14 @@ describe('kitchen routes', () => {
   let entries: MemoryEntryStore;
   let recipes: MemoryRecipeStore;
   let estimator: ScriptedEstimator;
+  let pipeline: KitchenPipeline;
 
   beforeEach(async () => {
     fastify = Fastify({ logger: false });
     entries = new MemoryEntryStore();
     recipes = new MemoryRecipeStore();
     estimator = new ScriptedEstimator([mkModelEstimate()]);
-    const pipeline = new KitchenPipeline(entries, recipes, estimator, fastify.log);
+    pipeline = new KitchenPipeline(entries, recipes, estimator, fastify.log);
     await fastify.register(registerKitchenRoutes, { pipeline });
     await fastify.ready();
   });
@@ -85,7 +86,7 @@ describe('kitchen routes', () => {
   });
 
   describe('POST /kitchen/entries', () => {
-    it('accepts a note-only multipart entry and estimates it synchronously', async () => {
+    it('accepts a note-only multipart entry: posts immediately, estimates detached', async () => {
       const ulid = generateUlid();
       const { body, contentType } = buildMultipart({ entry: JSON.stringify({ ulid, note: 'chicken salad' }) });
 
@@ -96,8 +97,14 @@ describe('kitchen routes', () => {
         payload: body,
       });
 
+      // The response never blocks on the model call (spec): row is written,
+      // estimation runs detached.
       expect(response.statusCode).toBe(201);
-      const json = response.json();
+      expect(response.json().status).toBe('estimating');
+
+      await pipeline.settle();
+      const after = await fastify.inject({ method: 'GET', url: `/kitchen/entries/${ulid}` });
+      const json = after.json();
       expect(json.status).toBe('estimated');
       expect(json.source).toBe('model');
       expect(json.label).toBe('Grilled chicken salad');
@@ -238,11 +245,10 @@ describe('kitchen routes', () => {
   describe('PATCH /kitchen/entries/:ulid', () => {
     it('applies a manual macro override (terminal, source manual)', async () => {
       const ulid = generateUlid();
-      const { record } = await new KitchenPipeline(entries, recipes, estimator, fastify.log).ingest(
-        { ulid, note: 'chicken salad' },
-        []
-      );
-      expect(record.status).toBe('estimated');
+      const seedPipeline = new KitchenPipeline(entries, recipes, estimator, fastify.log);
+      const { estimation } = await seedPipeline.ingest({ ulid, note: 'chicken salad' }, []);
+      await estimation;
+      expect((await seedPipeline.get(ulid))!.status).toBe('estimated');
 
       const response = await fastify.inject({
         method: 'PATCH',
