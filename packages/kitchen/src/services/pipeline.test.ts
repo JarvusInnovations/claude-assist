@@ -184,6 +184,38 @@ describe('estimation queue (mocked model)', () => {
   });
 });
 
+describe('sheet-sourced recipes', () => {
+  it('logs an entry against a sheet recipe (read-through, no DB row)', async () => {
+    const entries = new MemoryEntryStore();
+    const recipes = new MemoryRecipeStore();
+    const sheetRecipe = {
+      ulid: '01SHEET0000000000000000000',
+      name: 'Salmon-kale bowl',
+      components: [
+        { label: 'kale', default_qty_g: 70, per_100g: { calories: 35, protein_g: 2.9, sat_fat_g: 0.1 } },
+        { label: 'salmon', default_qty_g: 120, per_100g: { calories: 106, protein_g: 21, sat_fat_g: 1.2 } },
+      ],
+      source: 'sheet' as const,
+      created_at: new Date(),
+      updated_at: new Date(),
+    };
+    const pipeline = new KitchenPipeline(entries, recipes, null, log, {
+      readSheetRecipes: async () => [sheetRecipe],
+    });
+
+    const { record, created } = await pipeline.ingest(
+      { ulid: generateUlid(), recipe_ulid: sheetRecipe.ulid },
+      []
+    );
+    expect(created).toBe(true);
+    const after = await pipeline.get(record.ulid);
+    expect(after!.status).toBe('estimated');
+    expect(after!.source).toBe('reselect');
+    expect(after!.label).toBe('Salmon-kale bowl');
+    expect(after!.calories).toBeGreaterThan(0);
+  });
+});
+
 describe('manual override — terminal semantics', () => {
   it('a macro override sets source manual and status estimated from any prior state', async () => {
     const entries = new MemoryEntryStore();
