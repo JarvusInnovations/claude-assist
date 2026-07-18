@@ -1,9 +1,10 @@
 ---
-status: in-progress
+status: done
 depends: []
 specs:
   - specs/modules/kitchen.md
 issues: []
+pr: 87
 ---
 
 # Plan: Kitchen module (phase 1 — consumption journal)
