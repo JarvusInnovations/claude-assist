@@ -286,6 +286,170 @@ describe('promote', () => {
   });
 });
 
+describe('promote — real component reconstruction', () => {
+  const bowlComponents = [
+    { label: 'kale', default_qty_g: 70, per_100g: { calories: 35, protein_g: 2.9, sat_fat_g: 0.1 } },
+    { label: 'salmon', default_qty_g: 120, per_100g: { calories: 106, protein_g: 21, sat_fat_g: 1.2 } },
+  ];
+
+  async function seedRecipeEntry(
+    entries: MemoryEntryStore,
+    recipes: MemoryRecipeStore,
+    quantities: Array<{ label: string; quantity_g: number }>
+  ) {
+    const pipeline = new KitchenPipeline(entries, recipes, null, log);
+    const recipe = await recipes.insert({
+      ulid: generateUlid(),
+      name: 'Salmon-kale bowl',
+      components: structuredClone(bowlComponents),
+      source: 'pushed',
+    });
+    const { record } = await pipeline.ingest(
+      { ulid: generateUlid(), recipe_ulid: recipe.ulid, component_quantities: quantities },
+      []
+    );
+    return { pipeline, recipe, record };
+  }
+
+  it('reconstructs the source recipe components with logged quantities as new defaults', async () => {
+    const entries = new MemoryEntryStore();
+    const recipes = new MemoryRecipeStore();
+    const { pipeline, record } = await seedRecipeEntry(entries, recipes, [
+      { label: 'kale', quantity_g: 50 },
+      { label: 'salmon', quantity_g: 150 },
+    ]);
+
+    const promoted = await pipeline.promote(record.ulid, 'My bowl');
+    expect(promoted!.source).toBe('promoted');
+    expect(promoted!.components).toEqual([
+      { label: 'kale', default_qty_g: 50, per_100g: { calories: 35, protein_g: 2.9, sat_fat_g: 0.1 } },
+      { label: 'salmon', default_qty_g: 150, per_100g: { calories: 106, protein_g: 21, sat_fat_g: 1.2 } },
+    ]);
+  });
+
+  it('carries source defaults for components the entry did not quantify', async () => {
+    const entries = new MemoryEntryStore();
+    const recipes = new MemoryRecipeStore();
+    // Only salmon logged explicitly — kale contributed at its default at
+    // ingest, so it must survive at that default (dropping it would make
+    // the promoted recipe understate the meal).
+    const { pipeline, record } = await seedRecipeEntry(entries, recipes, [
+      { label: 'salmon', quantity_g: 150 },
+    ]);
+
+    const promoted = await pipeline.promote(record.ulid);
+    expect(promoted!.components.map((c) => [c.label, c.default_qty_g])).toEqual([
+      ['kale', 70],
+      ['salmon', 150],
+    ]);
+  });
+
+  it('reconstructs from a sheet recipe (read-through, no DB row)', async () => {
+    const entries = new MemoryEntryStore();
+    const recipes = new MemoryRecipeStore();
+    const sheetRecipe = {
+      ulid: '01SHEET0000000000000000000',
+      name: 'Sheet bowl',
+      components: structuredClone(bowlComponents),
+      source: 'sheet' as const,
+      created_at: new Date(),
+      updated_at: new Date(),
+    };
+    const pipeline = new KitchenPipeline(entries, recipes, null, log, {
+      readSheetRecipes: async () => [sheetRecipe],
+    });
+
+    const { record } = await pipeline.ingest(
+      {
+        ulid: generateUlid(),
+        recipe_ulid: sheetRecipe.ulid,
+        component_quantities: [{ label: 'kale', quantity_g: 90 }],
+      },
+      []
+    );
+
+    const promoted = await pipeline.promote(record.ulid);
+    expect(promoted!.components.map((c) => [c.label, c.default_qty_g])).toEqual([
+      ['kale', 90],
+      ['salmon', 120],
+    ]);
+  });
+
+  it('falls back to the synthetic component when a quantity label matches no source component', async () => {
+    const entries = new MemoryEntryStore();
+    const recipes = new MemoryRecipeStore();
+    // 'tofu' matches nothing — indistinguishable from source-recipe drift,
+    // so the whole reconstruction is abandoned for the truthful synthetic
+    // total (see reconstructComponents).
+    const { pipeline, record } = await seedRecipeEntry(entries, recipes, [
+      { label: 'kale', quantity_g: 50 },
+      { label: 'tofu', quantity_g: 100 },
+    ]);
+
+    const promoted = await pipeline.promote(record.ulid);
+    const stored = (await pipeline.get(record.ulid))!;
+    expect(promoted!.components).toHaveLength(1);
+    expect(promoted!.components[0]!.default_qty_g).toBe(100);
+    expect(promoted!.components[0]!.per_100g.calories).toBe(stored.calories!);
+  });
+
+  it('falls back to the synthetic component when the source recipe was deleted', async () => {
+    const entries = new MemoryEntryStore();
+    const recipes = new MemoryRecipeStore();
+    const { pipeline, recipe, record } = await seedRecipeEntry(entries, recipes, [
+      { label: 'salmon', quantity_g: 150 },
+    ]);
+    recipes.records.delete(recipe.ulid);
+
+    const promoted = await pipeline.promote(record.ulid);
+    const stored = (await pipeline.get(record.ulid))!;
+    expect(promoted!.components).toHaveLength(1);
+    expect(promoted!.components[0]!.per_100g.calories).toBe(stored.calories!);
+  });
+
+  it('falls back to the synthetic component after a manual override (the correction is terminal)', async () => {
+    const entries = new MemoryEntryStore();
+    const recipes = new MemoryRecipeStore();
+    const { pipeline, record } = await seedRecipeEntry(entries, recipes, [
+      { label: 'kale', quantity_g: 50 },
+      { label: 'salmon', quantity_g: 150 },
+    ]);
+    await pipeline.patch(record.ulid, { calories: 999 });
+
+    const promoted = await pipeline.promote(record.ulid);
+    // Real components would resurrect the pre-correction macros; the
+    // synthetic component carries the owner's corrected totals instead.
+    expect(promoted!.components).toHaveLength(1);
+    expect(promoted!.components[0]!.per_100g.calories).toBe(999);
+  });
+});
+
+describe('reselect comment carry', () => {
+  it('persists a note submitted with a recipe-sourced entry', async () => {
+    const entries = new MemoryEntryStore();
+    const recipes = new MemoryRecipeStore();
+    const pipeline = new KitchenPipeline(entries, recipes, null, log);
+    const recipe = await recipes.insert({
+      ulid: generateUlid(),
+      name: 'Oatmeal',
+      components: [{ label: 'oats', default_qty_g: 50, per_100g: { calories: 380, protein_g: 13, sat_fat_g: 2 } }],
+      source: 'pushed',
+    });
+
+    const { record } = await pipeline.ingest(
+      { ulid: generateUlid(), recipe_ulid: recipe.ulid, note: 'extra cinnamon this time' },
+      []
+    );
+
+    expect(record.note).toBe('extra cinnamon this time');
+    const stored = await pipeline.get(record.ulid);
+    expect(stored!.note).toBe('extra cinnamon this time');
+    expect(stored!.status).toBe('estimated');
+    expect(stored!.source).toBe('reselect');
+    expect(stored!.label).toBe('Oatmeal'); // the note annotates, never replaces, the label
+  });
+});
+
 describe('reselect merge logic', () => {
   it('merges sheet + pushed/promoted recipes with recent logged items', async () => {
     const entries = new MemoryEntryStore();

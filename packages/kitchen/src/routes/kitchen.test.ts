@@ -222,6 +222,37 @@ describe('kitchen routes', () => {
       expect(estimator.calls).toBe(0);
     });
 
+    it('carries an optional comment onto a recipe-sourced entry and it survives to the GET', async () => {
+      const recipe = await recipes.insert({
+        ulid: generateUlid(),
+        name: 'Protein shake',
+        components: [{ label: 'protein powder', default_qty_g: 30, per_100g: { calories: 400, protein_g: 80, sat_fat_g: 2 } }],
+        source: 'pushed',
+      });
+
+      const ulid = generateUlid();
+      const { body, contentType } = buildMultipart({
+        entry: JSON.stringify({ ulid, recipe_ulid: recipe.ulid, note: 'made with oat milk' }),
+      });
+
+      const response = await fastify.inject({
+        method: 'POST',
+        url: '/kitchen/entries',
+        headers: { 'content-type': contentType },
+        payload: body,
+      });
+      expect(response.statusCode).toBe(201);
+      expect(response.json().note).toBe('made with oat milk');
+
+      const after = await fastify.inject({ method: 'GET', url: `/kitchen/entries/${ulid}` });
+      const json = after.json();
+      expect(json.note).toBe('made with oat milk');
+      expect(json.status).toBe('estimated');
+      expect(json.source).toBe('reselect');
+      expect(json.label).toBe('Protein shake'); // the comment annotates the entry, not its label
+      expect(estimator.calls).toBe(0); // deterministic path — the note never triggers a model pass
+    });
+
     it('rejects a non-multipart POST with 400', async () => {
       const response = await fastify.inject({
         method: 'POST',
@@ -387,6 +418,35 @@ describe('kitchen routes', () => {
 
       const response = await fastify.inject({ method: 'POST', url: `/kitchen/entries/${ulid}/promote` });
       expect(response.statusCode).toBe(201);
+    });
+
+    it('reconstructs real components when the entry was logged from a recipe', async () => {
+      const recipe = await recipes.insert({
+        ulid: generateUlid(),
+        name: 'Salmon-kale bowl',
+        components: [
+          { label: 'kale', default_qty_g: 70, per_100g: { calories: 35, protein_g: 2.9, sat_fat_g: 0.1 } },
+          { label: 'salmon', default_qty_g: 120, per_100g: { calories: 106, protein_g: 21, sat_fat_g: 1.2 } },
+        ],
+        source: 'pushed',
+      });
+      const ulid = generateUlid();
+      await new KitchenPipeline(entries, recipes, estimator, fastify.log).ingest(
+        {
+          ulid,
+          recipe_ulid: recipe.ulid,
+          component_quantities: [{ label: 'salmon', quantity_g: 150 }],
+        },
+        []
+      );
+
+      const response = await fastify.inject({ method: 'POST', url: `/kitchen/entries/${ulid}/promote` });
+      expect(response.statusCode).toBe(201);
+      const json = response.json();
+      expect(json.components.map((c: { label: string; default_qty_g: number }) => [c.label, c.default_qty_g])).toEqual([
+        ['kale', 70],
+        ['salmon', 150],
+      ]);
     });
 
     it('honors a name override', async () => {
