@@ -2,6 +2,31 @@
 
 Backend services for Claude-based personal assistants. Bun monorepo with Fastify + PostgreSQL.
 
+**Repo boundary**: this is a public toolkit — no instance data, hostnames, or
+personal content in any git surface (code, specs, plans, PR bodies, history).
+Records enter an instance only through module APIs at runtime.
+
+## Spec-driven development (specops)
+
+This project uses spec-driven development. `specs/` is the source of truth for
+what *should be true*; `plans/` is the work-in-flight DAG that bridges specs to
+merged code. The **specops** skill (vendored at `.agents/skills/specops/`)
+carries the full methodology — invoke it before writing specs, planning, or
+building.
+
+- **Specs lead.** Before changing behavior, change the spec; bring code into
+  conformance after. Specs merge implemented-or-planned; a spec still being
+  designed rides a draft planning PR, not the main branch.
+- **`plans/` is the planning system — not your built-in plan mode.** Every
+  chunk of work lands as a plan file that freezes to `done` as the durable
+  record. Don't skip it for "small" changes.
+- **A spec change ripples to its plans** — after editing a spec, check
+  `grep -l '<spec-path>' plans/*.md` and offer updates.
+- Existing modules predate `specs/` — back-spec opportunistically when touching
+  them; new modules start spec-first.
+
+Query the DAG: `.agents/skills/specops/scripts/specops next` / `… dag`.
+
 ## Commands
 
 ```bash
