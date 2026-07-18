@@ -110,6 +110,49 @@ describe('kitchen routes', () => {
       expect(json.label).toBe('Grilled chicken salad');
     });
 
+    it('accepts the entry shipped as a file part (filename present), as some multipart clients do', async () => {
+      const ulid = generateUlid();
+      const { body, contentType } = buildMultipart({}, [
+        {
+          fieldname: 'entry',
+          filename: 'entry.json',
+          contentType: 'application/json',
+          data: Buffer.from(JSON.stringify({ ulid, note: 'chicken salad' })),
+        },
+      ]);
+
+      const response = await fastify.inject({
+        method: 'POST',
+        url: '/kitchen/entries',
+        headers: { 'content-type': contentType },
+        payload: body,
+      });
+
+      expect(response.statusCode).toBe(201);
+      expect(response.json().status).toBe('estimating');
+    });
+
+    it('rejects a file-part entry with invalid JSON with 400', async () => {
+      const { body, contentType } = buildMultipart({}, [
+        {
+          fieldname: 'entry',
+          filename: 'entry.json',
+          contentType: 'application/json',
+          data: Buffer.from('{not json'),
+        },
+      ]);
+
+      const response = await fastify.inject({
+        method: 'POST',
+        url: '/kitchen/entries',
+        headers: { 'content-type': contentType },
+        payload: body,
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error).toContain('valid JSON');
+    });
+
     it('accepts a photo part and holds it only in memory (never persisted)', async () => {
       const ulid = generateUlid();
       const { body, contentType } = buildMultipart(

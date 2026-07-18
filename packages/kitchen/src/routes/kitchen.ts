@@ -163,9 +163,19 @@ export const registerKitchenRoutes: FastifyPluginAsync<KitchenRoutesConfig> = as
           const buffer = await part.toBuffer();
           if (part.fieldname === 'photo' || part.fieldname === 'photos') {
             photos.push({ data: buffer, mimeType: part.mimetype });
+          } else if (part.fieldname === 'entry') {
+            // Some multipart clients ship the JSON metadata part with a
+            // filename, which classifies it as a file part — accept the
+            // entry either way.
+            try {
+              parsedEntry = JSON.parse(buffer.toString('utf8'));
+            } catch {
+              reply.status(400);
+              return { error: 'entry field must be valid JSON' };
+            }
           }
-          // Unknown file fields are drained (toBuffer already consumed the
-          // stream) and otherwise ignored — never written to disk either way.
+          // Other unknown file fields are drained (toBuffer already consumed
+          // the stream) and otherwise ignored — never written to disk either way.
         } else if (part.fieldname === 'entry') {
           try {
             parsedEntry = JSON.parse(part.value as string);
