@@ -5,13 +5,19 @@
  * KITCHEN_MEALBANK_REPO_PATH and KITCHEN_MEALBANK_SHEET are optional —
  * unset degrades to recents-only reselect, no error.
  *
- * TODO(specs/modules/kitchen.md § Meal-bank sheet consumption): open with
- * `contract: { schema: MEAL_RECORD_CONTRACT, mode: 'verify' }` once the
- * gitsheets consumer-verify surface ships (rung-1 declared identity
- * preferred, structural fallback). Until then this reads plain — a
- * malformed sheet degrades a record to "skipped", never crashes the read.
+ * The sheet opens with consumer-side contract verification against the
+ * module's published meal-record contract
+ * (contracts/meal-record.v1.schema.json), `mode: 'verify'` — rung-1
+ * declared identity preferred, structural fallback (gitsheets
+ * specs/behaviors/contracts.md § Consumer verification). A sheet that
+ * declares the contract verifies by identity without reading records; a
+ * contract-unaware sheet whose records conform still reads (logged as
+ * undeclared conformance); a non-conforming sheet is refused at wiring
+ * time — the read degrades to no sheet recipes (recents-only reselect),
+ * never a crash, never a mid-read surprise.
  */
 
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { FastifyBaseLogger } from 'fastify';
 import type { RecipeComponent, RecipeRecord } from '../types.js';
@@ -22,6 +28,19 @@ export interface MealBankConfig {
   repoPath?: string;
   /** Sheet name declared under that repo's .gitsheets/ (KITCHEN_MEALBANK_SHEET). */
   sheetName?: string;
+}
+
+/** The published contract's name — its `$id` with the URL scheme stripped. */
+export const MEAL_RECORD_CONTRACT_NAME = 'jarvus.dev/kitchen/meal-record/v1';
+
+/** The canonical contract document, shipped with the package. */
+const MEAL_RECORD_CONTRACT_URL = new URL('../../contracts/meal-record.v1.schema.json', import.meta.url);
+
+let mealRecordContract: unknown;
+
+async function loadMealRecordContract(): Promise<unknown> {
+  mealRecordContract ??= JSON.parse(await readFile(MEAL_RECORD_CONTRACT_URL, 'utf8'));
+  return mealRecordContract;
 }
 
 /** Raw shape expected of a meal-bank sheet record — see contracts/meal-record.v1.schema.json. */
@@ -99,10 +118,11 @@ function toRecipe(raw: MealBankRawRecord): RecipeRecord | null {
 }
 
 /**
- * Read the configured meal-bank sheet as `sheet`-sourced recipes. Degrades
- * to an empty list (never throws) when config is unset, the repo/sheet is
- * missing, or a record fails to parse — this is a read-through convenience,
- * not a required dependency.
+ * Read the configured meal-bank sheet as `sheet`-sourced recipes, with
+ * contract verification at wiring time. Degrades to an empty list (never
+ * throws) when config is unset, the repo/sheet is missing, the sheet fails
+ * contract verification, or a record fails to project — this is a
+ * read-through convenience, not a required dependency.
  */
 export async function readMealBankRecipes(
   config: MealBankConfig,
@@ -110,10 +130,39 @@ export async function readMealBankRecipes(
 ): Promise<RecipeRecord[]> {
   if (!config.repoPath || !config.sheetName) return [];
 
+  // Captured so the catch block can distinguish a contract refusal even
+  // though the module is loaded lazily inside the try.
+  let ContractErrorClass: (new (...args: never[]) => Error) | undefined;
+
   try {
-    const { openRepo } = await import('gitsheets');
+    const { openRepo, ContractError } = await import('gitsheets');
+    ContractErrorClass = ContractError;
     const repo = await openRepo({ gitDir: join(config.repoPath, '.git') });
-    const sheet = await repo.openSheet(config.sheetName);
+    const sheet = await repo.openSheet(config.sheetName, {
+      contract: {
+        schema: await loadMealRecordContract(),
+        mode: 'verify',
+        onDrift: (report) => {
+          log.warn(
+            { report, repoPath: config.repoPath, sheetName: config.sheetName },
+            'Meal-bank sheet drifted from the meal-record contract after wiring — reads continue (advisory signal)'
+          );
+        },
+      },
+    });
+
+    if (sheet.contractVerification?.rung === 'structural') {
+      log.info(
+        {
+          contract: MEAL_RECORD_CONTRACT_NAME,
+          tree: sheet.contractVerification.tree,
+          repoPath: config.repoPath,
+          sheetName: config.sheetName,
+        },
+        'Meal-bank sheet does not declare the meal-record contract but conforms structurally — consider adopting it (gitsheets contracts adopt) for identity-verified reads'
+      );
+    }
+
     const records = await sheet.queryAll();
 
     const recipes: RecipeRecord[] = [];
@@ -123,10 +172,22 @@ export async function readMealBankRecipes(
     }
     return recipes;
   } catch (err) {
-    log.warn(
-      { err, repoPath: config.repoPath, sheetName: config.sheetName },
-      'Meal-bank gitsheet read failed — degrading to recents-only reselect'
-    );
+    if (ContractErrorClass && err instanceof ContractErrorClass) {
+      log.warn(
+        {
+          err,
+          contract: MEAL_RECORD_CONTRACT_NAME,
+          repoPath: config.repoPath,
+          sheetName: config.sheetName,
+        },
+        'Meal-bank sheet refused at wiring time — contract verification failed; degrading to recents-only reselect'
+      );
+    } else {
+      log.warn(
+        { err, repoPath: config.repoPath, sheetName: config.sheetName },
+        'Meal-bank gitsheet read failed — degrading to recents-only reselect'
+      );
+    }
     return [];
   }
 }
