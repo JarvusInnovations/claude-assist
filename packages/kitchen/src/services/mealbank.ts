@@ -31,7 +31,7 @@ export interface MealBankConfig {
 }
 
 /** The published contract's name — its `$id` with the URL scheme stripped. */
-export const MEAL_TEMPLATE_CONTRACT_NAME = 'gitsheets.io/kitchen/meal-template/v1';
+export const MEAL_TEMPLATE_CONTRACT_NAME = 'gitsheets.io/meal-template/v1';
 
 /** The canonical contract document, shipped with the package. */
 const MEAL_TEMPLATE_CONTRACT_URL = new URL('../../contracts/meal-template.v1.schema.json', import.meta.url);
