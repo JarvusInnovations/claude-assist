@@ -20,9 +20,11 @@ through the module's APIs (never as committed seed content).
   client so offline replays are idempotent upserts (a replay must never
   duplicate or regress a processed entry). Fields: timestamp, optional free-text
   note, resolved label, nutrition estimate (calories + macros with a
-  confidence/portion basis), estimation source (`model` | `reselect` | `manual`),
-  portion modifier derived from the note, optional recipe reference with
-  per-component quantities, optional inventory-item links (phase 2).
+  confidence/portion basis) stored as the **base**, estimation source
+  (`model` | `reselect` | `manual`), a **portion multiplier** (post-hoc rescale
+  of the base — see § Portion multiplier), the note-derived portion modifier
+  (applied once at estimation time, baked into the base), optional recipe
+  reference with per-component quantities, optional inventory-item links (phase 2).
 - **Recipes** — named loggable templates: name, optional per-ingredient
   components (label, default quantity, per-100g macros), source
   (`sheet` | `pushed` | `promoted`), created/updated stamps. Sheet-sourced
@@ -36,6 +38,48 @@ through the module's APIs (never as committed seed content).
   outcome. No disk writes, no object storage, no staging prefixes. Records carry
   no image data. The client retains its local copy until the entry is confirmed
   processed and re-posts to retry a stale `estimating`.
+
+## Portion multiplier
+
+Every entry carries a `portion_multiplier` — a positive number, default `1`.
+It is the owner's **post-hoc** "I only ate half of that" knob: after an entry is
+logged (by photo, recipe, or manual override), the multiplier rescales how much
+of the entry actually counts, without touching the per-field macro estimate.
+
+**Base vs effective — the wire rule.** The entry's stored macro fields
+(`calories`, `protein_g`, `fat_g`, `sat_fat_g`, `carbs_g`, `sodium_mg`) are the
+**base**: the amount as estimated, recipe-computed, or manually overridden. The
+entry wire shape (POST / GET / list responses) carries those base fields
+**exactly as stored, unscaled**, alongside `portion_multiplier`. **Every consumer
+computes effective macros itself: `effective = base × portion_multiplier`.** This
+is the one rule, applied everywhere — entry tiles, day-group totals, the briefing
+daily totals, and any future macro consumer. The wire never carries pre-multiplied
+macros; base-on-the-wire is unambiguous (a macro field always means the base) and
+lossless (no division needed to recover the base).
+
+Consequences of this choice:
+
+- `confidence` and `portion_basis` are **not** scaled — the multiplier changes
+  how much was eaten, not how confident the estimate is.
+- Re-adjusting the multiplier always rescales **from the base**, so it is
+  idempotent and never compounds: setting `0.5` then `0.75` yields exactly
+  `0.75 × base`, not `0.375 × base`.
+- `portion_multiplier = 1` (the default and the value on every pre-existing row)
+  makes effective ≡ base, so the wire is byte-identical to the pre-feature shape
+  for every unscaled entry.
+
+**Distinct from adjacent mechanisms:**
+
+- *Not* the note-derived portion modifier (`portionModifierFor`): that fires once
+  at estimation time on standalone words like "half"/"double" and **bakes into
+  the base**. The multiplier is the separate post-hoc knob the owner turns later.
+- *Orthogonal to the manual override*: a manual override sets the **base**; the
+  multiplier scales it. A `manual` entry can carry a multiplier ≠ 1, and setting
+  a multiplier does **not** flip `source` to `manual`, re-queue estimation, or
+  change any macro field.
+
+Bounds: `0 < portion_multiplier ≤ 20` (the API rejects non-positive or absurd
+values). It is set via `PATCH /entries/:ulid`.
 
 ## Meal-bank sheet consumption
 
@@ -62,14 +106,20 @@ existing conventions.
 - `GET /entries?since|limit` — newest-first listing for client sync.
 - `PATCH /entries/:ulid` — note/label edits re-queue estimation; a macro
   override sets source `manual` and is terminal (no later model pass may
-  overwrite it). 409 on attempts to model-overwrite a `manual` entry.
+  overwrite it). 409 on attempts to model-overwrite a `manual` entry. A
+  `portion_multiplier` (positive number, ≤ 20) is accepted on any entry
+  regardless of source — it rescales the base post-hoc, never re-queues
+  estimation, never changes `source`, and never 409s (§ Portion multiplier). It
+  may be sent alone, or alongside a macro override (override sets base, multiplier
+  scales it).
 - `DELETE /entries/:ulid` — removes the entry from all rollups.
 - `GET /reselect` — the strip: recipes (sheet + pushed + promoted) merged with
   recent/frequent logged items.
 - `POST /recipes` — agent-pushed one-off or reusable templates.
 - `POST /entries/:ulid/promote` — creates a recipe from a logged entry.
-- Rollup queries (daily totals, weekly trend) are computed, never stored; they
-  feed the instance's briefing/review renderings.
+- Rollup queries (daily totals, weekly trend) are computed, never stored, over
+  **effective** macros (`base × portion_multiplier` per entry); they feed the
+  instance's briefing/review renderings.
 
 ## Estimation & model tiering
 
@@ -274,7 +324,10 @@ string match). A confident single match decrements the item's
 `on_hand_fraction` by a directional step and sets `entries.inventory_item_ulid`;
 an ambiguous or absent match is a no-op (unmatched entries are normal). Wired
 as an injected `onEntryEstimated` hook so the estimation pipeline stays
-inventory-agnostic.
+inventory-agnostic. The match is label-only and the decrement is a fixed
+directional step — it consumes no macro quantities, so the portion multiplier
+does not enter here. (Were it ever to deplete by consumed amount, that amount is
+the **effective** macros, not the base.)
 
 ### Model tiering (phase 2)
 
@@ -328,3 +381,8 @@ and every seam degrades cleanly when the kitchen module is absent.
   construction.
 - **The owner's correction is terminal.** `manual` overrides survive every
   subsequent automated pass.
+- **Store the base; carry the base; consumers multiply.** Macro fields are always
+  the base — in the DB and on the wire. Effective is `base × portion_multiplier`,
+  computed at every serving surface, never pre-baked into the stored/transmitted
+  fields. This keeps the multiplier idempotent (always rescales from base) and the
+  wire unambiguous (a macro field never silently means something scaled).
