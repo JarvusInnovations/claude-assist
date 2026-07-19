@@ -29,7 +29,7 @@ import type {
   RecipeComponent,
   RecipeRecord,
 } from '../types.js';
-import { NUTRITION_FIELD_KEYS } from '../types.js';
+import { NUTRITION_FIELD_KEYS, PORTION_MULTIPLIER_MAX } from '../types.js';
 import type { EntryStore, RecipeStore, RecentEntrySummary } from '../store.js';
 import { normalizeNewEntry } from '../store.js';
 import { InvalidTransitionError, transition } from '../state.js';
@@ -170,18 +170,56 @@ export class KitchenPipeline {
   }
 
   /**
-   * PATCH semantics (specs/modules/kitchen.md § API): a macro override
-   * (any nutrition field present) is always accepted and is terminal
-   * (source='manual'). A note/label-only edit re-queues estimation, but is
-   * refused with `ManualOverrideConflictError` when the entry is already
-   * `manual` — re-queuing it would open the door to a later model pass
-   * overwriting the owner's correction, which the spec forbids outright.
+   * PATCH semantics (specs/modules/kitchen.md § API + § Portion multiplier):
+   * three orthogonal axes.
+   * - A macro override (any nutrition field present) is always accepted and is
+   *   terminal (source='manual'). It sets the BASE macros.
+   * - A note/label-only edit re-queues estimation, but is refused with
+   *   `ManualOverrideConflictError` when the entry is already `manual` —
+   *   re-queuing would open the door to a later model pass overwriting the
+   *   owner's correction, which the spec forbids outright.
+   * - A `portion_multiplier` is accepted on ANY entry regardless of source; it
+   *   rescales the base post-hoc and touches nothing else (no source change, no
+   *   re-queue). It may ride alongside a macro override (override sets base,
+   *   multiplier scales it).
+   *
+   * All validation and conflict checks happen up front, before any write, so a
+   * rejected PATCH never leaves a partial change (e.g. multiplier applied but
+   * the note edit 409'd).
    */
   async patch(ulid: string, input: EntryPatchInput): Promise<EntryRecord | null> {
     const entry = await this.entries.get(ulid);
     if (!entry) return null;
 
     const hasMacroOverride = NUTRITION_FIELD_KEYS.some((key) => input[key] !== undefined);
+    const hasNoteLabelEdit = input.note !== undefined || input.label !== undefined;
+    const hasMultiplier = input.portion_multiplier !== undefined;
+
+    // ── Validate everything up front (no partial writes on a rejected PATCH) ──
+    if (hasMultiplier) {
+      const m = input.portion_multiplier!;
+      if (typeof m !== 'number' || !Number.isFinite(m) || m <= 0 || m > PORTION_MULTIPLIER_MAX) {
+        throw new PatchValidationError(
+          `portion_multiplier must be a number in (0, ${PORTION_MULTIPLIER_MAX}]`
+        );
+      }
+    }
+    if (!hasMultiplier && !hasMacroOverride && !hasNoteLabelEdit) {
+      throw new PatchValidationError(
+        'PATCH body must set a note/label edit, at least one nutrition field, or portion_multiplier'
+      );
+    }
+    // A note/label-only edit re-queues; forbidden on a terminal manual entry.
+    const willRequeue = hasNoteLabelEdit && !hasMacroOverride;
+    if (willRequeue && entry.source === 'manual') {
+      throw new ManualOverrideConflictError(ulid);
+    }
+
+    // ── Apply. The multiplier is orthogonal — never re-queues, never changes
+    //    source — so it lands first and independently of the other axes. ──
+    if (hasMultiplier) {
+      await this.entries.applyPortionMultiplier(ulid, input.portion_multiplier!);
+    }
 
     if (hasMacroOverride) {
       const nutrition: Partial<NutritionFields> = {};
@@ -196,23 +234,20 @@ export class KitchenPipeline {
       return this.entries.get(ulid);
     }
 
-    if (input.note === undefined && input.label === undefined) {
-      throw new PatchValidationError('PATCH body must set a note/label edit or at least one nutrition field');
+    if (willRequeue) {
+      transition(entry.status, { kind: 're_queue' });
+      await this.entries.applyRequeue(ulid, { label: input.label, note: input.note });
+
+      // A correction is an explicit human action — estimation starts
+      // immediately rather than waiting for the next sweep, but the response
+      // doesn't block on the model call (same contract as ingest). No photos
+      // are available on a PATCH (JSON body, not multipart).
+      const requeued = await this.entries.get(ulid);
+      this.detach(this.attemptEstimate(ulid, requeued!.note, []));
+      return this.entries.get(ulid);
     }
 
-    if (entry.source === 'manual') {
-      throw new ManualOverrideConflictError(ulid);
-    }
-
-    transition(entry.status, { kind: 're_queue' });
-    await this.entries.applyRequeue(ulid, { label: input.label, note: input.note });
-
-    // A correction is an explicit human action — estimation starts
-    // immediately rather than waiting for the next sweep, but the response
-    // doesn't block on the model call (same contract as ingest). No photos
-    // are available on a PATCH (JSON body, not multipart).
-    const requeued = await this.entries.get(ulid);
-    this.detach(this.attemptEstimate(ulid, requeued!.note, []));
+    // Multiplier-only PATCH: nothing else to do.
     return this.entries.get(ulid);
   }
 

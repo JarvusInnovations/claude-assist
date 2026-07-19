@@ -37,6 +37,7 @@ export class MemoryEntryStore implements EntryStore {
       last_error_at: null,
       recipe_ulid: entry.recipe_ulid,
       component_quantities: entry.component_quantities,
+      portion_multiplier: 1,
       inventory_item_ulid: null,
       created_at: now,
       updated_at: now,
@@ -126,6 +127,10 @@ export class MemoryEntryStore implements EntryStore {
     record.estimate_attempts = 0;
     record.last_error = null;
     record.last_error_at = null;
+  }
+
+  async applyPortionMultiplier(ulid: string, multiplier: number): Promise<void> {
+    this.mustGet(ulid).portion_multiplier = multiplier;
   }
 
   async delete(ulid: string): Promise<boolean> {

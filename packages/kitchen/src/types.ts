@@ -93,6 +93,13 @@ export interface EntryInput {
   component_quantities?: ComponentQuantity[];
 }
 
+/**
+ * Post-hoc portion rescale bound: `0 < portion_multiplier <= PORTION_MULTIPLIER_MAX`.
+ * Mirrored by the migration CHECK and the PATCH body schema
+ * (specs/modules/kitchen.md § Portion multiplier).
+ */
+export const PORTION_MULTIPLIER_MAX = 20;
+
 /** What the client PATCHes onto an existing entry. */
 export interface EntryPatchInput {
   note?: string;
@@ -105,6 +112,12 @@ export interface EntryPatchInput {
   carbs_g?: number;
   sodium_mg?: number;
   portion_basis?: string;
+  /**
+   * Post-hoc rescale of the base macros: `effective = base * portion_multiplier`.
+   * Orthogonal to a macro override — never re-queues estimation, never changes
+   * `source`, accepted on any entry. `0 < portion_multiplier <= PORTION_MULTIPLIER_MAX`.
+   */
+  portion_multiplier?: number;
 }
 
 /** A row in kitchen.entries. */
@@ -121,6 +134,12 @@ export interface EntryRecord extends NutritionFields {
   last_error_at: Date | null;
   recipe_ulid: string | null;
   component_quantities: ComponentQuantity[] | null;
+  /**
+   * Post-hoc portion rescale, default 1. The macro fields above are the BASE
+   * (unscaled); every consumer computes effective = base * portion_multiplier
+   * (specs/modules/kitchen.md § Portion multiplier).
+   */
+  portion_multiplier: number;
   /** Phase 2: the inventory item this entry depleted (set by the depletion matcher). */
   inventory_item_ulid: string | null;
   created_at: Date;

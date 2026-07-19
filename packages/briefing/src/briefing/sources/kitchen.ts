@@ -83,11 +83,14 @@ export async function fetchKitchenSummary(
   try {
     const { fromIso, toIso } = zonedDayWindow(opts.dateIso, opts.timeZone);
 
+    // Daily totals are EFFECTIVE macros: base * portion_multiplier per entry
+    // (specs/modules/kitchen.md § Portion multiplier). portion_multiplier is
+    // NOT NULL DEFAULT 1, so unscaled rows contribute their base unchanged.
     const [totals] = await sql<{ calories: string | null; protein_g: string | null; sat_fat_g: string | null }[]>`
       SELECT
-        COALESCE(SUM(calories), 0) AS calories,
-        COALESCE(SUM(protein_g), 0) AS protein_g,
-        COALESCE(SUM(sat_fat_g), 0) AS sat_fat_g
+        COALESCE(SUM(calories * portion_multiplier), 0) AS calories,
+        COALESCE(SUM(protein_g * portion_multiplier), 0) AS protein_g,
+        COALESCE(SUM(sat_fat_g * portion_multiplier), 0) AS sat_fat_g
       FROM kitchen.entries
       WHERE status = 'estimated' AND logged_at >= ${fromIso} AND logged_at < ${toIso}
     `;

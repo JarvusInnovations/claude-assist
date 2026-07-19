@@ -95,6 +95,13 @@ export interface EntryStore {
   /** A note/label edit re-queues estimation. Caller has already checked source !== 'manual'. */
   applyRequeue(ulid: string, extra: { label?: string; note?: string }): Promise<void>;
 
+  /**
+   * Set the post-hoc portion multiplier. Touches ONLY that column — no source
+   * change, no status change, no re-queue (specs/modules/kitchen.md § Portion
+   * multiplier). Caller has already range-validated the value.
+   */
+  applyPortionMultiplier(ulid: string, multiplier: number): Promise<void>;
+
   delete(ulid: string): Promise<boolean>;
 
   /** Recent/frequent logged items for the reselect strip, most-recent first. */
@@ -180,6 +187,7 @@ function rowToEntry(row: Record<string, unknown>): EntryRecord {
     component_quantities: parseJsonField<ComponentQuantity[]>(
       row.component_quantities as ComponentQuantity[] | string | null
     ),
+    portion_multiplier: parseNumeric(row.portion_multiplier) ?? 1,
     inventory_item_ulid: (row.inventory_item_ulid as string | null) ?? null,
     created_at: row.created_at as Date,
     updated_at: row.updated_at as Date,
@@ -317,6 +325,12 @@ export class PgEntryStore implements EntryStore {
         status = 'estimating', estimate_attempts = 0,
         last_error = NULL, last_error_at = NULL
       WHERE ulid = ${ulid}
+    `;
+  }
+
+  async applyPortionMultiplier(ulid: string, multiplier: number): Promise<void> {
+    await this.sql`
+      UPDATE kitchen.entries SET portion_multiplier = ${multiplier} WHERE ulid = ${ulid}
     `;
   }
 

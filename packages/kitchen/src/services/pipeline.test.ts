@@ -7,6 +7,7 @@ import type { Estimator } from './estimator.js';
 import {
   KitchenPipeline,
   ManualOverrideConflictError,
+  PatchValidationError,
   PromoteNotReadyError,
   RecipeNotFoundError,
 } from './pipeline.js';
@@ -260,6 +261,133 @@ describe('manual override — terminal semantics', () => {
     expect(updated!.label).toBe('second guess');
     expect(updated!.note).toBe('actually it was pizza');
     expect(estimator.calls).toBe(2);
+  });
+});
+
+describe('portion multiplier — post-hoc base rescale', () => {
+  const PORTION_MULTIPLIER_MAX = 20;
+
+  it('defaults to 1 on a fresh entry (wire byte-identical for the unscaled case)', async () => {
+    const entries = new MemoryEntryStore();
+    const estimator = new ScriptedEstimator([mkModelEstimate()]);
+    const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), estimator, log);
+
+    const { record, estimation } = await pipeline.ingest({ ulid: generateUlid(), note: 'salad' }, []);
+    expect(record.portion_multiplier).toBe(1);
+    await estimation;
+    const after = await pipeline.get(record.ulid);
+    expect(after!.portion_multiplier).toBe(1);
+  });
+
+  it('a multiplier PATCH on a model entry leaves base macros + source + status untouched', async () => {
+    const entries = new MemoryEntryStore();
+    const estimator = new ScriptedEstimator([mkModelEstimate({ calories: 800, protein_g: 40, sat_fat_g: 10 })]);
+    const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), estimator, log);
+
+    const ingested = await pipeline.ingest({ ulid: generateUlid(), note: 'loaded fries' }, []);
+    await ingested.estimation;
+    const base = await pipeline.get(ingested.record.ulid);
+    expect(base!.source).toBe('model');
+
+    const updated = await pipeline.patch(ingested.record.ulid, { portion_multiplier: 0.5 });
+    // Multiplier stored; the model call was NOT re-run; source/status/base unchanged.
+    expect(updated!.portion_multiplier).toBe(0.5);
+    expect(updated!.calories).toBe(800); // BASE, unscaled on the wire
+    expect(updated!.protein_g).toBe(40);
+    expect(updated!.sat_fat_g).toBe(10);
+    expect(updated!.source).toBe('model');
+    expect(updated!.status).toBe('estimated');
+    expect(estimator.calls).toBe(1); // no re-queue
+
+    // effective = base * multiplier, computed by the consumer
+    expect(updated!.calories! * updated!.portion_multiplier).toBe(400);
+  });
+
+  it('re-PATCH always rescales from base — 0.5 then 0.75 yields 0.75×base, never 0.375×base', async () => {
+    const entries = new MemoryEntryStore();
+    const estimator = new ScriptedEstimator([mkModelEstimate({ calories: 800, protein_g: 40 })]);
+    const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), estimator, log);
+
+    const ingested = await pipeline.ingest({ ulid: generateUlid(), note: 'plate' }, []);
+    await ingested.estimation;
+
+    await pipeline.patch(ingested.record.ulid, { portion_multiplier: 0.5 });
+    const half = await pipeline.get(ingested.record.ulid);
+    expect(half!.portion_multiplier).toBe(0.5);
+    expect(half!.calories).toBe(800); // base preserved
+
+    const updated = await pipeline.patch(ingested.record.ulid, { portion_multiplier: 0.75 });
+    expect(updated!.portion_multiplier).toBe(0.75); // rescales from base, not compounding
+    expect(updated!.calories).toBe(800); // base STILL untouched
+    expect(updated!.calories! * updated!.portion_multiplier).toBe(600); // 0.75 × base
+    // Proof it never compounded: 0.375 × 800 = 300 would be the bug.
+    expect(updated!.calories! * updated!.portion_multiplier).not.toBe(300);
+  });
+
+  it('is accepted on a manual entry without a 409 and never flips source away from manual', async () => {
+    const entries = new MemoryEntryStore();
+    const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), null, log);
+
+    const { record } = await pipeline.ingest({ ulid: generateUlid(), note: 'mystery bowl' }, []);
+    await pipeline.patch(record.ulid, { calories: 600, protein_g: 30 });
+    expect((await pipeline.get(record.ulid))!.source).toBe('manual');
+
+    const updated = await pipeline.patch(record.ulid, { portion_multiplier: 0.25 });
+    expect(updated!.portion_multiplier).toBe(0.25);
+    expect(updated!.source).toBe('manual'); // orthogonal — override set base, multiplier scales it
+    expect(updated!.calories).toBe(600); // base unchanged
+    expect(updated!.calories! * updated!.portion_multiplier).toBe(150);
+  });
+
+  it('rides alongside a macro override in one PATCH — override sets base, multiplier scales', async () => {
+    const entries = new MemoryEntryStore();
+    const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), null, log);
+
+    const { record } = await pipeline.ingest({ ulid: generateUlid(), note: 'bowl' }, []);
+    const updated = await pipeline.patch(record.ulid, { calories: 400, portion_multiplier: 1.5 });
+    expect(updated!.source).toBe('manual');
+    expect(updated!.calories).toBe(400); // base from the override
+    expect(updated!.portion_multiplier).toBe(1.5);
+    expect(updated!.calories! * updated!.portion_multiplier).toBe(600);
+  });
+
+  it('is allowed on an unresolved (estimating) entry without resolving it', async () => {
+    const entries = new MemoryEntryStore();
+    const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), null, log);
+
+    const { record } = await pipeline.ingest({ ulid: generateUlid(), note: 'pending' }, []);
+    expect(record.status).toBe('estimating');
+
+    const updated = await pipeline.patch(record.ulid, { portion_multiplier: 2 });
+    expect(updated!.portion_multiplier).toBe(2);
+    expect(updated!.status).toBe('estimating'); // multiplier doesn't resolve the entry
+    expect(updated!.source).toBeNull();
+  });
+
+  it('rejects non-positive or absurd multipliers with a validation error', async () => {
+    const entries = new MemoryEntryStore();
+    const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), null, log);
+    const { record } = await pipeline.ingest({ ulid: generateUlid(), note: 'x' }, []);
+
+    for (const bad of [0, -1, PORTION_MULTIPLIER_MAX + 0.1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      await expect(pipeline.patch(record.ulid, { portion_multiplier: bad })).rejects.toThrow(PatchValidationError);
+    }
+    // The rejected PATCHes left the entry's multiplier at its default.
+    expect((await pipeline.get(record.ulid))!.portion_multiplier).toBe(1);
+  });
+
+  it('a note edit on a manual entry still 409s even when a valid multiplier rides along (no partial write)', async () => {
+    const entries = new MemoryEntryStore();
+    const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), null, log);
+
+    const { record } = await pipeline.ingest({ ulid: generateUlid(), note: 'mystery' }, []);
+    await pipeline.patch(record.ulid, { calories: 500 }); // → manual
+
+    await expect(
+      pipeline.patch(record.ulid, { note: 'reopen', portion_multiplier: 0.5 })
+    ).rejects.toThrow(ManualOverrideConflictError);
+    // The multiplier must NOT have been applied (conflict checked before any write).
+    expect((await pipeline.get(record.ulid))!.portion_multiplier).toBe(1);
   });
 });
 
