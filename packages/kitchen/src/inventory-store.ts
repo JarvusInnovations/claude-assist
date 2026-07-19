@@ -97,6 +97,8 @@ export interface NewBatchLine {
   ulid: string;
   batch_ulid: string;
   raw_text: string;
+  /** Physical-unit count the line represents (≥ 1; default 1 when omitted). */
+  quantity?: number;
   match_outcome: LineMatchOutcome;
   product_ulid: string | null;
   inventory_item_ulid: string | null;
@@ -136,6 +138,12 @@ export interface InventoryStore {
   listBatches(limit: number): Promise<PurchaseBatchRecord[]>;
   selectBatchesForParsing(limit: number, maxAttempts: number): Promise<PurchaseBatchRecord[]>;
   setBatchStatus(ulid: string, status: BatchStatus): Promise<void>;
+  /**
+   * Persist the store resolved during a parse (meta store or header
+   * extraction) plus whether it was left undetermined. Called once per parse,
+   * before the batch flips to `parsed`.
+   */
+  setBatchStoreResolution(ulid: string, store: string | null, storeUndetermined: boolean): Promise<void>;
   recordBatchParseFailure(ulid: string, error: string): Promise<number>;
 
   // Batch lines
@@ -233,6 +241,7 @@ export function rowToBatch(row: Record<string, unknown>): PurchaseBatchRecord {
     ulid: row.ulid as string,
     source: row.source as BatchSource,
     store: (row.store as string | null) ?? null,
+    store_undetermined: Boolean(row.store_undetermined),
     purchased_at: toDate(row.purchased_at),
     status: row.status as BatchStatus,
     parse_attempts: Number(row.parse_attempts ?? 0),
@@ -248,6 +257,7 @@ export function rowToLine(row: Record<string, unknown>): BatchLineRecord {
     ulid: row.ulid as string,
     batch_ulid: row.batch_ulid as string,
     raw_text: row.raw_text as string,
+    quantity: row.quantity == null ? 1 : Number(row.quantity),
     match_outcome: row.match_outcome as LineMatchOutcome,
     product_ulid: (row.product_ulid as string | null) ?? null,
     inventory_item_ulid: (row.inventory_item_ulid as string | null) ?? null,
@@ -483,6 +493,18 @@ export class PgInventoryStore implements InventoryStore {
     await this.sql`UPDATE kitchen.purchase_batches SET status = ${status} WHERE ulid = ${ulid}`;
   }
 
+  async setBatchStoreResolution(
+    ulid: string,
+    store: string | null,
+    storeUndetermined: boolean
+  ): Promise<void> {
+    await this.sql`
+      UPDATE kitchen.purchase_batches
+      SET store = ${store}, store_undetermined = ${storeUndetermined}
+      WHERE ulid = ${ulid}
+    `;
+  }
+
   async recordBatchParseFailure(ulid: string, error: string): Promise<number> {
     const [row] = await this.sql<{ parse_attempts: number }[]>`
       UPDATE kitchen.purchase_batches SET
@@ -496,10 +518,10 @@ export class PgInventoryStore implements InventoryStore {
   async insertLine(line: NewBatchLine): Promise<BatchLineRecord> {
     const [row] = await this.sql`
       INSERT INTO kitchen.purchase_batch_lines
-        (ulid, batch_ulid, raw_text, match_outcome, product_ulid, inventory_item_ulid)
+        (ulid, batch_ulid, raw_text, quantity, match_outcome, product_ulid, inventory_item_ulid)
       VALUES (
-        ${line.ulid}, ${line.batch_ulid}, ${line.raw_text}, ${line.match_outcome},
-        ${line.product_ulid}, ${line.inventory_item_ulid}
+        ${line.ulid}, ${line.batch_ulid}, ${line.raw_text}, ${line.quantity ?? 1},
+        ${line.match_outcome}, ${line.product_ulid}, ${line.inventory_item_ulid}
       )
       RETURNING *
     `;

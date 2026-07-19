@@ -103,6 +103,156 @@ describe('receipt intake', () => {
     expect(first.created).toBe(true);
     expect(second.created).toBe(false);
   });
+
+  it('stamps the header-extracted store onto the batch + items when no meta store is given', async () => {
+    const store = new MemoryInventoryStore();
+    const parser = new FakeReceiptParser({ store: 'Example Grocer', lines: [{ text: 'MYSTERY ITEM' }] });
+    const pipeline = new InventoryPipeline(store, parser, null, log);
+    // No `store` on the scan meta — the parser's header extraction fills it.
+    await pipeline.ingestReceipt({ ulid: ULID(6), purchased_at: '2026-07-18' }, [photo]);
+    await pipeline.settle();
+
+    const view = await pipeline.getBatchView(ULID(6));
+    expect(view!.batch.store).toBe('Example Grocer');
+    expect(view!.batch.store_undetermined).toBe(false);
+    const items = await pipeline.listInventory({});
+    expect(items.every((i) => i.store === 'Example Grocer')).toBe(true);
+  });
+
+  it('an explicit meta store overrides the header extraction', async () => {
+    const store = new MemoryInventoryStore();
+    // The header says one thing; the owner named another on the scan meta.
+    const parser = new FakeReceiptParser({ store: 'Header Extraction', lines: [{ text: 'MYSTERY ITEM' }] });
+    const pipeline = new InventoryPipeline(store, parser, null, log);
+    await pipeline.ingestReceipt({ ulid: ULID(7), store: 'Owner Named Store', purchased_at: '2026-07-18' }, [photo]);
+    await pipeline.settle();
+
+    const view = await pipeline.getBatchView(ULID(7));
+    expect(view!.batch.store).toBe('Owner Named Store');
+    expect(view!.batch.store_undetermined).toBe(false);
+    const items = await pipeline.listInventory({});
+    expect(items.every((i) => i.store === 'Owner Named Store')).toBe(true);
+  });
+
+  it('records store_undetermined when neither the meta nor the extraction yields a store', async () => {
+    const store = new MemoryInventoryStore();
+    const parser = new FakeReceiptParser({ store: null, lines: [{ text: 'MYSTERY ITEM' }] });
+    const pipeline = new InventoryPipeline(store, parser, null, log);
+    await pipeline.ingestReceipt({ ulid: ULID(8), purchased_at: '2026-07-18' }, [photo]);
+    await pipeline.settle();
+
+    const view = await pipeline.getBatchView(ULID(8));
+    expect(view!.batch.store).toBeNull();
+    expect(view!.batch.store_undetermined).toBe(true);
+    // The batch still parsed and the unknown line still became a needs_info item.
+    expect(view!.batch.status).toBe('parsed');
+    const questions = await pipeline.listQuestions();
+    expect(questions.length).toBe(1);
+  });
+
+  it('a multi-quantity line creates N items (one lifecycle each) + records the quantity on the line', async () => {
+    const store = new MemoryInventoryStore();
+    const parser = new FakeReceiptParser({
+      store: 'Example Grocer',
+      lines: [{ text: 'ITAL CHICKEN SAUSAGE', quantity: 3 }],
+    });
+    const pipeline = new InventoryPipeline(store, parser, null, log);
+    await pipeline.ingestReceipt({ ulid: ULID(9), store: 'Example Grocer', purchased_at: '2026-07-18' }, [photo]);
+    await pipeline.settle();
+
+    const view = await pipeline.getBatchView(ULID(9));
+    expect(view!.lines.length).toBe(1);
+    expect(view!.lines[0]!.quantity).toBe(3);
+    expect(view!.lines[0]!.match_outcome).toBe('unmatched');
+    expect(view!.lines[0]!.inventory_item_ulid).not.toBeNull();
+
+    // Three distinct physical units.
+    const items = await pipeline.listInventory({});
+    expect(items.length).toBe(3);
+    expect(new Set(items.map((i) => i.ulid)).size).toBe(3);
+
+    // But one deduped question carrying the count of 3.
+    const questions = await pipeline.listQuestions();
+    expect(questions.length).toBe(1);
+    expect(questions[0]!.count).toBe(3);
+    expect(questions[0]!.item_ulids.length).toBe(3);
+  });
+
+  it('a clearly non-food line is skipped (no item); an ambiguous line still becomes needs_info', async () => {
+    const store = new MemoryInventoryStore();
+    const parser = new FakeReceiptParser({
+      store: 'Example Grocer',
+      lines: [
+        { text: 'PLASTIC FORKS', non_food: true },
+        { text: 'MYSTERY ITEM' }, // ambiguous — no flag
+      ],
+    });
+    const pipeline = new InventoryPipeline(store, parser, null, log);
+    await pipeline.ingestReceipt({ ulid: ULID(12), store: 'Example Grocer', purchased_at: '2026-07-18' }, [photo]);
+    await pipeline.settle();
+
+    const view = await pipeline.getBatchView(ULID(12));
+    const byText = Object.fromEntries(view!.lines.map((l) => [l.raw_text, l]));
+    expect(byText['PLASTIC FORKS']!.match_outcome).toBe('skipped');
+    expect(byText['PLASTIC FORKS']!.inventory_item_ulid).toBeNull();
+    expect(byText['MYSTERY ITEM']!.match_outcome).toBe('unmatched');
+
+    // Only the ambiguous line minted an item; the non-food line stocked nothing.
+    const items = await pipeline.listInventory({});
+    expect(items.length).toBe(1);
+    expect(items[0]!.raw_label).toBe('MYSTERY ITEM');
+    // The model judgment is per-receipt only — no durable lexicon marker written.
+    expect(await store.getLexicon('Example Grocer', 'PLASTIC FORKS')).toBeNull();
+  });
+
+  it('a durable product mapping wins over a model non_food guess (still matched + stocked)', async () => {
+    const store = new MemoryInventoryStore();
+    const product = await store.insertProduct({
+      ulid: ULID(13),
+      name: 'Feta Cheese',
+      shelf_life_class: 'fridge_short',
+      aliases: [],
+      nutrition_per_100g: null,
+      package_size: null,
+      shelf_life_days_unopened: null,
+      shelf_life_days_opened: null,
+    });
+    await store.upsertLexicon({
+      ulid: ULID(14),
+      store: 'Example Grocer',
+      line_text: 'FETA CHEESE',
+      product_ulid: product.ulid,
+      package_size: null,
+      shelf_life_class: 'fridge_short',
+    });
+    // Model wrongly guessed non_food, but the owner's lexicon mapping overrides.
+    const parser = new FakeReceiptParser({
+      store: 'Example Grocer',
+      lines: [{ text: 'FETA CHEESE', non_food: true }],
+    });
+    const pipeline = new InventoryPipeline(store, parser, null, log);
+    await pipeline.ingestReceipt({ ulid: ULID(15), store: 'Example Grocer', purchased_at: '2026-07-18' }, [photo]);
+    await pipeline.settle();
+
+    const view = await pipeline.getBatchView(ULID(15));
+    expect(view!.lines[0]!.match_outcome).toBe('matched');
+    const items = await pipeline.listInventory({});
+    expect(items.length).toBe(1);
+    expect(items[0]!.product_ulid).toBe(product.ulid);
+    expect(items[0]!.needs_info).toBe(false);
+  });
+
+  it('a single-quantity line records quantity 1 (unchanged behavior)', async () => {
+    const store = new MemoryInventoryStore();
+    const parser = new FakeReceiptParser({ store: 'Example Grocer', lines: [{ text: 'MYSTERY ITEM' }] });
+    const pipeline = new InventoryPipeline(store, parser, null, log);
+    await pipeline.ingestReceipt({ ulid: ULID(16), store: 'Example Grocer', purchased_at: '2026-07-18' }, [photo]);
+    await pipeline.settle();
+    const view = await pipeline.getBatchView(ULID(16));
+    expect(view!.lines[0]!.quantity).toBe(1);
+    const items = await pipeline.listInventory({});
+    expect(items.length).toBe(1);
+  });
 });
 
 describe('label intake', () => {

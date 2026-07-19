@@ -8,7 +8,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import type { FastifyBaseLogger } from 'fastify';
-import type { InventoryPhotoPart, ParsedReceipt } from '../inventory-types.js';
+import type { InventoryPhotoPart, ParsedReceipt, ParsedReceiptLine } from '../inventory-types.js';
 
 class ReceiptParseError extends Error {
   constructor(message: string) {
@@ -40,10 +40,12 @@ You transcribe a grocery/store receipt photo into its purchased line items for a
 </role>
 
 <instructions>
-1. Read the receipt photo(s). Identify the store name if printed.
-2. List every purchased PRODUCT line, in order. Copy the printed item text verbatim (keep the store's abbreviations/truncations — they are the lexicon key).
-3. Skip non-product lines: subtotals, tax, totals, payment, change, loyalty/points, store address, phone, date, cashier, coupons that aren't items.
-4. Do not invent items, quantities, or prices. If a line is unreadable, skip it.
+1. STORE: Return the merchant name printed in the receipt header — the logo or first header line — trimmed to just the brand. DROP the street address, city/state/ZIP, phone number, store number (e.g. "#1234"), slogan, and website; KEEP the printed casing. The goal is a short, stable name that will be identical across receipts from the same store. Return null if no store name is discernible.
+2. LINES: List every purchased PRODUCT line, in order. Copy the printed item text verbatim (keep the store's abbreviations/truncations — they are the lexicon key).
+3. QUANTITY: When a line represents more than one physical unit — a "N @ price" marker line above/beside the item, a "N x" prefix, or a quantity column — set that line's "quantity" to N (an integer ≥ 1) and DO NOT emit the bare "N @ price" marker as its own line. Default quantity is 1; omit it or use 1 for single units.
+4. NON-FOOD: Set "non_food": true ONLY when a line is CLEARLY non-food — a receipt non-grocery/taxable marker (e.g. a trailing tax-class code the receipt uses for non-food) or unambiguous non-grocery text (e.g. GIFT CARD, BAG FEE, housewares like a mug or foil). Be CONSERVATIVE: if you are at all unsure whether a line is food, leave non_food false/omitted — a wrongly skipped grocery is worse than an extra question.
+5. Skip non-product lines entirely: subtotals, tax, totals, payment, change, loyalty/points, store address, phone, date, cashier, standalone coupons.
+6. Do not invent items, quantities, or prices. If a product line is unreadable, skip it.
 </instructions>
 
 <response_format>
@@ -53,7 +55,7 @@ Return ONLY a JSON object inside <receipt> tags. No markdown, no text outside th
 {
   "store": "store name or null",
   "lines": [
-    {"text": "verbatim product line text"}
+    {"text": "verbatim product line text", "quantity": 1, "non_food": false}
   ]
 }
 </receipt>
@@ -132,20 +134,46 @@ export class KitchenReceiptParser implements ReceiptParser {
     } catch (error) {
       throw new ReceiptParseError(`JSON parse error: ${error instanceof Error ? error.message : String(error)}`);
     }
-    const store =
-      typeof parsed.store === 'string' && parsed.store.trim() ? parsed.store.trim() : storeHint;
+    // Extraction result; the pipeline applies meta-store precedence over this.
+    // storeHint is the pipeline's meta store — used only as a fallback here.
+    const store = normalizeStore(parsed.store) ?? (storeHint ? normalizeStore(storeHint) : null);
     const rawLines = Array.isArray(parsed.lines) ? parsed.lines : [];
     const lines = rawLines
-      .map((l) => {
-        if (typeof l === 'string') return { text: l.trim() };
+      .map((l): ParsedReceiptLine | null => {
+        if (typeof l === 'string') {
+          const text = l.trim();
+          return text ? { text } : null;
+        }
         if (l && typeof l === 'object' && typeof (l as Record<string, unknown>).text === 'string') {
-          return { text: ((l as Record<string, unknown>).text as string).trim() };
+          const obj = l as Record<string, unknown>;
+          const text = (obj.text as string).trim();
+          if (!text) return null;
+          return { text, quantity: normalizeQuantity(obj.quantity), non_food: obj.non_food === true };
         }
         return null;
       })
-      .filter((l): l is { text: string } => l !== null && l.text.length > 0);
-    return { store: store ?? null, lines };
+      .filter((l): l is ParsedReceiptLine => l !== null);
+    return { store, lines };
   }
+}
+
+/**
+ * Normalize a merchant name to a short, stable lexicon key: trim, collapse
+ * internal whitespace runs, keep the printed casing. Null/empty → null. The
+ * model does the semantic trimming (address/phone/store-number removal); this
+ * is the mechanical cleanup.
+ */
+export function normalizeStore(store: unknown): string | null {
+  if (typeof store !== 'string') return null;
+  const cleaned = store.trim().replace(/\s+/g, ' ');
+  return cleaned.length > 0 ? cleaned : null;
+}
+
+/** Clamp a parsed quantity to an integer ≥ 1 (default 1 on anything invalid). */
+function normalizeQuantity(value: unknown): number {
+  const n = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(n) || n < 1) return 1;
+  return Math.floor(n);
 }
 
 type SupportedMediaType = 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';

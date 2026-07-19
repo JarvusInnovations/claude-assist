@@ -303,16 +303,22 @@ All tables instance-agnostic empty schema, ULID keys, `kitchen` schema
   snapshot, nullable), `notes` (nullable), `created_at`, `updated_at`.
 - **`kitchen.purchase_batches`** — one shopping event: `ulid` (client-supplied
   for receipt idempotency), `source` (enum `receipt | manual`), `store`
-  (nullable), `purchased_at` (date), `status` (enum `parsing | parsed | failed`
-  — the parse work queue, mirrors entry estimation), `parse_attempts`,
-  `last_error`, `last_error_at`, `created_at`, `updated_at`.
+  (nullable), `store_undetermined` (bool, default false — set true when the
+  parse completed but neither the scan meta nor the header extraction yielded a
+  store, so the null is a recorded gap, not a silent one), `purchased_at`
+  (date), `status` (enum `parsing | parsed | failed` — the parse work queue,
+  mirrors entry estimation), `parse_attempts`, `last_error`, `last_error_at`,
+  `created_at`, `updated_at`.
 - **`kitchen.purchase_batch_lines`** — one parsed receipt line: `ulid`,
-  `batch_ulid`, `raw_text`, `match_outcome` (enum `matched | unmatched |
-  pending | skipped`), `product_ulid` (nullable), `inventory_item_ulid`
-  (nullable), `created_at`. `skipped` records a line the parse honored a
-  non-inventory lexicon marker for — no inventory item is created, but the line
-  is retained (never silently dropped) so the batch stays a faithful record of
-  the receipt.
+  `batch_ulid`, `raw_text`, `quantity` (int, default 1 — the physical-unit
+  count the line represents; a multi-quantity/multibuy line records N here and
+  fans out to N items), `match_outcome` (enum `matched | unmatched | pending |
+  skipped`), `product_ulid` (nullable), `inventory_item_ulid` (nullable — the
+  representative item for the line; the earliest of the N fanned-out units),
+  `created_at`. `skipped` records a line the parse either honored a
+  non-inventory lexicon marker for OR the model judged clearly non-food — no
+  inventory item is created, but the line is retained (never silently dropped)
+  so the batch stays a faithful record of the receipt.
 - **`kitchen.entries.inventory_item_ulid`** — added column (nullable, no FK):
   the item a consumption entry depleted (phase-1 "optional inventory-item
   link").
@@ -375,15 +381,32 @@ Receipts:
   `{ ulid (ULID, required), store?, purchased_at? (ISO date) }`. Photo parts
   named **`photo`** or **`photos`** (0..N). Posts a `purchase_batches` row
   immediately (`status: 'parsing'`), idempotent on ULID, and returns the
-  **bare** `PurchaseBatch` (`201` created / `200` replay). A detached parse pass runs the cheap receipt
-  model (`KITCHEN_RECEIPT_MODEL`) over the photos → line items; each line does
-  exact-string lexicon lookup per store; a **non-inventory marker** hit records
-  the line `skipped` and creates **no** item (the parse honors the marker); a
-  product match creates a `stocked` inventory item stamped with `purchased_at`;
-  an unknown creates a `needs_info` item (`product_ulid` null, `raw_label` =
-  line text). A multi-quantity line still creates **one item per physical unit**
-  (separate open/use lifecycles) — the dedupe is a read-side concern of the
-  questions queue, never a collapse of the physical units. Batch → `parsed`.
+  **bare** `PurchaseBatch` (`201` created / `200` replay). A detached parse pass
+  runs the cheap receipt model (`KITCHEN_RECEIPT_MODEL`) over the photos →
+  `{ store, lines[] }`. Each `line` carries `{ text, quantity, non_food }`. The
+  resolution of each line, in order:
+  1. **Store.** See § Store extraction & precedence — the resolved store is
+     written back onto the batch and stamped on every item + used as the lexicon
+     key.
+  2. **Non-inventory marker.** An exact-string `(store, line)` lexicon hit with
+     `non_inventory = true` records the line `skipped`, creates **no** item (the
+     parse honors the durable marker).
+  3. **Product match.** A `(store, line)` lexicon hit with a `product_ulid`
+     creates a `stocked` item stamped with `purchased_at` — this durable mapping
+     wins even when the model judged the line `non_food` (owner intent beats the
+     first-pass judgment).
+  4. **Model non-food.** A `non_food` line with no lexicon hit records the line
+     `skipped` and creates **no** item (see § Conservative non-food skip). This
+     is a per-receipt judgment only — it never writes a lexicon marker.
+  5. **Unknown.** Any other line creates a `needs_info` item (`product_ulid`
+     null, `raw_label` = line text).
+
+  A multi-quantity line (`quantity: N`) records `quantity = N` on the batch line
+  and creates **one item per physical unit** (N separate open/use lifecycles) —
+  matched → N stocked items, unknown → N `needs_info` items; the batch line's
+  `inventory_item_ulid` points at the representative (earliest) unit. The dedupe
+  is a read-side concern of the questions queue, never a collapse of the
+  physical units. Batch → `parsed`.
 - `GET /receipts?limit` → `{ batches: PurchaseBatch[], count }`.
 - `GET /receipts/:ulid` → `{ batch: PurchaseBatch, lines: BatchLine[] }` (404 if absent).
 
@@ -475,10 +498,13 @@ Products & lexicon (agentic seed + reads):
 
 ### JSON shapes (wire contract for the client app)
 
-- **PurchaseBatch**: `{ ulid, source, store, purchased_at, status,
-  parse_attempts, last_error, created_at, updated_at }`.
-- **BatchLine**: `{ ulid, batch_ulid, raw_text, match_outcome, product_ulid,
-  inventory_item_ulid, created_at }`.
+- **PurchaseBatch**: `{ ulid, source, store, store_undetermined, purchased_at,
+  status, parse_attempts, last_error, created_at, updated_at }`.
+  `store_undetermined` is true when a completed parse found no store (meta or
+  header); false otherwise.
+- **BatchLine**: `{ ulid, batch_ulid, raw_text, quantity, match_outcome,
+  product_ulid, inventory_item_ulid, created_at }`. `quantity` is the
+  physical-unit count the line represents (≥ 1; default 1).
 - **InventoryItem**: `{ ulid, product_ulid, product_name, raw_label, store,
   batch_ulid, state, on_hand_fraction, needs_info, acquired_at, opened_at,
   closed_at, eat_by, shelf_life_class, days_until_eat_by, age_days, notes,
@@ -499,6 +525,57 @@ Products & lexicon (agentic seed + reads):
   count when `count > 1` (e.g. `… ×2`).
 - **Label response**: `{ item: InventoryItem, product: Product, resolved_count }`.
 - **Dismiss response**: `{ item: InventoryItem, dismissed_count, non_inventory }`.
+
+### Store extraction & precedence
+
+A batch and every item it stocks are keyed to a **store**, and the receipt
+lexicon is `(store, line_text)` — so a null store is corrosive and silent: the
+lexicon write on label-resolve is skipped when the item's store is null, items
+resolve but the lexicon learns nothing, and the same lines re-ask on every
+future receipt. Two sources fill the store, in strict precedence:
+
+1. **Explicit scan meta.** A `store` on the `POST /receipts` meta always wins
+   (the owner naming the store they are standing in).
+2. **Header extraction.** Otherwise the receipt model returns the merchant name
+   as printed in the receipt header — the logo or first header line — **trimmed
+   to just the brand**: street address, city/state/ZIP, phone, store number,
+   slogan, and website are stripped; the printed casing is kept. The server
+   additionally trims surrounding whitespace and collapses internal whitespace
+   runs. The goal is a **short, stable** name so the same physical store keys
+   the same lexicon rows across receipts (which is why the store number is
+   dropped). Null when no name is discernible.
+
+Resolution is `store = meta.store ?? extracted`. The resolved store is written
+back onto the batch (`purchase_batches.store`) and stamped on every item the
+parse creates. When **neither** source yields a store, the batch keeps
+`store: null` and sets `store_undetermined: true` — the gap is recorded, not
+silent, so a client/agent can surface it and the parse still proceeds
+(unmatched lines become `needs_info` items with a null store, exactly as
+before). A supplied meta store never sets `store_undetermined`.
+
+### Conservative non-food skip
+
+Grocery receipts flag non-food lines with markers (a taxable/non-grocery suffix
+code) or obvious non-grocery text. The receipt model returns `non_food: true`
+on a line **only when it is clearly non-food** from such a marker or the line
+text itself (e.g. `GIFT CARD`, a bag fee, housewares). Effect: a `non_food`
+line with no lexicon hit is recorded `skipped` with **no** item minted (step 4
+of the resolution order above).
+
+The rule is deliberately conservative — **ambiguity resolves toward
+inventory**. Any line the model is unsure about is left un-flagged and becomes a
+`needs_info` item, because a wrongly-skipped grocery (silently absent from
+inventory) is worse than one extra question. Two further guards:
+
+- A **durable lexicon mapping wins over the model judgment** in both
+  directions: a `(store, line)` product mapping still matches and stocks even
+  if the model guessed `non_food`, and a `non_inventory` skip marker still
+  skips regardless of the model. The model judgment only decides lines the
+  lexicon has never seen.
+- The judgment is a **per-receipt first pass** — it never writes a
+  `receipt_lexicon` row. The durable, per-store skip mechanism remains the
+  explicit `non_inventory` dismissal (§ Non-inventory dismissal); the model
+  judgment just spares the owner a question on the obvious cases this receipt.
 
 ### Depletion matcher
 

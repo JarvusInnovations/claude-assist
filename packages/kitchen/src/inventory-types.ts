@@ -164,6 +164,8 @@ export interface PurchaseBatchRecord {
   ulid: string;
   source: BatchSource;
   store: string | null;
+  /** True when a completed parse found no store (meta or header extraction). */
+  store_undetermined: boolean;
   purchased_at: Date;
   status: BatchStatus;
   parse_attempts: number;
@@ -178,6 +180,7 @@ export interface PurchaseBatchView {
   ulid: string;
   source: BatchSource;
   store: string | null;
+  store_undetermined: boolean;
   purchased_at: string;
   status: BatchStatus;
   parse_attempts: number;
@@ -198,6 +201,8 @@ export interface BatchLineRecord {
   ulid: string;
   batch_ulid: string;
   raw_text: string;
+  /** Physical-unit count the line represents (≥ 1; a multibuy line fans out to N items). */
+  quantity: number;
   match_outcome: LineMatchOutcome;
   product_ulid: string | null;
   inventory_item_ulid: string | null;
@@ -208,6 +213,7 @@ export interface BatchLineView {
   ulid: string;
   batch_ulid: string;
   raw_text: string;
+  quantity: number;
   match_outcome: LineMatchOutcome;
   product_ulid: string | null;
   inventory_item_ulid: string | null;
@@ -259,6 +265,17 @@ export interface InventoryPhotoPart {
 /** The receipt model's raw structured output: one line per purchased item. */
 export interface ParsedReceiptLine {
   text: string;
+  /**
+   * Physical-unit count for a multi-quantity/multibuy line (a `N @ price`
+   * marker or a qty column). Defaults to 1; the parse fans out to N items.
+   */
+  quantity?: number;
+  /**
+   * The model's judgment that the line is CLEARLY non-food (a receipt
+   * non-grocery marker or unambiguous non-grocery text). Conservative: left
+   * false/undefined on any ambiguity. A durable lexicon mapping overrides it.
+   */
+  non_food?: boolean;
 }
 
 export interface ParsedReceipt {

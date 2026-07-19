@@ -26,6 +26,7 @@ import type {
   LexiconInput,
   LexiconRecord,
   NutritionPer100g,
+  ParsedReceiptLine,
   ProductInput,
   ProductRecord,
   PurchaseBatchRecord,
@@ -129,9 +130,17 @@ export class InventoryPipeline {
     }
     try {
       const parsed = await this.receiptParser.parse({ photos, storeHint: batch.store });
+      // Precedence: an explicit meta store overrides the header extraction.
       const store = batch.store ?? parsed.store;
+      // Persist the resolution back onto the batch when it wasn't meta-supplied:
+      // stamp the extracted store, or record `store_undetermined` when neither
+      // source yielded one (a null store is corrosive+silent — the lexicon is
+      // keyed on store, so it must be a visible gap, not an invisible one).
+      if (batch.store == null) {
+        await this.store.setBatchStoreResolution(batch.ulid, store, store == null);
+      }
       for (const line of parsed.lines) {
-        await this.resolveReceiptLine(batch, store, line.text);
+        await this.resolveReceiptLine(batch, store, line);
       }
       await this.store.setBatchStatus(batch.ulid, 'parsed');
     } catch (error) {
@@ -149,36 +158,53 @@ export class InventoryPipeline {
     }
   }
 
-  /** One receipt line: exact-string lexicon lookup per store → matched or needs_info item. */
+  /**
+   * One receipt line → batch line + inventory item(s). Resolution order
+   * (specs/modules/kitchen.md § POST /receipts, § Conservative non-food skip):
+   *   1. durable `non_inventory` lexicon marker → `skipped`, no item;
+   *   2. durable product mapping → `matched`, N stocked items (wins over a
+   *      model non_food guess — owner intent beats the first-pass judgment);
+   *   3. model judged clearly non-food (no lexicon hit) → `skipped`, no item
+   *      (per-receipt only — never writes a lexicon marker);
+   *   4. unknown → `unmatched`, N needs_info items (the queued question).
+   * A multi-quantity line (`quantity: N`) fans out to N items (one lifecycle
+   * each) and records N on the batch line, which points at the representative
+   * (earliest) unit.
+   */
   private async resolveReceiptLine(
     batch: PurchaseBatchRecord,
     store: string | null,
-    rawText: string
+    line: ParsedReceiptLine
   ): Promise<void> {
+    const rawText = line.text;
+    const quantity = Math.max(1, Math.floor(line.quantity ?? 1));
     const lineText = normalizeLine(rawText);
     const lexicon = store ? await this.store.getLexicon(store, lineText) : null;
 
-    // Non-inventory marker: a line the owner previously dismissed with the
-    // "never inventory this line" flag. Skip stocking it, but record the line
-    // (never silently drop it) so the batch stays a faithful receipt record.
+    // 1. Non-inventory marker: a line the owner previously flagged "never
+    // inventory". Skip stocking it, but record the line (never silently drop
+    // it) so the batch stays a faithful receipt record.
     if (lexicon?.non_inventory) {
-      await this.store.insertLine({
-        ulid: generateUlid(),
-        batch_ulid: batch.ulid,
-        raw_text: rawText,
-        match_outcome: 'skipped',
-        product_ulid: null,
-        inventory_item_ulid: null,
-      });
+      await this.recordSkippedLine(batch, rawText, quantity);
       return;
     }
 
+    // 2. Product mapping → N stocked items. A durable mapping stocks even when
+    // the model guessed non_food.
     if (lexicon && lexicon.product_ulid) {
-      const product = await this.store.getProduct(lexicon.product_ulid);
+      const productUlid = lexicon.product_ulid;
+      const product = await this.store.getProduct(productUlid);
       const cls = lexicon.shelf_life_class ?? product?.shelf_life_class ?? 'unknown';
-      const item = await this.store.insertItemIfAbsent({
+      const eatBy = deriveEatBy({
+        shelfLifeClass: cls,
+        acquiredAt: batch.purchased_at,
+        openedAt: null,
+        daysUnopenedOverride: product?.shelf_life_days_unopened,
+        daysOpenedOverride: product?.shelf_life_days_opened,
+      });
+      const firstUlid = await this.fanOutItems(quantity, () => ({
         ulid: generateUlid(),
-        product_ulid: lexicon.product_ulid,
+        product_ulid: productUlid,
         raw_label: rawText,
         store,
         batch_ulid: batch.ulid,
@@ -186,30 +212,34 @@ export class InventoryPipeline {
         on_hand_fraction: 1,
         needs_info: false,
         acquired_at: batch.purchased_at,
-        eat_by: deriveEatBy({
-          shelfLifeClass: cls,
-          acquiredAt: batch.purchased_at,
-          openedAt: null,
-          daysUnopenedOverride: product?.shelf_life_days_unopened,
-          daysOpenedOverride: product?.shelf_life_days_opened,
-        }),
+        eat_by: eatBy,
         shelf_life_class: cls,
         notes: null,
-      });
+      }));
       await this.store.insertLine({
         ulid: generateUlid(),
         batch_ulid: batch.ulid,
         raw_text: rawText,
+        quantity,
         match_outcome: 'matched',
-        product_ulid: lexicon.product_ulid,
-        inventory_item_ulid: item.record.ulid,
+        product_ulid: productUlid,
+        inventory_item_ulid: firstUlid,
       });
       return;
     }
 
-    // Unknown line: create a needs_info item + record the line as unmatched.
-    // The needs_info item IS the queued one-time question (self-clears on label scan).
-    const item = await this.store.insertItemIfAbsent({
+    // 3. Model judged the line clearly non-food (and the lexicon has never seen
+    // it): record it `skipped`, mint no item. Conservative — only fires on the
+    // model's explicit flag; ambiguous lines fall through to needs_info below.
+    if (line.non_food === true) {
+      await this.recordSkippedLine(batch, rawText, quantity);
+      return;
+    }
+
+    // 4. Unknown line: N needs_info items + record the line unmatched. The
+    // needs_info items ARE the queued one-time question (self-clear on label
+    // scan; deduped into one question carrying the count).
+    const firstUlid = await this.fanOutItems(quantity, () => ({
       ulid: generateUlid(),
       product_ulid: null,
       raw_label: rawText,
@@ -222,15 +252,47 @@ export class InventoryPipeline {
       eat_by: null,
       shelf_life_class: null,
       notes: null,
-    });
+    }));
     await this.store.insertLine({
       ulid: generateUlid(),
       batch_ulid: batch.ulid,
       raw_text: rawText,
+      quantity,
       match_outcome: 'unmatched',
       product_ulid: null,
-      inventory_item_ulid: item.record.ulid,
+      inventory_item_ulid: firstUlid,
     });
+  }
+
+  /** Record a batch line that stocks nothing (skipped), retaining the quantity. */
+  private async recordSkippedLine(
+    batch: PurchaseBatchRecord,
+    rawText: string,
+    quantity: number
+  ): Promise<void> {
+    await this.store.insertLine({
+      ulid: generateUlid(),
+      batch_ulid: batch.ulid,
+      raw_text: rawText,
+      quantity,
+      match_outcome: 'skipped',
+      product_ulid: null,
+      inventory_item_ulid: null,
+    });
+  }
+
+  /**
+   * Insert `count` inventory items (each its own physical unit + ULID) from a
+   * factory and return the representative (first-created) item's ULID for the
+   * batch line to point at. `count` is ≥ 1.
+   */
+  private async fanOutItems(count: number, make: () => NewItem): Promise<string> {
+    let firstUlid: string | null = null;
+    for (let i = 0; i < count; i++) {
+      const { record } = await this.store.insertItemIfAbsent(make());
+      if (firstUlid === null) firstUlid = record.ulid;
+    }
+    return firstUlid!;
   }
 
   async getBatchView(ulid: string): Promise<{ batch: PurchaseBatchView; lines: BatchLineView[] } | null> {
@@ -806,6 +868,7 @@ function toBatchView(b: PurchaseBatchRecord): PurchaseBatchView {
     ulid: b.ulid,
     source: b.source,
     store: b.store,
+    store_undetermined: b.store_undetermined,
     purchased_at: toIsoDate(b.purchased_at)!,
     status: b.status,
     parse_attempts: b.parse_attempts,
@@ -820,6 +883,7 @@ function toLineView(l: BatchLineView | import('../inventory-types.js').BatchLine
     ulid: l.ulid,
     batch_ulid: l.batch_ulid,
     raw_text: l.raw_text,
+    quantity: l.quantity,
     match_outcome: l.match_outcome,
     product_ulid: l.product_ulid,
     inventory_item_ulid: l.inventory_item_ulid,
