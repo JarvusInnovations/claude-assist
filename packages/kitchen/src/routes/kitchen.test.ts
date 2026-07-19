@@ -285,6 +285,129 @@ describe('kitchen routes', () => {
       });
       expect(response.statusCode).toBe(400);
     });
+
+    // ── reselect_of: clone a source entry deterministically (recent pills) ──
+
+    /** Seed an estimated source entry to clone from. */
+    async function seedSource(label = 'Cottage cheese bowl'): Promise<string> {
+      const sourceUlid = generateUlid();
+      await entries.insertIfAbsent({
+        ulid: sourceUlid,
+        logged_at: new Date(),
+        note: null,
+        recipe_ulid: null,
+        component_quantities: null,
+      });
+      await entries.applyEstimate(
+        sourceUlid,
+        label,
+        {
+          calories: 220,
+          protein_g: 24,
+          fat_g: 5,
+          sat_fat_g: 3,
+          carbs_g: 12,
+          sodium_mg: 400,
+          confidence: 0.5,
+          portion_basis: 'one bowl',
+        },
+        'model',
+        'estimated'
+      );
+      return sourceUlid;
+    }
+
+    it('clones a source entry via reselect_of (estimated, source reselect, exact base macros, no model call)', async () => {
+      const sourceUlid = await seedSource();
+      const ulid = generateUlid();
+      const { body, contentType } = buildMultipart({
+        entry: JSON.stringify({ ulid, reselect_of: sourceUlid }),
+      });
+
+      const response = await fastify.inject({
+        method: 'POST',
+        url: '/kitchen/entries',
+        headers: { 'content-type': contentType },
+        payload: body,
+      });
+
+      expect(response.statusCode).toBe(201);
+      const json = response.json();
+      expect(json.status).toBe('estimated');
+      expect(json.source).toBe('reselect');
+      expect(json.label).toBe('Cottage cheese bowl');
+      expect(json.calories).toBe(220);
+      expect(json.protein_g).toBe(24);
+      expect(json.sodium_mg).toBe(400);
+      expect(json.portion_multiplier).toBe(1); // never cloned — fresh serving
+      expect(estimator.calls).toBe(0);
+    });
+
+    it('stores a comment riding a reselect_of clone and never invokes the model', async () => {
+      const sourceUlid = await seedSource();
+      const ulid = generateUlid();
+      const { body, contentType } = buildMultipart({
+        entry: JSON.stringify({ ulid, reselect_of: sourceUlid, note: 'smaller portion' }),
+      });
+
+      const response = await fastify.inject({
+        method: 'POST',
+        url: '/kitchen/entries',
+        headers: { 'content-type': contentType },
+        payload: body,
+      });
+      expect(response.statusCode).toBe(201);
+      expect(response.json().note).toBe('smaller portion');
+
+      const after = await fastify.inject({ method: 'GET', url: `/kitchen/entries/${ulid}` });
+      expect(after.json().note).toBe('smaller portion');
+      expect(after.json().source).toBe('reselect');
+      expect(estimator.calls).toBe(0);
+    });
+
+    it('rejects a POST carrying both recipe_ulid and reselect_of with 400', async () => {
+      const { body, contentType } = buildMultipart({
+        entry: JSON.stringify({
+          ulid: generateUlid(),
+          recipe_ulid: generateUlid(),
+          reselect_of: generateUlid(),
+        }),
+      });
+      const response = await fastify.inject({
+        method: 'POST',
+        url: '/kitchen/entries',
+        headers: { 'content-type': contentType },
+        payload: body,
+      });
+      expect(response.statusCode).toBe(400);
+    });
+
+    it('rejects reselect_of referencing an unknown/deleted source entry with 400', async () => {
+      const { body, contentType } = buildMultipart({
+        entry: JSON.stringify({ ulid: generateUlid(), reselect_of: generateUlid() }),
+      });
+      const response = await fastify.inject({
+        method: 'POST',
+        url: '/kitchen/entries',
+        headers: { 'content-type': contentType },
+        payload: body,
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error).toContain('unknown source entry');
+    });
+
+    it('rejects a malformed reselect_of (not a ULID) with 400', async () => {
+      const { body, contentType } = buildMultipart({
+        entry: JSON.stringify({ ulid: generateUlid(), reselect_of: 'not-a-ulid' }),
+      });
+      const response = await fastify.inject({
+        method: 'POST',
+        url: '/kitchen/entries',
+        headers: { 'content-type': contentType },
+        payload: body,
+      });
+      expect(response.statusCode).toBe(400);
+    });
   });
 
   describe('GET /kitchen/entries', () => {
@@ -558,6 +681,39 @@ describe('kitchen routes', () => {
       expect(response.statusCode).toBe(200);
       const json = response.json();
       expect(json.recipes.map((r: { name: string }) => r.name)).toContain('Salad');
+    });
+
+    it('each recent item carries entry_ulid — the source a recent pill clones', async () => {
+      const sourceUlid = generateUlid();
+      await entries.insertIfAbsent({
+        ulid: sourceUlid,
+        logged_at: new Date(),
+        note: null,
+        recipe_ulid: null,
+        component_quantities: null,
+      });
+      await entries.applyEstimate(
+        sourceUlid,
+        'Latte',
+        {
+          calories: 130,
+          protein_g: 8,
+          fat_g: 5,
+          sat_fat_g: 3,
+          carbs_g: 13,
+          sodium_mg: 105,
+          confidence: 0.5,
+          portion_basis: 'grande',
+        },
+        'model',
+        'estimated'
+      );
+
+      const response = await fastify.inject({ method: 'GET', url: '/kitchen/reselect' });
+      const json = response.json();
+      const recent = json.recent.find((r: { label: string }) => r.label === 'Latte');
+      expect(recent).toBeDefined();
+      expect(recent.entry_ulid).toBe(sourceUlid);
     });
   });
 });

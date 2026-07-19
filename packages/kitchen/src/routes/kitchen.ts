@@ -19,10 +19,12 @@ import multipart from '@fastify/multipart';
 import { ULID_PATTERN } from '../ulid.js';
 import { InvalidTransitionError } from '../state.js';
 import {
+  ConflictingSourceError,
   ManualOverrideConflictError,
   PatchValidationError,
   PromoteNotReadyError,
   RecipeNotFoundError,
+  SourceEntryNotFoundError,
   type KitchenPipeline,
 } from '../services/pipeline.js';
 import { PORTION_MULTIPLIER_MAX } from '../types.js';
@@ -63,6 +65,12 @@ function validateEntryInput(input: unknown): { ok: true; value: EntryInput } | {
   if (obj.recipe_ulid !== undefined && (typeof obj.recipe_ulid !== 'string' || !ULID_PATTERN.test(obj.recipe_ulid))) {
     return { ok: false, error: 'entry.recipe_ulid must be a valid ULID' };
   }
+  if (obj.reselect_of !== undefined && (typeof obj.reselect_of !== 'string' || !ULID_PATTERN.test(obj.reselect_of))) {
+    return { ok: false, error: 'entry.reselect_of must be a valid ULID' };
+  }
+  if (obj.recipe_ulid !== undefined && obj.reselect_of !== undefined) {
+    return { ok: false, error: 'entry.recipe_ulid and entry.reselect_of are mutually exclusive' };
+  }
   if (obj.component_quantities !== undefined && !validateComponentQuantities(obj.component_quantities)) {
     return { ok: false, error: 'entry.component_quantities entries need a string label and numeric quantity_g' };
   }
@@ -75,6 +83,7 @@ function validateEntryInput(input: unknown): { ok: true; value: EntryInput } | {
       note: obj.note as string | undefined,
       recipe_ulid: obj.recipe_ulid as string | undefined,
       component_quantities: obj.component_quantities as ComponentQuantity[] | undefined,
+      reselect_of: obj.reselect_of as string | undefined,
     },
   };
 }
@@ -219,7 +228,11 @@ export const registerKitchenRoutes: FastifyPluginAsync<KitchenRoutesConfig> = as
       reply.status(created ? 201 : 200);
       return record;
     } catch (err) {
-      if (err instanceof RecipeNotFoundError) {
+      if (
+        err instanceof RecipeNotFoundError ||
+        err instanceof SourceEntryNotFoundError ||
+        err instanceof ConflictingSourceError
+      ) {
         reply.status(400);
         return { error: err.message };
       }

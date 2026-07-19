@@ -91,6 +91,14 @@ export interface EntryInput {
   /** Optional recipe reference — triggers deterministic recipe-computed macros. */
   recipe_ulid?: string;
   component_quantities?: ComponentQuantity[];
+  /**
+   * Optional source-entry reference — a recent pill re-logs by cloning this
+   * entry's label + base macros deterministically (source `reselect`, status
+   * `estimated`, no model call; see specs/modules/kitchen.md § Reselect
+   * cloning). Mutually exclusive with `recipe_ulid`. A note riding the same
+   * POST is stored as a comment and does NOT trigger estimation.
+   */
+  reselect_of?: string;
 }
 
 /**
