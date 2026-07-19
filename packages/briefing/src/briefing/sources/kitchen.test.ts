@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import type postgres from 'postgres';
-import { fetchSuggestions, scoreSuggestions } from './kitchen.js';
+import { fetchKitchenSummary, fetchSuggestions, scoreSuggestions } from './kitchen.js';
 
 /**
  * Fake postgres.Sql: a tagged-template function that routes on the query text.
@@ -70,6 +70,36 @@ describe('stock-aware suggestions via the injected recipes provider', () => {
       throw new Error('sheet read failed');
     };
     expect(await fetchSuggestions(sql, 3, provider)).toEqual([]);
+  });
+});
+
+describe('daily totals use EFFECTIVE macros (base × portion_multiplier)', () => {
+  it('sums each macro multiplied by portion_multiplier', async () => {
+    let totalsQuery = '';
+    const sql = fakeSql((query) => {
+      if (query.includes('SUM') && query.includes("status = 'estimated'")) {
+        totalsQuery = query;
+        // The DB does the SUM; the fake returns the already-effective totals so
+        // the source's parse/round path is exercised. The assertion below proves
+        // the multiplier is IN the SQL, which is where the scaling must happen.
+        return [{ calories: '600', protein_g: '30', sat_fat_g: '5' }];
+      }
+      if (query.includes("status = 'estimating'")) return [{ count: 0 }];
+      return [];
+    });
+
+    const summary = await fetchKitchenSummary(sql, {
+      dateIso: '2026-07-18',
+      timeZone: 'America/New_York',
+    });
+
+    expect(totalsQuery).toContain('calories * portion_multiplier');
+    expect(totalsQuery).toContain('protein_g * portion_multiplier');
+    expect(totalsQuery).toContain('sat_fat_g * portion_multiplier');
+    expect(summary.error).toBeNull();
+    expect(summary.calories).toBe(600);
+    expect(summary.proteinG).toBe(30);
+    expect(summary.satFatG).toBe(5);
   });
 });
 

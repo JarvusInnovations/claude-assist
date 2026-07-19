@@ -25,6 +25,7 @@ import {
   RecipeNotFoundError,
   type KitchenPipeline,
 } from '../services/pipeline.js';
+import { PORTION_MULTIPLIER_MAX } from '../types.js';
 import type { ComponentQuantity, EntryInput, EntryPatchInput, PhotoPart, RecipeComponent } from '../types.js';
 
 export interface KitchenRoutesConfig {
@@ -91,6 +92,9 @@ const PATCH_BODY_SCHEMA = {
     carbs_g: { type: 'number', minimum: 0 },
     sodium_mg: { type: 'number', minimum: 0 },
     portion_basis: { type: 'string', maxLength: 200 },
+    // Post-hoc rescale of the base macros (specs/modules/kitchen.md § Portion
+    // multiplier): 0 < m <= PORTION_MULTIPLIER_MAX. exclusiveMinimum keeps 0 out.
+    portion_multiplier: { type: 'number', exclusiveMinimum: 0, maximum: PORTION_MULTIPLIER_MAX },
   },
 } as const;
 

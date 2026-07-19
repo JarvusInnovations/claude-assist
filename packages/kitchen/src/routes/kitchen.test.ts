@@ -357,6 +357,53 @@ describe('kitchen routes', () => {
       expect(response.statusCode).toBe(404);
     });
 
+    it('accepts a portion_multiplier PATCH: 200, base unscaled on the wire, source unchanged', async () => {
+      const ulid = generateUlid();
+      const seedPipeline = new KitchenPipeline(entries, recipes, estimator, fastify.log);
+      const { estimation } = await seedPipeline.ingest({ ulid, note: 'loaded fries' }, []);
+      await estimation;
+      const base = (await seedPipeline.get(ulid))!.calories;
+
+      const response = await fastify.inject({
+        method: 'PATCH',
+        url: `/kitchen/entries/${ulid}`,
+        payload: { portion_multiplier: 0.5 },
+      });
+      expect(response.statusCode).toBe(200);
+      const json = response.json();
+      expect(json.portion_multiplier).toBe(0.5);
+      expect(json.calories).toBe(base); // base carried on the wire, not pre-scaled
+      expect(json.source).toBe('model'); // not flipped to manual
+    });
+
+    it('accepts a portion_multiplier PATCH on a manual entry without a 409', async () => {
+      const ulid = generateUlid();
+      await new KitchenPipeline(entries, recipes, estimator, fastify.log).ingest({ ulid, note: 'x' }, []);
+      await fastify.inject({ method: 'PATCH', url: `/kitchen/entries/${ulid}`, payload: { calories: 300 } });
+
+      const response = await fastify.inject({
+        method: 'PATCH',
+        url: `/kitchen/entries/${ulid}`,
+        payload: { portion_multiplier: 0.75 },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().portion_multiplier).toBe(0.75);
+      expect(response.json().source).toBe('manual');
+    });
+
+    it('rejects a non-positive or absurd portion_multiplier with 400 (schema bound)', async () => {
+      const ulid = generateUlid();
+      await new KitchenPipeline(entries, recipes, estimator, fastify.log).ingest({ ulid, note: 'x' }, []);
+      for (const bad of [0, -1, 21]) {
+        const response = await fastify.inject({
+          method: 'PATCH',
+          url: `/kitchen/entries/${ulid}`,
+          payload: { portion_multiplier: bad },
+        });
+        expect(response.statusCode).toBe(400);
+      }
+    });
+
     it('rejects an empty patch body with 400', async () => {
       const ulid = generateUlid();
       await new KitchenPipeline(entries, recipes, estimator, fastify.log).ingest({ ulid, note: 'x' }, []);
