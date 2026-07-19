@@ -9,6 +9,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { spliceGeneratedRegions as spliceSessions } from "../packages/sessions/src/axi/skill.ts";
 import { spliceGmail, spliceGoogle } from "../packages/google/src/axi/skill.ts";
+import { spliceGeneratedRegions as spliceKitchen } from "../packages/kitchen/src/axi/skill.ts";
 
 interface SkillTarget {
   path: string;
@@ -19,6 +20,7 @@ const TARGETS: SkillTarget[] = [
   { path: "skills/assist-sessions/SKILL.md", splice: spliceSessions },
   { path: "skills/assist-gmail/SKILL.md", splice: spliceGmail },
   { path: "skills/assist-google-setup/SKILL.md", splice: spliceGoogle },
+  { path: "skills/assist-kitchen/SKILL.md", splice: spliceKitchen },
 ];
 
 const check = process.argv.includes("--check");

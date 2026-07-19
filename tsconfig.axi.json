@@ -7,5 +7,6 @@
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true
   },
-  "include": ["packages/sessions/src/axi/**/*", "packages/google/src/axi/**/*"]
+  "include": ["packages/sessions/src/axi/**/*", "packages/google/src/axi/**/*", "packages/kitchen/src/axi/**/*"],
+  "exclude": ["**/*.test.ts"]
 }
