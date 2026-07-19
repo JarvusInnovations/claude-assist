@@ -22,12 +22,30 @@ import { KitchenEstimator } from './services/estimator.js';
 import { KitchenPipeline } from './services/pipeline.js';
 import { readMealBankRecipes } from './services/mealbank.js';
 import { registerKitchenRoutes } from './routes/kitchen.js';
+import { PgInventoryStore } from './inventory-store.js';
+import { KitchenReceiptParser } from './services/receipt-parser.js';
+import { KitchenLabelParser } from './services/label-parser.js';
+import { InventoryPipeline } from './services/inventory.js';
+import { registerInventoryRoutes } from './routes/inventory.js';
+import type { EventResolution } from './inventory-types.js';
+
+/** The kitchen module's ambient-remark resolver surface (phase-2 seam). */
+export interface KitchenEventsSurface {
+  /** Resolve a free-text remark into an inventory state change (best-effort). */
+  resolve(remark: string, at?: string): Promise<EventResolution>;
+}
 
 // Module augmentation for fastify decorators
 declare module 'fastify' {
   interface FastifyInstance {
     sql: postgres.Sql;
     scheduler: Scheduler;
+    /**
+     * Ambient-remark resolver, present only when the kitchen module is loaded.
+     * The server reads this to compose the capture module's kitchen_event
+     * executor (the two packages never import each other).
+     */
+    kitchenEvents?: KitchenEventsSurface;
   }
 }
 
@@ -58,9 +76,28 @@ export default createPlugin('kitchen', async (fastify: FastifyInstance, options:
       ? () => readMealBankRecipes({ repoPath: config.mealBankRepoPath, sheetName: config.mealBankSheet }, fastify.log)
       : undefined;
 
+  // ── Inventory (phase 2) ─────────────────────────────────────────────────────
+  // Receipt parsing runs on the cheap tier; label extraction on the strong
+  // (estimation) tier. Both require the API key — without it, receipts still
+  // post and their lines land as needs_info items, and label intake 503s.
+  const inventoryStore = new PgInventoryStore(fastify.sql);
+  const receiptParser = config.anthropicApiKey
+    ? new KitchenReceiptParser({ apiKey: config.anthropicApiKey, model: config.receiptModel }, fastify.log)
+    : null;
+  const labelParser = config.anthropicApiKey
+    ? new KitchenLabelParser({ apiKey: config.anthropicApiKey, model: config.estimationModel }, fastify.log)
+    : null;
+
+  const inventory = new InventoryPipeline(inventoryStore, receiptParser, labelParser, fastify.log, {
+    linkEntry: (entryUlid, itemUlid) => entryStore.linkInventoryItem(entryUlid, itemUlid),
+  });
+
   const pipeline = new KitchenPipeline(entryStore, recipeStore, estimator, fastify.log, {
     concurrency: config.concurrency,
     readSheetRecipes,
+    // Depletion matcher: an estimated entry plausibly depletes an on-hand item.
+    onEntryEstimated: (entry) =>
+      inventory.matchAndDeplete({ ulid: entry.ulid, label: entry.label, status: entry.status }).then(() => undefined),
   });
 
   await fastify.register(registerKitchenRoutes, {
@@ -68,6 +105,18 @@ export default createPlugin('kitchen', async (fastify: FastifyInstance, options:
     maxPhotoBytes: config.maxPhotoBytes,
     maxPhotos: config.maxPhotos,
   });
+
+  await fastify.register(registerInventoryRoutes, {
+    inventory,
+    maxPhotoBytes: config.maxPhotoBytes,
+    maxPhotos: config.maxPhotos,
+  });
+
+  // Ambient-remark seam: expose the resolver for the capture kitchen_event
+  // executor (composed by the server; the packages never import each other).
+  fastify.decorate('kitchenEvents', {
+    resolve: (remark: string, at?: string) => inventory.resolveRemark(remark, at),
+  } satisfies KitchenEventsSurface);
 
   if (!config.disableEstimation) {
     fastify.scheduler.register({
@@ -113,3 +162,51 @@ export {
 export { computeRecipeMacros } from './services/recipes.js';
 export { readMealBankRecipes, type MealBankConfig } from './services/mealbank.js';
 export { registerKitchenRoutes, type KitchenRoutesConfig } from './routes/kitchen.js';
+
+// ── Phase 2: inventory ────────────────────────────────────────────────────────
+export * from './inventory-types.js';
+export {
+  SHELF_LIFE_WINDOWS,
+  deriveEatBy,
+  toItemView,
+  toIsoDate,
+  addDays,
+  dayDiff,
+} from './inventory-derive.js';
+export {
+  transitionInventory,
+  isTerminal,
+  InvalidTransitionError as InvalidInventoryTransitionError,
+} from './inventory-state.js';
+export { parseRemark, matchScore, type ParsedRemark } from './inventory-remark.js';
+export {
+  PgInventoryStore,
+  DEFAULT_ON_HAND_ITEM_STATES,
+  type InventoryStore,
+  type NewProduct,
+  type NewItem,
+  type NewBatch,
+  type NewBatchLine,
+  type NewLexicon,
+} from './inventory-store.js';
+export { MemoryInventoryStore } from './inventory-memory-store.js';
+export {
+  InventoryPipeline,
+  LabelParserUnavailableError,
+  normalizeLine,
+  candidateStrings,
+  parseDate,
+  type InventoryPipelineConfig,
+  type DepletableEntry,
+} from './services/inventory.js';
+export {
+  KitchenReceiptParser,
+  type ReceiptParser,
+  type ReceiptParseInput,
+} from './services/receipt-parser.js';
+export {
+  KitchenLabelParser,
+  type LabelParser,
+  type LabelParseInput,
+} from './services/label-parser.js';
+export { registerInventoryRoutes, type InventoryRoutesConfig } from './routes/inventory.js';
