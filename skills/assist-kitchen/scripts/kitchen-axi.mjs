@@ -1507,6 +1507,7 @@ var BATCH_ROW_SCHEMA = [
 ];
 var LINE_SCHEMA = [
   field("raw_text", "line"),
+  field("quantity", "qty"),
   field("match_outcome", "outcome"),
   field("product_ulid"),
   field("inventory_item_ulid", "item_ulid")
