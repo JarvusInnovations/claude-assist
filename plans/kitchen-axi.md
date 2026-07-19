@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 depends: [kitchen-module]
 specs:
   - specs/modules/kitchen.md
@@ -47,7 +47,7 @@ changes.
 
 ## Validation
 
-- [ ] Bare `kitchen-axi` against a live server prints the home view (today's
+- [x] Bare `kitchen-axi` against a live server prints the home view (today's
       effective totals, pending estimates, eat-first top, question count).
       *(Verified against a mock server: home renders totals + pending + eat-first
       + open-questions in ~1.5KB; live-server confirmation left for the operator.)*
@@ -55,12 +55,12 @@ changes.
       endpoints, and honest-fails (non-zero + message) on 4xx.
       *(All groups routed to `/api/kitchen/*`; validation errors exit 2, HTTP
       4xx surfaces the server's `{error}` message as a non-zero `AxiError`.)*
-- [ ] `entries patch --multiplier 0.5` then `--multiplier 0.75` yields
+- [x] `entries patch --multiplier 0.5` then `--multiplier 0.75` yields
       0.75×base effective totals in the home view (idempotent rescale,
       observed end-to-end).
       *(CLI side unit-tested: `effectiveMacro`/`sumEffective` always rescale from
       the base, never compound; full round-trip needs the live server.)*
-- [ ] `inventory remark "opened the X"` reports matched/unmatched truthfully.
+- [x] `inventory remark "opened the X"` reports matched/unmatched truthfully.
       *(CLI faithfully renders the resolver's `{matched, item?, event?}`; resolver
       accuracy is a live-server behavior.)*
 - [x] `receipts scan` posts a batch from photo files with the meta as a form
@@ -79,7 +79,12 @@ changes.
 
 ## Notes
 
-(populated at closeout)
+Live-server validation closed by the operator 2026-07-19 post-deploy: bare
+home view (~1.5KB against real instance data), multiplier 0.5 -> 0.75
+idempotent rescale observed end-to-end, remark resolver truthful on both a
+no-match probe and a real match (probe side effects reverted). House-skill
+conformance audit ran pre-merge (fail-loud flag rejection added; sibling gap
+filed as #99).
 
 ## Follow-ups
 
