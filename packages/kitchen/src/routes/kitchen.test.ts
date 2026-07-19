@@ -404,6 +404,47 @@ describe('kitchen routes', () => {
       }
     });
 
+    it('accepts a logged_at PATCH: 200, backdates the wire, source/status unchanged', async () => {
+      const ulid = generateUlid();
+      const seedPipeline = new KitchenPipeline(entries, recipes, estimator, fastify.log);
+      const { estimation } = await seedPipeline.ingest({ ulid, note: 'leftover pasta' }, []);
+      await estimation;
+      const backdated = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
+
+      const response = await fastify.inject({
+        method: 'PATCH',
+        url: `/kitchen/entries/${ulid}`,
+        payload: { logged_at: backdated },
+      });
+      expect(response.statusCode).toBe(200);
+      const json = response.json();
+      expect(new Date(json.logged_at).toISOString()).toBe(backdated);
+      expect(json.source).toBe('model'); // not flipped to manual
+      expect(json.status).toBe('estimated'); // not re-queued
+    });
+
+    it('rejects an out-of-bounds or unparseable logged_at with 400', async () => {
+      const ulid = generateUlid();
+      await new KitchenPipeline(entries, recipes, estimator, fastify.log).ingest({ ulid, note: 'x' }, []);
+      const twoDaysAhead = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString();
+      const sixYearsBack = new Date(Date.now() - 6 * 365 * 24 * 60 * 60 * 1000).toISOString();
+      for (const bad of [twoDaysAhead, sixYearsBack, 'not-a-date']) {
+        const response = await fastify.inject({
+          method: 'PATCH',
+          url: `/kitchen/entries/${ulid}`,
+          payload: { logged_at: bad },
+        });
+        expect(response.statusCode).toBe(400);
+      }
+      // Wrong wire type is rejected by the schema, also 400.
+      const wrongType = await fastify.inject({
+        method: 'PATCH',
+        url: `/kitchen/entries/${ulid}`,
+        payload: { logged_at: 12345 },
+      });
+      expect(wrongType.statusCode).toBe(400);
+    });
+
     it('rejects an empty patch body with 400', async () => {
       const ulid = generateUlid();
       await new KitchenPipeline(entries, recipes, estimator, fastify.log).ingest({ ulid, note: 'x' }, []);

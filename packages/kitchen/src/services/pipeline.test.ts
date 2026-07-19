@@ -391,6 +391,100 @@ describe('portion multiplier — post-hoc base rescale', () => {
   });
 });
 
+describe('logged_at backdating — post-hoc, deterministic, orthogonal', () => {
+  const iso = (msFromNow: number) => new Date(Date.now() + msFromNow).toISOString();
+  const HOUR = 60 * 60 * 1000;
+  const DAY = 24 * HOUR;
+
+  it('backdates a model entry without re-queue, source, or macro change', async () => {
+    const entries = new MemoryEntryStore();
+    const estimator = new ScriptedEstimator([mkModelEstimate({ calories: 500 })]);
+    const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), estimator, log);
+
+    const ingested = await pipeline.ingest({ ulid: generateUlid(), note: 'leftover pasta' }, []);
+    await ingested.estimation;
+    const backdated = iso(-3 * HOUR);
+
+    const updated = await pipeline.patch(ingested.record.ulid, { logged_at: backdated });
+    expect(updated!.logged_at.toISOString()).toBe(backdated);
+    expect(updated!.source).toBe('model'); // not flipped to manual
+    expect(updated!.status).toBe('estimated'); // not re-queued
+    expect(updated!.calories).toBe(500); // base untouched
+    expect(estimator.calls).toBe(1); // the model was NOT re-run
+  });
+
+  it('is accepted on a manual entry without a 409 and keeps source manual', async () => {
+    const entries = new MemoryEntryStore();
+    const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), null, log);
+    const { record } = await pipeline.ingest({ ulid: generateUlid(), note: 'mystery bowl' }, []);
+    await pipeline.patch(record.ulid, { calories: 600 }); // → manual
+
+    const updated = await pipeline.patch(record.ulid, { logged_at: iso(-2 * DAY) });
+    expect(updated!.source).toBe('manual');
+    expect(updated!.calories).toBe(600);
+  });
+
+  it('moves the entry to the new day in a since-windowed rollup query', async () => {
+    const entries = new MemoryEntryStore();
+    const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), null, log);
+    // Log "now"; then backdate 3 days. A window opened 1 day ago must lose it.
+    const { record } = await pipeline.ingest({ ulid: generateUlid(), logged_at: iso(0), note: 'x' }, []);
+    const oneDayAgo = new Date(Date.now() - DAY);
+    expect((await pipeline.list({ since: oneDayAgo })).some((e) => e.ulid === record.ulid)).toBe(true);
+
+    await pipeline.patch(record.ulid, { logged_at: iso(-3 * DAY) });
+    // Same window no longer contains it — its rollup day moved with logged_at.
+    expect((await pipeline.list({ since: oneDayAgo })).some((e) => e.ulid === record.ulid)).toBe(false);
+    const threeDaysAgo = new Date(Date.now() - 3 * DAY - HOUR);
+    expect((await pipeline.list({ since: threeDaysAgo })).some((e) => e.ulid === record.ulid)).toBe(true);
+  });
+
+  it('composes with a portion_multiplier in one PATCH (both orthogonal axes land)', async () => {
+    const entries = new MemoryEntryStore();
+    const estimator = new ScriptedEstimator([mkModelEstimate({ calories: 800 })]);
+    const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), estimator, log);
+    const ingested = await pipeline.ingest({ ulid: generateUlid(), note: 'plate' }, []);
+    await ingested.estimation;
+
+    const at = iso(-5 * HOUR);
+    const updated = await pipeline.patch(ingested.record.ulid, { logged_at: at, portion_multiplier: 0.5 });
+    expect(updated!.logged_at.toISOString()).toBe(at);
+    expect(updated!.portion_multiplier).toBe(0.5);
+    expect(updated!.calories).toBe(800); // base unscaled on the wire
+    expect(updated!.source).toBe('model');
+  });
+
+  it('rejects a future-beyond-skew, absurdly-old, or unparseable logged_at (no write)', async () => {
+    const entries = new MemoryEntryStore();
+    const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), null, log);
+    const { record } = await pipeline.ingest({ ulid: generateUlid(), logged_at: iso(0), note: 'x' }, []);
+    const original = (await pipeline.get(record.ulid))!.logged_at.toISOString();
+
+    for (const bad of [iso(2 * DAY), iso(-6 * 365 * DAY), 'not-a-date']) {
+      await expect(pipeline.patch(record.ulid, { logged_at: bad })).rejects.toThrow(PatchValidationError);
+    }
+    // Within-skew future (a few hours) is allowed — device clock/timezone slack.
+    const nearFuture = iso(6 * HOUR);
+    const ok = await pipeline.patch(record.ulid, { logged_at: nearFuture });
+    expect(ok!.logged_at.toISOString()).toBe(nearFuture);
+    expect(original).not.toBe(nearFuture); // sanity: value actually changed
+  });
+
+  it('a note edit on a manual entry still 409s even when a valid logged_at rides along (no partial write)', async () => {
+    const entries = new MemoryEntryStore();
+    const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), null, log);
+    const { record } = await pipeline.ingest({ ulid: generateUlid(), logged_at: iso(0), note: 'mystery' }, []);
+    await pipeline.patch(record.ulid, { calories: 500 }); // → manual
+    const before = (await pipeline.get(record.ulid))!.logged_at.toISOString();
+
+    await expect(
+      pipeline.patch(record.ulid, { note: 'reopen', logged_at: iso(-DAY) })
+    ).rejects.toThrow(ManualOverrideConflictError);
+    // logged_at must NOT have been applied (conflict checked before any write).
+    expect((await pipeline.get(record.ulid))!.logged_at.toISOString()).toBe(before);
+  });
+});
+
 describe('promote', () => {
   it('creates a recipe from a resolved entry', async () => {
     const entries = new MemoryEntryStore();

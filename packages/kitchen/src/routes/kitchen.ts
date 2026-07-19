@@ -95,6 +95,10 @@ const PATCH_BODY_SCHEMA = {
     // Post-hoc rescale of the base macros (specs/modules/kitchen.md § Portion
     // multiplier): 0 < m <= PORTION_MULTIPLIER_MAX. exclusiveMinimum keeps 0 out.
     portion_multiplier: { type: 'number', exclusiveMinimum: 0, maximum: PORTION_MULTIPLIER_MAX },
+    // Post-hoc backdating (specs/modules/kitchen.md § Logged-at backdating). The
+    // schema only pins the wire TYPE; parse + clock-relative bounds live in the
+    // pipeline (they need `now`), which throws PatchValidationError → 400.
+    logged_at: { type: 'string' },
   },
 } as const;
 
