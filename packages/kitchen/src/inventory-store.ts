@@ -28,6 +28,7 @@ export interface NewProduct {
   shelf_life_class: ShelfLifeClass;
   aliases: string[];
   nutrition_per_100g: NutritionPer100g | null;
+  ingredients: string | null;
   package_size: string | null;
   shelf_life_days_unopened: number | null;
   shelf_life_days_opened: number | null;
@@ -38,6 +39,7 @@ export interface ProductPatch {
   shelf_life_class?: ShelfLifeClass;
   aliases?: string[];
   nutrition_per_100g?: NutritionPer100g | null;
+  ingredients?: string | null;
   package_size?: string | null;
   shelf_life_days_unopened?: number | null;
   shelf_life_days_opened?: number | null;
@@ -193,6 +195,7 @@ export function rowToProduct(row: Record<string, unknown>): ProductRecord {
     nutrition_per_100g: parseJsonField<NutritionPer100g>(
       row.nutrition_per_100g as NutritionPer100g | string | null
     ),
+    ingredients: (row.ingredients as string | null) ?? null,
     package_size: (row.package_size as string | null) ?? null,
     shelf_life_days_unopened: row.shelf_life_days_unopened == null ? null : Number(row.shelf_life_days_unopened),
     shelf_life_days_opened: row.shelf_life_days_opened == null ? null : Number(row.shelf_life_days_opened),
@@ -273,12 +276,13 @@ export class PgInventoryStore implements InventoryStore {
   async insertProduct(product: NewProduct): Promise<ProductRecord> {
     const [row] = await this.sql`
       INSERT INTO kitchen.products
-        (ulid, name, shelf_life_class, aliases, nutrition_per_100g, package_size,
-         shelf_life_days_unopened, shelf_life_days_opened)
+        (ulid, name, shelf_life_class, aliases, nutrition_per_100g, ingredients,
+         package_size, shelf_life_days_unopened, shelf_life_days_opened)
       VALUES (
         ${product.ulid}, ${product.name}, ${product.shelf_life_class},
         ${product.aliases}, ${product.nutrition_per_100g ? JSON.stringify(product.nutrition_per_100g) : null},
-        ${product.package_size}, ${product.shelf_life_days_unopened}, ${product.shelf_life_days_opened}
+        ${product.ingredients}, ${product.package_size},
+        ${product.shelf_life_days_unopened}, ${product.shelf_life_days_opened}
       )
       RETURNING *
     `;
@@ -300,6 +304,7 @@ export class PgInventoryStore implements InventoryStore {
         shelf_life_class = ${merged.shelf_life_class},
         aliases = ${merged.aliases},
         nutrition_per_100g = ${merged.nutrition_per_100g ? JSON.stringify(merged.nutrition_per_100g) : null},
+        ingredients = ${merged.ingredients},
         package_size = ${merged.package_size},
         shelf_life_days_unopened = ${merged.shelf_life_days_unopened},
         shelf_life_days_opened = ${merged.shelf_life_days_opened}

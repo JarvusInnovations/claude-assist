@@ -44,6 +44,7 @@ describe('receipt intake', () => {
       shelf_life_class: 'fridge_short',
       aliases: ['feta'],
       nutrition_per_100g: null,
+      ingredients: null,
       package_size: '8 oz',
       shelf_life_days_unopened: null,
       shelf_life_days_opened: null,
@@ -213,6 +214,7 @@ describe('receipt intake', () => {
       shelf_life_class: 'fridge_short',
       aliases: [],
       nutrition_per_100g: null,
+      ingredients: null,
       package_size: null,
       shelf_life_days_unopened: null,
       shelf_life_days_opened: null,
@@ -263,7 +265,8 @@ describe('label intake', () => {
       name: 'Roma Tomatoes',
       shelf_life_class: 'produce',
       package_size: '1 lb',
-      nutrition_per_100g: { calories: 18, protein_g: 0.9, fat_g: 0.2, sat_fat_g: 0, carbs_g: 3.9, sodium_mg: 5 },
+      nutrition_per_100g: { calories: 18, protein_g: 0.9, fat_g: 0.2, sat_fat_g: 0, carbs_g: 3.9, sodium_mg: 5, fiber_g: 1.2, sugar_g: 2.6 },
+      ingredients: 'Tomatoes',
       aliases: ['tomatoes', 'roma'],
     });
     const pipeline = new InventoryPipeline(store, parser, label, log);
@@ -278,6 +281,10 @@ describe('label intake', () => {
     expect(resolved!.product.name).toBe('Roma Tomatoes');
     expect(resolved!.item.needs_info).toBe(false);
     expect(resolved!.item.eat_by).toBe('2026-07-25'); // produce unopened +7 days from 07-18 (still stocked)
+    // The full nutrition panel (incl. fiber/sugar) + ingredients bank onto the product.
+    expect(resolved!.product.nutrition_per_100g!.fiber_g).toBe(1.2);
+    expect(resolved!.product.nutrition_per_100g!.sugar_g).toBe(2.6);
+    expect(resolved!.product.ingredients).toBe('Tomatoes');
 
     // A later receipt with the same line text now auto-resolves (no question).
     await pipeline.ingestReceipt({ ulid: ULID(11), store: 'Example Grocer', purchased_at: '2026-07-25' }, [photo]);
@@ -319,7 +326,7 @@ describe('free-text event resolver', () => {
     const pipeline = new InventoryPipeline(store, null, null, log);
     const feta = await store.insertProduct({
       ulid: ULID(20), name: 'Feta Cheese', shelf_life_class: 'fridge_long', aliases: ['feta'],
-      nutrition_per_100g: null, package_size: null, shelf_life_days_unopened: null, shelf_life_days_opened: null,
+      nutrition_per_100g: null, ingredients: null, package_size: null, shelf_life_days_unopened: null, shelf_life_days_opened: null,
     });
     await pipeline.createItem({ product_ulid: feta.ulid, shelf_life_class: 'fridge_long', acquired_at: '2026-07-01' });
     await pipeline.createItem({ raw_label: 'Tomatoes', shelf_life_class: 'produce', acquired_at: '2026-07-01' });
@@ -353,7 +360,7 @@ describe('depletion matcher', () => {
     });
     const yog = await store.insertProduct({
       ulid: ULID(30), name: 'Greek Yogurt', shelf_life_class: 'fridge_short', aliases: ['yogurt'],
-      nutrition_per_100g: null, package_size: null, shelf_life_days_unopened: null, shelf_life_days_opened: null,
+      nutrition_per_100g: null, ingredients: null, package_size: null, shelf_life_days_unopened: null, shelf_life_days_opened: null,
     });
     const { item } = await pipeline.createItem({ product_ulid: yog.ulid, shelf_life_class: 'fridge_short', acquired_at: '2026-07-15' });
 
@@ -406,7 +413,7 @@ describe('label fan-out', () => {
     const store = new MemoryInventoryStore();
     const label = new FakeLabelParser({
       name: 'Italian Chicken Sausage', shelf_life_class: 'fridge_short', package_size: '12 oz',
-      nutrition_per_100g: null, aliases: ['chicken sausage'],
+      nutrition_per_100g: null, ingredients: null, aliases: ['chicken sausage'],
     });
     const pipeline = new InventoryPipeline(store, null, label, log);
     // Two units of the same line, acquired on different days.
@@ -430,11 +437,101 @@ describe('label fan-out', () => {
 
   it('a single needs_info item with no siblings resolves with resolved_count 1', async () => {
     const store = new MemoryInventoryStore();
-    const label = new FakeLabelParser({ name: 'Feta', shelf_life_class: 'fridge_long', package_size: null, nutrition_per_100g: null, aliases: [] });
+    const label = new FakeLabelParser({ name: 'Feta', shelf_life_class: 'fridge_long', package_size: null, nutrition_per_100g: null, ingredients: null, aliases: [] });
     const pipeline = new InventoryPipeline(store, null, label, log);
     const a = await pipeline.createItem({ raw_label: 'FETA', store: 'S', acquired_at: '2026-07-18', needs_info: true });
     const resolved = await pipeline.resolveLabel(a.item.ulid, [photo]);
     expect(resolved!.resolved_count).toBe(1);
+  });
+});
+
+describe('label enrichment (ingredients + full panel + precedence)', () => {
+  const mkLabel = (over: Partial<ParsedLabel>): ParsedLabel => ({
+    name: 'Store Feta',
+    shelf_life_class: 'fridge_long',
+    package_size: null,
+    nutrition_per_100g: null,
+    ingredients: null,
+    aliases: [],
+    ...over,
+  });
+
+  it('a later scan merges nutrition per-field and never null-clobbers ingredients', async () => {
+    const store = new MemoryInventoryStore();
+    // First scan reads calories/protein + the ingredients list.
+    const first = new FakeLabelParser(
+      mkLabel({
+        nutrition_per_100g: { calories: 264, protein_g: 14, fat_g: 21, sat_fat_g: 15, carbs_g: 4, sodium_mg: 900 },
+        ingredients: 'Cultured pasteurized milk, salt, enzymes',
+      })
+    );
+    const pipeline1 = new InventoryPipeline(store, null, first, log);
+    const a = await pipeline1.createItem({ raw_label: 'FETA', store: 'S', acquired_at: '2026-07-18', needs_info: true });
+    const r1 = await pipeline1.resolveLabel(a.item.ulid, [photo]);
+    const productUlid = r1!.product.ulid;
+    expect(r1!.product.nutrition_per_100g!.calories).toBe(264);
+    expect(r1!.product.nutrition_per_100g!.fiber_g).toBeNull();
+    expect(r1!.product.ingredients).toBe('Cultured pasteurized milk, salt, enzymes');
+
+    // Second scan (already-linked item) reads ONLY fiber/sugar and no ingredients.
+    const second = new FakeLabelParser(
+      mkLabel({
+        nutrition_per_100g: { calories: null, protein_g: null, fat_g: null, sat_fat_g: null, carbs_g: null, sodium_mg: null, fiber_g: 0, sugar_g: 3 },
+        ingredients: null,
+      })
+    );
+    const pipeline2 = new InventoryPipeline(store, null, second, log);
+    const r2 = await pipeline2.resolveLabel(a.item.ulid, [photo]);
+    // Enrich path: same linked product, item untouched.
+    expect(r2!.product.ulid).toBe(productUlid);
+    expect(r2!.resolved_count).toBe(1);
+    expect(r2!.item.state).toBe('stocked');
+    expect(r2!.item.needs_info).toBe(false);
+    // Per-field merge: earlier calories survive, new fiber/sugar fill in.
+    expect(r2!.product.nutrition_per_100g!.calories).toBe(264); // not erased
+    expect(r2!.product.nutrition_per_100g!.protein_g).toBe(14);
+    expect(r2!.product.nutrition_per_100g!.fiber_g).toBe(0);
+    expect(r2!.product.nutrition_per_100g!.sugar_g).toBe(3);
+    // Null incoming ingredients does not clobber the earlier list.
+    expect(r2!.product.ingredients).toBe('Cultured pasteurized milk, salt, enzymes');
+  });
+
+  it('enriches an already-linked stocked item: product updated, state untouched, lexicon written', async () => {
+    const store = new MemoryInventoryStore();
+    const label = new FakeLabelParser(mkLabel({ name: 'Store Feta', ingredients: 'Milk, salt' }));
+    const pipeline = new InventoryPipeline(store, null, label, log);
+    // A directly-stocked (already resolved, product-linked) item — no needs_info.
+    const product = await store.insertProduct({
+      ulid: ULID(50), name: 'Store Feta', shelf_life_class: 'fridge_long', aliases: [],
+      nutrition_per_100g: null, ingredients: null, package_size: null, shelf_life_days_unopened: null, shelf_life_days_opened: null,
+    });
+    const { item } = await pipeline.createItem({
+      product_ulid: product.ulid, raw_label: 'FETA BLOCK', store: 'S',
+      shelf_life_class: 'fridge_long', acquired_at: '2026-07-18',
+    });
+    expect(item.needs_info).toBe(false);
+
+    const res = await pipeline.resolveLabel(item.ulid, [photo]);
+    expect(res!.product.ulid).toBe(product.ulid); // enriched the linked product, no new one
+    expect(res!.product.ingredients).toBe('Milk, salt');
+    // Item state untouched.
+    const after = await pipeline.getItemView(item.ulid);
+    expect(after!.state).toBe('stocked');
+    expect(after!.eat_by).toBe(item.eat_by);
+    // Lexicon line written for future receipts.
+    const lex = await store.getLexicon('S', 'FETA BLOCK');
+    expect(lex!.product_ulid).toBe(product.ulid);
+    // No new product created.
+    expect((await store.listProducts({})).length).toBe(1);
+  });
+
+  it('rejects a label scan on a terminal item (→ 409 at the route)', async () => {
+    const store = new MemoryInventoryStore();
+    const label = new FakeLabelParser(mkLabel({}));
+    const pipeline = new InventoryPipeline(store, null, label, log);
+    const { item } = await pipeline.createItem({ raw_label: 'X', acquired_at: '2026-07-18' });
+    await pipeline.applyEvent(item.ulid, 'finished', { at: '2026-07-18' });
+    expect(pipeline.resolveLabel(item.ulid, [photo])).rejects.toThrow();
   });
 });
 

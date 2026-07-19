@@ -303,6 +303,7 @@ export const registerInventoryRoutes: FastifyPluginAsync<InventoryRoutesConfig> 
         shelf_life_class: meta.shelf_life_class as ShelfLifeClass | undefined,
         package_size: typeof meta.package_size === 'string' ? meta.package_size : undefined,
         aliases: Array.isArray(meta.aliases) ? (meta.aliases as string[]) : undefined,
+        ingredients: typeof meta.ingredients === 'string' ? meta.ingredients : undefined,
       });
       if (!result) {
         reply.status(404);
@@ -312,6 +313,10 @@ export const registerInventoryRoutes: FastifyPluginAsync<InventoryRoutesConfig> 
     } catch (err) {
       if (err instanceof LabelParserUnavailableError) {
         reply.status(503);
+        return { error: err.message };
+      }
+      if (err instanceof InvalidTransitionError) {
+        reply.status(409);
         return { error: err.message };
       }
       throw err;
@@ -432,6 +437,8 @@ const NUTRITION_SCHEMA = {
     sat_fat_g: { type: ['number', 'null'], minimum: 0 },
     carbs_g: { type: ['number', 'null'], minimum: 0 },
     sodium_mg: { type: ['number', 'null'], minimum: 0 },
+    fiber_g: { type: ['number', 'null'], minimum: 0 },
+    sugar_g: { type: ['number', 'null'], minimum: 0 },
   },
 } as const;
 
@@ -462,6 +469,7 @@ const PRODUCT_BODY_SCHEMA = {
     shelf_life_class: { type: 'string', enum: [...SHELF_LIFE_CLASSES] },
     aliases: { type: 'array', maxItems: 20, items: { type: 'string', maxLength: 100 } },
     nutrition_per_100g: NUTRITION_SCHEMA,
+    ingredients: { type: 'string', maxLength: 4000 },
     package_size: { type: 'string', maxLength: 100 },
     shelf_life_days_unopened: { type: 'number', minimum: 0 },
     shelf_life_days_opened: { type: 'number', minimum: 0 },
