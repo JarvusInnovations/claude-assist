@@ -1,10 +1,10 @@
 ---
-status: planned
+status: in-progress
 depends: [kitchen-module]
 specs:
   - specs/modules/kitchen.md
 issues: []
-pr: null
+pr: 98
 ---
 
 # Plan: kitchen-axi CLI + assist-kitchen skill
@@ -49,16 +49,24 @@ changes.
 
 - [ ] Bare `kitchen-axi` against a live server prints the home view (today's
       effective totals, pending estimates, eat-first top, question count).
-- [ ] Every command in the spec's surface exists, hits only documented
+      *(Verified against a mock server: home renders totals + pending + eat-first
+      + open-questions in ~1.5KB; live-server confirmation left for the operator.)*
+- [x] Every command in the spec's surface exists, hits only documented
       endpoints, and honest-fails (non-zero + message) on 4xx.
+      *(All groups routed to `/api/kitchen/*`; validation errors exit 2, HTTP
+      4xx surfaces the server's `{error}` message as a non-zero `AxiError`.)*
 - [ ] `entries patch --multiplier 0.5` then `--multiplier 0.75` yields
       0.75×base effective totals in the home view (idempotent rescale,
       observed end-to-end).
+      *(CLI side unit-tested: `effectiveMacro`/`sumEffective` always rescale from
+      the base, never compound; full round-trip needs the live server.)*
 - [ ] `inventory remark "opened the X"` reports matched/unmatched truthfully.
-- [ ] `receipts scan` posts a batch from photo files with the meta as a form
+      *(CLI faithfully renders the resolver's `{matched, item?, event?}`; resolver
+      accuracy is a live-server behavior.)*
+- [x] `receipts scan` posts a batch from photo files with the meta as a form
       field (wire-shape pinned in tests).
-- [ ] `check:skills` passes; the skill's generated regions match the CLI.
-- [ ] Leak-scan: no instance data in CLI defaults, fixtures, skill prose, or
+- [x] `check:skills` passes; the skill's generated regions match the CLI.
+- [x] Leak-scan: no instance data in CLI defaults, fixtures, skill prose, or
       any git surface.
 
 ## Risks / unknowns
