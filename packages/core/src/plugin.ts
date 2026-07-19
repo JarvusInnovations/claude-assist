@@ -71,6 +71,11 @@ export interface KitchenPluginConfig {
   anthropicApiKey?: string;
   /** Estimation model (default: claude-fable-5 — a strong vision-capable tier). */
   estimationModel?: string;
+  /**
+   * Cheap receipt-parse model (default: claude-haiku-4-5). Phase-2 receipt line
+   * extraction is mechanical, so it runs on the cheap tier.
+   */
+  receiptModel?: string;
   /** Parallelism for the estimation sweep (default 3). */
   concurrency?: number;
   /** Disable the scheduled estimation sweep. */
@@ -199,6 +204,14 @@ export interface BriefingPluginConfig {
   meetingCron?: string;
   /** Refresh occurrences starting within this many hours (the ~24h trigger). Default 26. */
   meetingRefreshAheadHours?: number;
+  /**
+   * Phase-2 kitchen seam: provider of the kitchen module's merged recipe view
+   * (sheet + pushed + promoted) for stock-aware meal suggestions. Composed by
+   * the server from the kitchen module's decorated `fastify.kitchenRecipes`
+   * surface. When absent, the briefing source falls back to a direct SQL read
+   * of DB-persisted recipes only (sheet recipes won't participate).
+   */
+  kitchenRecipesProvider?: KitchenRecipesProvider;
 }
 
 /**
@@ -322,6 +335,34 @@ export interface ChatPluginConfig {
 /**
  * Configuration for the capture plugin
  */
+/**
+ * Outcome of handing an ambient remark to the kitchen module's event
+ * resolver. Intentionally minimal + kitchen-type-free so the capture package
+ * can depend on it without importing the kitchen package (the server composes
+ * the concrete resolver from the kitchen module's decorated surface).
+ */
+export interface KitchenEventOutcome {
+  matched: boolean;
+  itemUlid?: string;
+  eventType?: string;
+}
+
+export type KitchenEventResolver = (remark: string) => Promise<KitchenEventOutcome>;
+
+/**
+ * One recipe in the kitchen module's merged recipe view (sheet + pushed +
+ * promoted — whatever the reselect pipeline merges), reduced to what a
+ * stock-aware consumer needs. Kitchen-type-free so the briefing package can
+ * depend on it without importing the kitchen package.
+ */
+export interface KitchenRecipeSummary {
+  name: string;
+  /** Component/ingredient labels ([] for a componentless recipe). */
+  component_labels: string[];
+}
+
+export type KitchenRecipesProvider = () => Promise<KitchenRecipeSummary[]>;
+
 export interface CapturePluginConfig {
   /** Anthropic API key for AI classification */
   anthropicApiKey?: string;
@@ -343,6 +384,13 @@ export interface CapturePluginConfig {
    * rejected). Credentials come from Google Application Default Credentials.
    */
   attachmentsBucket?: string;
+  /**
+   * Phase-2 seam: resolver for the `kitchen_event` capture type. Composed by
+   * the server from the kitchen module's decorated `fastify.kitchenEvents`
+   * surface and injected here. When absent, a `kitchen_event` capture parks in
+   * awaiting_executor (no executor registered) until the resolver is wired.
+   */
+  kitchenEventResolver?: KitchenEventResolver;
 }
 
 export interface GooglePluginConfig {

@@ -19,13 +19,15 @@ export type CaptureType =
   | 'stray_thought'
   | 'link_reference'
   | 'actionable'
-  | 'team_relevant';
+  | 'team_relevant'
+  | 'kitchen_event';
 
 export const CAPTURE_TYPES: readonly CaptureType[] = [
   'stray_thought',
   'link_reference',
   'actionable',
   'team_relevant',
+  'kitchen_event',
 ];
 
 export type CaptureStatus =

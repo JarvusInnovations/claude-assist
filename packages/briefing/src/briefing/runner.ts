@@ -11,7 +11,7 @@
 
 import type { FastifyBaseLogger } from 'fastify';
 import type postgres from 'postgres';
-import type { NotifyDispatcher, NotifyInput } from '@jarvus/claude-assist-core';
+import type { KitchenRecipesProvider, NotifyDispatcher, NotifyInput } from '@jarvus/claude-assist-core';
 import type { PlanProvider } from '../alerts/plan-provider.js';
 import type { BriefingRenderer } from './render.js';
 import { composeBriefing, type Briefing } from './compose.js';
@@ -33,6 +33,8 @@ export interface BriefingRunnerDeps {
   commitmentsBin?: string;
   commitmentsArgs?: string[];
   pageBaseUrl?: string | null;
+  /** Kitchen merged-recipe view for stock-aware suggestions (server-injected). */
+  kitchenRecipesProvider?: KitchenRecipesProvider;
 }
 
 export interface BriefingRunResult {
@@ -54,7 +56,11 @@ export async function runDailyBriefing(deps: BriefingRunnerDeps): Promise<Briefi
     fetchCapturesSummary(deps.sql),
     fetchCoverageSummary(deps.sql),
     fetchLedgerNarrative(deps.sql, { dateIso: priorDateIso(dateIso), timeZone: deps.timeZone }),
-    fetchKitchenSummary(deps.sql, { dateIso, timeZone: deps.timeZone }),
+    fetchKitchenSummary(deps.sql, {
+      dateIso,
+      timeZone: deps.timeZone,
+      recipesProvider: deps.kitchenRecipesProvider,
+    }),
   ]);
 
   const events = dayPlan.items.map((item) => item.event);

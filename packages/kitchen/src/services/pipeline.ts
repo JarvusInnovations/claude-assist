@@ -85,6 +85,13 @@ export interface KitchenPipelineConfig {
   batchSize?: number;
   /** Sheet-sourced recipe reader override (tests; default: none — empty list). */
   readSheetRecipes?: () => Promise<RecipeRecord[]>;
+  /**
+   * Phase-2 depletion hook: called (detached) with an entry once it reaches
+   * terminal `estimated`, so the inventory module can plausibly match + deplete
+   * an on-hand item. Injected by the module — the entry pipeline stays
+   * inventory-agnostic. Its failures never affect the entry.
+   */
+  onEntryEstimated?: (entry: EntryRecord) => Promise<void>;
 }
 
 export class KitchenPipeline {
@@ -94,6 +101,7 @@ export class KitchenPipeline {
   private limit: ReturnType<typeof pLimit>;
   private batchSize: number;
   private readSheetRecipes: () => Promise<RecipeRecord[]>;
+  private onEntryEstimated?: (entry: EntryRecord) => Promise<void>;
   private sweeping = false;
 
   constructor(
@@ -106,6 +114,7 @@ export class KitchenPipeline {
     this.limit = pLimit(config.concurrency ?? 3);
     this.batchSize = config.batchSize ?? 50;
     this.readSheetRecipes = config.readSheetRecipes ?? (async () => []);
+    this.onEntryEstimated = config.onEntryEstimated;
   }
 
   /** Endpoint-side: idempotent ingest. Photos are used for one attempt, then dropped. */
@@ -129,6 +138,7 @@ export class KitchenPipeline {
         const nutrition = computeRecipeMacros(recipe, input.component_quantities);
         const nextStatus = transition('estimating', { kind: 'estimated' });
         await this.entries.applyEstimate(record.ulid, recipe.name, nutrition, 'reselect', nextStatus);
+        this.notifyEstimated(record.ulid);
       }
       return { record: (await this.entries.get(record.ulid))!, created };
     }
@@ -206,6 +216,23 @@ export class KitchenPipeline {
     return this.entries.get(ulid);
   }
 
+  /**
+   * Fire the phase-2 depletion hook (detached) for an entry that just reached
+   * `estimated`. The hook's failures never touch the entry — the depletion
+   * matcher is best-effort per the module's directional-inventory principle.
+   */
+  private notifyEstimated(ulid: string): void {
+    if (!this.onEntryEstimated) return;
+    const p = (async () => {
+      const entry = await this.entries.get(ulid);
+      if (entry) await this.onEntryEstimated!(entry);
+    })();
+    this.inflight.add(p);
+    void p
+      .catch((error) => this.log.warn({ error, ulid }, 'Depletion hook rejected'))
+      .finally(() => this.inflight.delete(p));
+  }
+
   /** Detach a floating estimation; only programming errors can reject. */
   private detach(p: Promise<boolean>): void {
     this.inflight.add(p);
@@ -214,7 +241,7 @@ export class KitchenPipeline {
       .finally(() => this.inflight.delete(p));
   }
 
-  private readonly inflight = new Set<Promise<boolean>>();
+  private readonly inflight = new Set<Promise<unknown>>();
 
   /** Await all in-flight detached estimations (tests, graceful shutdown). */
   async settle(): Promise<void> {
@@ -328,6 +355,20 @@ export class KitchenPipeline {
     return { recipes: [...sheetRecipes, ...dbRecipes], recent };
   }
 
+  /**
+   * The module's full merged recipe view — sheet + pushed + promoted, the same
+   * merge reselect performs, without the recents strip or its small default
+   * limit. Backs the decorated `fastify.kitchenRecipes` surface consumed (via
+   * the server-composed provider) by stock-aware briefing suggestions.
+   */
+  async listAllRecipes(limit = 500): Promise<RecipeRecord[]> {
+    const [sheetRecipes, dbRecipes] = await Promise.all([
+      this.readSheetRecipes(),
+      this.recipes.list({ limit }),
+    ]);
+    return [...sheetRecipes, ...dbRecipes];
+  }
+
   /** Scheduler-side sweep: retry `estimating` rows under the attempt cap (note-only — no photos survive). */
   async sweep(): Promise<SweepResult> {
     if (this.sweeping) {
@@ -382,6 +423,7 @@ export class KitchenPipeline {
         portion_basis: adjusted.portion_basis,
       };
       await this.entries.applyEstimate(ulid, adjusted.label, nutrition, 'model', nextStatus);
+      this.notifyEstimated(ulid);
       return true;
     } catch (error) {
       if (error instanceof InvalidTransitionError) throw error;

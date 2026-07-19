@@ -140,6 +140,7 @@ export default createPlugin('briefing', async (fastify: FastifyInstance, options
           commitmentsBin: config.commitmentsBin,
           commitmentsArgs: config.commitmentsArgs,
           pageBaseUrl: config.pageBaseUrl ?? null,
+          kitchenRecipesProvider: config.kitchenRecipesProvider,
         });
         fastify.log.info(
           { rendered: result.rendered, notified: result.notified, date: result.briefing.dateIso },

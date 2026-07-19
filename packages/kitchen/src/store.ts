@@ -99,6 +99,9 @@ export interface EntryStore {
 
   /** Recent/frequent logged items for the reselect strip, most-recent first. */
   recentLabels(limit: number): Promise<RecentEntrySummary[]>;
+
+  /** Phase 2: link an entry to the inventory item the depletion matcher decremented. */
+  linkInventoryItem(entryUlid: string, itemUlid: string): Promise<void>;
 }
 
 export interface RecipeStore {
@@ -177,6 +180,7 @@ function rowToEntry(row: Record<string, unknown>): EntryRecord {
     component_quantities: parseJsonField<ComponentQuantity[]>(
       row.component_quantities as ComponentQuantity[] | string | null
     ),
+    inventory_item_ulid: (row.inventory_item_ulid as string | null) ?? null,
     created_at: row.created_at as Date,
     updated_at: row.updated_at as Date,
   };
@@ -319,6 +323,12 @@ export class PgEntryStore implements EntryStore {
   async delete(ulid: string): Promise<boolean> {
     const rows = await this.sql`DELETE FROM kitchen.entries WHERE ulid = ${ulid} RETURNING ulid`;
     return rows.length > 0;
+  }
+
+  async linkInventoryItem(entryUlid: string, itemUlid: string): Promise<void> {
+    await this.sql`
+      UPDATE kitchen.entries SET inventory_item_ulid = ${itemUlid} WHERE ulid = ${entryUlid}
+    `;
   }
 
   async recentLabels(limit: number): Promise<RecentEntrySummary[]> {

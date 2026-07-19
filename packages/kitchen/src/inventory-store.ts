@@ -1,0 +1,511 @@
+/**
+ * Inventory stores (phase 2). Interface + Postgres implementation over the
+ * `kitchen` schema. `InventoryStore` is an interface so the pipeline + routes
+ * are testable without Postgres (see inventory-memory-store.ts); the memory
+ * and pg implementations move in lockstep. Mirrors store.ts's shape.
+ */
+
+import type postgres from 'postgres';
+import type {
+  BatchLineRecord,
+  BatchSource,
+  BatchStatus,
+  InventoryItemRecord,
+  InventoryState,
+  LexiconRecord,
+  LineMatchOutcome,
+  NutritionPer100g,
+  ProductRecord,
+  PurchaseBatchRecord,
+  ShelfLifeClass,
+} from './inventory-types.js';
+
+// ── Normalized insert payloads ───────────────────────────────────────────────
+
+export interface NewProduct {
+  ulid: string;
+  name: string;
+  shelf_life_class: ShelfLifeClass;
+  aliases: string[];
+  nutrition_per_100g: NutritionPer100g | null;
+  package_size: string | null;
+  shelf_life_days_unopened: number | null;
+  shelf_life_days_opened: number | null;
+}
+
+export interface ProductPatch {
+  name?: string;
+  shelf_life_class?: ShelfLifeClass;
+  aliases?: string[];
+  nutrition_per_100g?: NutritionPer100g | null;
+  package_size?: string | null;
+  shelf_life_days_unopened?: number | null;
+  shelf_life_days_opened?: number | null;
+}
+
+export interface NewLexicon {
+  ulid: string;
+  store: string;
+  line_text: string;
+  product_ulid: string;
+  package_size: string | null;
+  shelf_life_class: ShelfLifeClass | null;
+}
+
+export interface NewItem {
+  ulid: string;
+  product_ulid: string | null;
+  raw_label: string | null;
+  store: string | null;
+  batch_ulid: string | null;
+  state: InventoryState;
+  on_hand_fraction: number;
+  needs_info: boolean;
+  acquired_at: Date;
+  eat_by: Date | null;
+  shelf_life_class: ShelfLifeClass | null;
+  notes: string | null;
+}
+
+export interface ItemStateUpdate {
+  state: InventoryState;
+  opened_at?: Date | null;
+  closed_at?: Date | null;
+  on_hand_fraction?: number;
+  eat_by?: Date | null;
+  /** Replacement notes value (e.g. with a waste line appended); omitted = unchanged. */
+  notes?: string;
+}
+
+export interface ResolveNeedsInfo {
+  product_ulid: string;
+  shelf_life_class: ShelfLifeClass | null;
+  eat_by: Date | null;
+}
+
+export interface NewBatch {
+  ulid: string;
+  source: BatchSource;
+  store: string | null;
+  purchased_at: Date;
+}
+
+export interface NewBatchLine {
+  ulid: string;
+  batch_ulid: string;
+  raw_text: string;
+  match_outcome: LineMatchOutcome;
+  product_ulid: string | null;
+  inventory_item_ulid: string | null;
+}
+
+export interface ItemListFilter {
+  /** States to include; default ['stocked','open']. */
+  states?: InventoryState[];
+  limit?: number;
+}
+
+export interface InventoryStore {
+  // Products
+  insertProduct(product: NewProduct): Promise<ProductRecord>;
+  getProduct(ulid: string): Promise<ProductRecord | null>;
+  updateProduct(ulid: string, patch: ProductPatch): Promise<ProductRecord | null>;
+  listProducts(filter: { q?: string; limit?: number }): Promise<ProductRecord[]>;
+  getProductsByUlids(ulids: string[]): Promise<Map<string, ProductRecord>>;
+
+  // Lexicon
+  upsertLexicon(lexicon: NewLexicon): Promise<LexiconRecord>;
+  getLexicon(store: string, lineText: string): Promise<LexiconRecord | null>;
+  listLexicon(filter: { store?: string; limit?: number }): Promise<LexiconRecord[]>;
+
+  // Items
+  insertItemIfAbsent(item: NewItem): Promise<{ record: InventoryItemRecord; created: boolean }>;
+  getItem(ulid: string): Promise<InventoryItemRecord | null>;
+  listItems(filter: ItemListFilter): Promise<InventoryItemRecord[]>;
+  listNeedsInfo(limit: number): Promise<InventoryItemRecord[]>;
+  updateItemState(ulid: string, update: ItemStateUpdate): Promise<InventoryItemRecord | null>;
+  setItemFraction(ulid: string, fraction: number): Promise<InventoryItemRecord | null>;
+  resolveNeedsInfo(ulid: string, resolution: ResolveNeedsInfo): Promise<InventoryItemRecord | null>;
+
+  // Batches
+  insertBatchIfAbsent(batch: NewBatch): Promise<{ record: PurchaseBatchRecord; created: boolean }>;
+  getBatch(ulid: string): Promise<PurchaseBatchRecord | null>;
+  listBatches(limit: number): Promise<PurchaseBatchRecord[]>;
+  selectBatchesForParsing(limit: number, maxAttempts: number): Promise<PurchaseBatchRecord[]>;
+  setBatchStatus(ulid: string, status: BatchStatus): Promise<void>;
+  recordBatchParseFailure(ulid: string, error: string): Promise<number>;
+
+  // Batch lines
+  insertLine(line: NewBatchLine): Promise<BatchLineRecord>;
+  listLines(batchUlid: string): Promise<BatchLineRecord[]>;
+}
+
+// ── Helpers (shared with memory store via export) ─────────────────────────────
+
+export const DEFAULT_ON_HAND_ITEM_STATES: readonly InventoryState[] = ['stocked', 'open'];
+
+export function parseJsonField<T>(value: T | string | null): T | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value) as T;
+    } catch {
+      return null;
+    }
+  }
+  return value as T;
+}
+
+function parseNumeric(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number') return value;
+  const parsed = parseFloat(value as string);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function toDate(value: unknown): Date {
+  if (value instanceof Date) return value;
+  return new Date(value as string);
+}
+
+function toDateOrNull(value: unknown): Date | null {
+  if (value === null || value === undefined) return null;
+  return toDate(value);
+}
+
+export function rowToProduct(row: Record<string, unknown>): ProductRecord {
+  return {
+    ulid: row.ulid as string,
+    name: row.name as string,
+    shelf_life_class: row.shelf_life_class as ShelfLifeClass,
+    aliases: (row.aliases as string[] | null) ?? [],
+    nutrition_per_100g: parseJsonField<NutritionPer100g>(
+      row.nutrition_per_100g as NutritionPer100g | string | null
+    ),
+    package_size: (row.package_size as string | null) ?? null,
+    shelf_life_days_unopened: row.shelf_life_days_unopened == null ? null : Number(row.shelf_life_days_unopened),
+    shelf_life_days_opened: row.shelf_life_days_opened == null ? null : Number(row.shelf_life_days_opened),
+    created_at: toDate(row.created_at),
+    updated_at: toDate(row.updated_at),
+  };
+}
+
+export function rowToLexicon(row: Record<string, unknown>): LexiconRecord {
+  return {
+    ulid: row.ulid as string,
+    store: row.store as string,
+    line_text: row.line_text as string,
+    product_ulid: row.product_ulid as string,
+    package_size: (row.package_size as string | null) ?? null,
+    shelf_life_class: (row.shelf_life_class as ShelfLifeClass | null) ?? null,
+    created_at: toDate(row.created_at),
+    updated_at: toDate(row.updated_at),
+  };
+}
+
+export function rowToItem(row: Record<string, unknown>): InventoryItemRecord {
+  return {
+    ulid: row.ulid as string,
+    product_ulid: (row.product_ulid as string | null) ?? null,
+    raw_label: (row.raw_label as string | null) ?? null,
+    store: (row.store as string | null) ?? null,
+    batch_ulid: (row.batch_ulid as string | null) ?? null,
+    state: row.state as InventoryState,
+    on_hand_fraction: parseNumeric(row.on_hand_fraction) ?? 0,
+    needs_info: Boolean(row.needs_info),
+    acquired_at: toDate(row.acquired_at),
+    opened_at: toDateOrNull(row.opened_at),
+    closed_at: toDateOrNull(row.closed_at),
+    eat_by: toDateOrNull(row.eat_by),
+    shelf_life_class: (row.shelf_life_class as ShelfLifeClass | null) ?? null,
+    notes: (row.notes as string | null) ?? null,
+    created_at: toDate(row.created_at),
+    updated_at: toDate(row.updated_at),
+  };
+}
+
+export function rowToBatch(row: Record<string, unknown>): PurchaseBatchRecord {
+  return {
+    ulid: row.ulid as string,
+    source: row.source as BatchSource,
+    store: (row.store as string | null) ?? null,
+    purchased_at: toDate(row.purchased_at),
+    status: row.status as BatchStatus,
+    parse_attempts: Number(row.parse_attempts ?? 0),
+    last_error: (row.last_error as string | null) ?? null,
+    last_error_at: toDateOrNull(row.last_error_at),
+    created_at: toDate(row.created_at),
+    updated_at: toDate(row.updated_at),
+  };
+}
+
+export function rowToLine(row: Record<string, unknown>): BatchLineRecord {
+  return {
+    ulid: row.ulid as string,
+    batch_ulid: row.batch_ulid as string,
+    raw_text: row.raw_text as string,
+    match_outcome: row.match_outcome as LineMatchOutcome,
+    product_ulid: (row.product_ulid as string | null) ?? null,
+    inventory_item_ulid: (row.inventory_item_ulid as string | null) ?? null,
+    created_at: toDate(row.created_at),
+  };
+}
+
+// ── Postgres implementation ───────────────────────────────────────────────────
+
+export class PgInventoryStore implements InventoryStore {
+  constructor(private sql: postgres.Sql) {}
+
+  async insertProduct(product: NewProduct): Promise<ProductRecord> {
+    const [row] = await this.sql`
+      INSERT INTO kitchen.products
+        (ulid, name, shelf_life_class, aliases, nutrition_per_100g, package_size,
+         shelf_life_days_unopened, shelf_life_days_opened)
+      VALUES (
+        ${product.ulid}, ${product.name}, ${product.shelf_life_class},
+        ${product.aliases}, ${product.nutrition_per_100g ? JSON.stringify(product.nutrition_per_100g) : null},
+        ${product.package_size}, ${product.shelf_life_days_unopened}, ${product.shelf_life_days_opened}
+      )
+      RETURNING *
+    `;
+    return rowToProduct(row!);
+  }
+
+  async getProduct(ulid: string): Promise<ProductRecord | null> {
+    const [row] = await this.sql`SELECT * FROM kitchen.products WHERE ulid = ${ulid}`;
+    return row ? rowToProduct(row) : null;
+  }
+
+  async updateProduct(ulid: string, patch: ProductPatch): Promise<ProductRecord | null> {
+    const current = await this.getProduct(ulid);
+    if (!current) return null;
+    const merged = { ...current, ...patch };
+    const [row] = await this.sql`
+      UPDATE kitchen.products SET
+        name = ${merged.name},
+        shelf_life_class = ${merged.shelf_life_class},
+        aliases = ${merged.aliases},
+        nutrition_per_100g = ${merged.nutrition_per_100g ? JSON.stringify(merged.nutrition_per_100g) : null},
+        package_size = ${merged.package_size},
+        shelf_life_days_unopened = ${merged.shelf_life_days_unopened},
+        shelf_life_days_opened = ${merged.shelf_life_days_opened}
+      WHERE ulid = ${ulid}
+      RETURNING *
+    `;
+    return row ? rowToProduct(row) : null;
+  }
+
+  async listProducts(filter: { q?: string; limit?: number }): Promise<ProductRecord[]> {
+    const limit = Math.min(filter.limit ?? 100, 500);
+    const rows = filter.q
+      ? await this.sql`
+          SELECT * FROM kitchen.products
+          WHERE name ILIKE ${'%' + filter.q + '%'}
+             OR EXISTS (SELECT 1 FROM unnest(aliases) a WHERE a ILIKE ${'%' + filter.q + '%'})
+          ORDER BY name ASC LIMIT ${limit}
+        `
+      : await this.sql`SELECT * FROM kitchen.products ORDER BY name ASC LIMIT ${limit}`;
+    return rows.map(rowToProduct);
+  }
+
+  async getProductsByUlids(ulids: string[]): Promise<Map<string, ProductRecord>> {
+    const map = new Map<string, ProductRecord>();
+    if (ulids.length === 0) return map;
+    const rows = await this.sql`SELECT * FROM kitchen.products WHERE ulid IN ${this.sql(ulids)}`;
+    for (const row of rows) {
+      const p = rowToProduct(row);
+      map.set(p.ulid, p);
+    }
+    return map;
+  }
+
+  async upsertLexicon(lexicon: NewLexicon): Promise<LexiconRecord> {
+    const [row] = await this.sql`
+      INSERT INTO kitchen.receipt_lexicon
+        (ulid, store, line_text, product_ulid, package_size, shelf_life_class)
+      VALUES (
+        ${lexicon.ulid}, ${lexicon.store}, ${lexicon.line_text}, ${lexicon.product_ulid},
+        ${lexicon.package_size}, ${lexicon.shelf_life_class}
+      )
+      ON CONFLICT (store, line_text) DO UPDATE SET
+        product_ulid = EXCLUDED.product_ulid,
+        package_size = EXCLUDED.package_size,
+        shelf_life_class = EXCLUDED.shelf_life_class
+      RETURNING *
+    `;
+    return rowToLexicon(row!);
+  }
+
+  async getLexicon(store: string, lineText: string): Promise<LexiconRecord | null> {
+    const [row] = await this.sql`
+      SELECT * FROM kitchen.receipt_lexicon WHERE store = ${store} AND line_text = ${lineText}
+    `;
+    return row ? rowToLexicon(row) : null;
+  }
+
+  async listLexicon(filter: { store?: string; limit?: number }): Promise<LexiconRecord[]> {
+    const limit = Math.min(filter.limit ?? 200, 1000);
+    const rows = filter.store
+      ? await this.sql`
+          SELECT * FROM kitchen.receipt_lexicon WHERE store = ${filter.store}
+          ORDER BY line_text ASC LIMIT ${limit}
+        `
+      : await this.sql`SELECT * FROM kitchen.receipt_lexicon ORDER BY store, line_text ASC LIMIT ${limit}`;
+    return rows.map(rowToLexicon);
+  }
+
+  async insertItemIfAbsent(item: NewItem): Promise<{ record: InventoryItemRecord; created: boolean }> {
+    const inserted = await this.sql`
+      INSERT INTO kitchen.inventory_items
+        (ulid, product_ulid, raw_label, store, batch_ulid, state, on_hand_fraction,
+         needs_info, acquired_at, eat_by, shelf_life_class, notes)
+      VALUES (
+        ${item.ulid}, ${item.product_ulid}, ${item.raw_label}, ${item.store}, ${item.batch_ulid},
+        ${item.state}, ${item.on_hand_fraction}, ${item.needs_info}, ${item.acquired_at},
+        ${item.eat_by}, ${item.shelf_life_class}, ${item.notes}
+      )
+      ON CONFLICT (ulid) DO NOTHING
+      RETURNING *
+    `;
+    if (inserted.length > 0) return { record: rowToItem(inserted[0]!), created: true };
+    const existing = await this.getItem(item.ulid);
+    if (!existing) throw new Error(`Inventory item ${item.ulid} conflicted on insert but is not readable`);
+    return { record: existing, created: false };
+  }
+
+  async getItem(ulid: string): Promise<InventoryItemRecord | null> {
+    const [row] = await this.sql`SELECT * FROM kitchen.inventory_items WHERE ulid = ${ulid}`;
+    return row ? rowToItem(row) : null;
+  }
+
+  async listItems(filter: ItemListFilter): Promise<InventoryItemRecord[]> {
+    const states = filter.states ?? [...DEFAULT_ON_HAND_ITEM_STATES];
+    const limit = Math.min(filter.limit ?? 100, 500);
+    const rows = await this.sql`
+      SELECT * FROM kitchen.inventory_items
+      WHERE state IN ${this.sql(states)}
+      ORDER BY eat_by ASC NULLS LAST, acquired_at ASC
+      LIMIT ${limit}
+    `;
+    return rows.map(rowToItem);
+  }
+
+  async listNeedsInfo(limit: number): Promise<InventoryItemRecord[]> {
+    const rows = await this.sql`
+      SELECT * FROM kitchen.inventory_items
+      WHERE needs_info = TRUE AND state IN ('stocked', 'open')
+      ORDER BY acquired_at ASC
+      LIMIT ${Math.min(limit, 500)}
+    `;
+    return rows.map(rowToItem);
+  }
+
+  async updateItemState(ulid: string, update: ItemStateUpdate): Promise<InventoryItemRecord | null> {
+    const current = await this.getItem(ulid);
+    if (!current) return null;
+    const [row] = await this.sql`
+      UPDATE kitchen.inventory_items SET
+        state = ${update.state},
+        opened_at = ${update.opened_at !== undefined ? update.opened_at : current.opened_at},
+        closed_at = ${update.closed_at !== undefined ? update.closed_at : current.closed_at},
+        on_hand_fraction = ${update.on_hand_fraction ?? current.on_hand_fraction},
+        eat_by = ${update.eat_by !== undefined ? update.eat_by : current.eat_by},
+        notes = ${update.notes !== undefined ? update.notes : current.notes}
+      WHERE ulid = ${ulid}
+      RETURNING *
+    `;
+    return row ? rowToItem(row) : null;
+  }
+
+  async setItemFraction(ulid: string, fraction: number): Promise<InventoryItemRecord | null> {
+    const [row] = await this.sql`
+      UPDATE kitchen.inventory_items SET on_hand_fraction = ${fraction}
+      WHERE ulid = ${ulid} RETURNING *
+    `;
+    return row ? rowToItem(row) : null;
+  }
+
+  async resolveNeedsInfo(ulid: string, resolution: ResolveNeedsInfo): Promise<InventoryItemRecord | null> {
+    const [row] = await this.sql`
+      UPDATE kitchen.inventory_items SET
+        product_ulid = ${resolution.product_ulid},
+        shelf_life_class = ${resolution.shelf_life_class},
+        eat_by = ${resolution.eat_by},
+        needs_info = FALSE
+      WHERE ulid = ${ulid}
+      RETURNING *
+    `;
+    return row ? rowToItem(row) : null;
+  }
+
+  async insertBatchIfAbsent(batch: NewBatch): Promise<{ record: PurchaseBatchRecord; created: boolean }> {
+    const inserted = await this.sql`
+      INSERT INTO kitchen.purchase_batches (ulid, source, store, purchased_at, status)
+      VALUES (${batch.ulid}, ${batch.source}, ${batch.store}, ${batch.purchased_at}, 'parsing')
+      ON CONFLICT (ulid) DO NOTHING
+      RETURNING *
+    `;
+    if (inserted.length > 0) return { record: rowToBatch(inserted[0]!), created: true };
+    const existing = await this.getBatch(batch.ulid);
+    if (!existing) throw new Error(`Purchase batch ${batch.ulid} conflicted on insert but is not readable`);
+    return { record: existing, created: false };
+  }
+
+  async getBatch(ulid: string): Promise<PurchaseBatchRecord | null> {
+    const [row] = await this.sql`SELECT * FROM kitchen.purchase_batches WHERE ulid = ${ulid}`;
+    return row ? rowToBatch(row) : null;
+  }
+
+  async listBatches(limit: number): Promise<PurchaseBatchRecord[]> {
+    const rows = await this.sql`
+      SELECT * FROM kitchen.purchase_batches ORDER BY purchased_at DESC, created_at DESC
+      LIMIT ${Math.min(limit, 500)}
+    `;
+    return rows.map(rowToBatch);
+  }
+
+  async selectBatchesForParsing(limit: number, maxAttempts: number): Promise<PurchaseBatchRecord[]> {
+    const rows = await this.sql`
+      SELECT * FROM kitchen.purchase_batches
+      WHERE status = 'parsing' AND parse_attempts < ${maxAttempts}
+      ORDER BY created_at ASC
+      LIMIT ${limit}
+    `;
+    return rows.map(rowToBatch);
+  }
+
+  async setBatchStatus(ulid: string, status: BatchStatus): Promise<void> {
+    await this.sql`UPDATE kitchen.purchase_batches SET status = ${status} WHERE ulid = ${ulid}`;
+  }
+
+  async recordBatchParseFailure(ulid: string, error: string): Promise<number> {
+    const [row] = await this.sql<{ parse_attempts: number }[]>`
+      UPDATE kitchen.purchase_batches SET
+        parse_attempts = parse_attempts + 1, last_error = ${error}, last_error_at = NOW()
+      WHERE ulid = ${ulid}
+      RETURNING parse_attempts
+    `;
+    return row?.parse_attempts ?? 0;
+  }
+
+  async insertLine(line: NewBatchLine): Promise<BatchLineRecord> {
+    const [row] = await this.sql`
+      INSERT INTO kitchen.purchase_batch_lines
+        (ulid, batch_ulid, raw_text, match_outcome, product_ulid, inventory_item_ulid)
+      VALUES (
+        ${line.ulid}, ${line.batch_ulid}, ${line.raw_text}, ${line.match_outcome},
+        ${line.product_ulid}, ${line.inventory_item_ulid}
+      )
+      RETURNING *
+    `;
+    return rowToLine(row!);
+  }
+
+  async listLines(batchUlid: string): Promise<BatchLineRecord[]> {
+    const rows = await this.sql`
+      SELECT * FROM kitchen.purchase_batch_lines WHERE batch_ulid = ${batchUlid}
+      ORDER BY created_at ASC
+    `;
+    return rows.map(rowToLine);
+  }
+}

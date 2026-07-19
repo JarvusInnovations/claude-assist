@@ -481,4 +481,27 @@ describe('reselect merge logic', () => {
     expect(strip.recipes).toEqual([]);
     expect(strip.recent).toEqual([]);
   });
+
+  it('listAllRecipes returns the merged sheet + DB view (backs fastify.kitchenRecipes)', async () => {
+    const recipes = new MemoryRecipeStore();
+    const sheetRecipe = {
+      ulid: generateUlid(),
+      name: 'Sheet Greek Bowl',
+      components: [
+        { label: 'feta', default_qty_g: 50, per_100g: { calories: 260, protein_g: 14, sat_fat_g: 15 } },
+      ],
+      source: 'sheet' as const,
+      created_at: new Date(),
+      updated_at: new Date(),
+    };
+    const pipeline = new KitchenPipeline(new MemoryEntryStore(), recipes, null, log, {
+      readSheetRecipes: async () => [sheetRecipe],
+    });
+    await recipes.insert({ ulid: generateUlid(), name: 'Pushed Salad', components: [], source: 'pushed' });
+
+    const all = await pipeline.listAllRecipes();
+    expect(all.map((r) => r.name)).toEqual(expect.arrayContaining(['Sheet Greek Bowl', 'Pushed Salad']));
+    // A sheet-only recipe carries its component labels through the merged view.
+    expect(all.find((r) => r.name === 'Sheet Greek Bowl')!.components.map((c) => c.label)).toEqual(['feta']);
+  });
 });

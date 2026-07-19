@@ -27,6 +27,10 @@ export const ROUTING_TABLE: Record<CaptureType, string> = {
   link_reference: 'references',
   actionable: 'review',
   team_relevant: 'review',
+  // Ambient kitchen remarks route to the kitchen module's event resolver (a
+  // write executor injected by the server). Absent that wiring the row parks
+  // in awaiting_executor until it lands — no capture is ever lost.
+  kitchen_event: 'kitchen-event',
 };
 
 export type CaptureEvent =

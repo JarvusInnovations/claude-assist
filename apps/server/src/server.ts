@@ -266,6 +266,31 @@ await fastify.register(
       api.log.info('Google module disabled');
     }
 
+    // Kitchen module — registered BEFORE capture so its fastify.kitchenEvents
+    // resolver decorator is available to compose the capture module's
+    // kitchen_event executor below (the two packages never import each other).
+    if (fastify.config.ENABLE_KITCHEN) {
+      api.log.info('Kitchen module enabled');
+      await api.register(kitchenPlugin, {
+        migrationsDir: join(__dirname, '../../../packages/kitchen/migrations'),
+        disableMigrations: fastify.config.DISABLE_MIGRATIONS,
+        kitchenConfig: {
+          anthropicApiKey: fastify.config.ANTHROPIC_API_KEY,
+          estimationModel: fastify.config.KITCHEN_ESTIMATION_MODEL,
+          receiptModel: fastify.config.KITCHEN_RECEIPT_MODEL,
+          concurrency: fastify.config.KITCHEN_CONCURRENCY,
+          disableEstimation:
+            fastify.config.DISABLE_SYNCS || fastify.config.KITCHEN_DISABLE_ESTIMATION,
+          maxPhotoBytes: fastify.config.KITCHEN_MAX_PHOTO_BYTES,
+          maxPhotos: fastify.config.KITCHEN_MAX_PHOTOS,
+          mealBankRepoPath: fastify.config.KITCHEN_MEALBANK_REPO_PATH,
+          mealBankSheet: fastify.config.KITCHEN_MEALBANK_SHEET,
+        },
+      });
+    } else {
+      api.log.info('Kitchen module disabled');
+    }
+
     if (fastify.config.ENABLE_CAPTURE) {
       api.log.info('Capture module enabled');
       await api.register(capturePlugin, {
@@ -282,31 +307,20 @@ await fastify.register(
           tanaMcpToken: fastify.config.TANA_MCP_TOKEN,
           tanaWorkspaceId: fastify.config.TANA_WORKSPACE_ID,
           attachmentsBucket: fastify.config.CAPTURE_ATTACHMENTS_BUCKET,
+          // Ambient kitchen-remark seam: the resolver decorated by the kitchen
+          // module (registered above). Absent → kitchen_event captures park.
+          kitchenEventResolver: api.kitchenEvents
+            ? (remark: string) =>
+                api.kitchenEvents!.resolve(remark).then((r) => ({
+                  matched: r.matched,
+                  itemUlid: r.item?.ulid,
+                  eventType: r.event?.type,
+                }))
+            : undefined,
         },
       });
     } else {
       api.log.info('Capture module disabled');
-    }
-
-    if (fastify.config.ENABLE_KITCHEN) {
-      api.log.info('Kitchen module enabled');
-      await api.register(kitchenPlugin, {
-        migrationsDir: join(__dirname, '../../../packages/kitchen/migrations'),
-        disableMigrations: fastify.config.DISABLE_MIGRATIONS,
-        kitchenConfig: {
-          anthropicApiKey: fastify.config.ANTHROPIC_API_KEY,
-          estimationModel: fastify.config.KITCHEN_ESTIMATION_MODEL,
-          concurrency: fastify.config.KITCHEN_CONCURRENCY,
-          disableEstimation:
-            fastify.config.DISABLE_SYNCS || fastify.config.KITCHEN_DISABLE_ESTIMATION,
-          maxPhotoBytes: fastify.config.KITCHEN_MAX_PHOTO_BYTES,
-          maxPhotos: fastify.config.KITCHEN_MAX_PHOTOS,
-          mealBankRepoPath: fastify.config.KITCHEN_MEALBANK_REPO_PATH,
-          mealBankSheet: fastify.config.KITCHEN_MEALBANK_SHEET,
-        },
-      });
-    } else {
-      api.log.info('Kitchen module disabled');
     }
 
     // Pages module — publish + collect interactive HTML pages. Registered
@@ -413,6 +427,18 @@ await fastify.register(
             .filter(Boolean),
           meetingCron: fastify.config.MEETING_CRON,
           meetingRefreshAheadHours: fastify.config.MEETING_REFRESH_AHEAD_HOURS,
+          // Stock-aware suggestion seam: the merged sheet+pushed+promoted
+          // recipe view decorated by the kitchen module (registered above).
+          // Absent → the briefing source falls back to DB-persisted recipes.
+          kitchenRecipesProvider: api.kitchenRecipes
+            ? () =>
+                api.kitchenRecipes!.listAll().then((recipes) =>
+                  recipes.map((r) => ({
+                    name: r.name,
+                    component_labels: r.components.map((c) => c.label),
+                  }))
+                )
+            : undefined,
         },
       });
     } else {

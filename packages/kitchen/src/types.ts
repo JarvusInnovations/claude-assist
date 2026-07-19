@@ -121,6 +121,8 @@ export interface EntryRecord extends NutritionFields {
   last_error_at: Date | null;
   recipe_ulid: string | null;
   component_quantities: ComponentQuantity[] | null;
+  /** Phase 2: the inventory item this entry depleted (set by the depletion matcher). */
+  inventory_item_ulid: string | null;
   created_at: Date;
   updated_at: Date;
 }

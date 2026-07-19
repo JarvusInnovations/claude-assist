@@ -72,7 +72,7 @@ function sampleBriefing(over: Partial<Briefing> = {}): Briefing {
     captures: { awaitingReview: 2, awaitingExecutor: 1, error: null },
     coverage: { pipelines: [{ name: 'email-sync', ageHours: 30, thresholdHours: 12, ratio: 2.5, stale: true }], staleCount: 1, error: null },
     ledger: { totalCount: 0, groups: [], error: null },
-    kitchen: { calories: 1450, proteinG: 95, satFatG: 12.5, pendingCount: 1, error: null },
+    kitchen: { calories: 1450, proteinG: 95, satFatG: 12.5, pendingCount: 1, eatFirst: [], suggestions: [], error: null },
     links: [{ label: 'Inbox', url: 'https://assist.example/inbox' }],
     ...over,
   };
@@ -110,16 +110,45 @@ describe('renderTanaPaste', () => {
     expect(paste).toContain('1 entry still estimating');
   });
 
+  it('renders an eat-first line and stock-aware meal ideas when present', () => {
+    const paste2 = renderTanaPaste(
+      sampleBriefing({
+        kitchen: {
+          calories: 500,
+          proteinG: 30,
+          satFatG: 5,
+          pendingCount: 0,
+          eatFirst: [
+            { label: 'Feta', state: 'open', eatBy: '2026-07-11', daysUntil: 1, fraction: 0.5 },
+            { label: 'Berries', state: 'stocked', eatBy: '2026-07-09', daysUntil: -1, fraction: 1 },
+          ],
+          suggestions: [{ name: 'Greek bowl', have: 2, total: 3 }],
+          error: null,
+        },
+      })
+    );
+    expect(paste2).toContain('Eat first');
+    expect(paste2).toContain('Feta (open) — eat by 1d');
+    expect(paste2).toContain('Berries — eat by 1d overdue');
+    expect(paste2).toContain('Meal ideas from stock');
+    expect(paste2).toContain('Greek bowl (2/3 components on hand)');
+  });
+
+  it('omits eat-first and meal-idea lines when the inventory is empty', () => {
+    expect(paste).not.toContain('Eat first');
+    expect(paste).not.toContain('Meal ideas from stock');
+  });
+
   it('shows "nothing logged yet" on a quiet kitchen day', () => {
     const quiet = renderTanaPaste(
-      sampleBriefing({ kitchen: { calories: 0, proteinG: 0, satFatG: 0, pendingCount: 0, error: null } })
+      sampleBriefing({ kitchen: { calories: 0, proteinG: 0, satFatG: 0, pendingCount: 0, eatFirst: [], suggestions: [], error: null } })
     );
     expect(quiet).toContain('Nothing logged yet');
   });
 
   it('shows a not-available line when the kitchen read fails', () => {
     const paste2 = renderTanaPaste(
-      sampleBriefing({ kitchen: { calories: 0, proteinG: 0, satFatG: 0, pendingCount: 0, error: 'kitchen schema missing' } })
+      sampleBriefing({ kitchen: { calories: 0, proteinG: 0, satFatG: 0, pendingCount: 0, eatFirst: [], suggestions: [], error: 'kitchen schema missing' } })
     );
     expect(paste2).toContain('Kitchen summary not available: kitchen schema missing');
   });

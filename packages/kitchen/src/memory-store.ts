@@ -37,6 +37,7 @@ export class MemoryEntryStore implements EntryStore {
       last_error_at: null,
       recipe_ulid: entry.recipe_ulid,
       component_quantities: entry.component_quantities,
+      inventory_item_ulid: null,
       created_at: now,
       updated_at: now,
     };
@@ -129,6 +130,11 @@ export class MemoryEntryStore implements EntryStore {
 
   async delete(ulid: string): Promise<boolean> {
     return this.records.delete(ulid);
+  }
+
+  async linkInventoryItem(entryUlid: string, itemUlid: string): Promise<void> {
+    const record = this.records.get(entryUlid);
+    if (record) record.inventory_item_ulid = itemUlid;
   }
 
   async recentLabels(limit: number): Promise<RecentEntrySummary[]> {

@@ -220,6 +220,21 @@ export function renderTanaPaste(b: Briefing): string {
     }
   }
 
+  // Eat-first — most-urgent on-hand items (phase-2 inventory). Omitted when the
+  // inventory is empty or unavailable, never surfaced as an error.
+  if (b.kitchen.eatFirst.length > 0) {
+    lines.push('  - Eat first');
+    for (const item of b.kitchen.eatFirst) lines.push(`    - ${eatFirstLine(item)}`);
+  }
+
+  // Stock-aware meal suggestions — only when something plausibly qualifies.
+  if (b.kitchen.suggestions.length > 0) {
+    lines.push('  - Meal ideas from stock');
+    for (const s of b.kitchen.suggestions) {
+      lines.push(`    - ${s.name} (${s.have}/${s.total} components on hand)`);
+    }
+  }
+
   // Coverage / pipeline health
   lines.push('  - Pipeline health');
   if (b.coverage.error) {
@@ -283,6 +298,19 @@ function collapseWhitespace(s: string): string {
 function truncate(s: string, max: number): string {
   if (s.length <= max) return s;
   return `${s.slice(0, max - 1).trimEnd()}…`;
+}
+
+function eatFirstLine(item: import('./sources/kitchen.js').EatFirstItem): string {
+  const when =
+    item.daysUntil == null
+      ? item.eatBy ?? 'soon'
+      : item.daysUntil < 0
+        ? `${Math.abs(item.daysUntil)}d overdue`
+        : item.daysUntil === 0
+          ? 'today'
+          : `${item.daysUntil}d`;
+  const openFlag = item.state === 'open' ? ' (open)' : '';
+  return `${item.label}${openFlag} — eat by ${when}`;
 }
 
 function commitmentLine(c: OpenCommitment): string {

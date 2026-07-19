@@ -28,6 +28,7 @@ import { TanaMcpClient } from './services/tana-mcp.js';
 import { TanaInboxExecutor } from './services/executors/tana-inbox.js';
 import { ReferencesExecutor } from './services/executors/references.js';
 import { HoldExecutor } from './services/executors/hold.js';
+import { KitchenEventExecutor } from './services/executors/kitchen-event.js';
 import { emitHeartbeat } from './services/heartbeat.js';
 import { registerCaptureRoutes } from './routes/capture.js';
 import type { AttachmentStorage } from './services/attachments/storage.js';
@@ -101,6 +102,17 @@ export default createPlugin('capture', async (fastify: FastifyInstance, options:
     );
   }
 
+  // Kitchen-event executor (phase-2 ambient-remark seam). The resolver is
+  // composed by the server from the kitchen module's decorated surface; without
+  // it, kitchen_event captures park in awaiting_executor until it lands.
+  if (config.kitchenEventResolver) {
+    router.register(new KitchenEventExecutor(config.kitchenEventResolver));
+  } else {
+    fastify.log.warn(
+      'kitchenEventResolver not configured - kitchen_event captures will park in awaiting_executor'
+    );
+  }
+
   const pipeline = new CapturePipeline(store, classifier, router, fastify.log, {
     concurrency: config.concurrency,
     storage: attachmentStorage,
@@ -163,5 +175,6 @@ export {
 } from './services/attachments/errors.js';
 export { ReferencesExecutor, extractNotes } from './services/executors/references.js';
 export { HoldExecutor } from './services/executors/hold.js';
+export { KitchenEventExecutor } from './services/executors/kitchen-event.js';
 export { registerCaptureRoutes, type CaptureRoutesConfig } from './routes/capture.js';
 export { emitHeartbeat } from './services/heartbeat.js';
