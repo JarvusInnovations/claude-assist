@@ -371,6 +371,48 @@ and every seam degrades cleanly when the kitchen module is absent.
   (no cold start). Absent the provider, the briefing source falls back to a
   direct SQL read of DB-persisted recipes only.
 
+## Agent tooling — `kitchen-axi` CLI + `assist-kitchen` skill
+
+The module ships the same agent-facing tooling pair the older modules do
+(sessions/gmail/pages): a token-efficient CLI and a hand-authored skill that
+bundles it, so any agent session — interactive, chat, or scheduled — can read
+and write the kitchen without hand-rolled `curl`.
+
+- **`kitchen-axi`** (`packages/kitchen/src/axi/`, bundled per the repo's axi
+  build): TOON-table output, `--json` escape hatch, server resolved from
+  `CLAUDE_ASSIST_SERVER` (default localhost) + bearer auth per the sibling
+  CLIs' convention. Invoked bare it prints the **home view**: today's entry
+  count + effective totals, pending-estimate count, the top eat-first items,
+  and the open needs-info question count — the at-a-glance state an agent
+  needs before acting.
+- **Command surface** (each a thin veneer over one documented endpoint — the
+  CLI adds no semantics the API lacks):
+  - `entries` — list (since/limit), `show <ulid>`, `log` (note and/or
+    `--recipe` + component quantities; the deliberate no-model path),
+    `patch <ulid>` (note/label re-queue, macro override, portion multiplier),
+    `resolve`-style close-outs are NOT here (entries have no such state);
+    `delete <ulid>`.
+  - `inventory` — list (eat-first order; `--state`, `--closed`),
+    `show <ulid>`, `add` (manual/seed create), `event <ulid> <opened|finished|
+    tossed> [--fraction]`, `remark "<free text>"` (the resolver; prints
+    matched/unmatched honestly), `questions`.
+  - `receipts` — list, `show <ulid>` (batch + line outcomes), `scan <photo…>`
+    (multipart post; meta as a form field per the module's part-type rule).
+  - `recipes` — list (merged view), `push` (agent-authored recipe JSON),
+    `promote <entry-ulid> --name`.
+  - `products` / `lexicon` — list/search + seed-grade create (the agentic
+    seed path).
+- **`assist-kitchen` skill** (`skills/assist-kitchen/`): hand-authored
+  SKILL.md with generated command-reference regions (build-skill splice
+  targets registered like the others; `check:skills` guards drift). The
+  narrative must carry the module's decisive rules an agent needs at write
+  time: base-vs-effective multiplier semantics, macro-override terminality,
+  partial-toss fraction meaning, the deliberate-action-vs-classifier
+  boundary, and photos-are-ephemeral.
+- **Boundary**: the CLI and skill are generic toolkit surfaces — no instance
+  names, no owner identity; instance wiring (install, hooks, chat command
+  lists) is the operator's concern, outside this repo.
+
 ## Principles
 
 - **A ballpark now beats precision later.** Single-call estimates, no food-DB
