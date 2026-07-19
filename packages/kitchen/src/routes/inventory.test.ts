@@ -3,13 +3,24 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { MemoryInventoryStore } from '../inventory-memory-store.js';
 import { InventoryPipeline } from '../services/inventory.js';
 import type { ReceiptParser } from '../services/receipt-parser.js';
-import type { ParsedReceipt } from '../inventory-types.js';
+import type { LabelParser, LabelParseInput } from '../services/label-parser.js';
+import type { InventoryPhotoPart, ParsedLabel, ParsedReceipt } from '../inventory-types.js';
 import { generateUlid } from '../ulid.js';
 import { registerInventoryRoutes } from './inventory.js';
 
 class FakeReceiptParser implements ReceiptParser {
   constructor(private result: ParsedReceipt) {}
   async parse(): Promise<ParsedReceipt> {
+    return this.result;
+  }
+}
+
+/** Records the photos handed to it so a route test can pin the multi-photo shape. */
+class CapturingLabelParser implements LabelParser {
+  seen: InventoryPhotoPart[] = [];
+  constructor(private result: ParsedLabel) {}
+  async parse(input: LabelParseInput): Promise<ParsedLabel> {
+    this.seen = input.photos;
     return this.result;
   }
 }
@@ -196,6 +207,60 @@ describe('inventory routes', () => {
 
     const missing = await fastify.inject({ method: 'POST', url: `/kitchen/inventory/${generateUlid()}/dismiss`, payload: {} });
     expect(missing.statusCode).toBe(404);
+  });
+
+  it('POST /kitchen/inventory/:ulid/label carries ALL photos[] parts to the parser as one product', async () => {
+    // A dedicated app with a capturing label parser (the shared one has none).
+    const app = Fastify({ logger: false });
+    const s = new MemoryInventoryStore();
+    const label = new CapturingLabelParser({
+      name: 'Roma Tomatoes', shelf_life_class: 'produce', package_size: '1 lb',
+      nutrition_per_100g: { calories: 18, protein_g: 0.9, fat_g: 0.2, sat_fat_g: 0, carbs_g: 3.9, sodium_mg: 5, fiber_g: 1.2, sugar_g: 2.6 },
+      ingredients: 'Tomatoes', aliases: ['tomatoes'],
+    });
+    const pl = new InventoryPipeline(s, null, label, app.log);
+    await app.register(registerInventoryRoutes, { inventory: pl });
+    await app.ready();
+    const { item } = await pl.createItem({ raw_label: 'TOMATOES', store: 'Example Grocer', acquired_at: '2026-07-18', needs_info: true });
+
+    // Front label + nutrition panel + ingredients panel: three complementary shots, one scan.
+    const { body, contentType } = buildMultipart(
+      { label: JSON.stringify({ shelf_life_class: 'produce' }) },
+      [
+        { fieldname: 'photos', filename: 'front.jpg', contentType: 'image/jpeg', data: Buffer.from('front') },
+        { fieldname: 'photos', filename: 'nutrition.jpg', contentType: 'image/jpeg', data: Buffer.from('nutrition') },
+        { fieldname: 'photos', filename: 'ingredients.jpg', contentType: 'image/jpeg', data: Buffer.from('ingredients') },
+      ]
+    );
+    const res = await app.inject({ method: 'POST', url: `/kitchen/inventory/${item.ulid}/label`, payload: body, headers: { 'content-type': contentType } });
+    expect(res.statusCode).toBe(200);
+    // All three photos reached the parser as one complementary set.
+    expect(label.seen.length).toBe(3);
+    const j = res.json();
+    expect(j.item.needs_info).toBe(false);
+    expect(j.product.ingredients).toBe('Tomatoes');
+    expect(j.product.nutrition_per_100g.fiber_g).toBe(1.2);
+    expect(j.resolved_count).toBe(1);
+    await app.close();
+  });
+
+  it('POST /kitchen/inventory/:ulid/label 409s on a terminal item, 503 with no model', async () => {
+    // 503: shared pipeline has a null label parser.
+    const { item } = await pipeline.createItem({ raw_label: 'X', store: 'S', acquired_at: '2026-07-18', needs_info: true });
+    const { body, contentType } = buildMultipart({}, [
+      { fieldname: 'photos', filename: 'a.jpg', contentType: 'image/jpeg', data: Buffer.from('a') },
+    ]);
+    const noModel = await fastify.inject({ method: 'POST', url: `/kitchen/inventory/${item.ulid}/label`, payload: body, headers: { 'content-type': contentType } });
+    expect(noModel.statusCode).toBe(503);
+
+    // 409: a terminal item rejects the scan.
+    const { item: term } = await pipeline.createItem({ raw_label: 'Y', acquired_at: '2026-07-18' });
+    await pipeline.applyEvent(term.ulid, 'finished', { at: '2026-07-18' });
+    const { body: b2, contentType: c2 } = buildMultipart({}, [
+      { fieldname: 'photos', filename: 'a.jpg', contentType: 'image/jpeg', data: Buffer.from('a') },
+    ]);
+    const terminal = await fastify.inject({ method: 'POST', url: `/kitchen/inventory/${term.ulid}/label`, payload: b2, headers: { 'content-type': c2 } });
+    expect(terminal.statusCode).toBe(409);
   });
 
   it('POST /kitchen/products then /kitchen/lexicon are creatable for the seed port', async () => {

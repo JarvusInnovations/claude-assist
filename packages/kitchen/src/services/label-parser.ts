@@ -37,8 +37,12 @@ export interface LabelParser {
 }
 
 const SYSTEM_PROMPT = `<role>
-You read a photo of a food package's label — nutrition facts panel, product name, net weight/count — for a personal kitchen inventory. You extract durable product facts, not a meal estimate.
+You read photos of a food package's label — nutrition facts panel, ingredients list, product name, net weight/count — for a personal kitchen inventory. You extract durable product facts, not a meal estimate.
 </role>
+
+<multiple_photos>
+When several photos are supplied they are complementary views of ONE product, not different products — e.g. the front of the package (for the product name, brand, and net weight), the nutrition-facts panel (for per-100g nutrition), and the ingredients panel (for the ingredients list). Combine them into a single extraction: take identity/size from the front, nutrition from the nutrition panel, ingredients from the ingredients panel. Never merge distinct products; if the photos plainly show different products, describe the most prominent one.
+</multiple_photos>
 
 <instructions>
 1. Read the product's display name (brand + item, e.g. "Store-brand Feta Cheese").
@@ -51,8 +55,9 @@ You read a photo of a food package's label — nutrition facts panel, product na
    - very_perishable: fish, fresh berries, fresh herbs, prepared salads.
    - unknown: cannot tell.
 3. Read the package size as printed (e.g. "16 oz", "1 L", "12 ct"). Null if absent.
-4. If a nutrition facts panel is visible, give per-100g values (calories, protein_g, fat_g, sat_fat_g, carbs_g, sodium_mg). Convert from the panel's serving size to 100g. Any value you cannot read is null.
-5. Suggest up to 3 short alias strings someone might use when logging (e.g. "feta", "feta cheese").
+4. If a nutrition facts panel is visible, give per-100g values (calories, protein_g, fat_g, sat_fat_g, carbs_g, sodium_mg, fiber_g, sugar_g). Convert from the panel's serving size to 100g. Any single value you cannot read is null; a partial panel fills what it shows and leaves the rest null.
+5. If an ingredients list is visible, transcribe it verbatim as printed (a single comma-separated string). Null if no ingredients panel is shown.
+6. Suggest up to 3 short alias strings someone might use when logging (e.g. "feta", "feta cheese").
 </instructions>
 
 <response_format>
@@ -63,12 +68,13 @@ Return ONLY a JSON object inside <label> tags. No markdown, no text outside the 
   "name": "product display name or null",
   "shelf_life_class": "pantry|frozen|fridge_long|fridge_short|produce|very_perishable|unknown",
   "package_size": "as printed or null",
-  "nutrition_per_100g": {"calories": 0, "protein_g": 0, "fat_g": 0, "sat_fat_g": 0, "carbs_g": 0, "sodium_mg": 0},
+  "nutrition_per_100g": {"calories": 0, "protein_g": 0, "fat_g": 0, "sat_fat_g": 0, "carbs_g": 0, "sodium_mg": 0, "fiber_g": 0, "sugar_g": 0},
+  "ingredients": "ingredients list as printed, or null",
   "aliases": ["short", "names"]
 }
 </label>
 
-Any value you cannot read should be null (nutrition_per_100g itself may be null if no panel is visible).
+Any value you cannot read should be null (nutrition_per_100g itself may be null if no panel is visible; ingredients null if no ingredients panel is visible).
 </response_format>`;
 
 export class KitchenLabelParser implements LabelParser {
@@ -160,14 +166,19 @@ export class KitchenLabelParser implements LabelParser {
             sat_fat_g: numOrNull((rawNut as Record<string, unknown>).sat_fat_g),
             carbs_g: numOrNull((rawNut as Record<string, unknown>).carbs_g),
             sodium_mg: numOrNull((rawNut as Record<string, unknown>).sodium_mg),
+            fiber_g: numOrNull((rawNut as Record<string, unknown>).fiber_g),
+            sugar_g: numOrNull((rawNut as Record<string, unknown>).sugar_g),
           }
         : null;
+
+    const ingredients =
+      typeof parsed.ingredients === 'string' && parsed.ingredients.trim() ? parsed.ingredients.trim() : null;
 
     const aliases = Array.isArray(parsed.aliases)
       ? parsed.aliases.filter((a): a is string => typeof a === 'string' && a.trim().length > 0).map((a) => a.trim()).slice(0, 3)
       : [];
 
-    return { name, shelf_life_class: cls, package_size: packageSize, nutrition_per_100g: nutrition, aliases };
+    return { name, shelf_life_class: cls, package_size: packageSize, nutrition_per_100g: nutrition, ingredients, aliases };
   }
 }
 

@@ -274,11 +274,20 @@ All tables instance-agnostic empty schema, ULID keys, `kitchen` schema
   unit): `ulid`, `name`, `shelf_life_class` (enum, see below), `aliases`
   (text[] — alternate names for depletion/lexicon matching),
   `nutrition_per_100g` (JSONB `{calories, protein_g, fat_g, sat_fat_g, carbs_g,
-  sodium_mg}`, any field null = unknown; nullable), `package_size` (text, e.g.
-  `"16 oz"`; nullable), `shelf_life_days_unopened` / `shelf_life_days_opened`
-  (int, label-derived precise overrides of the class default; nullable),
-  `created_at`, `updated_at`. A label photo enriches the **product**, not the
-  item.
+  sodium_mg, fiber_g, sugar_g}`, any field null = unknown; nullable),
+  `ingredients` (text — the full ingredients list as printed on the panel, e.g.
+  `"Cultured pasteurized milk, salt, enzymes"`; nullable; migration
+  `006-kitchen-product-ingredients.sql`), `package_size` (text, e.g. `"16 oz"`;
+  nullable), `shelf_life_days_unopened` / `shelf_life_days_opened` (int,
+  label-derived precise overrides of the class default; nullable), `created_at`,
+  `updated_at`. A label photo enriches the **product**, not the item. The
+  `nutrition_per_100g` panel is the full dietary panel — the same six fields a
+  consumption entry tracks (`calories, protein_g, fat_g, sat_fat_g, carbs_g,
+  sodium_mg`) plus `fiber_g` and `sugar_g`, which package panels state and the
+  module's dietary purpose cares about. It is a **product-nutrition** shape,
+  distinct from the recipe-component per-100g macro shape (`{calories,
+  protein_g, sat_fat_g}` in `types.ts`), which stays on its own type — the two
+  are not conflated.
 - **`kitchen.receipt_lexicon`** — one row per `(store, line_text)`: `ulid`,
   `store`, `line_text` (exact receipt line text, normalized to upper/trim),
   `product_ulid` (**nullable** — null on a non-inventory marker, see below),
@@ -452,21 +461,54 @@ Item mutation:
   error (`200`).
 - `POST /inventory/:ulid/label` — multipart. Photo parts (`photo`/`photos`) +
   optional meta part **`label`** (JSON `{ name?, shelf_life_class?,
-  package_size?, aliases? }`, field or file part). Runs the label model
-  (`KITCHEN_ESTIMATION_MODEL`, the strong tier) over the photos, enriches/creates
-  the product, links + clears `needs_info` on the item, and writes the
-  `receipt_lexicon` line so the same receipt text auto-resolves next time.
-  **Label fan-out:** resolving one item also resolves **every other open
-  `needs_info` item with the same `(store, normalized raw_label)`** — the same
-  product link and `shelf_life_class`, but `eat_by` re-derived per each sibling's
-  **own** `acquired_at`/`opened_at` (they are distinct physical units with
-  distinct clocks). This clears the whole multi-quantity group in one scan; the
-  lexicon write handles *future* receipts, the fan-out handles the *current*
-  batch's siblings. Fan-out only applies when the scanned item carries both a
-  `store` and a `raw_label` (the grouping key); otherwise only the scanned item
-  resolves. Returns `{ item: InventoryItem, product: Product, resolved_count }`,
-  where `resolved_count` is the total number of items resolved (the scanned item
-  plus its siblings, ≥ 1) (`404` unknown item, `503` no label model configured).
+  package_size?, aliases?, ingredients? }`, field or file part). Runs the label
+  model (`KITCHEN_ESTIMATION_MODEL`, the strong tier) over the photos and
+  enriches/creates the product. **Legal on any non-terminal item** (`409
+  InvalidTransitionError` on a `finished`/`tossed`/`dismissed` item); `404`
+  unknown item; `503` no label model configured.
+
+  **Multiple photos are complementary views of one product.** The client may
+  send several shots in one scan — a front label (product identity), a
+  nutrition-facts panel, an ingredients panel — and the parser treats them as
+  one product seen from multiple angles: front for name/aliases/package size,
+  panels for `nutrition_per_100g` and `ingredients`. A single shot works exactly
+  as before.
+
+  **Per-state behavior:**
+  - **`needs_info` item** — the resolve path (unchanged): enrich/create the
+    product, link it, clear `needs_info`, re-derive `eat_by`, run the label
+    fan-out, and write the `receipt_lexicon` line so the same receipt text
+    auto-resolves next time.
+  - **already-linked item** (`product_ulid` set, not `needs_info`) — the enrich
+    path: merge the parsed facts into the **linked** product under the
+    precedence below (never null-clobbering) and update/write the
+    `receipt_lexicon` line, but **leave the item untouched** (no state, product
+    link, or `eat_by` change). This is how a later nutrition/ingredients scan
+    banks the panel onto an already-stocked item. `resolved_count` is `1`.
+  - **unlinked, not `needs_info`** (edge) — treated like the resolve path.
+
+  **Label fan-out** (resolve path only): resolving one item also resolves
+  **every other open `needs_info` item with the same `(store, normalized
+  raw_label)`** — the same product link and `shelf_life_class`, but `eat_by`
+  re-derived per each sibling's **own** `acquired_at`/`opened_at` (they are
+  distinct physical units with distinct clocks). This clears the whole
+  multi-quantity group in one scan; the lexicon write handles *future* receipts,
+  the fan-out handles the *current* batch's siblings. Fan-out only applies when
+  the scanned item carries both a `store` and a `raw_label` (the grouping key);
+  otherwise only the scanned item resolves.
+
+  **Enrichment precedence** (both paths, applied per product field): explicit
+  `label` meta > model-parsed > keep existing. A null/absent incoming value
+  never clobbers an existing non-null value. `nutrition_per_100g` merges
+  **per-field**, not whole-object: a later scan that reads only `fiber_g` fills
+  that field and leaves the previously-banked `calories`/`protein_g`/etc.
+  intact. `ingredients` follows the same rule (a null parse keeps an existing
+  list). `shelf_life_class` only overrides when the incoming class is not
+  `unknown`; `aliases` union-merge.
+
+  Returns `{ item: InventoryItem, product: Product, resolved_count }`, where
+  `resolved_count` is the total number of items resolved (the scanned item plus
+  its siblings on the resolve path, ≥ 1; `1` on the enrich path).
 - `POST /inventory/:ulid/dismiss` — remove a line that does not belong in
   inventory (housewares and other non-grocery lines on a grocery receipt). JSON
   `{ non_inventory? (bool, default false), at? (ISO date) }`. Transitions the
@@ -487,7 +529,7 @@ Item mutation:
 Products & lexicon (agentic seed + reads):
 
 - `POST /products` — JSON `{ name (required), shelf_life_class?, aliases?,
-  nutrition_per_100g?, package_size?, shelf_life_days_unopened?,
+  nutrition_per_100g?, ingredients?, package_size?, shelf_life_days_unopened?,
   shelf_life_days_opened? }` → `Product` (`201`).
 - `GET /products?q&limit` → `{ products: Product[], count }` (`q` = substring
   over name/aliases).
@@ -513,8 +555,11 @@ Products & lexicon (agentic seed + reads):
   (null when undeterminable). Dates are ISO date strings (`YYYY-MM-DD`);
   timestamps are ISO date-time.
 - **Product**: `{ ulid, name, shelf_life_class, aliases, nutrition_per_100g,
-  package_size, shelf_life_days_unopened, shelf_life_days_opened, created_at,
-  updated_at }`.
+  ingredients, package_size, shelf_life_days_unopened, shelf_life_days_opened,
+  created_at, updated_at }`. `nutrition_per_100g` (nullable) is `{ calories,
+  protein_g, fat_g, sat_fat_g, carbs_g, sodium_mg, fiber_g, sugar_g }` (any
+  field null = unknown); `ingredients` is the printed ingredients list (nullable
+  text).
 - **LexiconLine**: `{ ulid, store, line_text, product_ulid, package_size,
   shelf_life_class, non_inventory, created_at, updated_at }`. `product_ulid` is
   null on a non-inventory skip marker (`non_inventory: true`).
@@ -620,7 +665,11 @@ food waste:
 - Receipt line extraction uses the **cheap** tier (`KITCHEN_RECEIPT_MODEL`,
   default a Haiku-class id) — mechanical OCR-ish extraction, gather cheap.
 - Label extraction reuses the **strong** vision tier (`KITCHEN_ESTIMATION_MODEL`)
-  — reading a nutrition/size panel accurately earns the better model.
+  — reading a nutrition/size panel accurately earns the better model. The
+  prompt treats multiple photos as complementary views of **one** product (front
+  for identity, panels for nutrition + ingredients) and extracts the full
+  `nutrition_per_100g` panel plus the `ingredients` list when a photo shows
+  them; a partial panel fills only what it shows and leaves the rest null.
 - Lexicon resolution and depletion matching are **deterministic** — no model
   call.
 - Every model dependency is optional: with no API key, receipts still post but

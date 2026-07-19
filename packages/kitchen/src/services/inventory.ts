@@ -36,7 +36,7 @@ import type {
 } from '../inventory-types.js';
 import type { InventoryStore, NewItem } from '../inventory-store.js';
 import { deriveEatBy, toItemView, toIsoDate } from '../inventory-derive.js';
-import { isTerminal, transitionInventory } from '../inventory-state.js';
+import { InvalidTransitionError, isTerminal, transitionInventory } from '../inventory-state.js';
 import { matchScore, parseRemark } from '../inventory-remark.js';
 import { generateUlid } from '../ulid.js';
 import type { ReceiptParser } from './receipt-parser.js';
@@ -310,37 +310,80 @@ export class InventoryPipeline {
   // ── Label intake ────────────────────────────────────────────────────────────
 
   /**
-   * Resolve a needs_info item from a label photo: extract product facts,
-   * create/enrich the product, clear needs_info + re-derive eat_by, and write
-   * the receipt-lexicon line so the same store+line text auto-resolves next time.
+   * Intake a label scan on any **non-terminal** item (specs/modules/kitchen.md
+   * § POST /inventory/:ulid/label). Extract product facts from the photos
+   * (multiple photos are complementary views of one product — front + panels),
+   * then, by the item's state:
+   *
+   * - **needs_info** — resolve: enrich/create the product, link it, clear
+   *   needs_info + re-derive eat_by, fan out to same-line siblings, and write
+   *   the receipt-lexicon line so the same store+line text auto-resolves next
+   *   time.
+   * - **already-linked (product set, not needs_info)** — enrich the *linked*
+   *   product only (per-field precedence, never null-clobbering) + write the
+   *   lexicon line; the item itself is left untouched. Banks a later
+   *   nutrition/ingredients scan onto an already-stocked item.
+   * - **unlinked, not needs_info** (edge) — treated like resolve.
+   *
+   * Throws InvalidTransitionError (→ 409) on a terminal item.
    */
   async resolveLabel(
     itemUlid: string,
     photos: InventoryPhotoPart[],
-    meta: { name?: string; shelf_life_class?: ShelfLifeClass; package_size?: string; aliases?: string[] } = {}
+    meta: {
+      name?: string;
+      shelf_life_class?: ShelfLifeClass;
+      package_size?: string;
+      aliases?: string[];
+      ingredients?: string;
+    } = {}
   ): Promise<LabelResolution | null> {
     const item = await this.store.getItem(itemUlid);
     if (!item) return null;
+    if (isTerminal(item.state)) throw new InvalidTransitionError(item.state, 'opened');
     if (!this.labelParser && photos.length > 0) throw new LabelParserUnavailableError();
 
     const parsed = photos.length > 0 && this.labelParser
       ? await this.labelParser.parse({ photos, hint: item.raw_label })
-      : { name: null, shelf_life_class: null, package_size: null, nutrition_per_100g: null, aliases: [] as string[] };
+      : {
+          name: null,
+          shelf_life_class: null,
+          package_size: null,
+          nutrition_per_100g: null,
+          ingredients: null,
+          aliases: [] as string[],
+        };
 
     const name = meta.name?.trim() || parsed.name || item.raw_label || 'Unlabeled item';
     const cls: ShelfLifeClass = meta.shelf_life_class ?? parsed.shelf_life_class ?? 'unknown';
     const packageSize = meta.package_size ?? parsed.package_size ?? null;
     const aliases = dedupeAliases([...(meta.aliases ?? []), ...parsed.aliases]);
     const nutrition = normalizeNutrition(parsed.nutrition_per_100g);
-
-    // Enrich an existing product (same name) or create one.
-    const product = await this.upsertProductByName({
+    const ingredients = meta.ingredients?.trim() || parsed.ingredients || null;
+    const productInput: ProductInput & { name: string } = {
       name,
       shelf_life_class: cls,
       aliases,
       nutrition_per_100g: nutrition,
+      ingredients,
       package_size: packageSize,
-    });
+    };
+
+    // Enrich path: an already-linked, non-needs_info item. Bank the parsed panel
+    // onto the LINKED product (ground truth, not a name match) and update the
+    // lexicon line, but leave the item's state/link/eat_by untouched.
+    if (item.product_ulid && !item.needs_info) {
+      const linked = await this.store.getProduct(item.product_ulid);
+      if (linked) {
+        const enriched = await this.enrichProduct(linked, productInput);
+        await this.writeLexiconLine(item, enriched, packageSize);
+        return { item: await this.viewOf(item), product: enriched, resolved_count: 1 };
+      }
+      // Linked product vanished — fall through to the resolve path.
+    }
+
+    // Resolve path: enrich an existing product (same name) or create one.
+    const product = await this.upsertProductByName(productInput);
 
     const eatBy = deriveEatBy({
       shelfLifeClass: product.shelf_life_class,
@@ -360,16 +403,8 @@ export class InventoryPipeline {
     // same-line siblings (a multi-quantity line makes one item per physical
     // unit; one label scan clears them all). Both need (store, raw_label).
     let resolvedCount = 1;
+    await this.writeLexiconLine(item, product, packageSize);
     if (item.store && item.raw_label) {
-      await this.store.upsertLexicon({
-        ulid: generateUlid(),
-        store: item.store,
-        line_text: normalizeLine(item.raw_label),
-        product_ulid: product.ulid,
-        package_size: packageSize,
-        shelf_life_class: product.shelf_life_class,
-      });
-
       const siblings = await this.sameLineNeedsInfoSiblings(item.store, item.raw_label, itemUlid);
       for (const sib of siblings) {
         // Same product + class, but eat_by re-derived from THIS sibling's own
@@ -412,6 +447,28 @@ export class InventoryPipeline {
         i.raw_label != null &&
         normalizeLine(i.raw_label) === norm
     );
+  }
+
+  /**
+   * Upsert the `(store, normalized raw_label)` → product lexicon line for a
+   * scanned item so future receipts carrying the same line auto-resolve. A null
+   * store or raw_label is a no-op (the lexicon key would be incomplete — see
+   * § Store extraction & precedence). Shared by both label paths.
+   */
+  private async writeLexiconLine(
+    item: InventoryItemRecord,
+    product: ProductRecord,
+    packageSize: string | null
+  ): Promise<void> {
+    if (!item.store || !item.raw_label) return;
+    await this.store.upsertLexicon({
+      ulid: generateUlid(),
+      store: item.store,
+      line_text: normalizeLine(item.raw_label),
+      product_ulid: product.ulid,
+      package_size: packageSize,
+      shelf_life_class: product.shelf_life_class,
+    });
   }
 
   // ── Item events ───────────────────────────────────────────────────────────
@@ -709,6 +766,7 @@ export class InventoryPipeline {
       shelf_life_class: input.shelf_life_class ?? 'unknown',
       aliases: dedupeAliases(input.aliases ?? []),
       nutrition_per_100g: normalizeNutrition(input.nutrition_per_100g),
+      ingredients: input.ingredients?.trim() || null,
       package_size: input.package_size ?? null,
       shelf_life_days_unopened: input.shelf_life_days_unopened ?? null,
       shelf_life_days_opened: input.shelf_life_days_opened ?? null,
@@ -739,18 +797,32 @@ export class InventoryPipeline {
   private async upsertProductByName(input: ProductInput & { name: string }): Promise<ProductRecord> {
     const matches = await this.store.listProducts({ q: input.name, limit: 20 });
     const exact = matches.find((p) => p.name.toLowerCase() === input.name.toLowerCase());
-    if (exact) {
-      const merged = await this.store.updateProduct(exact.ulid, {
-        shelf_life_class: input.shelf_life_class && input.shelf_life_class !== 'unknown'
-          ? input.shelf_life_class
-          : exact.shelf_life_class,
-        aliases: dedupeAliases([...exact.aliases, ...(input.aliases ?? [])]),
-        nutrition_per_100g: normalizeNutrition(input.nutrition_per_100g) ?? exact.nutrition_per_100g,
-        package_size: input.package_size ?? exact.package_size,
-      });
-      return merged ?? exact;
-    }
+    if (exact) return this.enrichProduct(exact, input);
     return this.createProduct(input);
+  }
+
+  /**
+   * Merge parsed/explicit facts onto an existing product under the field
+   * precedence explicit-meta/parsed > keep-existing (never null-clobbering).
+   * `nutrition_per_100g` merges **per-field** so a later partial panel adds
+   * fields without erasing earlier ones; `ingredients`/`package_size` keep the
+   * existing value when the incoming is null; `shelf_life_class` only overrides
+   * when the incoming class is not `unknown`; `aliases` union-merge. Shared by
+   * the label resolve path (match-by-name) and the label enrich path
+   * (already-linked item → enrich the linked product by ulid).
+   */
+  private async enrichProduct(existing: ProductRecord, input: ProductInput): Promise<ProductRecord> {
+    const merged = await this.store.updateProduct(existing.ulid, {
+      shelf_life_class:
+        input.shelf_life_class && input.shelf_life_class !== 'unknown'
+          ? input.shelf_life_class
+          : existing.shelf_life_class,
+      aliases: dedupeAliases([...existing.aliases, ...(input.aliases ?? [])]),
+      nutrition_per_100g: mergeNutrition(existing.nutrition_per_100g, normalizeNutrition(input.nutrition_per_100g)),
+      ingredients: (input.ingredients?.trim() || null) ?? existing.ingredients,
+      package_size: input.package_size ?? existing.package_size,
+    });
+    return merged ?? existing;
   }
 
   /** Single unambiguous best item match for a query, or null (tie / below threshold). */
@@ -842,17 +914,45 @@ function dedupeAliases(aliases: string[]): string[] {
   return out;
 }
 
+const NUTRITION_KEYS: (keyof NutritionPer100g)[] = [
+  'calories',
+  'protein_g',
+  'fat_g',
+  'sat_fat_g',
+  'carbs_g',
+  'sodium_mg',
+  'fiber_g',
+  'sugar_g',
+];
+
 function normalizeNutrition(input: Partial<NutritionPer100g> | null | undefined): NutritionPer100g | null {
   if (!input) return null;
-  const keys: (keyof NutritionPer100g)[] = ['calories', 'protein_g', 'fat_g', 'sat_fat_g', 'carbs_g', 'sodium_mg'];
   const out = {} as NutritionPer100g;
   let any = false;
-  for (const k of keys) {
+  for (const k of NUTRITION_KEYS) {
     const v = input[k];
     out[k] = typeof v === 'number' && Number.isFinite(v) ? v : null;
     if (out[k] !== null) any = true;
   }
   return any ? out : null;
+}
+
+/**
+ * Merge an incoming nutrition panel onto an existing one **per field**: a
+ * non-null incoming value wins, otherwise the existing value is kept. This is
+ * why a later scan that reads only `fiber_g` fills that field without erasing
+ * the previously-banked `calories`/`protein_g`/etc. Returns the existing panel
+ * when there is nothing to add, and the incoming when there was nothing before.
+ */
+export function mergeNutrition(
+  existing: NutritionPer100g | null,
+  incoming: NutritionPer100g | null
+): NutritionPer100g | null {
+  if (!incoming) return existing;
+  if (!existing) return incoming;
+  const out = {} as NutritionPer100g;
+  for (const k of NUTRITION_KEYS) out[k] = incoming[k] ?? existing[k];
+  return out;
 }
 
 /** Parse an ISO date/date-time to a day-normalized (UTC midnight) Date; default today. */

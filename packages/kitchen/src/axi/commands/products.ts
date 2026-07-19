@@ -10,12 +10,13 @@ export const PRODUCTS_HELP = `kitchen-axi products <subcommand> [args] [--json]
                                       name/aliases (substring)
   add --name NAME [flags]           seed a product
        [--shelf-life C] [--aliases a,b] [--package-size S]
-       [--nutrition '<json>'] [--shelf-life-days-unopened N]
-       [--shelf-life-days-opened N]
+       [--nutrition '<json>'] [--ingredients TEXT]
+       [--shelf-life-days-unopened N] [--shelf-life-days-opened N]
 
   shelf-life classes: ${SHELF_LIFE_CLASSES.join(", ")}
   --nutrition is a JSON object of per-100g macros, e.g.
-    '{"calories": 52, "protein_g": 0.3, "carbs_g": 14}'`;
+    '{"calories": 52, "protein_g": 0.3, "carbs_g": 14, "fiber_g": 2.4, "sugar_g": 10}'
+  --ingredients is the printed ingredients list as a single string`;
 
 const PRODUCT_ROW_SCHEMA: FieldDef[] = [
   field("ulid"),
@@ -38,6 +39,7 @@ const PRODUCT_DETAIL_SCHEMA: FieldDef[] = [
     as: "nutrition_per_100g",
     fn: (p) => (p.nutrition_per_100g ? JSON.stringify(p.nutrition_per_100g) : null),
   },
+  field("ingredients"),
 ];
 
 export async function productsCommand(args: string[]): Promise<string> {
@@ -65,13 +67,14 @@ async function listProducts(args: string[]): Promise<string> {
 }
 
 async function addProduct(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json"], ["name", "shelf-life", "aliases", "package-size", "nutrition", "shelf-life-days-unopened", "shelf-life-days-opened"]);
+  const { flags } = parseArgs(args, ["json"], ["name", "shelf-life", "aliases", "package-size", "nutrition", "ingredients", "shelf-life-days-unopened", "shelf-life-days-opened"]);
   const name = requireFlag(flags, "name", PRODUCTS_HELP);
   const body: Record<string, unknown> = { name };
   if (typeof flags["shelf-life"] === "string") body.shelf_life_class = validateShelfLife(flags["shelf-life"]);
   if (typeof flags.aliases === "string") body.aliases = splitCsv(flags.aliases);
   if (typeof flags["package-size"] === "string") body.package_size = flags["package-size"];
   if (typeof flags.nutrition === "string") body.nutrition_per_100g = parseJson(flags.nutrition, "--nutrition", PRODUCTS_HELP);
+  if (typeof flags.ingredients === "string") body.ingredients = flags.ingredients;
   if (typeof flags["shelf-life-days-unopened"] === "string") body.shelf_life_days_unopened = parseNumberFlag(flags["shelf-life-days-unopened"], "shelf-life-days-unopened", PRODUCTS_HELP, { min: 0 });
   if (typeof flags["shelf-life-days-opened"] === "string") body.shelf_life_days_opened = parseNumberFlag(flags["shelf-life-days-opened"], "shelf-life-days-opened", PRODUCTS_HELP, { min: 0 });
 

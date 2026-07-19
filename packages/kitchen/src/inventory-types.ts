@@ -44,7 +44,13 @@ export type InventoryEventType = 'opened' | 'finished' | 'tossed';
 
 export const INVENTORY_EVENT_TYPES: readonly InventoryEventType[] = ['opened', 'finished', 'tossed'];
 
-/** Reference nutrition per 100g on a product. Any field null = unknown. */
+/**
+ * Reference nutrition per 100g on a product. Any field null = unknown.
+ * The full dietary panel: the six fields an entry tracks plus fiber_g/sugar_g
+ * (panels state them and they matter for the module's dietary purpose). This is
+ * a product-nutrition shape, distinct from RecipeComponentMacros — the two are
+ * not conflated.
+ */
 export interface NutritionPer100g {
   calories: number | null;
   protein_g: number | null;
@@ -52,6 +58,8 @@ export interface NutritionPer100g {
   sat_fat_g: number | null;
   carbs_g: number | null;
   sodium_mg: number | null;
+  fiber_g: number | null;
+  sugar_g: number | null;
 }
 
 /** A row in kitchen.products. */
@@ -61,6 +69,8 @@ export interface ProductRecord {
   shelf_life_class: ShelfLifeClass;
   aliases: string[];
   nutrition_per_100g: NutritionPer100g | null;
+  /** The printed ingredients list; null when unknown. */
+  ingredients: string | null;
   package_size: string | null;
   shelf_life_days_unopened: number | null;
   shelf_life_days_opened: number | null;
@@ -74,6 +84,7 @@ export interface ProductInput {
   shelf_life_class?: ShelfLifeClass;
   aliases?: string[];
   nutrition_per_100g?: Partial<NutritionPer100g> | null;
+  ingredients?: string | null;
   package_size?: string | null;
   shelf_life_days_unopened?: number | null;
   shelf_life_days_opened?: number | null;
@@ -283,12 +294,18 @@ export interface ParsedReceipt {
   lines: ParsedReceiptLine[];
 }
 
-/** The label model's raw structured output for a single package panel. */
+/**
+ * The label model's raw structured output. When several photos are supplied
+ * they are complementary views of one product (front + panels), so this is one
+ * merged extraction, not one-per-photo.
+ */
 export interface ParsedLabel {
   name: string | null;
   shelf_life_class: ShelfLifeClass | null;
   package_size: string | null;
   nutrition_per_100g: Partial<NutritionPer100g> | null;
+  /** The printed ingredients list when a photo shows it; null otherwise. */
+  ingredients: string | null;
   aliases: string[];
 }
 
