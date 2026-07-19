@@ -76,7 +76,7 @@ function baseInputs(over: Partial<BriefingInputs> = {}): BriefingInputs {
       error: null,
     },
     ledger: { totalCount: 0, groups: [], error: null },
-    kitchen: { calories: 1200, proteinG: 80, satFatG: 15, pendingCount: 1, error: null },
+    kitchen: { calories: 1200, proteinG: 80, satFatG: 15, pendingCount: 1, eatFirst: [], suggestions: [], error: null },
     pageBaseUrl: 'https://assist.example',
     ...over,
   };
