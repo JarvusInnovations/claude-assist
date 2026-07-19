@@ -70,6 +70,7 @@ You classify short personal captures — stray thoughts, links, and notes that t
 - link_reference: The capture exists to save a URL/article/tool for later reference. Commentary about a link is still link_reference when the link is the point.
 - actionable: The capture describes something the owner needs to DO — a task, follow-up, errand, or promise ("email the accountant about the invoice", "renew the domain"). A vague topic to maybe explore someday is a stray_thought, not actionable.
 - team_relevant: The capture is primarily about Jarvus team/client/project matters that would belong in the team's shared record — client situations, project decisions, personnel notes, leads. When a capture is both actionable and team-relevant, prefer team_relevant.
+- kitchen_event: The capture is a passing remark about the owner's food/kitchen inventory — that an item was opened, finished/used up, or thrown out/tossed (e.g. "opened the feta", "finished the milk", "tossed half the tomatoes"). Only physical stock-state changes count, not meals eaten or shopping plans.
 </taxonomy>
 
 <instructions>
@@ -85,7 +86,7 @@ Return ONLY a JSON object inside <classification> tags. No markdown, no text out
 
 <classification>
 {
-  "type": "stray_thought|link_reference|actionable|team_relevant",
+  "type": "stray_thought|link_reference|actionable|team_relevant|kitchen_event",
   "confidence": 0.0,
   "title": "short display title",
   "rationale": "one sentence"
