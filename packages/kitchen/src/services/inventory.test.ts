@@ -184,6 +184,7 @@ describe('free-text event resolver', () => {
     expect(tossed.event?.type).toBe('tossed');
     expect(tossed.item?.on_hand_fraction).toBeCloseTo(0.5, 5);
     expect(tossed.item?.state).toBe('stocked'); // partial toss doesn't terminate
+    expect(tossed.item?.notes).toContain('tossed 0.5'); // waste amount recorded
 
     const nothing = await pipeline.resolveRemark('opened the caviar');
     expect(nothing.matched).toBe(false);

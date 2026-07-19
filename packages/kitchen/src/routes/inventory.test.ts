@@ -102,6 +102,56 @@ describe('inventory routes', () => {
     expect(again.statusCode).toBe(409);
   });
 
+  it('POST /kitchen/inventory/:ulid/events partial toss decrements, then terminates at zero', async () => {
+    const { item } = await pipeline.createItem({ raw_label: 'Tomatoes', shelf_life_class: 'produce', acquired_at: '2026-07-10' });
+
+    // Partial toss: fraction is the AMOUNT tossed — item stays alive, decremented.
+    const partial = await fastify.inject({
+      method: 'POST',
+      url: `/kitchen/inventory/${item.ulid}/events`,
+      payload: { type: 'tossed', fraction: 0.4, at: '2026-07-12' },
+    });
+    expect(partial.statusCode).toBe(200);
+    expect(partial.json().state).toBe('stocked');
+    expect(partial.json().on_hand_fraction).toBeCloseTo(0.6, 5);
+    expect(partial.json().closed_at).toBeNull();
+    // Waste amount is recorded on the item's notes for telemetry.
+    expect(partial.json().notes).toContain('tossed 0.4 2026-07-12');
+
+    // Tossing the remainder reaches zero → terminal.
+    const rest = await fastify.inject({
+      method: 'POST',
+      url: `/kitchen/inventory/${item.ulid}/events`,
+      payload: { type: 'tossed', fraction: 0.6, at: '2026-07-13' },
+    });
+    expect(rest.statusCode).toBe(200);
+    expect(rest.json().state).toBe('tossed');
+    expect(rest.json().on_hand_fraction).toBe(0);
+    expect(rest.json().closed_at).toBe('2026-07-13');
+    expect(rest.json().notes).toContain('tossed 0.6 2026-07-13');
+
+    // Terminal now: further events 409.
+    const again = await fastify.inject({
+      method: 'POST',
+      url: `/kitchen/inventory/${item.ulid}/events`,
+      payload: { type: 'tossed', fraction: 0.1 },
+    });
+    expect(again.statusCode).toBe(409);
+  });
+
+  it('POST /kitchen/inventory/:ulid/events tossed without a fraction is a full terminal toss', async () => {
+    const { item } = await pipeline.createItem({ raw_label: 'Lettuce', shelf_life_class: 'produce', acquired_at: '2026-07-10' });
+    const res = await fastify.inject({
+      method: 'POST',
+      url: `/kitchen/inventory/${item.ulid}/events`,
+      payload: { type: 'tossed', at: '2026-07-14' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().state).toBe('tossed');
+    expect(res.json().on_hand_fraction).toBe(0);
+    expect(res.json().notes).toContain('tossed 1 2026-07-14');
+  });
+
   it('POST /kitchen/inventory/events resolves a free-text remark', async () => {
     await pipeline.createItem({ raw_label: 'Feta', shelf_life_class: 'fridge_long', acquired_at: '2026-07-01' });
     const res = await fastify.inject({ method: 'POST', url: '/kitchen/inventory/events', payload: { remark: 'opened the feta' } });

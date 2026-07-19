@@ -153,13 +153,31 @@ default; `unknown` (and any null window) yields `eat_by = null`.
 **Inventory state machine** (`src/inventory-state.ts`):
 `stocked --opened--> open`, `{stocked,open} --finished--> finished`,
 `{stocked,open} --tossed--> tossed`. `finished`/`tossed` are terminal. Opening
-stamps `opened_at` and re-derives `eat_by`; finishing/tossing stamps `closed_at`
-and sets `on_hand_fraction` to 0.
+stamps `opened_at` and re-derives `eat_by`; finishing stamps `closed_at` and
+sets `on_hand_fraction` to 0. Tossing takes an optional **amount tossed**
+(fraction 0..1): a partial toss decrements `on_hand_fraction` and keeps the
+item's state alive (directional — it self-heals at the next event); the item
+only transitions to terminal `tossed` (with `closed_at`, fraction 0) when no
+fraction is supplied (full toss) or the remainder reaches zero. Every toss
+appends `tossed <amount> <date>` to the item's `notes` so waste amounts stay
+recoverable for telemetry. These semantics are shared verbatim by the explicit
+event endpoint and the free-text resolver.
 
 ### API
 
 All under `/api/kitchen`. Error envelope `{ error }`, same conventions as
 phase 1. Photos are memory-only for the request, never persisted (phase-1 rule).
+
+**Response wrapping is deliberate and contractual, per endpoint** (clients must
+not assume one convention): single-resource creates/mutations return the
+**bare** row (`POST /receipts` → `PurchaseBatch`; `POST /inventory` and
+`POST /inventory/:ulid/events` → `InventoryItem`; `POST /products` → `Product`;
+`POST /lexicon` → `LexiconLine`); list reads return a named plural + `count`
+(`{ batches, count }`, `{ items, count }`, `{ questions, count }`,
+`{ products, count }`, `{ lines, count }`); compound reads/results return named
+objects (`GET /receipts/:ulid` → `{ batch, lines }`; label →
+`{ item, product }`; free-text resolver → `{ matched, item?, event? }`). The
+shape stated on each endpoint below is exact.
 
 Receipts:
 
@@ -167,8 +185,8 @@ Receipts:
   either a form field OR a file part, same tolerance as `/entries`):
   `{ ulid (ULID, required), store?, purchased_at? (ISO date) }`. Photo parts
   named **`photo`** or **`photos`** (0..N). Posts a `purchase_batches` row
-  immediately (`status: 'parsing'`), idempotent on ULID, and returns it
-  (`201` created / `200` replay). A detached parse pass runs the cheap receipt
+  immediately (`status: 'parsing'`), idempotent on ULID, and returns the
+  **bare** `PurchaseBatch` (`201` created / `200` replay). A detached parse pass runs the cheap receipt
   model (`KITCHEN_RECEIPT_MODEL`) over the photos → line items; each line does
   exact-string lexicon lookup per store; a match creates a `stocked` inventory
   item stamped with `purchased_at`; an unknown creates a `needs_info` item
@@ -182,7 +200,7 @@ Inventory reads:
   Default: on-hand (`stocked`+`open`) ordered by `eat_by` ascending, nulls last
   (eat-first urgency). `state` filters to one state; `include_closed=true`
   includes finished/tossed.
-- `GET /inventory/:ulid` → `InventoryItem` (404 if absent).
+- `GET /inventory/:ulid` → bare `InventoryItem` (404 if absent).
 - `GET /inventory/questions?limit` → `{ questions: Question[], count }` — open
   `needs_info` items rendered as one-time questions for the digest/chat.
 
@@ -192,10 +210,14 @@ Item mutation:
   agentic seed port). JSON `{ ulid?, product_ulid?, raw_label?, store?,
   batch_ulid?, acquired_at? (ISO date), on_hand_fraction?, state?, needs_info?,
   shelf_life_class?, notes? }`. ULID optional (server-generates when absent);
-  idempotent when supplied. Returns the `InventoryItem` (`201`/`200`).
+  idempotent when supplied. Returns the **bare** `InventoryItem` (`201`/`200`).
 - `POST /inventory/:ulid/events` — explicit state change. JSON
   `{ type: 'opened'|'finished'|'tossed', fraction? (0..1), at? (ISO date) }`.
-  Returns the updated `InventoryItem`. `404` unknown item; `409`
+  `fraction` semantics per type: `opened` — absolute remaining fraction
+  (omitted = unchanged); `tossed` — **amount tossed** (partial toss decrements
+  and stays alive; terminal only at zero remainder or when omitted, per the
+  state-machine rules above); `finished` ignores it (always terminal + zeroed).
+  Returns the **bare** updated `InventoryItem`. `404` unknown item; `409`
   `InvalidTransitionError` on a terminal item.
 - `POST /inventory/events` — **free-text event resolver**. JSON
   `{ remark (string, required), at? (ISO date) }`. Best-effort matches the

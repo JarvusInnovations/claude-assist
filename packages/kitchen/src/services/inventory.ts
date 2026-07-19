@@ -303,7 +303,16 @@ export class InventoryPipeline {
     return updated ? this.viewOf(updated) : null;
   }
 
-  /** Shared side-effect application used by both the explicit endpoint and the resolver. */
+  /**
+   * Shared side-effect application used by both the explicit endpoint and the
+   * free-text resolver. Fraction semantics per event type:
+   * - `opened`: optional absolute remaining fraction (defaults to unchanged).
+   * - `tossed`: optional AMOUNT tossed — decrements on-hand and terminates
+   *   (state `tossed`) only when the remainder reaches zero or no fraction was
+   *   supplied (full toss). The tossed amount is appended to the item's
+   *   `notes` (`tossed <amount> <date>`) so waste telemetry stays possible.
+   * - `finished`: always terminal and zeroing.
+   */
   private async applyEventToRecord(
     item: InventoryItemRecord,
     type: InventoryEventType,
@@ -329,7 +338,34 @@ export class InventoryPipeline {
       });
     }
 
-    // finished | tossed: terminal, zero the fraction, stamp closed_at.
+    if (type === 'tossed') {
+      // Amount tossed: the supplied fraction, or everything on hand (full toss).
+      const tossedAmount = clampFraction(opts.fraction ?? item.on_hand_fraction);
+      const remaining = clampFraction(item.on_hand_fraction - tossedAmount);
+      const wasteNote = `tossed ${tossedAmount} ${toIsoDate(at)}`;
+      const notes = item.notes ? `${item.notes}\n${wasteNote}` : wasteNote;
+
+      if (opts.fraction !== undefined && remaining > 0) {
+        // Partial toss: decrement, keep the current state alive (directional —
+        // self-heals at the next event). transitionInventory above has already
+        // rejected terminal items.
+        return this.store.updateItemState(item.ulid, {
+          state: item.state,
+          on_hand_fraction: remaining,
+          notes,
+        });
+      }
+
+      // Full toss (or the remainder hit zero): terminal.
+      return this.store.updateItemState(item.ulid, {
+        state: nextState,
+        closed_at: at,
+        on_hand_fraction: 0,
+        notes,
+      });
+    }
+
+    // finished: terminal, zero the fraction, stamp closed_at.
     return this.store.updateItemState(item.ulid, {
       state: nextState,
       closed_at: at,
@@ -353,20 +389,12 @@ export class InventoryPipeline {
     const best = this.bestItemMatch(parsed.term, onHand, products);
     if (!best) return { matched: false };
 
-    // A `tossed` with a fraction < 1 is a partial toss: decrement rather than
-    // terminate. Everything else applies the full state change.
-    if (parsed.type === 'tossed' && parsed.fraction !== null && parsed.fraction < 1) {
-      const next = clampFraction(best.on_hand_fraction - parsed.fraction);
-      const updated = await this.store.setItemFraction(best.ulid, next);
-      return {
-        matched: true,
-        item: await this.viewOf(updated ?? best),
-        event: { type: 'tossed', fraction: parsed.fraction },
-      };
-    }
-
     try {
-      const updated = await this.applyEventToRecord(best, parsed.type, { fraction: undefined, at });
+      // Same shared application as the explicit endpoint: a `tossed` fraction
+      // is the amount tossed (partial toss decrements rather than terminates);
+      // opened/finished ignore the parsed fraction.
+      const fraction = parsed.type === 'tossed' ? parsed.fraction ?? undefined : undefined;
+      const updated = await this.applyEventToRecord(best, parsed.type, { fraction, at });
       return {
         matched: true,
         item: updated ? await this.viewOf(updated) : undefined,

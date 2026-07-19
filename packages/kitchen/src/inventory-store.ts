@@ -73,6 +73,8 @@ export interface ItemStateUpdate {
   closed_at?: Date | null;
   on_hand_fraction?: number;
   eat_by?: Date | null;
+  /** Replacement notes value (e.g. with a waste line appended); omitted = unchanged. */
+  notes?: string;
 }
 
 export interface ResolveNeedsInfo {
@@ -407,7 +409,8 @@ export class PgInventoryStore implements InventoryStore {
         opened_at = ${update.opened_at !== undefined ? update.opened_at : current.opened_at},
         closed_at = ${update.closed_at !== undefined ? update.closed_at : current.closed_at},
         on_hand_fraction = ${update.on_hand_fraction ?? current.on_hand_fraction},
-        eat_by = ${update.eat_by !== undefined ? update.eat_by : current.eat_by}
+        eat_by = ${update.eat_by !== undefined ? update.eat_by : current.eat_by},
+        notes = ${update.notes !== undefined ? update.notes : current.notes}
       WHERE ulid = ${ulid}
       RETURNING *
     `;
