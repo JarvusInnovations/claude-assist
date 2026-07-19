@@ -194,12 +194,22 @@ The module reads a meal-bank gitsheet owned by the instance's own repo:
 
 - Wiring is **instance configuration** — repo path + sheet name via env; no
   source is hardcoded in the toolkit.
-- The module **publishes its meal-record contract document** (gitsheets schema
-  contract) as its named interface; any sheet satisfying it works. The read
-  opens with `contract: { schema, mode: 'verify' }` — rung-1 declared identity
-  preferred, structural fallback — and a contract failure is a wiring-time
-  refusal, never a mid-read surprise. Until the gitsheets consumer-verify
-  surface ships, the module reads plain and flips the option on when available.
+- The module **publishes its meal-template contract document** (gitsheets schema
+  contract, `contracts/meal-template.v1.schema.json`, name
+  `gitsheets.io/meal-template/v1`) as its named interface; any sheet
+  satisfying it works. The read opens with `contract: { schema, mode:
+  'verify' }` (gitsheets ≥ 2.5.0) — rung-1 declared identity preferred,
+  structural fallback — and a contract failure is a wiring-time refusal,
+  never a mid-read surprise.
+- **Verification outcomes**: a sheet that declares the contract
+  (`implements` + byte-identical vendored copy) verifies by identity with no
+  record scan; a contract-unaware sheet whose records structurally conform
+  still reads, with a log line noting the undeclared conformance (so sheets
+  predating contract adoption never regress); a non-conforming sheet is
+  refused at wiring time — the read logs the `ContractError` and returns no
+  sheet recipes, and reselect degrades to recents-only, exactly like the
+  missing-config path. The server never crashes on a bad sheet, and reads
+  are never blocked mid-flight (post-wiring drift is an advisory log).
 
 ## API
 
