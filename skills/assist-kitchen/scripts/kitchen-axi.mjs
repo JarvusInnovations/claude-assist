@@ -815,7 +815,7 @@ var api = {
 };
 
 // packages/kitchen/src/axi/args.ts
-function parseArgs(args, booleanFlags = []) {
+function parseArgs(args, booleanFlags = [], valueFlags) {
   const positionals = [];
   const flags = {};
   for (let i = 0; i < args.length; i++) {
@@ -824,6 +824,11 @@ function parseArgs(args, booleanFlags = []) {
       const name = arg.slice(2);
       if (booleanFlags.includes(name)) {
         flags[name] = true;
+      } else if (valueFlags !== void 0 && !valueFlags.includes(name)) {
+        const valid = [...valueFlags, ...booleanFlags].map((f) => `--${f}`).join(", ");
+        throw new AxiError(`Unknown flag --${name}`, "VALIDATION_ERROR", [
+          valid ? `Valid flags here: ${valid}` : "This command takes no flags besides --json"
+        ]);
       } else {
         const value = args[++i];
         if (value === void 0) {
@@ -1072,7 +1077,7 @@ function startOfTodayIso() {
   return new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
 }
 async function homeCommand(args) {
-  const { flags } = parseArgs(args, ["json"]);
+  const { flags } = parseArgs(args, ["json"], ["eat-first"]);
   const server = resolveServer();
   const cli = cliInvocation();
   const eatFirstN = typeof flags["eat-first"] === "string" ? Math.max(parseInt(flags["eat-first"], 10) || 3, 1) : 3;
@@ -1225,7 +1230,7 @@ async function entriesCommand(args) {
   }
 }
 async function listEntries(args) {
-  const { flags } = parseArgs(args, ["json"]);
+  const { flags } = parseArgs(args, ["json"], ["since", "limit"]);
   const since = typeof flags.since === "string" ? validateDate(flags.since, "--since", ENTRIES_HELP) : void 0;
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", ENTRIES_HELP, { min: 1 })) : void 0;
   const result = await api.get("/api/kitchen/entries", { since, limit });
@@ -1234,7 +1239,7 @@ async function listEntries(args) {
   return renderList("entries", entries, ENTRY_ROW_SCHEMA);
 }
 async function showEntry(args) {
-  const { positionals, flags } = parseArgs(args, ["json"]);
+  const { positionals, flags } = parseArgs(args, ["json"], []);
   const ulid = requirePositional(positionals, 0, "entry ulid", ENTRIES_HELP);
   const entry = await api.get(`/api/kitchen/entries/${encodeURIComponent(ulid)}`);
   if (flags.json) return rawJson(entry);
@@ -1253,7 +1258,7 @@ function parseComponent(raw) {
   return { label, quantity_g: qty };
 }
 async function logEntry(args) {
-  const { positionals, flags } = parseArgs(args, ["json"]);
+  const { positionals, flags } = parseArgs(args, ["json"], ["recipe", "component"]);
   const note = positionals.join(" ").trim();
   const recipe = typeof flags.recipe === "string" ? flags.recipe : void 0;
   const components = collectFlag(args, "component").map(parseComponent);
@@ -1277,7 +1282,7 @@ async function logEntry(args) {
   ]);
 }
 async function patchEntry(args) {
-  const { positionals, flags } = parseArgs(args, ["json"]);
+  const { positionals, flags } = parseArgs(args, ["json"], ["note", "label", "portion-basis", "calories", "protein", "fat", "sat-fat", "carbs", "sodium", "multiplier"]);
   const ulid = requirePositional(positionals, 0, "entry ulid", ENTRIES_HELP);
   const body = {};
   if (typeof flags.note === "string") body.note = flags.note;
@@ -1305,7 +1310,7 @@ async function patchEntry(args) {
   return renderDetail("entry", updated, DETAIL_SCHEMA);
 }
 async function deleteEntry(args) {
-  const { positionals, flags } = parseArgs(args, ["json"]);
+  const { positionals, flags } = parseArgs(args, ["json"], []);
   const ulid = requirePositional(positionals, 0, "entry ulid", ENTRIES_HELP);
   await api.del(`/api/kitchen/entries/${encodeURIComponent(ulid)}`);
   if (flags.json) return rawJson({ deleted: ulid });
@@ -1386,7 +1391,7 @@ async function inventoryCommand(args) {
   }
 }
 async function listItems(args) {
-  const { flags } = parseArgs(args, ["json", "closed"]);
+  const { flags } = parseArgs(args, ["json", "closed"], ["state", "limit"]);
   const state = typeof flags.state === "string" ? flags.state : void 0;
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", INVENTORY_HELP, { min: 1 })) : void 0;
   const result = await api.get("/api/kitchen/inventory", {
@@ -1399,14 +1404,14 @@ async function listItems(args) {
   return renderList("items", items, ITEM_ROW_SCHEMA);
 }
 async function showItem(args) {
-  const { positionals, flags } = parseArgs(args, ["json"]);
+  const { positionals, flags } = parseArgs(args, ["json"], []);
   const ulid = requirePositional(positionals, 0, "item ulid", INVENTORY_HELP);
   const item = await api.get(`/api/kitchen/inventory/${encodeURIComponent(ulid)}`);
   if (flags.json) return rawJson(item);
   return renderDetail("item", item, ITEM_DETAIL_SCHEMA);
 }
 async function addItem(args) {
-  const { flags } = parseArgs(args, ["json", "needs-info"]);
+  const { flags } = parseArgs(args, ["json", "needs-info"], ["ulid", "product-ulid", "raw-label", "store", "batch-ulid", "acquired-at", "fraction", "state", "shelf-life", "notes"]);
   const body = {};
   if (typeof flags.ulid === "string") body.ulid = flags.ulid;
   if (typeof flags["product-ulid"] === "string") body.product_ulid = flags["product-ulid"];
@@ -1427,7 +1432,7 @@ async function addItem(args) {
   return renderDetail("item", item, ITEM_DETAIL_SCHEMA);
 }
 async function itemEvent(args) {
-  const { positionals, flags } = parseArgs(args, ["json"]);
+  const { positionals, flags } = parseArgs(args, ["json"], ["fraction", "at"]);
   const ulid = requirePositional(positionals, 0, "item ulid", INVENTORY_HELP);
   const type = requirePositional(positionals, 1, "event type", INVENTORY_HELP);
   if (!EVENT_TYPES.includes(type)) {
@@ -1441,7 +1446,7 @@ async function itemEvent(args) {
   return renderDetail("item", item, ITEM_DETAIL_SCHEMA);
 }
 async function remark(args) {
-  const { positionals, flags } = parseArgs(args, ["json"]);
+  const { positionals, flags } = parseArgs(args, ["json"], ["at"]);
   const text = positionals.join(" ").trim();
   if (!text) throw new AxiError("inventory remark needs free text", "VALIDATION_ERROR", [INVENTORY_HELP]);
   const body = { remark: text };
@@ -1465,7 +1470,7 @@ async function remark(args) {
   ]);
 }
 async function questions(args) {
-  const { flags } = parseArgs(args, ["json"]);
+  const { flags } = parseArgs(args, ["json"], ["limit"]);
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", INVENTORY_HELP, { min: 1 })) : void 0;
   const result = await api.get("/api/kitchen/inventory/questions", { limit });
   if (flags.json) return rawJson(result);
@@ -1522,7 +1527,7 @@ async function receiptsCommand(args) {
   }
 }
 async function listBatches(args) {
-  const { flags } = parseArgs(args, ["json"]);
+  const { flags } = parseArgs(args, ["json"], ["limit"]);
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", RECEIPTS_HELP, { min: 1 })) : void 0;
   const result = await api.get("/api/kitchen/receipts", { limit });
   if (flags.json) return rawJson(result);
@@ -1530,7 +1535,7 @@ async function listBatches(args) {
   return renderList("batches", batches, BATCH_ROW_SCHEMA);
 }
 async function showBatch(args) {
-  const { positionals, flags } = parseArgs(args, ["json"]);
+  const { positionals, flags } = parseArgs(args, ["json"], []);
   const ulid = requirePositional(positionals, 0, "batch ulid", RECEIPTS_HELP);
   const result = await api.get(`/api/kitchen/receipts/${encodeURIComponent(ulid)}`);
   if (flags.json) return rawJson(result);
@@ -1541,7 +1546,7 @@ async function showBatch(args) {
   ]);
 }
 async function scanReceipt(args) {
-  const { positionals, flags } = parseArgs(args, ["json"]);
+  const { positionals, flags } = parseArgs(args, ["json"], ["store", "purchased-at", "ulid"]);
   const photos = positionals;
   if (photos.length === 0) {
     throw new AxiError("receipts scan needs at least one photo path", "VALIDATION_ERROR", [RECEIPTS_HELP]);
@@ -1602,7 +1607,7 @@ async function recipesCommand(args) {
   }
 }
 async function listRecipes(args) {
-  const { flags } = parseArgs(args, ["json"]);
+  const { flags } = parseArgs(args, ["json"], ["limit"]);
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", RECIPES_HELP, { min: 1 })) : void 0;
   const strip = await api.get("/api/kitchen/reselect", { limit });
   if (flags.json) return rawJson(strip);
@@ -1614,7 +1619,7 @@ async function listRecipes(args) {
   ]);
 }
 async function pushRecipe(args) {
-  const { positionals, flags } = parseArgs(args, ["json"]);
+  const { positionals, flags } = parseArgs(args, ["json"], []);
   const jsonArg = positionals[0];
   if (!jsonArg) {
     throw new AxiError("recipes push needs a recipe JSON body", "VALIDATION_ERROR", [RECIPES_HELP]);
@@ -1625,7 +1630,7 @@ async function pushRecipe(args) {
   return renderDetail("recipe", recipe, [...RECIPE_SCHEMA, custom("components", (r) => JSON.stringify(r.components ?? []))]);
 }
 async function promote(args) {
-  const { positionals, flags } = parseArgs(args, ["json"]);
+  const { positionals, flags } = parseArgs(args, ["json"], ["name"]);
   const ulid = requirePositional(positionals, 0, "entry ulid", RECIPES_HELP);
   const name = requireFlag(flags, "name", RECIPES_HELP);
   const recipe = await api.post(`/api/kitchen/entries/${encodeURIComponent(ulid)}/promote`, { name });
@@ -1681,7 +1686,7 @@ async function productsCommand(args) {
   }
 }
 async function listProducts(args) {
-  const { flags } = parseArgs(args, ["json"]);
+  const { flags } = parseArgs(args, ["json"], ["q", "limit"]);
   const q = typeof flags.q === "string" ? flags.q : void 0;
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", PRODUCTS_HELP, { min: 1 })) : void 0;
   const result = await api.get("/api/kitchen/products", { q, limit });
@@ -1690,7 +1695,7 @@ async function listProducts(args) {
   return renderList("products", products, PRODUCT_ROW_SCHEMA);
 }
 async function addProduct(args) {
-  const { flags } = parseArgs(args, ["json"]);
+  const { flags } = parseArgs(args, ["json"], ["name", "shelf-life", "aliases", "package-size", "nutrition", "shelf-life-days-unopened", "shelf-life-days-opened"]);
   const name = requireFlag(flags, "name", PRODUCTS_HELP);
   const body = { name };
   if (typeof flags["shelf-life"] === "string") body.shelf_life_class = validateShelfLife2(flags["shelf-life"]);
@@ -1740,7 +1745,7 @@ async function lexiconCommand(args) {
   }
 }
 async function listLexicon(args) {
-  const { flags } = parseArgs(args, ["json"]);
+  const { flags } = parseArgs(args, ["json"], ["store", "limit"]);
   const store = typeof flags.store === "string" ? flags.store : void 0;
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", LEXICON_HELP, { min: 1 })) : void 0;
   const result = await api.get("/api/kitchen/lexicon", { store, limit });
@@ -1749,7 +1754,7 @@ async function listLexicon(args) {
   return renderList("lexicon", lines, LEXICON_SCHEMA);
 }
 async function addLexicon(args) {
-  const { flags } = parseArgs(args, ["json"]);
+  const { flags } = parseArgs(args, ["json"], ["store", "line-text", "product-ulid", "package-size", "shelf-life"]);
   const body = {
     store: requireFlag(flags, "store", LEXICON_HELP),
     line_text: requireFlag(flags, "line-text", LEXICON_HELP),
@@ -1769,7 +1774,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "35ff6ec" : "dev";
+var VERSION = true ? "b9c94c0" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)

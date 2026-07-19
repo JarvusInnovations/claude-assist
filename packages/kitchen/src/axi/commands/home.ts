@@ -37,7 +37,7 @@ function startOfTodayIso(): string {
 }
 
 export async function homeCommand(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json"]);
+  const { flags } = parseArgs(args, ["json"], ["eat-first"]);
   const server = resolveServer();
   const cli = cliInvocation();
   const eatFirstN = typeof flags["eat-first"] === "string" ? Math.max(parseInt(flags["eat-first"], 10) || 3, 1) : 3;

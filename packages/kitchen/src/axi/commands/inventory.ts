@@ -90,7 +90,7 @@ export async function inventoryCommand(args: string[]): Promise<string> {
 }
 
 async function listItems(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json", "closed"]);
+  const { flags } = parseArgs(args, ["json", "closed"], ["state", "limit"]);
   const state = typeof flags.state === "string" ? flags.state : undefined;
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", INVENTORY_HELP, { min: 1 })) : undefined;
   const result = await api.get("/api/kitchen/inventory", {
@@ -104,7 +104,7 @@ async function listItems(args: string[]): Promise<string> {
 }
 
 async function showItem(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"]);
+  const { positionals, flags } = parseArgs(args, ["json"], []);
   const ulid = requirePositional(positionals, 0, "item ulid", INVENTORY_HELP);
   const item = await api.get(`/api/kitchen/inventory/${encodeURIComponent(ulid)}`);
   if (flags.json) return rawJson(item);
@@ -112,7 +112,7 @@ async function showItem(args: string[]): Promise<string> {
 }
 
 async function addItem(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json", "needs-info"]);
+  const { flags } = parseArgs(args, ["json", "needs-info"], ["ulid", "product-ulid", "raw-label", "store", "batch-ulid", "acquired-at", "fraction", "state", "shelf-life", "notes"]);
   const body: Record<string, unknown> = {};
   if (typeof flags.ulid === "string") body.ulid = flags.ulid;
   if (typeof flags["product-ulid"] === "string") body.product_ulid = flags["product-ulid"];
@@ -136,7 +136,7 @@ async function addItem(args: string[]): Promise<string> {
 }
 
 async function itemEvent(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"]);
+  const { positionals, flags } = parseArgs(args, ["json"], ["fraction", "at"]);
   const ulid = requirePositional(positionals, 0, "item ulid", INVENTORY_HELP);
   const type = requirePositional(positionals, 1, "event type", INVENTORY_HELP);
   if (!EVENT_TYPES.includes(type)) {
@@ -152,7 +152,7 @@ async function itemEvent(args: string[]): Promise<string> {
 }
 
 async function remark(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"]);
+  const { positionals, flags } = parseArgs(args, ["json"], ["at"]);
   const text = positionals.join(" ").trim();
   if (!text) throw new AxiError("inventory remark needs free text", "VALIDATION_ERROR", [INVENTORY_HELP]);
   const body: Record<string, unknown> = { remark: text };
@@ -179,7 +179,7 @@ async function remark(args: string[]): Promise<string> {
 }
 
 async function questions(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json"]);
+  const { flags } = parseArgs(args, ["json"], ["limit"]);
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", INVENTORY_HELP, { min: 1 })) : undefined;
   const result = await api.get("/api/kitchen/inventory/questions", { limit });
   if (flags.json) return rawJson(result);

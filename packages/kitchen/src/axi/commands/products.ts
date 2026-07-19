@@ -55,7 +55,7 @@ export async function productsCommand(args: string[]): Promise<string> {
 }
 
 async function listProducts(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json"]);
+  const { flags } = parseArgs(args, ["json"], ["q", "limit"]);
   const q = typeof flags.q === "string" ? flags.q : undefined;
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", PRODUCTS_HELP, { min: 1 })) : undefined;
   const result = await api.get("/api/kitchen/products", { q, limit });
@@ -65,7 +65,7 @@ async function listProducts(args: string[]): Promise<string> {
 }
 
 async function addProduct(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json"]);
+  const { flags } = parseArgs(args, ["json"], ["name", "shelf-life", "aliases", "package-size", "nutrition", "shelf-life-days-unopened", "shelf-life-days-opened"]);
   const name = requireFlag(flags, "name", PRODUCTS_HELP);
   const body: Record<string, unknown> = { name };
   if (typeof flags["shelf-life"] === "string") body.shelf_life_class = validateShelfLife(flags["shelf-life"]);

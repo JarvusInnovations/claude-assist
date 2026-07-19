@@ -22,6 +22,22 @@ describe("args", () => {
     expect(flags.json).toBe(true);
   });
 
+  it("rejects unknown flags by name when the command declares its flags (fail loud)", () => {
+    // A silently dropped flag would hand the agent plausible-looking but
+    // unscoped output — e.g. `inventory list --stat closed` must not run
+    // the unfiltered query.
+    expect(() => parseArgs(["--stat", "closed"], ["json", "closed"], ["state", "limit"])).toThrow(/Unknown flag --stat/);
+    try {
+      parseArgs(["--stat", "closed"], ["json", "closed"], ["state", "limit"]);
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect((err as AxiError).suggestions.join(" ")).toContain("--state");
+    }
+    // Known flags still pass, and legacy two-arg calls stay permissive.
+    expect(parseArgs(["--state", "open"], ["json"], ["state"]).flags.state).toBe("open");
+    expect(parseArgs(["--anything", "x"], ["json"]).flags.anything).toBe("x");
+  });
+
   it("collects a repeatable flag in order", () => {
     const args = ["--component", "rice=150", "--component", "chicken=120", "--json"];
     expect(collectFlag(args, "component", ["json"])).toEqual(["rice=150", "chicken=120"]);

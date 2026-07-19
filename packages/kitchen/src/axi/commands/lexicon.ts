@@ -36,7 +36,7 @@ export async function lexiconCommand(args: string[]): Promise<string> {
 }
 
 async function listLexicon(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json"]);
+  const { flags } = parseArgs(args, ["json"], ["store", "limit"]);
   const store = typeof flags.store === "string" ? flags.store : undefined;
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", LEXICON_HELP, { min: 1 })) : undefined;
   const result = await api.get("/api/kitchen/lexicon", { store, limit });
@@ -46,7 +46,7 @@ async function listLexicon(args: string[]): Promise<string> {
 }
 
 async function addLexicon(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json"]);
+  const { flags } = parseArgs(args, ["json"], ["store", "line-text", "product-ulid", "package-size", "shelf-life"]);
   const body: Record<string, unknown> = {
     store: requireFlag(flags, "store", LEXICON_HELP),
     line_text: requireFlag(flags, "line-text", LEXICON_HELP),

@@ -51,7 +51,7 @@ export async function receiptsCommand(args: string[]): Promise<string> {
 }
 
 async function listBatches(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json"]);
+  const { flags } = parseArgs(args, ["json"], ["limit"]);
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", RECEIPTS_HELP, { min: 1 })) : undefined;
   const result = await api.get("/api/kitchen/receipts", { limit });
   if (flags.json) return rawJson(result);
@@ -60,7 +60,7 @@ async function listBatches(args: string[]): Promise<string> {
 }
 
 async function showBatch(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"]);
+  const { positionals, flags } = parseArgs(args, ["json"], []);
   const ulid = requirePositional(positionals, 0, "batch ulid", RECEIPTS_HELP);
   const result = await api.get(`/api/kitchen/receipts/${encodeURIComponent(ulid)}`);
   if (flags.json) return rawJson(result);
@@ -72,7 +72,7 @@ async function showBatch(args: string[]): Promise<string> {
 }
 
 async function scanReceipt(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"]);
+  const { positionals, flags } = parseArgs(args, ["json"], ["store", "purchased-at", "ulid"]);
   const photos = positionals;
   if (photos.length === 0) {
     throw new AxiError("receipts scan needs at least one photo path", "VALIDATION_ERROR", [RECEIPTS_HELP]);

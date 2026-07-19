@@ -10,8 +10,14 @@ export interface ParsedArgs {
  * `booleanFlags`, which are bare `--name`. Everything else is a positional.
  * Repeated non-boolean flags keep the last value; use `collectFlag` when a
  * flag may appear multiple times (e.g. `--component`).
+ *
+ * When `valueFlags` is provided, any flag not in `booleanFlags` ∪ `valueFlags`
+ * is **rejected by name** with the command's valid flags listed — a silently
+ * dropped flag would hand the agent plausible-looking but unscoped output
+ * (AXI doctrine: fail loud on unrecognized input). `--help` never reaches
+ * handlers (the SDK intercepts it), so it needs no carve-out here.
  */
-export function parseArgs(args: string[], booleanFlags: string[] = []): ParsedArgs {
+export function parseArgs(args: string[], booleanFlags: string[] = [], valueFlags?: string[]): ParsedArgs {
   const positionals: string[] = [];
   const flags: Record<string, string | boolean> = {};
   for (let i = 0; i < args.length; i++) {
@@ -20,6 +26,11 @@ export function parseArgs(args: string[], booleanFlags: string[] = []): ParsedAr
       const name = arg.slice(2);
       if (booleanFlags.includes(name)) {
         flags[name] = true;
+      } else if (valueFlags !== undefined && !valueFlags.includes(name)) {
+        const valid = [...valueFlags, ...booleanFlags].map((f) => `--${f}`).join(", ");
+        throw new AxiError(`Unknown flag --${name}`, "VALIDATION_ERROR", [
+          valid ? `Valid flags here: ${valid}` : "This command takes no flags besides --json",
+        ]);
       } else {
         const value = args[++i];
         if (value === undefined) {

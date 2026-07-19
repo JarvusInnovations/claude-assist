@@ -46,7 +46,7 @@ export async function recipesCommand(args: string[]): Promise<string> {
 }
 
 async function listRecipes(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json"]);
+  const { flags } = parseArgs(args, ["json"], ["limit"]);
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", RECIPES_HELP, { min: 1 })) : undefined;
   const strip = await api.get("/api/kitchen/reselect", { limit });
   if (flags.json) return rawJson(strip);
@@ -59,7 +59,7 @@ async function listRecipes(args: string[]): Promise<string> {
 }
 
 async function pushRecipe(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"]);
+  const { positionals, flags } = parseArgs(args, ["json"], []);
   const jsonArg = positionals[0];
   if (!jsonArg) {
     throw new AxiError("recipes push needs a recipe JSON body", "VALIDATION_ERROR", [RECIPES_HELP]);
@@ -71,7 +71,7 @@ async function pushRecipe(args: string[]): Promise<string> {
 }
 
 async function promote(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"]);
+  const { positionals, flags } = parseArgs(args, ["json"], ["name"]);
   const ulid = requirePositional(positionals, 0, "entry ulid", RECIPES_HELP);
   const name = requireFlag(flags, "name", RECIPES_HELP);
   const recipe = await api.post(`/api/kitchen/entries/${encodeURIComponent(ulid)}/promote`, { name });

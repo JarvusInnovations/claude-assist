@@ -71,7 +71,7 @@ export async function entriesCommand(args: string[]): Promise<string> {
 }
 
 async function listEntries(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json"]);
+  const { flags } = parseArgs(args, ["json"], ["since", "limit"]);
   const since = typeof flags.since === "string" ? validateDate(flags.since, "--since", ENTRIES_HELP) : undefined;
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", ENTRIES_HELP, { min: 1 })) : undefined;
   const result = await api.get("/api/kitchen/entries", { since, limit });
@@ -81,7 +81,7 @@ async function listEntries(args: string[]): Promise<string> {
 }
 
 async function showEntry(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"]);
+  const { positionals, flags } = parseArgs(args, ["json"], []);
   const ulid = requirePositional(positionals, 0, "entry ulid", ENTRIES_HELP);
   const entry = await api.get(`/api/kitchen/entries/${encodeURIComponent(ulid)}`);
   if (flags.json) return rawJson(entry);
@@ -103,7 +103,7 @@ function parseComponent(raw: string): { label: string; quantity_g: number } {
 }
 
 async function logEntry(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"]);
+  const { positionals, flags } = parseArgs(args, ["json"], ["recipe", "component"]);
   const note = positionals.join(" ").trim();
   const recipe = typeof flags.recipe === "string" ? flags.recipe : undefined;
   const components = collectFlag(args, "component").map(parseComponent);
@@ -134,7 +134,7 @@ async function logEntry(args: string[]): Promise<string> {
 }
 
 async function patchEntry(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"]);
+  const { positionals, flags } = parseArgs(args, ["json"], ["note", "label", "portion-basis", "calories", "protein", "fat", "sat-fat", "carbs", "sodium", "multiplier"]);
   const ulid = requirePositional(positionals, 0, "entry ulid", ENTRIES_HELP);
 
   const body: Record<string, unknown> = {};
@@ -167,7 +167,7 @@ async function patchEntry(args: string[]): Promise<string> {
 }
 
 async function deleteEntry(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"]);
+  const { positionals, flags } = parseArgs(args, ["json"], []);
   const ulid = requirePositional(positionals, 0, "entry ulid", ENTRIES_HELP);
   await api.del(`/api/kitchen/entries/${encodeURIComponent(ulid)}`);
   if (flags.json) return rawJson({ deleted: ulid });
