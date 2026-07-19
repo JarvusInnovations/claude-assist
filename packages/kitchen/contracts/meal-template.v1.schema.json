@@ -1,8 +1,8 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://jarvus.dev/kitchen/meal-record/v1",
-  "title": "Kitchen meal-record v1",
-  "description": "The kitchen module's published meal-record interface (specs/modules/kitchen.md § Meal-bank sheet consumption). Any gitsheet satisfying this contract can back the module's meal-bank read — a sheet-sourced recipe projection. Self-contained, no external $ref. TOML data model: no null-bearing keywords (no 'null' type, no 'nullable'); an unknown field is simply absent, never null. Deliberately open (no additionalProperties: false anywhere) so producers can carry extra fields the module doesn't read yet.",
+  "$id": "https://gitsheets.io/kitchen/meal-template/v1",
+  "title": "Kitchen meal-template v1",
+  "description": "The kitchen module's published meal-template interface (specs/modules/kitchen.md § Meal-bank sheet consumption). Any gitsheet satisfying this contract can back the module's meal-bank read — a sheet-sourced recipe projection. Self-contained, no external $ref. TOML data model: no null-bearing keywords (no 'null' type, no 'nullable'); an unknown field is simply absent, never null. Deliberately open (no additionalProperties: false anywhere) so producers can carry extra fields the module doesn't read yet.",
   "type": "object",
   "required": ["name"],
   "properties": {

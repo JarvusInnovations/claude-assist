@@ -194,9 +194,9 @@ The module reads a meal-bank gitsheet owned by the instance's own repo:
 
 - Wiring is **instance configuration** — repo path + sheet name via env; no
   source is hardcoded in the toolkit.
-- The module **publishes its meal-record contract document** (gitsheets schema
-  contract, `contracts/meal-record.v1.schema.json`, name
-  `jarvus.dev/kitchen/meal-record/v1`) as its named interface; any sheet
+- The module **publishes its meal-template contract document** (gitsheets schema
+  contract, `contracts/meal-template.v1.schema.json`, name
+  `gitsheets.io/kitchen/meal-template/v1`) as its named interface; any sheet
   satisfying it works. The read opens with `contract: { schema, mode:
   'verify' }` (gitsheets ≥ 2.5.0) — rung-1 declared identity preferred,
   structural fallback — and a contract failure is a wiring-time refusal,

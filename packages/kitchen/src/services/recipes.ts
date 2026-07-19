@@ -16,7 +16,7 @@ function round1(n: number): number {
  * component's per_100g reference. Fields the recipe schema doesn't carry
  * (fat_g overall, carbs_g, sodium_mg) stay null — the contract only
  * requires calories/protein_g/sat_fat_g per component (see
- * contracts/meal-record.v1.schema.json).
+ * contracts/meal-template.v1.schema.json).
  */
 export function computeRecipeMacros(
   recipe: RecipeRecord,

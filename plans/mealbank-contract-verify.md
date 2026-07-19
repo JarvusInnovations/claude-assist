@@ -27,14 +27,14 @@ new API/axi surface.
 ## Implements
 
 - **specs/modules/kitchen.md § Meal-bank sheet consumption** — the read opens
-  with `contract: { schema: <meal-record.v1.schema.json>, mode: 'verify' }`;
+  with `contract: { schema: <meal-template.v1.schema.json>, mode: 'verify' }`;
   rung-1 declared identity preferred, structural fallback; wiring-time refusal
   on non-conformance with degradation to recents-only reselect.
 
 ## Approach
 
 - `readMealBankRecipes` loads the packaged contract document
-  (`contracts/meal-record.v1.schema.json`, resolved relative to the module so
+  (`contracts/meal-template.v1.schema.json`, resolved relative to the module so
   src and dist both work) and passes it as a parsed object — no `format` key
   needed (that's only for string input).
 - `mode: 'verify'` is the shipped default, but is passed explicitly since the

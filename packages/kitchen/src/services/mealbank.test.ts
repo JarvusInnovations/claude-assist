@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { FastifyBaseLogger } from 'fastify';
-import { MEAL_RECORD_CONTRACT_NAME, readMealBankRecipes } from './mealbank.js';
+import { MEAL_TEMPLATE_CONTRACT_NAME, readMealBankRecipes } from './mealbank.js';
 
 interface LogCall {
   level: 'info' | 'warn';
@@ -27,12 +27,12 @@ function makeLog(): { log: FastifyBaseLogger; calls: LogCall[] } {
   return { log, calls };
 }
 
-const CONTRACT_JSON_PATH = join(import.meta.dir, '../../contracts/meal-record.v1.schema.json');
+const CONTRACT_JSON_PATH = join(import.meta.dir, '../../contracts/meal-template.v1.schema.json');
 const GITSHEETS_BIN = join(import.meta.dir, '../../node_modules/.bin/gitsheets');
 
 const SHEET_CONFIG_PLAIN = "[gitsheet]\nroot = 'meals'\npath = '${{ slug }}'\n";
 const SHEET_CONFIG_DECLARED =
-  SHEET_CONFIG_PLAIN + `implements = ['${MEAL_RECORD_CONTRACT_NAME}']\n`;
+  SHEET_CONFIG_PLAIN + `implements = ['${MEAL_TEMPLATE_CONTRACT_NAME}']\n`;
 
 const CONFORMING_RECORDS = [
   {
@@ -94,7 +94,7 @@ function adoptContract(dir: string): void {
       '--git-dir',
       join(dir, '.git'),
       '--message',
-      'adopt meal-record contract',
+      'adopt meal-template contract',
     ],
     { stdio: 'pipe' }
   );
@@ -103,7 +103,7 @@ function adoptContract(dir: string): void {
   git(dir, 'reset', '-q', '--hard', 'HEAD');
   writeFileSync(join(dir, '.gitsheets/meals.toml'), SHEET_CONFIG_DECLARED);
   git(dir, 'add', '.gitsheets/meals.toml');
-  git(dir, 'commit', '-qm', 'declare meal-record contract');
+  git(dir, 'commit', '-qm', 'declare meal-template contract');
 }
 
 let fixturesRoot: string;
@@ -162,7 +162,7 @@ describe('readMealBankRecipes', () => {
     expect(info).toHaveLength(1);
     expect(info[0]!.msg).toContain('does not declare');
     expect(info[0]!.msg).toContain('conforms structurally');
-    expect((info[0]!.obj as { contract?: string }).contract).toBe(MEAL_RECORD_CONTRACT_NAME);
+    expect((info[0]!.obj as { contract?: string }).contract).toBe(MEAL_TEMPLATE_CONTRACT_NAME);
   });
 
   it('refuses a non-conforming sheet at wiring time and degrades to no sheet recipes', async () => {
