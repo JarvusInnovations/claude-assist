@@ -1,9 +1,10 @@
 ---
-status: in-progress
+status: done
 depends: [kitchen-module]
 specs:
   - specs/modules/kitchen.md
 issues: []
+pr: 104
 ---
 
 # Plan: Meal-bank contract-verified read
@@ -55,22 +56,33 @@ new API/axi surface.
 
 ## Validation
 
-- [ ] `bun add gitsheets@^2.5.0` in `packages/kitchen` (lockfile rides the
+- [x] `bun add gitsheets@^2.5.0` in `packages/kitchen` (lockfile rides the
       same commit)
-- [ ] Declared-conforming fixture verifies rung-1 and reads normally, no logs
-- [ ] Undeclared-conforming fixture reads via structural fallback with an
+- [x] Declared-conforming fixture verifies rung-1 and reads normally, no logs
+- [x] Undeclared-conforming fixture reads via structural fallback with an
       undeclared-conformance info log (sheets predating adoption never regress)
-- [ ] Non-conforming fixture is refused at wiring time: `[]` returned, warn
+- [x] Non-conforming fixture is refused at wiring time: `[]` returned, warn
       log carries the `ContractError` (`contract_unsatisfied` + issues), no
       throw
-- [ ] Pre-existing mealbank degrade tests stay green
-- [ ] `bun run build`, full `bun run test` (all packages), and
+- [x] Pre-existing mealbank degrade tests stay green
+- [x] `bun run build`, full `bun run test` (all packages), and
       `bun run check:skills` green
 
 ## Notes
 
-(Populated at closeout.)
+- The shipped 2.5.0 API matches the plan's sketch: `contract.schema` accepts a
+  parsed object (or JSON/TOML text + a `format` key — no auto-detection),
+  `mode` defaults to `'verify'`, and `sheet.contractVerification` reports
+  `{ name, rung, tree, conforming, issues }`. `onDrift` fires only for
+  structural-verified sheets — declared sheets are covered by write-time
+  enforcement going forward.
+- Vendoring for the declared fixture goes through the real CLI
+  (`gitsheets contracts adopt`) rather than baked-in canonical TOML bytes, so
+  the fixture can never skew from the encoder's canonical form. `adopt` never
+  edits the sheet config (`implements` is human-authored by design) — the test
+  declares it in a follow-up commit, after a `git reset --hard` to re-sync the
+  working tree with gitsheets' ref-only commits.
 
 ## Follow-ups
 
-(Populated at closeout.)
+None.
