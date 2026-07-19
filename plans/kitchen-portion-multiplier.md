@@ -4,7 +4,7 @@ depends: [kitchen-module]
 specs:
   - specs/modules/kitchen.md
 issues: []
-pr:
+pr: 94
 ---
 
 # Plan: Kitchen portion multiplier (post-hoc base rescale)
