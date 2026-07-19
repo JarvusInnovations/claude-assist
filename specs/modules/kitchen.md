@@ -135,6 +135,59 @@ These bounds are enforced at the API (they are relative to the server clock, so
 they cannot be a static DB `CHECK`); the column itself is unchanged
 (migration-free).
 
+## Reselect cloning (recent entries)
+
+The reselect strip (§ API `GET /reselect`) merges recipes with recent logged
+items. The two kinds of pill re-log by different deterministic mechanisms, and
+neither spends a model call:
+
+- **Recipe pills** re-log via `recipe_ulid` (+ optional component quantities);
+  macros are recipe-computed.
+- **Recent pills** re-log by **cloning a source entry**. Each recent summary the
+  strip carries names, in an `entry_ulid` field, the source entry it summarizes:
+  the **most-recent estimated occurrence** of that label. The pill re-logs by
+  POSTing `reselect_of: <entry_ulid>` (never a bare, identity-less entry — a
+  bare POST would blind-estimate a note-less, photo-less entry into a garbage
+  meal).
+
+**The clone is deterministic — never a model call.** On ingest with
+`reselect_of`:
+
+- The server resolves the source entry and copies its **label** and **base macro
+  fields** (`calories`, `protein_g`, `fat_g`, `sat_fat_g`, `carbs_g`,
+  `sodium_mg`, plus the `confidence`/`portion_basis` describing them) onto the
+  new entry, then sets `source: 'reselect'` and `status: 'estimated'`
+  immediately. The estimator is never invoked.
+- `portion_multiplier` is **not** cloned — it defaults to `1`. The clone is a
+  fresh serving; the source's post-hoc "I only ate half" rescale does not carry.
+- A `note` riding the same POST is stored on the clone as a comment and does
+  **not** trigger estimation. This is the deterministic implementation of the
+  spec's "optional comment carried onto the cloned entry" for recents — the note
+  is retained, but a reselect clone never runs the model over it.
+- Cloning from **any** source entry is legal regardless of its `source`
+  (`model` | `reselect` | `manual`) — the numbers are the numbers. The clone is
+  an independent entry; its own later corrections (note/label re-queue, macro
+  override, multiplier, backdate) follow the normal PATCH rules.
+
+**Mutual exclusivity & errors.** `reselect_of` and `recipe_ulid` may not both
+appear on one POST (`400`). An unknown or deleted source ULID is rejected `400`
+with a clear "unknown source entry" error — never a silently-empty clone.
+
+**Deleted source.** `entry_ulid` always references a live estimated entry at
+strip-build time: the recents query groups only `estimated` entries by label and
+takes the most-recent occurrence's ULID as `entry_ulid` (the same row whose base
+macros the summary carries). The strip is a client-cached snapshot, so a source
+entry can be deleted (e.g. an agent DELETE) between strip build and replay; the
+resulting `reselect_of` then 400s. The client treats that 400 as a **permanent,
+non-retryable send failure** surfaced through the send-failed affordance — the
+local optimistic clone keeps its label + macros visible for retry-or-discard —
+rather than spinning retries that can never succeed. Refreshing the strip drops
+the stale pill.
+
+**Recent-summary wire shape** (`GET /reselect` `recent[]` item): `{ entry_ulid,
+label, calories, protein_g, fat_g, sat_fat_g, carbs_g, sodium_mg, last_logged_at,
+log_count }`. The macro fields are the source entry's **base** (unscaled) macros.
+
 ## Meal-bank sheet consumption
 
 The module reads a meal-bank gitsheet owned by the instance's own repo:
@@ -154,9 +207,12 @@ All endpoints under `/api/kitchen`. Error envelope and auth follow the server's
 existing conventions.
 
 - `POST /entries` — multipart: entry JSON part (ULID, timestamp, note,
-  optional recipe ref + component quantities) + 0..N photo parts. Posts
-  immediately (`estimating` when photos present and no deterministic source;
-  `estimated` when recipe-computed or reselect-cloned). Idempotent on ULID.
+  optional recipe ref + component quantities, **or** `reselect_of`) + 0..N photo
+  parts. Posts immediately (`estimating` when photos present and no deterministic
+  source; `estimated` when recipe-computed or reselect-cloned). Idempotent on
+  ULID. `recipe_ulid` and `reselect_of` are **mutually exclusive** (`400` if
+  both). `reselect_of` clones a source entry deterministically — see § Reselect
+  cloning.
 - `GET /entries?since|limit` — newest-first listing for client sync.
 - `PATCH /entries/:ulid` — note/label edits re-queue estimation; a macro
   override sets source `manual` and is terminal (no later model pass may
@@ -170,7 +226,10 @@ existing conventions.
   sets base, multiplier scales it, logged_at moves the day).
 - `DELETE /entries/:ulid` — removes the entry from all rollups.
 - `GET /reselect` — the strip: recipes (sheet + pushed + promoted) merged with
-  recent/frequent logged items.
+  recent/frequent logged items. Each recent item carries an `entry_ulid` — the
+  source entry it summarizes — so a recent pill can re-log by cloning it (§
+  Reselect cloning). See § Reselect cloning for the recent-summary shape and how
+  `entry_ulid` is derived.
 - `POST /recipes` — agent-pushed one-off or reusable templates.
 - `POST /entries/:ulid/promote` — creates a recipe from a logged entry.
 - Rollup queries (daily totals, weekly trend) are computed, never stored, over

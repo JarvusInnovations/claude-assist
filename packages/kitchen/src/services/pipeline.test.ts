@@ -5,12 +5,15 @@ import { generateUlid } from '../ulid.js';
 import type { ModelEstimate } from '../types.js';
 import type { Estimator } from './estimator.js';
 import {
+  ConflictingSourceError,
   KitchenPipeline,
   ManualOverrideConflictError,
   PatchValidationError,
   PromoteNotReadyError,
   RecipeNotFoundError,
+  SourceEntryNotFoundError,
 } from './pipeline.js';
+import type { NutritionFields } from '../types.js';
 
 const log = {
   info: () => {},
@@ -725,5 +728,170 @@ describe('reselect merge logic', () => {
     expect(all.map((r) => r.name)).toEqual(expect.arrayContaining(['Sheet Greek Bowl', 'Pushed Salad']));
     // A sheet-only recipe carries its component labels through the merged view.
     expect(all.find((r) => r.name === 'Sheet Greek Bowl')!.components.map((c) => c.label)).toEqual(['feta']);
+  });
+});
+
+describe('reselect_of clone — deterministic recent re-log (no model call)', () => {
+  const SOURCE_NUTRITION: NutritionFields = {
+    calories: 300,
+    protein_g: 20,
+    fat_g: 8,
+    sat_fat_g: 3,
+    carbs_g: 30,
+    sodium_mg: 120,
+    confidence: 0.6,
+    portion_basis: 'one bowl',
+  };
+
+  /** Seed an estimated source entry directly (no estimator involved). */
+  async function seedSource(
+    entries: MemoryEntryStore,
+    label: string,
+    nutrition: NutritionFields = SOURCE_NUTRITION,
+    source: 'model' | 'reselect' | 'manual' = 'model'
+  ): Promise<string> {
+    const ulid = generateUlid();
+    await entries.insertIfAbsent({
+      ulid,
+      logged_at: new Date(),
+      note: null,
+      recipe_ulid: null,
+      component_quantities: null,
+    });
+    await entries.applyEstimate(ulid, label, nutrition, source, 'estimated');
+    return ulid;
+  }
+
+  it('clones the source entry exact base macros → instant estimated/reselect, estimator never invoked', async () => {
+    const entries = new MemoryEntryStore();
+    const sourceUlid = await seedSource(entries, 'Yogurt bowl');
+    // A RefusingEstimator throws if the model is ever called — the assertion
+    // that no estimation happens is that this ingest does NOT reject.
+    const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), new RefusingEstimator(), log);
+
+    const cloneUlid = generateUlid();
+    const { record, created } = await pipeline.ingest({ ulid: cloneUlid, reselect_of: sourceUlid }, []);
+
+    expect(created).toBe(true);
+    expect(record.status).toBe('estimated');
+    expect(record.source).toBe('reselect');
+    expect(record.label).toBe('Yogurt bowl');
+    expect(record.calories).toBe(300);
+    expect(record.protein_g).toBe(20);
+    expect(record.fat_g).toBe(8);
+    expect(record.sat_fat_g).toBe(3);
+    expect(record.carbs_g).toBe(30);
+    expect(record.sodium_mg).toBe(120);
+    expect(record.confidence).toBe(0.6);
+    expect(record.portion_basis).toBe('one bowl');
+    // A distinct, independent entry — not the source.
+    expect(record.ulid).toBe(cloneUlid);
+    expect(record.ulid).not.toBe(sourceUlid);
+  });
+
+  it('does NOT clone the portion multiplier — the clone is a fresh serving (defaults 1)', async () => {
+    const entries = new MemoryEntryStore();
+    const sourceUlid = await seedSource(entries, 'Yogurt bowl');
+    await entries.applyPortionMultiplier(sourceUlid, 2); // source: "I ate a double"
+    const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), new RefusingEstimator(), log);
+
+    const { record } = await pipeline.ingest({ ulid: generateUlid(), reselect_of: sourceUlid }, []);
+    expect(record.portion_multiplier).toBe(1);
+    // The base macros still clone verbatim (the multiplier is orthogonal).
+    expect(record.calories).toBe(300);
+  });
+
+  it('stores a note riding the clone POST as a comment and NEVER invokes the estimator', async () => {
+    const entries = new MemoryEntryStore();
+    const sourceUlid = await seedSource(entries, 'Yogurt bowl');
+    const estimator = new RefusingEstimator();
+    const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), estimator, log);
+
+    const { record } = await pipeline.ingest(
+      { ulid: generateUlid(), reselect_of: sourceUlid, note: 'less granola today' },
+      []
+    );
+    await pipeline.settle();
+
+    expect(record.note).toBe('less granola today');
+    expect(record.status).toBe('estimated');
+    expect(record.source).toBe('reselect');
+    expect(record.label).toBe('Yogurt bowl'); // the note annotates, never re-estimates
+    expect(estimator.called).toBe(false);
+    // Persisted, not just on the returned record.
+    const stored = await pipeline.get(record.ulid);
+    expect(stored!.note).toBe('less granola today');
+  });
+
+  it('is legal to clone from a manual source — the numbers are the numbers', async () => {
+    const entries = new MemoryEntryStore();
+    const manualNutrition: NutritionFields = { ...SOURCE_NUTRITION, calories: 512, confidence: null };
+    const sourceUlid = await seedSource(entries, 'Scale-weighed dinner', manualNutrition, 'manual');
+    const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), new RefusingEstimator(), log);
+
+    const { record } = await pipeline.ingest({ ulid: generateUlid(), reselect_of: sourceUlid }, []);
+    expect(record.source).toBe('reselect'); // the CLONE's source, not the source's
+    expect(record.calories).toBe(512);
+    expect(record.confidence).toBeNull();
+  });
+
+  it('rejects an unknown/deleted source ULID', async () => {
+    const pipeline = new KitchenPipeline(new MemoryEntryStore(), new MemoryRecipeStore(), null, log);
+    await expect(
+      pipeline.ingest({ ulid: generateUlid(), reselect_of: generateUlid() }, [])
+    ).rejects.toThrow(SourceEntryNotFoundError);
+  });
+
+  it('rejects a POST carrying both recipe_ulid and reselect_of', async () => {
+    const pipeline = new KitchenPipeline(new MemoryEntryStore(), new MemoryRecipeStore(), null, log);
+    await expect(
+      pipeline.ingest(
+        { ulid: generateUlid(), recipe_ulid: generateUlid(), reselect_of: generateUlid() },
+        []
+      )
+    ).rejects.toThrow(ConflictingSourceError);
+  });
+
+  it('is idempotent on ULID: replaying a clone POST does not re-clone or regress', async () => {
+    const entries = new MemoryEntryStore();
+    const sourceUlid = await seedSource(entries, 'Yogurt bowl');
+    const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), new RefusingEstimator(), log);
+
+    const cloneUlid = generateUlid();
+    const first = await pipeline.ingest({ ulid: cloneUlid, reselect_of: sourceUlid }, []);
+    expect(first.created).toBe(true);
+    const replay = await pipeline.ingest({ ulid: cloneUlid, reselect_of: sourceUlid }, []);
+    expect(replay.created).toBe(false);
+    expect(replay.record.calories).toBe(300);
+    expect(replay.record.source).toBe('reselect');
+  });
+
+  it('surfaces entry_ulid on each recent summary — the source a recent pill clones', async () => {
+    const entries = new MemoryEntryStore();
+    const sourceUlid = await seedSource(entries, 'Yogurt bowl');
+    const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), null, log);
+
+    const strip = await pipeline.reselect();
+    const recent = strip.recent.find((r) => r.label === 'Yogurt bowl');
+    expect(recent).toBeDefined();
+    expect(recent!.entry_ulid).toBe(sourceUlid);
+    expect(recent!.calories).toBe(300);
+  });
+
+  it('entry_ulid tracks the MOST-RECENT occurrence of a repeated label', async () => {
+    const entries = new MemoryEntryStore();
+    // Two entries share a label; the newer one's ULID must be the clone source.
+    const older = generateUlid();
+    await entries.insertIfAbsent({ ulid: older, logged_at: new Date(Date.now() - 60_000), note: null, recipe_ulid: null, component_quantities: null });
+    await entries.applyEstimate(older, 'Latte', { ...SOURCE_NUTRITION, calories: 100 }, 'model', 'estimated');
+    const newer = generateUlid();
+    await entries.insertIfAbsent({ ulid: newer, logged_at: new Date(), note: null, recipe_ulid: null, component_quantities: null });
+    await entries.applyEstimate(newer, 'Latte', { ...SOURCE_NUTRITION, calories: 130 }, 'model', 'estimated');
+
+    const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), null, log);
+    const strip = await pipeline.reselect();
+    const recent = strip.recent.find((r) => r.label === 'Latte');
+    expect(recent!.entry_ulid).toBe(newer);
+    expect(recent!.calories).toBe(130); // macros come from the same most-recent row
   });
 });

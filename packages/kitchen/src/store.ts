@@ -38,6 +38,13 @@ export interface NewRecipe {
 
 /** A recent/frequent logged item, for the reselect strip. */
 export interface RecentEntrySummary {
+  /**
+   * The source entry this summary points at — the most-recent estimated
+   * occurrence of `label`. A recent pill re-logs by POSTing
+   * `reselect_of: entry_ulid`, which clones this entry (specs/modules/kitchen.md
+   * § Reselect cloning).
+   */
+  entry_ulid: string;
   label: string;
   calories: number | null;
   protein_g: number | null;
@@ -364,6 +371,7 @@ export class PgEntryStore implements EntryStore {
     const rows = await this.sql`
       SELECT
         label,
+        (array_agg(ulid ORDER BY logged_at DESC))[1] AS entry_ulid,
         (array_agg(calories ORDER BY logged_at DESC))[1] AS calories,
         (array_agg(protein_g ORDER BY logged_at DESC))[1] AS protein_g,
         (array_agg(fat_g ORDER BY logged_at DESC))[1] AS fat_g,
@@ -379,6 +387,7 @@ export class PgEntryStore implements EntryStore {
       LIMIT ${limit}
     `;
     return rows.map((row) => ({
+      entry_ulid: row.entry_ulid as string,
       label: row.label as string,
       calories: parseNumeric(row.calories),
       protein_g: parseNumeric(row.protein_g),

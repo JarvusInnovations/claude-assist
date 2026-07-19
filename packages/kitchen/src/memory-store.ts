@@ -158,6 +158,9 @@ export class MemoryEntryStore implements EntryStore {
         existing.log_count += 1;
       } else {
         byLabel.set(label, {
+          // `sorted` is newest-first, so the first row seen for a label is its
+          // most-recent estimated occurrence — the entry a recent pill clones.
+          entry_ulid: r.ulid,
           label,
           calories: r.calories,
           protein_g: r.protein_g,

@@ -50,6 +50,27 @@ export class RecipeNotFoundError extends Error {
   }
 }
 
+/**
+ * A `reselect_of` POST referenced a source entry that does not exist (unknown
+ * ULID, or an entry deleted since the reselect strip was built). Mapped to 400
+ * at the route — never a silently-empty clone (specs/modules/kitchen.md
+ * § Reselect cloning).
+ */
+export class SourceEntryNotFoundError extends Error {
+  constructor(sourceUlid: string) {
+    super(`reselect_of references an unknown source entry: ${sourceUlid}`);
+    this.name = 'SourceEntryNotFoundError';
+  }
+}
+
+/** A POST carried both `recipe_ulid` and `reselect_of` — mutually exclusive (400). */
+export class ConflictingSourceError extends Error {
+  constructor() {
+    super('recipe_ulid and reselect_of are mutually exclusive on one entry');
+    this.name = 'ConflictingSourceError';
+  }
+}
+
 /** The owner's manual override is terminal — thrown on a note/label edit that would re-queue one. */
 export class ManualOverrideConflictError extends Error {
   constructor(ulid: string) {
@@ -128,6 +149,43 @@ export class KitchenPipeline {
     photos: PhotoPart[]
   ): Promise<{ record: EntryRecord; created: boolean; estimation?: Promise<boolean> }> {
     const newEntry = normalizeNewEntry(input);
+
+    // recipe_ulid and reselect_of are mutually exclusive — a POST is one kind
+    // of deterministic re-log or the other, never both.
+    if (input.recipe_ulid && input.reselect_of) {
+      throw new ConflictingSourceError();
+    }
+
+    if (input.reselect_of) {
+      // Recent-pill re-log: deterministically CLONE the source entry's label +
+      // base macros. No model call — the numbers already exist on the source
+      // (specs/modules/kitchen.md § Reselect cloning). A note on this POST is
+      // stored as a comment (via normalizeNewEntry → insertIfAbsent) and does
+      // NOT trigger estimation.
+      const source = await this.entries.get(input.reselect_of);
+      if (!source) throw new SourceEntryNotFoundError(input.reselect_of);
+
+      const { record, created } = await this.entries.insertIfAbsent(newEntry);
+      if (created) {
+        // Copy the source's base macro fields + the confidence/portion_basis
+        // that describe them. portion_multiplier is deliberately NOT cloned —
+        // the clone is a fresh serving and defaults to 1.
+        const nutrition: NutritionFields = {
+          calories: source.calories,
+          protein_g: source.protein_g,
+          fat_g: source.fat_g,
+          sat_fat_g: source.sat_fat_g,
+          carbs_g: source.carbs_g,
+          sodium_mg: source.sodium_mg,
+          confidence: source.confidence,
+          portion_basis: source.portion_basis,
+        };
+        const nextStatus = transition('estimating', { kind: 'estimated' });
+        await this.entries.applyEstimate(record.ulid, source.label, nutrition, 'reselect', nextStatus);
+        this.notifyEstimated(record.ulid);
+      }
+      return { record: (await this.entries.get(record.ulid))!, created };
+    }
 
     if (input.recipe_ulid) {
       // Sheet-sourced recipes are read-through projections (deterministic
