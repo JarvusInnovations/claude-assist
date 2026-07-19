@@ -47,9 +47,12 @@ export interface NewLexicon {
   ulid: string;
   store: string;
   line_text: string;
-  product_ulid: string;
+  /** Null on a non-inventory skip marker. */
+  product_ulid: string | null;
   package_size: string | null;
   shelf_life_class: ShelfLifeClass | null;
+  /** True on a non-inventory skip marker; defaults false for a product mapping. */
+  non_inventory?: boolean;
 }
 
 export interface NewItem {
@@ -195,9 +198,10 @@ export function rowToLexicon(row: Record<string, unknown>): LexiconRecord {
     ulid: row.ulid as string,
     store: row.store as string,
     line_text: row.line_text as string,
-    product_ulid: row.product_ulid as string,
+    product_ulid: (row.product_ulid as string | null) ?? null,
     package_size: (row.package_size as string | null) ?? null,
     shelf_life_class: (row.shelf_life_class as ShelfLifeClass | null) ?? null,
+    non_inventory: Boolean(row.non_inventory),
     created_at: toDate(row.created_at),
     updated_at: toDate(row.updated_at),
   };
@@ -322,15 +326,16 @@ export class PgInventoryStore implements InventoryStore {
   async upsertLexicon(lexicon: NewLexicon): Promise<LexiconRecord> {
     const [row] = await this.sql`
       INSERT INTO kitchen.receipt_lexicon
-        (ulid, store, line_text, product_ulid, package_size, shelf_life_class)
+        (ulid, store, line_text, product_ulid, package_size, shelf_life_class, non_inventory)
       VALUES (
         ${lexicon.ulid}, ${lexicon.store}, ${lexicon.line_text}, ${lexicon.product_ulid},
-        ${lexicon.package_size}, ${lexicon.shelf_life_class}
+        ${lexicon.package_size}, ${lexicon.shelf_life_class}, ${lexicon.non_inventory ?? false}
       )
       ON CONFLICT (store, line_text) DO UPDATE SET
         product_ulid = EXCLUDED.product_ulid,
         package_size = EXCLUDED.package_size,
-        shelf_life_class = EXCLUDED.shelf_life_class
+        shelf_life_class = EXCLUDED.shelf_life_class,
+        non_inventory = EXCLUDED.non_inventory
       RETURNING *
     `;
     return rowToLexicon(row!);

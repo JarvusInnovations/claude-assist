@@ -13,6 +13,7 @@
 import type { FastifyBaseLogger } from 'fastify';
 import type {
   BatchLineView,
+  DismissResolution,
   EventResolution,
   InventoryEventType,
   InventoryItemInput,
@@ -21,6 +22,7 @@ import type {
   InventoryPhotoPart,
   InventoryQuestion,
   InventoryState,
+  LabelResolution,
   LexiconInput,
   LexiconRecord,
   NutritionPer100g,
@@ -65,8 +67,11 @@ export interface DepletableEntry {
   status: string;
 }
 
-const DEFAULT_QUESTION = (label: string | null): string =>
-  `What is “${label ?? 'this item'}”? (product identity + package size)`;
+/** Digest/chat question text for a needs-info line; notes the count when > 1. */
+function questionText(label: string | null, count: number): string {
+  const suffix = count > 1 ? ` (×${count})` : '';
+  return `What is “${label ?? 'this item'}”${suffix}? (product identity + package size)`;
+}
 
 export class InventoryPipeline {
   static readonly MAX_PARSE_ATTEMPTS = 5;
@@ -153,7 +158,22 @@ export class InventoryPipeline {
     const lineText = normalizeLine(rawText);
     const lexicon = store ? await this.store.getLexicon(store, lineText) : null;
 
-    if (lexicon) {
+    // Non-inventory marker: a line the owner previously dismissed with the
+    // "never inventory this line" flag. Skip stocking it, but record the line
+    // (never silently drop it) so the batch stays a faithful receipt record.
+    if (lexicon?.non_inventory) {
+      await this.store.insertLine({
+        ulid: generateUlid(),
+        batch_ulid: batch.ulid,
+        raw_text: rawText,
+        match_outcome: 'skipped',
+        product_ulid: null,
+        inventory_item_ulid: null,
+      });
+      return;
+    }
+
+    if (lexicon && lexicon.product_ulid) {
       const product = await this.store.getProduct(lexicon.product_ulid);
       const cls = lexicon.shelf_life_class ?? product?.shelf_life_class ?? 'unknown';
       const item = await this.store.insertItemIfAbsent({
@@ -236,7 +256,7 @@ export class InventoryPipeline {
     itemUlid: string,
     photos: InventoryPhotoPart[],
     meta: { name?: string; shelf_life_class?: ShelfLifeClass; package_size?: string; aliases?: string[] } = {}
-  ): Promise<{ item: InventoryItemView; product: ProductRecord } | null> {
+  ): Promise<LabelResolution | null> {
     const item = await this.store.getItem(itemUlid);
     if (!item) return null;
     if (!this.labelParser && photos.length > 0) throw new LabelParserUnavailableError();
@@ -274,7 +294,10 @@ export class InventoryPipeline {
     });
 
     // Write the lexicon line so future receipts carrying this exact text
-    // auto-resolve with no question.
+    // auto-resolve with no question, and fan out across the current batch's
+    // same-line siblings (a multi-quantity line makes one item per physical
+    // unit; one label scan clears them all). Both need (store, raw_label).
+    let resolvedCount = 1;
     if (item.store && item.raw_label) {
       await this.store.upsertLexicon({
         ulid: generateUlid(),
@@ -284,9 +307,49 @@ export class InventoryPipeline {
         package_size: packageSize,
         shelf_life_class: product.shelf_life_class,
       });
+
+      const siblings = await this.sameLineNeedsInfoSiblings(item.store, item.raw_label, itemUlid);
+      for (const sib of siblings) {
+        // Same product + class, but eat_by re-derived from THIS sibling's own
+        // acquired/opened clock — they are distinct physical units.
+        await this.store.resolveNeedsInfo(sib.ulid, {
+          product_ulid: product.ulid,
+          shelf_life_class: product.shelf_life_class,
+          eat_by: deriveEatBy({
+            shelfLifeClass: product.shelf_life_class,
+            acquiredAt: sib.acquired_at,
+            openedAt: sib.opened_at,
+            daysUnopenedOverride: product.shelf_life_days_unopened,
+            daysOpenedOverride: product.shelf_life_days_opened,
+          }),
+        });
+        resolvedCount += 1;
+      }
     }
 
-    return { item: await this.viewOf(resolved ?? item), product };
+    return { item: await this.viewOf(resolved ?? item), product, resolved_count: resolvedCount };
+  }
+
+  /**
+   * Open `needs_info` siblings sharing `(store, normalized raw_label)` with a
+   * scanned item, excluding the scanned item itself. Used by the label fan-out
+   * and the non-inventory dismissal fan-out. Single-user scale — a generous
+   * needs_info scan + in-memory filter (normalization lives here, not the store).
+   */
+  private async sameLineNeedsInfoSiblings(
+    store: string,
+    rawLabel: string,
+    excludeUlid: string
+  ): Promise<InventoryItemRecord[]> {
+    const norm = normalizeLine(rawLabel);
+    const all = await this.store.listNeedsInfo(500);
+    return all.filter(
+      (i) =>
+        i.ulid !== excludeUlid &&
+        i.store === store &&
+        i.raw_label != null &&
+        normalizeLine(i.raw_label) === norm
+    );
   }
 
   // ── Item events ───────────────────────────────────────────────────────────
@@ -444,15 +507,98 @@ export class InventoryPipeline {
     return item ? this.viewOf(item) : null;
   }
 
+  /**
+   * Open needs_info items as one-time questions, **deduplicated by
+   * `(store, normalized line_text)`**: a multi-quantity receipt line is one
+   * question carrying the count + every covered item ulid. `limit` caps the
+   * number of returned questions (groups). Items with a null raw_label are
+   * never grouped together (each is its own question). Earliest-acquired first.
+   */
   async listQuestions(limit = 50): Promise<InventoryQuestion[]> {
-    const items = await this.store.listNeedsInfo(limit);
-    return items.map((i) => ({
-      item_ulid: i.ulid,
-      raw_label: i.raw_label,
-      store: i.store,
-      acquired_at: toIsoDate(i.acquired_at)!,
-      question: DEFAULT_QUESTION(i.raw_label),
-    }));
+    // Fetch generously (store caps at 500); group, then cap groups by `limit`.
+    const items = await this.store.listNeedsInfo(500);
+    const groups = new Map<string, InventoryItemRecord[]>();
+    const order: string[] = [];
+    for (const i of items) {
+      // Null raw_label → a unique key per item (never merged with anything).
+      const key =
+        i.raw_label != null
+          ? `${i.store ?? ''} ${normalizeLine(i.raw_label)}`
+          : `${i.ulid}`;
+      const bucket = groups.get(key);
+      if (bucket) {
+        bucket.push(i);
+      } else {
+        groups.set(key, [i]);
+        order.push(key);
+      }
+    }
+    // listNeedsInfo is already acquired_at-ascending, so each bucket's first
+    // item is its earliest and `order` is earliest-group-first.
+    const cap = Math.min(limit, order.length);
+    const out: InventoryQuestion[] = [];
+    for (let n = 0; n < cap; n++) {
+      const bucket = groups.get(order[n]!)!;
+      const rep = bucket[0]!;
+      out.push({
+        item_ulid: rep.ulid,
+        item_ulids: bucket.map((i) => i.ulid),
+        count: bucket.length,
+        raw_label: rep.raw_label,
+        store: rep.store,
+        acquired_at: toIsoDate(rep.acquired_at)!,
+        question: questionText(rep.raw_label, bucket.length),
+      });
+    }
+    return out;
+  }
+
+  /**
+   * Dismiss a non-grocery line (housewares etc.) to the terminal `dismissed`
+   * state — removed from inventory without the food-waste semantics of a toss
+   * (no waste note, on_hand_fraction untouched). Returns null if the item is
+   * unknown; throws InvalidTransitionError (→ 409) on an already-terminal item.
+   *
+   * With `nonInventory`, additionally: (a) fan out to dismiss every open
+   * needs_info sibling with the same `(store, normalized raw_label)`, and
+   * (b) upsert a receipt_lexicon skip marker so future receipts skip the line.
+   * Without it, only the single scanned item is dismissed.
+   */
+  async dismissItem(
+    itemUlid: string,
+    opts: { nonInventory?: boolean; at?: string } = {}
+  ): Promise<DismissResolution | null> {
+    const item = await this.store.getItem(itemUlid);
+    if (!item) return null;
+    const at = parseDate(opts.at);
+    const nextState = transitionInventory(item.state, 'dismissed'); // throws on terminal
+    const primary = await this.store.updateItemState(itemUlid, { state: nextState, closed_at: at });
+
+    let dismissedCount = 1;
+    const nonInventory = !!opts.nonInventory && !!item.store && !!item.raw_label;
+    if (nonInventory && item.store && item.raw_label) {
+      const siblings = await this.sameLineNeedsInfoSiblings(item.store, item.raw_label, itemUlid);
+      for (const sib of siblings) {
+        await this.store.updateItemState(sib.ulid, { state: 'dismissed', closed_at: at });
+        dismissedCount += 1;
+      }
+      // Skip marker: future receipts carrying this line skip it (null product).
+      await this.store.upsertLexicon({
+        ulid: generateUlid(),
+        store: item.store,
+        line_text: normalizeLine(item.raw_label),
+        product_ulid: null,
+        package_size: null,
+        shelf_life_class: null,
+        non_inventory: true,
+      });
+    }
+
+    return {
+      item: await this.viewOf(primary ?? item),
+      dismissed_count: dismissedCount,
+      non_inventory: nonInventory,
+    };
   }
 
   // ── Direct item / product / lexicon creation (manual + agentic seed) ──────────

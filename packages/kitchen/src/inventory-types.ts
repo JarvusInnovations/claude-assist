@@ -25,13 +25,19 @@ export const SHELF_LIFE_CLASSES: readonly ShelfLifeClass[] = [
   'unknown',
 ];
 
-export type InventoryState = 'stocked' | 'open' | 'finished' | 'tossed';
+export type InventoryState = 'stocked' | 'open' | 'finished' | 'tossed' | 'dismissed';
 
-export const INVENTORY_STATES: readonly InventoryState[] = ['stocked', 'open', 'finished', 'tossed'];
+export const INVENTORY_STATES: readonly InventoryState[] = [
+  'stocked',
+  'open',
+  'finished',
+  'tossed',
+  'dismissed',
+];
 
 export type BatchSource = 'receipt' | 'manual';
 export type BatchStatus = 'parsing' | 'parsed' | 'failed';
-export type LineMatchOutcome = 'pending' | 'matched' | 'unmatched';
+export type LineMatchOutcome = 'pending' | 'matched' | 'unmatched' | 'skipped';
 
 /** Explicit inventory event types (state-changing). */
 export type InventoryEventType = 'opened' | 'finished' | 'tossed';
@@ -73,14 +79,16 @@ export interface ProductInput {
   shelf_life_days_opened?: number | null;
 }
 
-/** A row in kitchen.receipt_lexicon. */
+/** A row in kitchen.receipt_lexicon. `product_ulid` is null on a skip marker. */
 export interface LexiconRecord {
   ulid: string;
   store: string;
   line_text: string;
-  product_ulid: string;
+  product_ulid: string | null;
   package_size: string | null;
   shelf_life_class: ShelfLifeClass | null;
+  /** True on a non-inventory skip marker: future receipts skip this line. */
+  non_inventory: boolean;
   created_at: Date;
   updated_at: Date;
 }
@@ -206,13 +214,40 @@ export interface BatchLineView {
   created_at: string;
 }
 
-/** An open needs-info item rendered as a one-time question (digest/chat). */
+/**
+ * Open needs-info items rendered as a one-time question (digest/chat),
+ * deduplicated by `(store, normalized line_text)`. A multi-quantity receipt
+ * line is one question covering N physical units.
+ */
 export interface InventoryQuestion {
+  /** Representative (earliest-acquired) item to target for a label scan / dismissal. */
   item_ulid: string;
+  /** Every item this grouped question covers (≥ 1). */
+  item_ulids: string[];
+  /** `item_ulids.length` — the number of physical units behind this line. */
+  count: number;
   raw_label: string | null;
   store: string | null;
+  /** Earliest `acquired_at` among the covered items. */
   acquired_at: string;
   question: string;
+}
+
+/** Result of a label scan: the resolved item + product + how many items it cleared. */
+export interface LabelResolution {
+  item: InventoryItemView;
+  product: ProductRecord;
+  /** Total items resolved: the scanned item plus fanned-out siblings (≥ 1). */
+  resolved_count: number;
+}
+
+/** Result of a dismissal: the dismissed item + how many it cleared + the flag. */
+export interface DismissResolution {
+  item: InventoryItemView;
+  /** Total items dismissed: the scanned item plus fanned-out siblings (≥ 1). */
+  dismissed_count: number;
+  /** Whether a non-inventory skip marker was written (and siblings fanned out). */
+  non_inventory: boolean;
 }
 
 /** One uploaded photo part, held in memory only for the request. */

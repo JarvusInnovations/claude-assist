@@ -170,6 +170,34 @@ describe('inventory routes', () => {
     expect(res.json().questions[0].raw_label).toBe('MYSTERYITEM');
   });
 
+  it('GET /kitchen/inventory/questions groups a multi-quantity line into one question with a count', async () => {
+    await pipeline.createItem({ raw_label: 'ITAL CHICKEN SAUSAGE', store: 'Example Grocer', acquired_at: '2026-07-18', needs_info: true });
+    await pipeline.createItem({ raw_label: 'ITAL CHICKEN SAUSAGE', store: 'Example Grocer', acquired_at: '2026-07-19', needs_info: true });
+    const res = await fastify.inject({ method: 'GET', url: '/kitchen/inventory/questions' });
+    expect(res.statusCode).toBe(200);
+    const { questions, count } = res.json();
+    expect(count).toBe(1);
+    expect(questions[0].count).toBe(2);
+    expect(questions[0].item_ulids.length).toBe(2);
+    expect(questions[0].question).toContain('×2');
+  });
+
+  it('POST /kitchen/inventory/:ulid/dismiss dismisses a line; 404 unknown; 409 terminal', async () => {
+    const { item } = await pipeline.createItem({ raw_label: 'SOUP MUG', store: 'Example Grocer', acquired_at: '2026-07-18', needs_info: true });
+    const res = await fastify.inject({ method: 'POST', url: `/kitchen/inventory/${item.ulid}/dismiss`, payload: { non_inventory: true } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().item.state).toBe('dismissed');
+    expect(res.json().dismissed_count).toBe(1);
+    expect(res.json().non_inventory).toBe(true);
+
+    // Now terminal → 409.
+    const again = await fastify.inject({ method: 'POST', url: `/kitchen/inventory/${item.ulid}/dismiss`, payload: {} });
+    expect(again.statusCode).toBe(409);
+
+    const missing = await fastify.inject({ method: 'POST', url: `/kitchen/inventory/${generateUlid()}/dismiss`, payload: {} });
+    expect(missing.statusCode).toBe(404);
+  });
+
   it('POST /kitchen/products then /kitchen/lexicon are creatable for the seed port', async () => {
     const p = await fastify.inject({ method: 'POST', url: '/kitchen/products', payload: { name: 'Oat Milk', shelf_life_class: 'fridge_short', aliases: ['oatmilk'] } });
     expect(p.statusCode).toBe(201);
