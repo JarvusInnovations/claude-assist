@@ -204,6 +204,14 @@ export interface BriefingPluginConfig {
   meetingCron?: string;
   /** Refresh occurrences starting within this many hours (the ~24h trigger). Default 26. */
   meetingRefreshAheadHours?: number;
+  /**
+   * Phase-2 kitchen seam: provider of the kitchen module's merged recipe view
+   * (sheet + pushed + promoted) for stock-aware meal suggestions. Composed by
+   * the server from the kitchen module's decorated `fastify.kitchenRecipes`
+   * surface. When absent, the briefing source falls back to a direct SQL read
+   * of DB-persisted recipes only (sheet recipes won't participate).
+   */
+  kitchenRecipesProvider?: KitchenRecipesProvider;
 }
 
 /**
@@ -340,6 +348,20 @@ export interface KitchenEventOutcome {
 }
 
 export type KitchenEventResolver = (remark: string) => Promise<KitchenEventOutcome>;
+
+/**
+ * One recipe in the kitchen module's merged recipe view (sheet + pushed +
+ * promoted — whatever the reselect pipeline merges), reduced to what a
+ * stock-aware consumer needs. Kitchen-type-free so the briefing package can
+ * depend on it without importing the kitchen package.
+ */
+export interface KitchenRecipeSummary {
+  name: string;
+  /** Component/ingredient labels ([] for a componentless recipe). */
+  component_labels: string[];
+}
+
+export type KitchenRecipesProvider = () => Promise<KitchenRecipeSummary[]>;
 
 export interface CapturePluginConfig {
   /** Anthropic API key for AI classification */

@@ -269,17 +269,32 @@ inventory-agnostic.
   item; label intake `503`s until configured. The whole inventory surface
   degrades to "roughly right, self-healing".
 
-### Ambient-remark seam (phase 2 wiring)
+### Cross-module seams (phase 2 wiring)
 
-The capture classifier's `kitchen_event` type routes (ROUTING_TABLE →
-`kitchen-event`) to a `KitchenEventExecutor` whose dependency — a
-`(remark) => Promise<resolution>` resolver — is **composed by the server** from
-the kitchen module's decorated `fastify.kitchenEvents` resolver and injected
-via `captureConfig.kitchenEventResolver`. The capture package never imports the
-kitchen package. The executor hands the remark to `POST /inventory/events`'s
-same resolver, so a passing remark from any capture surface reaches the same
-state machine a deliberate event does. Deliberate inventory actions (the app's
-tabs) never touch the classifier.
+Both seams follow one pattern: the kitchen module **decorates** a surface on
+the Fastify instance; the **server composes** a minimal, kitchen-type-free
+function (types owned by core) from that surface and injects it into the
+consuming module's config. Consumer packages never import the kitchen package,
+and every seam degrades cleanly when the kitchen module is absent.
+
+- **Ambient remarks** — the capture classifier's `kitchen_event` type routes
+  (ROUTING_TABLE → `kitchen-event`) to a `KitchenEventExecutor` whose
+  dependency — a `(remark) => Promise<outcome>` resolver — is composed from
+  the decorated `fastify.kitchenEvents` surface and injected via
+  `captureConfig.kitchenEventResolver`. The executor hands the remark to
+  `POST /inventory/events`'s same resolver, so a passing remark from any
+  capture surface reaches the same state machine a deliberate event does.
+  Absent the wiring, `kitchen_event` captures park in `awaiting_executor`.
+  Deliberate inventory actions (the app's tabs) never touch the classifier.
+- **Stock-aware suggestions** — the kitchen module decorates
+  `fastify.kitchenRecipes` (`listAll()`: the full **merged sheet + pushed +
+  promoted** recipe view, the same merge the reselect strip performs). The
+  server composes a `KitchenRecipesProvider` (`() =>
+  Promise<{name, component_labels[]}[]>`, core-owned type) from it and injects
+  it via `briefingConfig.kitchenRecipesProvider`, so meal-bank **sheet**
+  recipes participate in the briefing's stock-aware suggestions from day one
+  (no cold start). Absent the provider, the briefing source falls back to a
+  direct SQL read of DB-persisted recipes only.
 
 ## Principles
 

@@ -2,15 +2,20 @@
  * Kitchen summary for the briefing, read from the kitchen module's tables
  * (claude-assist Postgres) — today's logged totals plus, from phase-2
  * inventory, an eat-first line (most-urgent on-hand items) and stock-aware
- * meal suggestions (persisted recipes whose components are plausibly on hand).
+ * meal suggestions (recipes whose components are plausibly on hand).
  *
  * Follows the captures-source pattern: a direct read of the sibling module's
- * schema, no import of @jarvus/claude-assist-kitchen. Every read degrades to
- * omission (its own error/empty) if the kitchen schema or a phase-2 table is
- * absent — the briefing never fails on a missing source.
+ * schema, no import of @jarvus/claude-assist-kitchen. Suggestions prefer the
+ * server-injected KitchenRecipesProvider (the kitchen module's merged
+ * sheet + pushed + promoted view, so meal-bank sheet recipes participate
+ * from day one); without it they fall back to a direct SQL read of
+ * DB-persisted recipes only. Every read degrades to omission (its own
+ * error/empty) if the kitchen schema or a phase-2 table is absent — the
+ * briefing never fails on a missing source.
  */
 
 import type postgres from 'postgres';
+import type { KitchenRecipeSummary, KitchenRecipesProvider } from '@jarvus/claude-assist-core';
 import { zonedDayWindow } from '../../time.js';
 
 /** One most-urgent on-hand item for the eat-first line. */
@@ -54,6 +59,11 @@ export interface KitchenSummaryOptions {
   eatFirstLimit?: number;
   /** Max meal suggestions to surface (default 3). */
   suggestionLimit?: number;
+  /**
+   * Kitchen module's merged recipe view (sheet + pushed + promoted), injected
+   * by the server. Preferred over the SQL fallback so sheet recipes qualify.
+   */
+  recipesProvider?: KitchenRecipesProvider;
 }
 
 export async function fetchKitchenSummary(
@@ -89,7 +99,7 @@ export async function fetchKitchenSummary(
     `;
 
     const eatFirst = await fetchEatFirst(sql, opts.eatFirstLimit ?? 5);
-    const suggestions = await fetchSuggestions(sql, opts.suggestionLimit ?? 3);
+    const suggestions = await fetchSuggestions(sql, opts.suggestionLimit ?? 3, opts.recipesProvider);
 
     return {
       calories: Math.round(parseFloat(totals?.calories ?? '0')),
@@ -137,12 +147,16 @@ async function fetchEatFirst(sql: postgres.Sql, limit: number): Promise<EatFirst
 }
 
 /**
- * Persisted recipes plausibly makeable from current stock. Conservative: a
- * recipe qualifies only when a majority (≥60%) of its named components match an
- * on-hand item's product name/alias/raw label, and at least one matches. Ranked
- * by how much stock they'd use (matched count), then most-complete first.
+ * Recipes plausibly makeable from current stock. The recipe list comes from
+ * the injected provider (the kitchen module's merged sheet + pushed + promoted
+ * view) when available, else the SQL fallback over DB-persisted recipes.
+ * Exported for tests.
  */
-async function fetchSuggestions(sql: postgres.Sql, limit: number): Promise<MealSuggestion[]> {
+export async function fetchSuggestions(
+  sql: postgres.Sql,
+  limit: number,
+  recipesProvider?: KitchenRecipesProvider
+): Promise<MealSuggestion[]> {
   try {
     const onHand = await sql<{ name: string | null; aliases: string[] | null; raw_label: string | null }[]>`
       SELECT p.name AS name, p.aliases AS aliases, i.raw_label AS raw_label
@@ -159,24 +173,48 @@ async function fetchSuggestions(sql: postgres.Sql, limit: number): Promise<MealS
       if (r.raw_label) stock.push(r.raw_label.toLowerCase());
     }
 
-    const recipes = await sql<RecipeRow[]>`SELECT name, components FROM kitchen.recipes`;
-
-    const scored: MealSuggestion[] = [];
-    for (const recipe of recipes) {
-      const labels = componentLabels(recipe.components);
-      if (labels.length === 0) continue;
-      const have = labels.filter((label) => stock.some((s) => tokenMatch(label, s))).length;
-      if (have >= 1 && have / labels.length >= 0.6) {
-        scored.push({ name: recipe.name, have, total: labels.length });
-      }
-    }
-
-    return scored
-      .sort((a, b) => b.have - a.have || b.have / b.total - a.have / a.total)
-      .slice(0, Math.max(1, limit));
+    const recipes = await readRecipeSummaries(sql, recipesProvider);
+    return scoreSuggestions(stock, recipes, limit);
   } catch {
     return [];
   }
+}
+
+/** Provider-first recipe read; SQL fallback covers DB rows only (no sheet). */
+async function readRecipeSummaries(
+  sql: postgres.Sql,
+  recipesProvider?: KitchenRecipesProvider
+): Promise<KitchenRecipeSummary[]> {
+  if (recipesProvider) {
+    return recipesProvider();
+  }
+  const rows = await sql<RecipeRow[]>`SELECT name, components FROM kitchen.recipes`;
+  return rows.map((r) => ({ name: r.name, component_labels: componentLabels(r.components) }));
+}
+
+/**
+ * Conservative scoring: a recipe qualifies only when a majority (≥60%) of its
+ * named components match an on-hand item's product name/alias/raw label, and
+ * at least one matches. Ranked by how much stock it'd use (matched count),
+ * then most-complete first. Pure — exported for tests.
+ */
+export function scoreSuggestions(
+  stock: string[],
+  recipes: KitchenRecipeSummary[],
+  limit: number
+): MealSuggestion[] {
+  const scored: MealSuggestion[] = [];
+  for (const recipe of recipes) {
+    const labels = recipe.component_labels.map((l) => l.toLowerCase());
+    if (labels.length === 0) continue;
+    const have = labels.filter((label) => stock.some((s) => tokenMatch(label, s))).length;
+    if (have >= 1 && have / labels.length >= 0.6) {
+      scored.push({ name: recipe.name, have, total: labels.length });
+    }
+  }
+  return scored
+    .sort((a, b) => b.have - a.have || b.have / b.total - a.have / a.total)
+    .slice(0, Math.max(1, limit));
 }
 
 function componentLabels(components: unknown): string[] {

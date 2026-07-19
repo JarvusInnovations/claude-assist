@@ -355,6 +355,20 @@ export class KitchenPipeline {
     return { recipes: [...sheetRecipes, ...dbRecipes], recent };
   }
 
+  /**
+   * The module's full merged recipe view — sheet + pushed + promoted, the same
+   * merge reselect performs, without the recents strip or its small default
+   * limit. Backs the decorated `fastify.kitchenRecipes` surface consumed (via
+   * the server-composed provider) by stock-aware briefing suggestions.
+   */
+  async listAllRecipes(limit = 500): Promise<RecipeRecord[]> {
+    const [sheetRecipes, dbRecipes] = await Promise.all([
+      this.readSheetRecipes(),
+      this.recipes.list({ limit }),
+    ]);
+    return [...sheetRecipes, ...dbRecipes];
+  }
+
   /** Scheduler-side sweep: retry `estimating` rows under the attempt cap (note-only — no photos survive). */
   async sweep(): Promise<SweepResult> {
     if (this.sweeping) {

@@ -28,11 +28,21 @@ import { KitchenLabelParser } from './services/label-parser.js';
 import { InventoryPipeline } from './services/inventory.js';
 import { registerInventoryRoutes } from './routes/inventory.js';
 import type { EventResolution } from './inventory-types.js';
+import type { RecipeRecord } from './types.js';
 
 /** The kitchen module's ambient-remark resolver surface (phase-2 seam). */
 export interface KitchenEventsSurface {
   /** Resolve a free-text remark into an inventory state change (best-effort). */
   resolve(remark: string, at?: string): Promise<EventResolution>;
+}
+
+/**
+ * The kitchen module's merged-recipe surface (phase-2 seam): the full
+ * sheet + pushed + promoted view the reselect pipeline merges. The server
+ * composes the briefing's stock-aware suggestion provider from this.
+ */
+export interface KitchenRecipesSurface {
+  listAll(): Promise<RecipeRecord[]>;
 }
 
 // Module augmentation for fastify decorators
@@ -46,6 +56,12 @@ declare module 'fastify' {
      * executor (the two packages never import each other).
      */
     kitchenEvents?: KitchenEventsSurface;
+    /**
+     * Merged recipe view (sheet + pushed + promoted), present only when the
+     * kitchen module is loaded. The server reads this to compose the briefing
+     * module's stock-aware suggestion provider (no cross-package import).
+     */
+    kitchenRecipes?: KitchenRecipesSurface;
   }
 }
 
@@ -117,6 +133,12 @@ export default createPlugin('kitchen', async (fastify: FastifyInstance, options:
   fastify.decorate('kitchenEvents', {
     resolve: (remark: string, at?: string) => inventory.resolveRemark(remark, at),
   } satisfies KitchenEventsSurface);
+
+  // Merged-recipe seam: expose the full sheet+pushed+promoted view for the
+  // briefing's stock-aware suggestions (composed by the server, same pattern).
+  fastify.decorate('kitchenRecipes', {
+    listAll: () => pipeline.listAllRecipes(),
+  } satisfies KitchenRecipesSurface);
 
   if (!config.disableEstimation) {
     fastify.scheduler.register({

@@ -427,6 +427,18 @@ await fastify.register(
             .filter(Boolean),
           meetingCron: fastify.config.MEETING_CRON,
           meetingRefreshAheadHours: fastify.config.MEETING_REFRESH_AHEAD_HOURS,
+          // Stock-aware suggestion seam: the merged sheet+pushed+promoted
+          // recipe view decorated by the kitchen module (registered above).
+          // Absent → the briefing source falls back to DB-persisted recipes.
+          kitchenRecipesProvider: api.kitchenRecipes
+            ? () =>
+                api.kitchenRecipes!.listAll().then((recipes) =>
+                  recipes.map((r) => ({
+                    name: r.name,
+                    component_labels: r.components.map((c) => c.label),
+                  }))
+                )
+            : undefined,
         },
       });
     } else {

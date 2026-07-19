@@ -38,6 +38,8 @@ export {
   type KitchenPluginConfig,
   type KitchenEventResolver,
   type KitchenEventOutcome,
+  type KitchenRecipesProvider,
+  type KitchenRecipeSummary,
 } from './plugin.js';
 
 // Tana MCP client (shared by capture's inbox executor + the briefing render)
