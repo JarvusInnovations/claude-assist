@@ -100,6 +100,15 @@ export interface EntryInput {
  */
 export const PORTION_MULTIPLIER_MAX = 20;
 
+/**
+ * Backdating bounds for `logged_at` (specs/modules/kitchen.md § Logged-at
+ * backdating). Relative to the server clock, so enforced at the API — not a
+ * static DB CHECK. Future tolerance absorbs device-clock/timezone skew (EXIF
+ * carries no zone); the past bound rejects a corrupt/typo'd stamp.
+ */
+export const LOGGED_AT_FUTURE_SKEW_MS = 24 * 60 * 60 * 1000; // 24 hours
+export const LOGGED_AT_MAX_AGE_MS = 5 * 365 * 24 * 60 * 60 * 1000; // ~5 years
+
 /** What the client PATCHes onto an existing entry. */
 export interface EntryPatchInput {
   note?: string;
@@ -118,6 +127,15 @@ export interface EntryPatchInput {
    * `source`, accepted on any entry. `0 < portion_multiplier <= PORTION_MULTIPLIER_MAX`.
    */
   portion_multiplier?: number;
+  /**
+   * Post-hoc backdating of the entry to the meal's actual moment (ISO date-time).
+   * Orthogonal to every other axis — never re-queues estimation, never changes
+   * `source`, accepted on any entry. Moving it re-buckets the entry (and its
+   * effective macros) to a new day in every rollup. Bounded per
+   * LOGGED_AT_FUTURE_SKEW_MS / LOGGED_AT_MAX_AGE_MS
+   * (specs/modules/kitchen.md § Logged-at backdating).
+   */
+  logged_at?: string;
 }
 
 /** A row in kitchen.entries. */

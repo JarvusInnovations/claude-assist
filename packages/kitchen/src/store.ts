@@ -102,6 +102,15 @@ export interface EntryStore {
    */
   applyPortionMultiplier(ulid: string, multiplier: number): Promise<void>;
 
+  /**
+   * Backdate the entry to a new `logged_at`. Touches ONLY that column — no
+   * source change, no status change, no re-queue (specs/modules/kitchen.md
+   * § Logged-at backdating). Caller has already parsed + bounds-validated the
+   * value. Rollups re-bucket by `logged_at` at query time, so nothing else
+   * moves.
+   */
+  applyLoggedAt(ulid: string, loggedAt: Date): Promise<void>;
+
   delete(ulid: string): Promise<boolean>;
 
   /** Recent/frequent logged items for the reselect strip, most-recent first. */
@@ -331,6 +340,12 @@ export class PgEntryStore implements EntryStore {
   async applyPortionMultiplier(ulid: string, multiplier: number): Promise<void> {
     await this.sql`
       UPDATE kitchen.entries SET portion_multiplier = ${multiplier} WHERE ulid = ${ulid}
+    `;
+  }
+
+  async applyLoggedAt(ulid: string, loggedAt: Date): Promise<void> {
+    await this.sql`
+      UPDATE kitchen.entries SET logged_at = ${loggedAt} WHERE ulid = ${ulid}
     `;
   }
 

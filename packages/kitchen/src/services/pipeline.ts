@@ -29,7 +29,12 @@ import type {
   RecipeComponent,
   RecipeRecord,
 } from '../types.js';
-import { NUTRITION_FIELD_KEYS, PORTION_MULTIPLIER_MAX } from '../types.js';
+import {
+  LOGGED_AT_FUTURE_SKEW_MS,
+  LOGGED_AT_MAX_AGE_MS,
+  NUTRITION_FIELD_KEYS,
+  PORTION_MULTIPLIER_MAX,
+} from '../types.js';
 import type { EntryStore, RecipeStore, RecentEntrySummary } from '../store.js';
 import { normalizeNewEntry } from '../store.js';
 import { InvalidTransitionError, transition } from '../state.js';
@@ -182,11 +187,41 @@ export class KitchenPipeline {
    *   rescales the base post-hoc and touches nothing else (no source change, no
    *   re-queue). It may ride alongside a macro override (override sets base,
    *   multiplier scales it).
+   * - A `logged_at` (§ Logged-at backdating) is likewise accepted on ANY entry;
+   *   it backdates the entry to the meal's actual moment and touches nothing
+   *   else (no source change, no re-queue). Rollups re-bucket by `logged_at` at
+   *   query time, so moving it moves the entry's day everywhere.
    *
    * All validation and conflict checks happen up front, before any write, so a
    * rejected PATCH never leaves a partial change (e.g. multiplier applied but
    * the note edit 409'd).
    */
+  /**
+   * Parse + bounds-check a PATCHed `logged_at` (specs/modules/kitchen.md
+   * § Logged-at backdating). Deterministic — the timestamp comes from the
+   * client (EXIF or the owner's pick), never the model. Rejects unparseable
+   * values, anything more than LOGGED_AT_FUTURE_SKEW_MS ahead of now, or more
+   * than LOGGED_AT_MAX_AGE_MS behind now.
+   */
+  private validateLoggedAt(raw: string): Date {
+    if (typeof raw !== 'string') {
+      throw new PatchValidationError('logged_at must be an ISO date-time string');
+    }
+    const parsed = new Date(raw);
+    const t = parsed.getTime();
+    if (Number.isNaN(t)) {
+      throw new PatchValidationError('logged_at must be a valid ISO date-time');
+    }
+    const now = Date.now();
+    if (t > now + LOGGED_AT_FUTURE_SKEW_MS) {
+      throw new PatchValidationError('logged_at is too far in the future');
+    }
+    if (t < now - LOGGED_AT_MAX_AGE_MS) {
+      throw new PatchValidationError('logged_at is implausibly far in the past');
+    }
+    return parsed;
+  }
+
   async patch(ulid: string, input: EntryPatchInput): Promise<EntryRecord | null> {
     const entry = await this.entries.get(ulid);
     if (!entry) return null;
@@ -194,6 +229,7 @@ export class KitchenPipeline {
     const hasMacroOverride = NUTRITION_FIELD_KEYS.some((key) => input[key] !== undefined);
     const hasNoteLabelEdit = input.note !== undefined || input.label !== undefined;
     const hasMultiplier = input.portion_multiplier !== undefined;
+    const hasLoggedAt = input.logged_at !== undefined;
 
     // ── Validate everything up front (no partial writes on a rejected PATCH) ──
     if (hasMultiplier) {
@@ -204,9 +240,13 @@ export class KitchenPipeline {
         );
       }
     }
-    if (!hasMultiplier && !hasMacroOverride && !hasNoteLabelEdit) {
+    let loggedAt: Date | undefined;
+    if (hasLoggedAt) {
+      loggedAt = this.validateLoggedAt(input.logged_at!);
+    }
+    if (!hasMultiplier && !hasLoggedAt && !hasMacroOverride && !hasNoteLabelEdit) {
       throw new PatchValidationError(
-        'PATCH body must set a note/label edit, at least one nutrition field, or portion_multiplier'
+        'PATCH body must set a note/label edit, at least one nutrition field, portion_multiplier, or logged_at'
       );
     }
     // A note/label-only edit re-queues; forbidden on a terminal manual entry.
@@ -215,10 +255,13 @@ export class KitchenPipeline {
       throw new ManualOverrideConflictError(ulid);
     }
 
-    // ── Apply. The multiplier is orthogonal — never re-queues, never changes
-    //    source — so it lands first and independently of the other axes. ──
+    // ── Apply. The multiplier and logged_at are orthogonal — never re-queue,
+    //    never change source — so they land first and independently. ──
     if (hasMultiplier) {
       await this.entries.applyPortionMultiplier(ulid, input.portion_multiplier!);
+    }
+    if (hasLoggedAt) {
+      await this.entries.applyLoggedAt(ulid, loggedAt!);
     }
 
     if (hasMacroOverride) {
@@ -247,7 +290,8 @@ export class KitchenPipeline {
       return this.entries.get(ulid);
     }
 
-    // Multiplier-only PATCH: nothing else to do.
+    // Orthogonal-axis-only PATCH (multiplier and/or logged_at): the applies
+    // above are all there is to do.
     return this.entries.get(ulid);
   }
 

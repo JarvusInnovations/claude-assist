@@ -133,6 +133,10 @@ export class MemoryEntryStore implements EntryStore {
     this.mustGet(ulid).portion_multiplier = multiplier;
   }
 
+  async applyLoggedAt(ulid: string, loggedAt: Date): Promise<void> {
+    this.mustGet(ulid).logged_at = loggedAt;
+  }
+
   async delete(ulid: string): Promise<boolean> {
     return this.records.delete(ulid);
   }

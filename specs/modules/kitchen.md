@@ -18,7 +18,9 @@ through the module's APIs (never as committed seed content).
 
 - **Entries** — one row per consumption entry, ULID primary key supplied by the
   client so offline replays are idempotent upserts (a replay must never
-  duplicate or regress a processed entry). Fields: timestamp, optional free-text
+  duplicate or regress a processed entry). Fields: timestamp (`logged_at` — the
+  meal's own moment, client-supplied and post-hoc editable; see § Logged-at
+  backdating), optional free-text
   note, resolved label, nutrition estimate (calories + macros with a
   confidence/portion basis) stored as the **base**, estimation source
   (`model` | `reselect` | `manual`), a **portion multiplier** (post-hoc rescale
@@ -81,6 +83,58 @@ Consequences of this choice:
 Bounds: `0 < portion_multiplier ≤ 20` (the API rejects non-positive or absurd
 values). It is set via `PATCH /entries/:ulid`.
 
+## Logged-at backdating
+
+Every entry carries `logged_at` — the moment the meal actually happened, which
+is **not** the same as when it was logged. Logging a gallery photo hours after
+eating is the common case: the entry must land on the meal's day, not the
+logging day.
+
+**The timestamp is deterministic, never model-inferred.** `logged_at` is set by
+the client from a concrete source and is directly editable by the owner; the
+estimation model is deliberately **not** given authority over time. This is the
+module's *deterministic-beats-estimated* principle applied to the time axis:
+
+- Gallery-picked photos carry an EXIF capture time (`DateTimeOriginal`) which
+  *is* when the meal happened — the client defaults `logged_at` to the earliest
+  selected photo's capture time.
+- Camera-shot-now photos, no-EXIF files, and note/reselect-only logging default
+  to now.
+- The owner can always override via a visible, editable affordance (the composer
+  time chip; the correction sheet "Logged at" row).
+
+A future implementer must **not** hand the model authority to infer or adjust
+`logged_at` from photo content or note text — the note-derived portion modifier
+governs PORTION only, never time.
+
+**`logged_at` is PATCHable**, as a fourth orthogonal axis on `PATCH
+/entries/:ulid` (alongside note/label re-queue, macro override, and portion
+multiplier):
+
+- Accepted on **any** entry regardless of `source` (including `manual`). It
+  **never re-queues estimation, never changes `source`, and never 409s** — like
+  the portion multiplier, it touches only its own column. It may be sent alone
+  or composed with any other patch field.
+- Because every rollup (day-group totals, the briefing daily totals, weekly
+  trend) filters and buckets by `logged_at`, moving an entry's `logged_at`
+  moves it — and its effective macros — to the new day automatically. Rollups
+  are never stored, so nothing else must be recomputed.
+
+**Bounds.** `logged_at` must be a valid ISO date-time that is neither in the
+future beyond clock/timezone skew nor absurdly old:
+
+- Not later than `now + 24h`. A full day of future tolerance absorbs
+  device-clock skew and timezone ambiguity (EXIF `DateTimeOriginal` carries no
+  zone) while still rejecting a plainly-future date.
+- Not earlier than `now − 5 years`. Generous enough for any legitimate backfill
+  of an old photo, tight enough to reject a corrupt/typo'd stamp (epoch 0, year
+  0001, a mis-parsed EXIF value). The API rejects out-of-range or unparseable
+  values with `400`.
+
+These bounds are enforced at the API (they are relative to the server clock, so
+they cannot be a static DB `CHECK`); the column itself is unchanged
+(migration-free).
+
 ## Meal-bank sheet consumption
 
 The module reads a meal-bank gitsheet owned by the instance's own repo:
@@ -109,9 +163,11 @@ existing conventions.
   overwrite it). 409 on attempts to model-overwrite a `manual` entry. A
   `portion_multiplier` (positive number, ≤ 20) is accepted on any entry
   regardless of source — it rescales the base post-hoc, never re-queues
-  estimation, never changes `source`, and never 409s (§ Portion multiplier). It
-  may be sent alone, or alongside a macro override (override sets base, multiplier
-  scales it).
+  estimation, never changes `source`, and never 409s (§ Portion multiplier). A
+  `logged_at` (ISO date-time, bounded — § Logged-at backdating) is likewise
+  accepted on any entry, moving it to a new day without re-queue or source
+  change. Any of these axes may be sent alone or composed in one PATCH (override
+  sets base, multiplier scales it, logged_at moves the day).
 - `DELETE /entries/:ulid` — removes the entry from all rollups.
 - `GET /reselect` — the strip: recipes (sheet + pushed + promoted) merged with
   recent/frequent logged items.
@@ -378,7 +434,10 @@ and every seam degrades cleanly when the kitchen module is absent.
   pursuit of accuracy.
 - **Deterministic beats estimated when quantities are known.** Recipe-computed
   macros never go through a model; a kitchen-scale user's numbers are exact by
-  construction.
+  construction. The same holds for **time**: `logged_at` comes from a concrete
+  source (EXIF capture time, or the owner's explicit pick) and is never
+  model-inferred — the model owns PORTION, never the clock (§ Logged-at
+  backdating).
 - **The owner's correction is terminal.** `manual` overrides survive every
   subsequent automated pass.
 - **Store the base; carry the base; consumers multiply.** Macro fields are always
