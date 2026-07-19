@@ -4,7 +4,7 @@ depends: [kitchen-module]
 specs:
   - specs/modules/kitchen.md
 issues: []
-pr: PR_PLACEHOLDER
+pr: 98
 ---
 
 # Plan: kitchen-axi CLI + assist-kitchen skill
