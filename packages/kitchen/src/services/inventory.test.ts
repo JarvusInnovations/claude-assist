@@ -218,6 +218,162 @@ describe('depletion matcher', () => {
   });
 });
 
+describe('grouped questions', () => {
+  it('deduplicates needs_info questions by (store, line_text), carrying the count + covered ulids', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    // A ×2 line: two physical units, same store + label.
+    await pipeline.createItem({ raw_label: 'ITAL CHICKEN SAUSAGE', store: 'Example Grocer', acquired_at: '2026-07-18', needs_info: true });
+    await pipeline.createItem({ raw_label: 'ital chicken sausage', store: 'Example Grocer', acquired_at: '2026-07-19', needs_info: true });
+    // A distinct single line.
+    await pipeline.createItem({ raw_label: 'MYSTERY JAR', store: 'Example Grocer', acquired_at: '2026-07-18', needs_info: true });
+
+    const questions = await pipeline.listQuestions();
+    expect(questions.length).toBe(2); // two lines, not three items
+    const sausage = questions.find((q) => q.raw_label === 'ITAL CHICKEN SAUSAGE')!;
+    expect(sausage.count).toBe(2);
+    expect(sausage.item_ulids.length).toBe(2);
+    expect(sausage.acquired_at).toBe('2026-07-18'); // earliest
+    expect(sausage.question).toContain('×2');
+    const jar = questions.find((q) => q.raw_label === 'MYSTERY JAR')!;
+    expect(jar.count).toBe(1);
+    expect(jar.question).not.toContain('×');
+  });
+
+  it('never groups null-raw_label items together', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    await pipeline.createItem({ store: 'S', acquired_at: '2026-07-18', needs_info: true });
+    await pipeline.createItem({ store: 'S', acquired_at: '2026-07-19', needs_info: true });
+    const questions = await pipeline.listQuestions();
+    expect(questions.length).toBe(2);
+    expect(questions.every((q) => q.count === 1)).toBe(true);
+  });
+});
+
+describe('label fan-out', () => {
+  it('resolving one item resolves every same-line needs_info sibling, each with its own eat-by', async () => {
+    const store = new MemoryInventoryStore();
+    const label = new FakeLabelParser({
+      name: 'Italian Chicken Sausage', shelf_life_class: 'fridge_short', package_size: '12 oz',
+      nutrition_per_100g: null, aliases: ['chicken sausage'],
+    });
+    const pipeline = new InventoryPipeline(store, null, label, log);
+    // Two units of the same line, acquired on different days.
+    const a = await pipeline.createItem({ raw_label: 'ITAL CHICKEN SAUSAGE', store: 'Example Grocer', acquired_at: '2026-07-18', needs_info: true });
+    const b = await pipeline.createItem({ raw_label: 'ITAL CHICKEN SAUSAGE', store: 'Example Grocer', acquired_at: '2026-07-20', needs_info: true });
+
+    const resolved = await pipeline.resolveLabel(a.item.ulid, [photo]);
+    expect(resolved).not.toBeNull();
+    expect(resolved!.resolved_count).toBe(2); // scanned + one sibling
+    expect(resolved!.item.eat_by).toBe('2026-08-01'); // 07-18 + 14 fridge_short
+
+    // The sibling is resolved to the same product, its OWN eat-by re-derived.
+    const sib = await pipeline.getItemView(b.item.ulid);
+    expect(sib!.needs_info).toBe(false);
+    expect(sib!.product_ulid).toBe(resolved!.product.ulid);
+    expect(sib!.eat_by).toBe('2026-08-03'); // 07-20 + 14, distinct from the scanned unit
+    // No more open questions for that line.
+    const questions = await pipeline.listQuestions();
+    expect(questions.length).toBe(0);
+  });
+
+  it('a single needs_info item with no siblings resolves with resolved_count 1', async () => {
+    const store = new MemoryInventoryStore();
+    const label = new FakeLabelParser({ name: 'Feta', shelf_life_class: 'fridge_long', package_size: null, nutrition_per_100g: null, aliases: [] });
+    const pipeline = new InventoryPipeline(store, null, label, log);
+    const a = await pipeline.createItem({ raw_label: 'FETA', store: 'S', acquired_at: '2026-07-18', needs_info: true });
+    const resolved = await pipeline.resolveLabel(a.item.ulid, [photo]);
+    expect(resolved!.resolved_count).toBe(1);
+  });
+});
+
+describe('non-inventory dismissal', () => {
+  it('dismisses a single item to a terminal non-waste state, excluded from lists + questions', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    const { item } = await pipeline.createItem({ raw_label: 'SOUP MUG', store: 'Example Grocer', acquired_at: '2026-07-18', needs_info: true });
+
+    const res = await pipeline.dismissItem(item.ulid, { at: '2026-07-19' });
+    expect(res).not.toBeNull();
+    expect(res!.dismissed_count).toBe(1);
+    expect(res!.non_inventory).toBe(false);
+    expect(res!.item.state).toBe('dismissed');
+    expect(res!.item.closed_at).toBe('2026-07-19');
+    // NOT a food-waste event: no toss note, fraction untouched.
+    expect(res!.item.on_hand_fraction).toBe(1);
+    expect(res!.item.notes ?? '').not.toContain('tossed');
+
+    // Gone from the default on-hand list and the questions queue.
+    expect((await pipeline.listInventory({})).some((i) => i.ulid === item.ulid)).toBe(false);
+    expect((await pipeline.listQuestions()).length).toBe(0);
+    // Still inspectable when explicitly asking for the dismissed state.
+    const dismissed = await pipeline.listInventory({ states: ['dismissed'] });
+    expect(dismissed.some((i) => i.ulid === item.ulid)).toBe(true);
+  });
+
+  it('dismissing a terminal item throws (→ 409 at the route)', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    const { item } = await pipeline.createItem({ raw_label: 'X', acquired_at: '2026-07-18' });
+    await pipeline.applyEvent(item.ulid, 'finished', { at: '2026-07-18' });
+    expect(pipeline.dismissItem(item.ulid)).rejects.toThrow();
+  });
+
+  it('non_inventory flag: fans out to same-line siblings, writes a skip marker, next receipt skips the line', async () => {
+    const store = new MemoryInventoryStore();
+    const parser = new FakeReceiptParser({ store: 'Example Grocer', lines: [{ text: 'SOUP MUG' }] });
+    const pipeline = new InventoryPipeline(store, parser, null, log);
+    const a = await pipeline.createItem({ raw_label: 'SOUP MUG', store: 'Example Grocer', acquired_at: '2026-07-18', needs_info: true });
+    const b = await pipeline.createItem({ raw_label: 'soup mug', store: 'Example Grocer', acquired_at: '2026-07-19', needs_info: true });
+
+    const res = await pipeline.dismissItem(a.item.ulid, { nonInventory: true });
+    expect(res!.non_inventory).toBe(true);
+    expect(res!.dismissed_count).toBe(2);
+
+    // Sibling was dismissed too.
+    expect((await pipeline.getItemView(b.item.ulid))!.state).toBe('dismissed');
+    // Skip marker written.
+    const lex = await store.getLexicon('Example Grocer', 'SOUP MUG');
+    expect(lex!.non_inventory).toBe(true);
+    expect(lex!.product_ulid).toBeNull();
+
+    // A future receipt with that line is recorded skipped, no item created.
+    const before = (await pipeline.listInventory({ states: ['stocked', 'open'] })).length;
+    await pipeline.ingestReceipt({ ulid: ULID(40), store: 'Example Grocer', purchased_at: '2026-07-25' }, [photo]);
+    await pipeline.settle();
+    const view = await pipeline.getBatchView(ULID(40));
+    expect(view!.lines.length).toBe(1);
+    expect(view!.lines[0]!.match_outcome).toBe('skipped');
+    expect(view!.lines[0]!.inventory_item_ulid).toBeNull();
+    const after = (await pipeline.listInventory({ states: ['stocked', 'open'] })).length;
+    expect(after).toBe(before); // no new stocked item
+  });
+
+  it('single-item dismissal (no flag) leaves siblings + future receipts unaffected', async () => {
+    const store = new MemoryInventoryStore();
+    const parser = new FakeReceiptParser({ store: 'Example Grocer', lines: [{ text: 'SOUP MUG' }] });
+    const pipeline = new InventoryPipeline(store, parser, null, log);
+    const a = await pipeline.createItem({ raw_label: 'SOUP MUG', store: 'Example Grocer', acquired_at: '2026-07-18', needs_info: true });
+    const b = await pipeline.createItem({ raw_label: 'SOUP MUG', store: 'Example Grocer', acquired_at: '2026-07-19', needs_info: true });
+
+    const res = await pipeline.dismissItem(a.item.ulid); // no flag
+    expect(res!.dismissed_count).toBe(1);
+    expect(res!.non_inventory).toBe(false);
+    // Sibling still needs_info; still surfaces as a question (count 1 now).
+    expect((await pipeline.getItemView(b.item.ulid))!.needs_info).toBe(true);
+    const questions = await pipeline.listQuestions();
+    expect(questions.length).toBe(1);
+    expect(questions[0]!.count).toBe(1);
+    // No skip marker → a future receipt still lands a needs_info item.
+    await pipeline.ingestReceipt({ ulid: ULID(41), store: 'Example Grocer', purchased_at: '2026-07-25' }, [photo]);
+    await pipeline.settle();
+    const view = await pipeline.getBatchView(ULID(41));
+    expect(view!.lines[0]!.match_outcome).toBe('unmatched');
+    expect(view!.lines[0]!.inventory_item_ulid).not.toBeNull();
+  });
+});
+
 describe('inventory read ordering', () => {
   it('orders on-hand items by eat-by urgency, nulls last', async () => {
     const store = new MemoryInventoryStore();

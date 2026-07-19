@@ -318,6 +318,43 @@ export const registerInventoryRoutes: FastifyPluginAsync<InventoryRoutesConfig> 
     }
   });
 
+  // ── Dismissal (non-grocery line removal) ──────────────────────────────────────
+
+  fastify.post<{ Params: { ulid: string }; Body: { non_inventory?: boolean; at?: string } }>(
+    '/kitchen/inventory/:ulid/dismiss',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            non_inventory: { type: 'boolean' },
+            at: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      try {
+        const result = await inventory.dismissItem(request.params.ulid, {
+          nonInventory: request.body?.non_inventory,
+          at: request.body?.at,
+        });
+        if (!result) {
+          reply.status(404);
+          return { error: 'Inventory item not found' };
+        }
+        return result;
+      } catch (err) {
+        if (err instanceof InvalidTransitionError) {
+          reply.status(409);
+          return { error: err.message };
+        }
+        throw err;
+      }
+    }
+  );
+
   // ── Products ──────────────────────────────────────────────────────────────────
 
   fastify.post<{ Body: Record<string, unknown> }>(

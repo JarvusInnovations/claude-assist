@@ -13,15 +13,23 @@
 
 import type { InventoryEventType, InventoryState } from './inventory-types.js';
 
+/**
+ * Transitions accepted by the state machine. `dismissed` is not one of the
+ * `/events` surface's {opened,finished,tossed} — it rides its own endpoint (it
+ * carries a non-inventory flag + fan-out) — but it moves the state machine, so
+ * it belongs here.
+ */
+export type InventoryTransition = InventoryEventType | 'dismissed';
+
 export class InvalidTransitionError extends Error {
-  constructor(state: InventoryState, event: InventoryEventType) {
+  constructor(state: InventoryState, event: InventoryTransition) {
     super(`Invalid inventory transition: ${state} + ${event}`);
     this.name = 'InvalidInventoryTransitionError';
   }
 }
 
 /** Compute the next state for an item + event, or throw InvalidTransitionError. */
-export function transitionInventory(state: InventoryState, event: InventoryEventType): InventoryState {
+export function transitionInventory(state: InventoryState, event: InventoryTransition): InventoryState {
   switch (event) {
     case 'opened':
       if (state === 'stocked') return 'open';
@@ -37,10 +45,16 @@ export function transitionInventory(state: InventoryState, event: InventoryEvent
     case 'tossed':
       if (state === 'stocked' || state === 'open') return 'tossed';
       throw new InvalidTransitionError(state, event);
+
+    case 'dismissed':
+      // A non-grocery line removed from inventory (not food waste). Legal from
+      // any live state; terminal items can't be dismissed.
+      if (state === 'stocked' || state === 'open') return 'dismissed';
+      throw new InvalidTransitionError(state, event);
   }
 }
 
-/** A terminal item is finished or tossed — no further events apply. */
+/** A terminal item is finished, tossed, or dismissed — no further events apply. */
 export function isTerminal(state: InventoryState): boolean {
-  return state === 'finished' || state === 'tossed';
+  return state === 'finished' || state === 'tossed' || state === 'dismissed';
 }

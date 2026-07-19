@@ -166,17 +166,24 @@ All tables instance-agnostic empty schema, ULID keys, `kitchen` schema
   item.
 - **`kitchen.receipt_lexicon`** — one row per `(store, line_text)`: `ulid`,
   `store`, `line_text` (exact receipt line text, normalized to upper/trim),
-  `product_ulid`, `package_size` (nullable), `shelf_life_class` (nullable
-  override), `created_at`, `updated_at`. `UNIQUE(store, line_text)`. Grows
-  monotonically; once mapped, every future receipt carrying the line resolves
-  automatically.
+  `product_ulid` (**nullable** — null on a non-inventory marker, see below),
+  `package_size` (nullable), `shelf_life_class` (nullable override),
+  `non_inventory` (bool, default false), `created_at`, `updated_at`.
+  `UNIQUE(store, line_text)`. Grows monotonically; once mapped, every future
+  receipt carrying the line resolves automatically. A row with
+  `non_inventory = true` (and null `product_ulid`) is a **skip marker**: the
+  line is a known non-grocery line (housewares etc.) that future receipt parses
+  skip rather than stock (see § Non-inventory dismissal). The upsert on
+  `(store, line_text)` means a later label scan can overwrite a skip marker with
+  a real product mapping, or a dismissal can overwrite a stale product mapping
+  with a skip marker — last write wins, monotonic in intent.
 - **`kitchen.inventory_items`** — one physical unit: `ulid`, `product_ulid`
   (nullable — null while `needs_info`), `raw_label` (text — the receipt line or
   display name when no product; nullable), `store` (nullable), `batch_ulid`
-  (nullable), `state` (enum `stocked | open | finished | tossed`),
+  (nullable), `state` (enum `stocked | open | finished | tossed | dismissed`),
   `on_hand_fraction` (numeric 0..1, directional; default 1.0), `needs_info`
   (bool), `acquired_at` (date), `opened_at` (date, nullable), `closed_at` (date,
-  nullable — finished/tossed date), `eat_by` (date, nullable — **derived**,
+  nullable — finished/tossed/dismissed date), `eat_by` (date, nullable — **derived**,
   materialized for ordering; recomputed on open), `shelf_life_class` (enum
   snapshot, nullable), `notes` (nullable), `created_at`, `updated_at`.
 - **`kitchen.purchase_batches`** — one shopping event: `ulid` (client-supplied
@@ -186,8 +193,11 @@ All tables instance-agnostic empty schema, ULID keys, `kitchen` schema
   `last_error`, `last_error_at`, `created_at`, `updated_at`.
 - **`kitchen.purchase_batch_lines`** — one parsed receipt line: `ulid`,
   `batch_ulid`, `raw_text`, `match_outcome` (enum `matched | unmatched |
-  pending`), `product_ulid` (nullable), `inventory_item_ulid` (nullable),
-  `created_at`.
+  pending | skipped`), `product_ulid` (nullable), `inventory_item_ulid`
+  (nullable), `created_at`. `skipped` records a line the parse honored a
+  non-inventory lexicon marker for — no inventory item is created, but the line
+  is retained (never silently dropped) so the batch stays a faithful record of
+  the receipt.
 - **`kitchen.entries.inventory_item_ulid`** — added column (nullable, no FK):
   the item a consumption entry depleted (phase-1 "optional inventory-item
   link").
@@ -202,9 +212,23 @@ default; `unknown` (and any null window) yields `eat_by = null`.
 
 **Inventory state machine** (`src/inventory-state.ts`):
 `stocked --opened--> open`, `{stocked,open} --finished--> finished`,
-`{stocked,open} --tossed--> tossed`. `finished`/`tossed` are terminal. Opening
+`{stocked,open} --tossed--> tossed`, `{stocked,open} --dismissed--> dismissed`.
+`finished`/`tossed`/`dismissed` are terminal. Opening
 stamps `opened_at` and re-derives `eat_by`; finishing stamps `closed_at` and
-sets `on_hand_fraction` to 0. Tossing takes an optional **amount tossed**
+sets `on_hand_fraction` to 0.
+
+`dismissed` is the "this line does not belong in inventory at all" terminal
+state (see § Non-inventory dismissal). It is deliberately **not** a food-waste
+outcome: unlike `tossed`, dismissing stamps `closed_at` but appends **no**
+`tossed …` note and leaves `on_hand_fraction` untouched, so a dismissed soup mug
+never enters waste/tossed telemetry. A new terminal state (rather than a
+`DELETE`) is chosen because it mirrors the existing `finished`/`tossed` terminal
+idiom exactly — the row is retained for provenance (its batch line still points
+at it, a receipt replay stays idempotent), it drops out of the default on-hand
+list and the questions queue by the same state-filter mechanics the other
+terminals use, and it needs no orphan-cleanup of the referencing batch line.
+
+Tossing takes an optional **amount tossed**
 (fraction 0..1): a partial toss decrements `on_hand_fraction` and keeps the
 item's state alive (directional — it self-heals at the next event); the item
 only transitions to terminal `tossed` (with `closed_at`, fraction 0) when no
@@ -238,9 +262,13 @@ Receipts:
   immediately (`status: 'parsing'`), idempotent on ULID, and returns the
   **bare** `PurchaseBatch` (`201` created / `200` replay). A detached parse pass runs the cheap receipt
   model (`KITCHEN_RECEIPT_MODEL`) over the photos → line items; each line does
-  exact-string lexicon lookup per store; a match creates a `stocked` inventory
-  item stamped with `purchased_at`; an unknown creates a `needs_info` item
-  (`product_ulid` null, `raw_label` = line text). Batch → `parsed`.
+  exact-string lexicon lookup per store; a **non-inventory marker** hit records
+  the line `skipped` and creates **no** item (the parse honors the marker); a
+  product match creates a `stocked` inventory item stamped with `purchased_at`;
+  an unknown creates a `needs_info` item (`product_ulid` null, `raw_label` =
+  line text). A multi-quantity line still creates **one item per physical unit**
+  (separate open/use lifecycles) — the dedupe is a read-side concern of the
+  questions queue, never a collapse of the physical units. Batch → `parsed`.
 - `GET /receipts?limit` → `{ batches: PurchaseBatch[], count }`.
 - `GET /receipts/:ulid` → `{ batch: PurchaseBatch, lines: BatchLine[] }` (404 if absent).
 
@@ -252,7 +280,15 @@ Inventory reads:
   includes finished/tossed.
 - `GET /inventory/:ulid` → bare `InventoryItem` (404 if absent).
 - `GET /inventory/questions?limit` → `{ questions: Question[], count }` — open
-  `needs_info` items rendered as one-time questions for the digest/chat.
+  `needs_info` items rendered as one-time questions for the digest/chat,
+  **deduplicated by `(store, normalized line_text)`**. A multi-quantity receipt
+  line yields one item per physical unit but **one question**, carrying the
+  `count` of items it covers and the `item_ulids` of all of them (so a label
+  scan or dismissal can fan out across the group — see below). `limit` caps the
+  number of returned questions (groups), not the underlying item count; `count`
+  is `questions.length`. Items with a null `raw_label` are never grouped with
+  each other (each is its own question). Ordering is earliest-acquired first,
+  and each group's `item_ulid`/`acquired_at` is that of its earliest item.
 
 Item mutation:
 
@@ -282,7 +318,33 @@ Item mutation:
   (`KITCHEN_ESTIMATION_MODEL`, the strong tier) over the photos, enriches/creates
   the product, links + clears `needs_info` on the item, and writes the
   `receipt_lexicon` line so the same receipt text auto-resolves next time.
-  Returns `{ item: InventoryItem, product: Product }` (`404` unknown item).
+  **Label fan-out:** resolving one item also resolves **every other open
+  `needs_info` item with the same `(store, normalized raw_label)`** — the same
+  product link and `shelf_life_class`, but `eat_by` re-derived per each sibling's
+  **own** `acquired_at`/`opened_at` (they are distinct physical units with
+  distinct clocks). This clears the whole multi-quantity group in one scan; the
+  lexicon write handles *future* receipts, the fan-out handles the *current*
+  batch's siblings. Fan-out only applies when the scanned item carries both a
+  `store` and a `raw_label` (the grouping key); otherwise only the scanned item
+  resolves. Returns `{ item: InventoryItem, product: Product, resolved_count }`,
+  where `resolved_count` is the total number of items resolved (the scanned item
+  plus its siblings, ≥ 1) (`404` unknown item, `503` no label model configured).
+- `POST /inventory/:ulid/dismiss` — remove a line that does not belong in
+  inventory (housewares and other non-grocery lines on a grocery receipt). JSON
+  `{ non_inventory? (bool, default false), at? (ISO date) }`. Transitions the
+  item to the terminal `dismissed` state (stamps `closed_at`; leaves
+  `on_hand_fraction` and appends no waste note, so it never enters tossed/waste
+  telemetry — § Non-inventory dismissal). `409 InvalidTransitionError` on an
+  already-terminal item; `404` unknown item. When `non_inventory` is **true**:
+  (a) the same fan-out as the label path dismisses **every other open
+  `needs_info` sibling** with the same `(store, normalized raw_label)`, and
+  (b) a `receipt_lexicon` skip marker (`non_inventory = true`, null
+  `product_ulid`) is upserted for `(store, normalized raw_label)` so future
+  receipts skip the line. When `non_inventory` is **false** (or the item lacks a
+  `store`/`raw_label`), only the single scanned item is dismissed — siblings and
+  future receipts are unaffected. Returns
+  `{ item: InventoryItem, dismissed_count, non_inventory }`, where
+  `dismissed_count` is the total items dismissed (≥ 1).
 
 Products & lexicon (agentic seed + reads):
 
@@ -313,8 +375,15 @@ Products & lexicon (agentic seed + reads):
   package_size, shelf_life_days_unopened, shelf_life_days_opened, created_at,
   updated_at }`.
 - **LexiconLine**: `{ ulid, store, line_text, product_ulid, package_size,
-  shelf_life_class, created_at, updated_at }`.
-- **Question**: `{ item_ulid, raw_label, store, acquired_at, question }`.
+  shelf_life_class, non_inventory, created_at, updated_at }`. `product_ulid` is
+  null on a non-inventory skip marker (`non_inventory: true`).
+- **Question**: `{ item_ulid, item_ulids, count, raw_label, store, acquired_at,
+  question }`. `item_ulid` is the representative (earliest-acquired) item to
+  target for a label scan or dismissal; `item_ulids` are all items the grouped
+  question covers; `count` is `item_ulids.length`. `question` renders the
+  count when `count > 1` (e.g. `… ×2`).
+- **Label response**: `{ item: InventoryItem, product: Product, resolved_count }`.
+- **Dismiss response**: `{ item: InventoryItem, dismissed_count, non_inventory }`.
 
 ### Depletion matcher
 
@@ -328,6 +397,31 @@ inventory-agnostic. The match is label-only and the decrement is a fixed
 directional step — it consumes no macro quantities, so the portion multiplier
 does not enter here. (Were it ever to deplete by consumed amount, that amount is
 the **effective** macros, not the base.)
+
+### Non-inventory dismissal
+
+Grocery receipts carry non-grocery lines (housewares, a soup mug, a gift card).
+The parse cannot know these are not food, so they land as `needs_info` items and
+clutter the questions queue. Dismissal removes them without pretending they were
+food waste:
+
+- **State, not delete.** Dismissing transitions the item to the terminal
+  `dismissed` state (§ Inventory state machine). The row survives for provenance
+  (its batch line still references it; a receipt replay stays idempotent) and
+  drops out of the default on-hand list and the questions queue by the same
+  state-filter the other terminals use. `include_closed=true` surfaces it
+  alongside finished/tossed.
+- **Never waste telemetry.** `dismissed` is distinct from `tossed`: no
+  `tossed …` note is appended and `on_hand_fraction` is left untouched, so waste
+  rollups never count a dismissed non-food line.
+- **The `non_inventory` flag makes it durable.** A bare dismissal clears one
+  physical unit. `non_inventory: true` additionally (a) fans out to dismiss every
+  open `needs_info` sibling with the same `(store, normalized raw_label)` — the
+  same group the label path and questions queue treat as one — and (b) upserts a
+  `receipt_lexicon` skip marker so the receipt parser skips the line on every
+  future receipt from that store (recording it `skipped` on the batch line, never
+  silently dropping it). This is the mirror image of a label scan: a label maps
+  the line to a product; a non-inventory dismissal maps it to "not inventory".
 
 ### Model tiering (phase 2)
 
