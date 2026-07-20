@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { applyPortionModifier, portionModifierFor } from './estimator.js';
+import { applyPortionModifier, portionModifierFor, SYSTEM_PROMPT } from './estimator.js';
 import type { ModelEstimate } from '../types.js';
 
 function mkEstimate(over: Partial<ModelEstimate> = {}): ModelEstimate {
@@ -54,5 +54,24 @@ describe('applyPortionModifier', () => {
   it('preserves nulls rather than scaling them into 0', () => {
     const scaled = applyPortionModifier(mkEstimate({ sodium_mg: null }), 2);
     expect(scaled.sodium_mg).toBeNull();
+  });
+});
+
+describe('SYSTEM_PROMPT embedded-text precedence (claude-assist#92)', () => {
+  it('instructs the estimator to trust printed text over visual inference', () => {
+    expect(SYSTEM_PROMPT).toMatch(/AUTHORITATIVE/);
+    expect(SYSTEM_PROMPT.toLowerCase()).toContain('order sticker');
+    expect(SYSTEM_PROMPT.toLowerCase()).toContain('menu board');
+    expect(SYSTEM_PROMPT.toLowerCase()).toContain('nutrition panel');
+  });
+
+  it('ties corroborating text to a confidence bump, not just identity', () => {
+    expect(SYSTEM_PROMPT.toLowerCase()).toContain('raise your confidence');
+  });
+
+  it('still instructs a best-guess fallback for photos with no legible text', () => {
+    // A photo with no text must behave as before — the model still returns
+    // its best visual guess rather than refusing.
+    expect(SYSTEM_PROMPT).toContain('never refuse');
   });
 });
