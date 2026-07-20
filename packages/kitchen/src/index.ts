@@ -22,6 +22,7 @@ import { KitchenEstimator } from './services/estimator.js';
 import { KitchenPipeline } from './services/pipeline.js';
 import { readMealBankRecipes } from './services/mealbank.js';
 import { registerKitchenRoutes } from './routes/kitchen.js';
+import { registerPlanSessionRoutes } from './routes/plan-session.js';
 import { PgInventoryStore } from './inventory-store.js';
 import { KitchenReceiptParser } from './services/receipt-parser.js';
 import { KitchenLabelParser } from './services/label-parser.js';
@@ -128,6 +129,11 @@ export default createPlugin('kitchen', async (fastify: FastifyInstance, options:
     maxPhotos: config.maxPhotos,
   });
 
+  // Plan-session — app-initiated warm meal-planning session. Reads the generic
+  // `fastify.sessionSpawner` decorator (from the session-spawn module) at
+  // request time; 503s when it's absent/unconfigured.
+  await fastify.register(registerPlanSessionRoutes, { pipeline, inventory });
+
   // Ambient-remark seam: expose the resolver for the capture kitchen_event
   // executor (composed by the server; the packages never import each other).
   fastify.decorate('kitchenEvents', {
@@ -184,6 +190,16 @@ export {
 export { computeRecipeMacros } from './services/recipes.js';
 export { readMealBankRecipes, type MealBankConfig } from './services/mealbank.js';
 export { registerKitchenRoutes, type KitchenRoutesConfig } from './routes/kitchen.js';
+export { registerPlanSessionRoutes, type PlanSessionRoutesConfig } from './routes/plan-session.js';
+export {
+  gatherPlanningContext,
+  composePreloadPrompt,
+  sumEffectiveTotals,
+  PLAN_SESSION_TITLE,
+  type PlanningContext,
+  type PlanningContextConfig,
+  type MacroTotals,
+} from './services/plan-session.js';
 
 // ── Phase 2: inventory ────────────────────────────────────────────────────────
 export * from './inventory-types.js';
