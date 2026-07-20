@@ -297,6 +297,135 @@ describe('label intake', () => {
   });
 });
 
+describe('lexicon retro-resolve (claude-assist#102)', () => {
+  it('seeding a product mapping clears matching pending needs_info items immediately', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+
+    const { item } = await pipeline.createItem({
+      raw_label: 'ORG MILK 1GAL',
+      store: 'Example Grocer',
+      acquired_at: '2026-07-18',
+      needs_info: true,
+    });
+    expect(item.needs_info).toBe(true);
+    expect((await pipeline.listQuestions()).length).toBe(1);
+
+    const product = await pipeline.createProduct({ name: 'Organic Whole Milk', shelf_life_class: 'fridge_short' });
+    await pipeline.upsertLexicon({ store: 'Example Grocer', line_text: 'ORG MILK 1GAL', product_ulid: product.ulid });
+
+    const resolved = await pipeline.getItemView(item.ulid);
+    expect(resolved!.needs_info).toBe(false);
+    expect(resolved!.product_ulid).toBe(product.ulid);
+    expect(resolved!.shelf_life_class).toBe('fridge_short');
+    expect(resolved!.eat_by).toBe('2026-08-01'); // fridge_short unopened +14d from 2026-07-18
+    expect((await pipeline.listQuestions()).length).toBe(0);
+  });
+
+  it('lexicon line normalization matches case/whitespace variants of the raw label', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    const { item } = await pipeline.createItem({
+      raw_label: '  org   milk  1gal ',
+      store: 'Example Grocer',
+      acquired_at: '2026-07-18',
+      needs_info: true,
+    });
+    const product = await pipeline.createProduct({ name: 'Organic Whole Milk', shelf_life_class: 'fridge_short' });
+    await pipeline.upsertLexicon({ store: 'Example Grocer', line_text: 'ORG MILK 1GAL', product_ulid: product.ulid });
+    expect((await pipeline.getItemView(item.ulid))!.needs_info).toBe(false);
+  });
+
+  it('leaves already-resolved, dismissed, and other-store items untouched', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+
+    const otherProduct = await pipeline.createProduct({ name: 'Some Other Product' });
+    const { item: alreadyResolved } = await pipeline.createItem({
+      raw_label: 'ORG MILK 1GAL',
+      store: 'Example Grocer',
+      acquired_at: '2026-07-10',
+      product_ulid: otherProduct.ulid,
+      needs_info: false,
+    });
+    const { item: dismissed } = await pipeline.createItem({
+      raw_label: 'ORG MILK 1GAL',
+      store: 'Example Grocer',
+      acquired_at: '2026-07-12',
+      needs_info: true,
+    });
+    await pipeline.dismissItem(dismissed.ulid);
+    const { item: otherStore } = await pipeline.createItem({
+      raw_label: 'ORG MILK 1GAL',
+      store: 'Different Store',
+      acquired_at: '2026-07-14',
+      needs_info: true,
+    });
+    const { item: pending } = await pipeline.createItem({
+      raw_label: 'ORG MILK 1GAL',
+      store: 'Example Grocer',
+      acquired_at: '2026-07-18',
+      needs_info: true,
+    });
+
+    const product = await pipeline.createProduct({ name: 'Organic Whole Milk', shelf_life_class: 'fridge_short' });
+    await pipeline.upsertLexicon({ store: 'Example Grocer', line_text: 'ORG MILK 1GAL', product_ulid: product.ulid });
+
+    // The genuinely-pending item resolved…
+    expect((await pipeline.getItemView(pending.ulid))!.needs_info).toBe(false);
+    expect((await pipeline.getItemView(pending.ulid))!.product_ulid).toBe(product.ulid);
+    // …but nothing else moved.
+    expect((await pipeline.getItemView(alreadyResolved.ulid))!.product_ulid).toBe(otherProduct.ulid);
+    const dismissedView = await pipeline.getItemView(dismissed.ulid);
+    expect(dismissedView!.state).toBe('dismissed');
+    expect(dismissedView!.product_ulid).toBeNull();
+    expect((await pipeline.getItemView(otherStore.ulid))!.needs_info).toBe(true);
+  });
+
+  it('a skip-marker upsert (non_inventory, no product) never retro-resolves anything', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    const { item } = await pipeline.createItem({
+      raw_label: 'SOUP MUG',
+      store: 'Example Grocer',
+      acquired_at: '2026-07-18',
+      needs_info: true,
+    });
+    await store.upsertLexicon({
+      ulid: 'skip-marker',
+      store: 'Example Grocer',
+      line_text: 'SOUP MUG',
+      product_ulid: null,
+      package_size: null,
+      shelf_life_class: null,
+      non_inventory: true,
+    });
+    expect((await pipeline.getItemView(item.ulid))!.needs_info).toBe(true);
+  });
+
+  it('future receipts still resolve after a retro-resolving lexicon seed (the queue never re-asks)', async () => {
+    const store = new MemoryInventoryStore();
+    const parser = new FakeReceiptParser({ store: 'Example Grocer', lines: [{ text: 'ORG MILK 1GAL' }] });
+    const pipeline = new InventoryPipeline(store, parser, null, log);
+
+    await pipeline.ingestReceipt({ ulid: ULID(20), store: 'Example Grocer', purchased_at: '2026-07-18' }, [photo]);
+    await pipeline.settle();
+    expect((await pipeline.listQuestions()).length).toBe(1);
+
+    const product = await pipeline.createProduct({ name: 'Organic Whole Milk', shelf_life_class: 'fridge_short' });
+    await pipeline.upsertLexicon({ store: 'Example Grocer', line_text: 'ORG MILK 1GAL', product_ulid: product.ulid });
+    expect((await pipeline.listQuestions()).length).toBe(0);
+
+    // A second receipt carrying the same line resolves straight to `matched` —
+    // no new needs_info item, no new question.
+    await pipeline.ingestReceipt({ ulid: ULID(21), store: 'Example Grocer', purchased_at: '2026-07-25' }, [photo]);
+    await pipeline.settle();
+    expect((await pipeline.listQuestions()).length).toBe(0);
+    const items = await pipeline.listInventory({});
+    expect(items.some((i) => i.acquired_at === '2026-07-25' && i.product_ulid === product.ulid)).toBe(true);
+  });
+});
+
 describe('item events', () => {
   it('opening stamps opened_at + re-derives eat-by; finishing zeroes the fraction', async () => {
     const store = new MemoryInventoryStore();

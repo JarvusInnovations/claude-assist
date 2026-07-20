@@ -35,7 +35,7 @@ import type {
   ShelfLifeClass,
 } from '../inventory-types.js';
 import type { InventoryStore, NewItem } from '../inventory-store.js';
-import { deriveEatBy, toItemView, toIsoDate } from '../inventory-derive.js';
+import { deriveEatBy, normalizeLexiconLine, toItemView, toIsoDate } from '../inventory-derive.js';
 import { InvalidTransitionError, isTerminal, transitionInventory } from '../inventory-state.js';
 import { matchScore, parseRemark } from '../inventory-remark.js';
 import { generateUlid } from '../ulid.js';
@@ -398,30 +398,39 @@ export class InventoryPipeline {
       eat_by: eatBy,
     });
 
+    // Fan out across the current batch's same-line siblings (a multi-quantity
+    // line makes one item per physical unit; one label scan clears them all).
+    // Captured BEFORE the lexicon write: writeLexiconLine's upsert now also
+    // retro-resolves same-line needs_info items itself (claude-assist#102),
+    // which would otherwise empty this query out from under us (already-
+    // resolved siblings drop out of listNeedsInfo) and undercount
+    // resolved_count. The explicit resolveNeedsInfo below stays — it's an
+    // idempotent no-op re-write when the lexicon write already resolved a
+    // sibling, and the only path at all when it didn't.
+    const siblings =
+      item.store && item.raw_label
+        ? await this.sameLineNeedsInfoSiblings(item.store, item.raw_label, itemUlid)
+        : [];
+
     // Write the lexicon line so future receipts carrying this exact text
-    // auto-resolve with no question, and fan out across the current batch's
-    // same-line siblings (a multi-quantity line makes one item per physical
-    // unit; one label scan clears them all). Both need (store, raw_label).
+    // auto-resolve with no question. Both need (store, raw_label).
     let resolvedCount = 1;
     await this.writeLexiconLine(item, product, packageSize);
-    if (item.store && item.raw_label) {
-      const siblings = await this.sameLineNeedsInfoSiblings(item.store, item.raw_label, itemUlid);
-      for (const sib of siblings) {
-        // Same product + class, but eat_by re-derived from THIS sibling's own
-        // acquired/opened clock — they are distinct physical units.
-        await this.store.resolveNeedsInfo(sib.ulid, {
-          product_ulid: product.ulid,
-          shelf_life_class: product.shelf_life_class,
-          eat_by: deriveEatBy({
-            shelfLifeClass: product.shelf_life_class,
-            acquiredAt: sib.acquired_at,
-            openedAt: sib.opened_at,
-            daysUnopenedOverride: product.shelf_life_days_unopened,
-            daysOpenedOverride: product.shelf_life_days_opened,
-          }),
-        });
-        resolvedCount += 1;
-      }
+    for (const sib of siblings) {
+      // Same product + class, but eat_by re-derived from THIS sibling's own
+      // acquired/opened clock — they are distinct physical units.
+      await this.store.resolveNeedsInfo(sib.ulid, {
+        product_ulid: product.ulid,
+        shelf_life_class: product.shelf_life_class,
+        eat_by: deriveEatBy({
+          shelfLifeClass: product.shelf_life_class,
+          acquiredAt: sib.acquired_at,
+          openedAt: sib.opened_at,
+          daysUnopenedOverride: product.shelf_life_days_unopened,
+          daysOpenedOverride: product.shelf_life_days_opened,
+        }),
+      });
+      resolvedCount += 1;
     }
 
     return { item: await this.viewOf(resolved ?? item), product, resolved_count: resolvedCount };
@@ -881,10 +890,13 @@ export class InventoryPipeline {
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────
 
-/** Normalize a receipt line for exact-string lexicon matching (upper + collapse ws). */
-export function normalizeLine(text: string): string {
-  return text.trim().toUpperCase().replace(/\s+/g, ' ');
-}
+/**
+ * Normalize a receipt line for exact-string lexicon matching (upper +
+ * collapse ws). Re-exported alias of the canonical `normalizeLexiconLine`
+ * (inventory-derive.ts) — kept under this name for backward compatibility
+ * with existing importers (index.ts's public re-export).
+ */
+export const normalizeLine = normalizeLexiconLine;
 
 /** Candidate match strings for an item: product name + aliases + raw label. */
 export function candidateStrings(item: InventoryItemRecord, product?: ProductRecord): string[] {
