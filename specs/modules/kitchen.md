@@ -246,6 +246,95 @@ existing conventions.
   **effective** macros (`base × portion_multiplier` per entry); they feed the
   instance's briefing/review renderings.
 
+## Plan-session — app-initiated warm meal-planning session
+
+`POST /api/kitchen/plan-session` is the kitchen module's use of the generic
+session-spawn service (`specs/modules/session-spawn.md`). It is the server side
+of the "Plan meals" button: the app taps it, the endpoint gathers the current
+kitchen state, composes a warm-start **preload prompt**, and asks the shared
+`SessionSpawner` to warm an interactive session and ping the phone with a
+takeover link. The endpoint returns only an **acknowledgement** — never the
+link, which rides the push alone (§ security below).
+
+The meal-planning briefing is the only kitchen-specific part; the spawn
+machinery is entirely generic. This endpoint is a *configured caller* of the
+session-spawn module.
+
+### Request
+
+`POST /api/kitchen/plan-session` — no body required. A body, if sent, is
+ignored (the endpoint gathers everything server-side). No auth beyond the
+server's existing posture.
+
+### Context gathered (server-side)
+
+The endpoint reads its own module data and builds a concise current-state
+briefing. All of it comes from the kitchen stores directly — no external call:
+
+- **Today's effective totals** — sum of `base × portion_multiplier` over
+  today's `estimated` entries (today = the server-local day), plus a count of
+  entries still `estimating`. Computed the same way the briefing daily-totals
+  source computes them (§ Portion multiplier); the wire never pre-multiplies.
+- **Eat-first inventory (top N)** — the most-urgent on-hand items
+  (`stocked`/`open`, `on_hand_fraction > 0`), ordered `eat_by` ascending — the
+  same eat-first ordering the inventory list and briefing use. Default N small
+  (a briefing, not a dump).
+- **Recent entries** — a handful of recently/frequently logged meals (the
+  reselect "recent" summaries), so the session opens knowing what the owner
+  actually eats.
+- **Reselect / meal-bank options** — the reselect strip's recipes (sheet +
+  pushed + promoted), so meal-bank meals are on the table from the first turn.
+- **Open needs-info items** — a note of how many inventory items are awaiting
+  info (and a few examples), so the session can nudge the owner to resolve them.
+
+### Preload prompt
+
+The endpoint composes these into a **preload prompt**: a short current-state
+briefing (the totals, the eat-first list, recent meals, meal-bank options, open
+needs-info count) followed by an instruction that **this is a warm
+meal-planning session** and that, when the human takes over, the assistant
+should help plan meals that **use what is aging and hit the owner's targets**.
+It is a warm-start briefing, not a full data dump — the session's working
+directory (instance config on the spawn command) already gives it the kitchen
+CLI and diet protocol to pull more if needed. The prompt names no instance data
+that isn't already the owner's own kitchen state.
+
+The prompt is handed to `sessionSpawner.spawn({ preloadPrompt, title })` with a
+title like `"meal-planning"`.
+
+### Response
+
+An **ack, never the link**:
+
+- **`200`** — spawn accepted and dispatched. Body: `{ status: "spawned",
+  spawn_id: string }`. The takeover link was delivered to the phone (redacted at
+  rest per session-spawn § dispatch-and-redact); it is **not** in this response.
+- **`503`** — spawning is not configured (`SESSION_SPAWN_CMD` unset, or the
+  session-spawn/notify modules are absent). Body: `{ error: string }`. The app
+  shows a clear "not available" state; nothing partial spawns.
+- **`502`** — the spawn command failed (non-zero exit, timeout, or no link
+  produced). Body: `{ status: "failed", spawn_id: string }`. A failure push was
+  dispatched (no link). The response carries no reason detail beyond the status
+  and no link.
+
+The response shapes above are the exact wire contract the app codes against.
+
+### Security — link never in the response or logs
+
+The endpoint returns only the session-spawn service's record fields (`status`,
+`spawn_id`) — the record itself never contains the link
+(`specs/modules/session-spawn.md` § security). Therefore a screenshot or log of
+the app's HTTP exchange can never leak a session handle. The link exists only in
+the delivered push, redacted at rest. The endpoint logs only the spawn id and
+status, never the link.
+
+### Principles
+
+**Inherited** — [session-spawn](session-spawn.md#principles): the link rides the
+push and nothing else; the endpoint spawns but does not reason (the human takes
+over under their own human-driven credentials). The endpoint pulls the trigger;
+the planning conversation happens after takeover.
+
 ## Estimation & model tiering
 
 - One structured-output vision call per estimation attempt: photos + note →
