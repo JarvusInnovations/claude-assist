@@ -2,8 +2,10 @@ import { api } from "../client.js";
 import { AxiError } from "axi-sdk-js";
 import {
   parseArgs,
+  collectFlag,
   requirePositional,
   rawJson,
+  parseJson,
   validateDate,
   parseNumberFlag,
 } from "../args.js";
@@ -16,22 +18,40 @@ export const INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json
   list [--state S] [--closed] [--limit N]   on-hand items, eat-first (eat_by asc)
   show <ulid>                               one item with derived eat_by/age
   add [flags]                               create an item (manual/verbal/seed)
-  event <ulid> <opened|finished|tossed>     explicit state change
+       [--units-total N] makes it a COUNTED item (sealed multipack); omitted stays fraction-modeled
+  event <ulid> <opened|finished|finished-unit|tossed>   explicit state change
        [--fraction F] [--at DATE]
   remark "<free text>" [--at DATE]          free-text event resolver (honest match)
   questions [--limit N]                     open needs-info items as questions
+  convert --from <ulid>[:amount]… --to '<json>' [--at DATE]
+                                             prep transform: decrement source(s), create a derived item
 
   states: stocked, open, finished, tossed. For 'event … tossed', --fraction is
   the AMOUNT TOSSED — a partial toss decrements on_hand_fraction and keeps the
   item alive (self-heals at the next event); it goes terminal only at zero
   remainder or when --fraction is omitted (full toss). 'opened' --fraction is
-  the absolute remaining fraction; 'finished' ignores --fraction (always zeroed).`;
+  the absolute remaining fraction; 'finished' ignores --fraction (always zeroed).
+  'finished-unit' is for a COUNTED item only (units_total set): integer
+  decrement of one sealed unit — reaching zero goes terminal, otherwise the
+  item reverts to a fresh unopened clock for the next unit.
+
+  'convert' turns source stock into a NEW derived item (meal prep, not
+  consumption). --from is repeatable; an omitted amount fully consumes that
+  source (all remaining units for a counted item, the whole remaining fraction
+  for a divisible one) — an integer amount for a counted source, a fraction
+  0..1 for a divisible one. --to is a JSON object: {"name": "...",
+  "shelf_life_class": "...", "units_total": N} for a counted derived item, or
+  {"name": "...", "shelf_life_class": "...", "on_hand_fraction": 1} for a
+  divisible one (fields: shelf_life_class?, on_hand_fraction?, units_total?,
+  store?, notes?, acquired_at?, recipe_ulid?).`;
 
 const ITEM_ROW_SCHEMA: FieldDef[] = [
   field("ulid"),
   field("product_name", "name"),
   field("state"),
   field("on_hand_fraction", "on_hand"),
+  field("units_remaining"),
+  field("units_total"),
   field("eat_by"),
   field("days_until_eat_by", "days_left"),
   field("store"),
@@ -46,6 +66,8 @@ const ITEM_DETAIL_SCHEMA: FieldDef[] = [
   field("store"),
   field("state"),
   field("on_hand_fraction", "on_hand"),
+  field("units_remaining"),
+  field("units_total"),
   { type: "boolYesNo", key: "needs_info" },
   field("acquired_at"),
   field("opened_at"),
@@ -65,7 +87,7 @@ const QUESTION_SCHEMA: FieldDef[] = [
   field("question"),
 ];
 
-const EVENT_TYPES = ["opened", "finished", "tossed"];
+const EVENT_TYPES = ["opened", "finished", "finished-unit", "tossed"];
 
 export async function inventoryCommand(args: string[]): Promise<string> {
   const sub = args[0];
@@ -84,6 +106,8 @@ export async function inventoryCommand(args: string[]): Promise<string> {
       return remark(rest);
     case "questions":
       return questions(rest);
+    case "convert":
+      return convert(rest);
     default:
       throw new AxiError(`Unknown inventory subcommand: ${sub}`, "VALIDATION_ERROR", [INVENTORY_HELP]);
   }
@@ -112,7 +136,7 @@ async function showItem(args: string[]): Promise<string> {
 }
 
 async function addItem(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json", "needs-info"], ["ulid", "product-ulid", "raw-label", "store", "batch-ulid", "acquired-at", "fraction", "state", "shelf-life", "notes"]);
+  const { flags } = parseArgs(args, ["json", "needs-info"], ["ulid", "product-ulid", "raw-label", "store", "batch-ulid", "acquired-at", "fraction", "units-total", "state", "shelf-life", "notes"]);
   const body: Record<string, unknown> = {};
   if (typeof flags.ulid === "string") body.ulid = flags.ulid;
   if (typeof flags["product-ulid"] === "string") body.product_ulid = flags["product-ulid"];
@@ -121,6 +145,7 @@ async function addItem(args: string[]): Promise<string> {
   if (typeof flags["batch-ulid"] === "string") body.batch_ulid = flags["batch-ulid"];
   if (typeof flags["acquired-at"] === "string") body.acquired_at = validateDate(flags["acquired-at"], "--acquired-at", INVENTORY_HELP);
   if (typeof flags.fraction === "string") body.on_hand_fraction = parseNumberFlag(flags.fraction, "fraction", INVENTORY_HELP, { min: 0, max: 1 });
+  if (typeof flags["units-total"] === "string") body.units_total = parseNumberFlag(flags["units-total"], "units-total", INVENTORY_HELP, { min: 1 });
   if (typeof flags.state === "string") body.state = flags.state;
   if (flags["needs-info"]) body.needs_info = true;
   if (typeof flags["shelf-life"] === "string") body.shelf_life_class = validateShelfLife(flags["shelf-life"]);
@@ -185,6 +210,46 @@ async function questions(args: string[]): Promise<string> {
   if (flags.json) return rawJson(result);
   const q = result?.questions ?? [];
   return renderList("questions", q, QUESTION_SCHEMA);
+}
+
+/** Parse one `--from <ulid>[:amount]` value into a convert source. */
+function parseSource(raw: string): { item_ulid: string; amount?: number } {
+  const sep = raw.indexOf(":");
+  if (sep === -1) return { item_ulid: raw };
+  const item_ulid = raw.slice(0, sep);
+  const amountText = raw.slice(sep + 1);
+  const amount = Number(amountText);
+  if (!item_ulid || !Number.isFinite(amount)) {
+    throw new AxiError(`--from must be "<ulid>" or "<ulid>:<amount>" (got ${raw})`, "VALIDATION_ERROR", [INVENTORY_HELP]);
+  }
+  return { item_ulid, amount };
+}
+
+async function convert(args: string[]): Promise<string> {
+  const { flags } = parseArgs(args, ["json"], ["from", "to", "at"]);
+  const fromValues = collectFlag(args, "from");
+  if (fromValues.length === 0) {
+    throw new AxiError("convert needs at least one --from <ulid>[:amount]", "VALIDATION_ERROR", [INVENTORY_HELP]);
+  }
+  const toRaw = typeof flags.to === "string" ? flags.to : undefined;
+  if (!toRaw) throw new AxiError("convert needs --to '<derived spec json>'", "VALIDATION_ERROR", [INVENTORY_HELP]);
+  const derived = parseJson(toRaw, "--to", INVENTORY_HELP);
+  if (!derived || typeof derived !== "object" || Array.isArray(derived) || !("name" in derived)) {
+    throw new AxiError("--to must be a JSON object with at least a \"name\" field", "VALIDATION_ERROR", [INVENTORY_HELP]);
+  }
+
+  const body: Record<string, unknown> = {
+    sources: fromValues.map(parseSource),
+    derived,
+  };
+  if (typeof flags.at === "string") body.at = validateDate(flags.at, "--at", INVENTORY_HELP);
+
+  const result = await api.post("/api/kitchen/inventory/convert", body);
+  if (flags.json) return rawJson(result);
+  return renderOutput([
+    renderList("sources", result.sources ?? [], ITEM_ROW_SCHEMA),
+    renderDetail("derived", result.derived, ITEM_DETAIL_SCHEMA),
+  ]);
 }
 
 function validateShelfLife(value: string): string {

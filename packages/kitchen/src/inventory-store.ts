@@ -10,6 +10,8 @@ import type {
   BatchLineRecord,
   BatchSource,
   BatchStatus,
+  DerivationSource,
+  InventoryDerivationRecord,
   InventoryItemRecord,
   InventoryState,
   LexiconRecord,
@@ -66,6 +68,9 @@ export interface NewItem {
   batch_ulid: string | null;
   state: InventoryState;
   on_hand_fraction: number;
+  /** Sealed-unit count model (both null = fraction-modeled). See InventoryItemRecord. */
+  units_total?: number | null;
+  units_remaining?: number | null;
   needs_info: boolean;
   acquired_at: Date;
   eat_by: Date | null;
@@ -78,9 +83,19 @@ export interface ItemStateUpdate {
   opened_at?: Date | null;
   closed_at?: Date | null;
   on_hand_fraction?: number;
+  /** Present only when mutating a counted item's remaining-units count. */
+  units_remaining?: number;
   eat_by?: Date | null;
   /** Replacement notes value (e.g. with a waste line appended); omitted = unchanged. */
   notes?: string;
+}
+
+/** What the pipeline hands the store to persist one conversion's provenance. */
+export interface NewDerivation {
+  ulid: string;
+  derived_item_ulid: string;
+  sources: DerivationSource[];
+  recipe_ulid: string | null;
 }
 
 export interface ResolveNeedsInfo {
@@ -152,6 +167,10 @@ export interface InventoryStore {
   // Batch lines
   insertLine(line: NewBatchLine): Promise<BatchLineRecord>;
   listLines(batchUlid: string): Promise<BatchLineRecord[]>;
+
+  // Derivations (conversion provenance — § Conversions)
+  insertDerivation(derivation: NewDerivation): Promise<InventoryDerivationRecord>;
+  getDerivationsByDerivedItemUlids(ulids: string[]): Promise<Map<string, InventoryDerivationRecord>>;
 }
 
 // ── Helpers (shared with memory store via export) ─────────────────────────────
@@ -228,6 +247,8 @@ export function rowToItem(row: Record<string, unknown>): InventoryItemRecord {
     batch_ulid: (row.batch_ulid as string | null) ?? null,
     state: row.state as InventoryState,
     on_hand_fraction: parseNumeric(row.on_hand_fraction) ?? 0,
+    units_total: row.units_total == null ? null : Number(row.units_total),
+    units_remaining: row.units_remaining == null ? null : Number(row.units_remaining),
     needs_info: Boolean(row.needs_info),
     acquired_at: toDate(row.acquired_at),
     opened_at: toDateOrNull(row.opened_at),
@@ -265,6 +286,16 @@ export function rowToLine(row: Record<string, unknown>): BatchLineRecord {
     match_outcome: row.match_outcome as LineMatchOutcome,
     product_ulid: (row.product_ulid as string | null) ?? null,
     inventory_item_ulid: (row.inventory_item_ulid as string | null) ?? null,
+    created_at: toDate(row.created_at),
+  };
+}
+
+export function rowToDerivation(row: Record<string, unknown>): InventoryDerivationRecord {
+  return {
+    ulid: row.ulid as string,
+    derived_item_ulid: row.derived_item_ulid as string,
+    sources: parseJsonField<DerivationSource[]>(row.sources as DerivationSource[] | string | null) ?? [],
+    recipe_ulid: (row.recipe_ulid as string | null) ?? null,
     created_at: toDate(row.created_at),
   };
 }
@@ -418,11 +449,11 @@ export class PgInventoryStore implements InventoryStore {
     const inserted = await this.sql`
       INSERT INTO kitchen.inventory_items
         (ulid, product_ulid, raw_label, store, batch_ulid, state, on_hand_fraction,
-         needs_info, acquired_at, eat_by, shelf_life_class, notes)
+         units_total, units_remaining, needs_info, acquired_at, eat_by, shelf_life_class, notes)
       VALUES (
         ${item.ulid}, ${item.product_ulid}, ${item.raw_label}, ${item.store}, ${item.batch_ulid},
-        ${item.state}, ${item.on_hand_fraction}, ${item.needs_info}, ${item.acquired_at},
-        ${item.eat_by}, ${item.shelf_life_class}, ${item.notes}
+        ${item.state}, ${item.on_hand_fraction}, ${item.units_total ?? null}, ${item.units_remaining ?? null},
+        ${item.needs_info}, ${item.acquired_at}, ${item.eat_by}, ${item.shelf_life_class}, ${item.notes}
       )
       ON CONFLICT (ulid) DO NOTHING
       RETURNING *
@@ -469,6 +500,7 @@ export class PgInventoryStore implements InventoryStore {
         opened_at = ${update.opened_at !== undefined ? update.opened_at : current.opened_at},
         closed_at = ${update.closed_at !== undefined ? update.closed_at : current.closed_at},
         on_hand_fraction = ${update.on_hand_fraction ?? current.on_hand_fraction},
+        units_remaining = ${update.units_remaining !== undefined ? update.units_remaining : current.units_remaining},
         eat_by = ${update.eat_by !== undefined ? update.eat_by : current.eat_by},
         notes = ${update.notes !== undefined ? update.notes : current.notes}
       WHERE ulid = ${ulid}
@@ -579,5 +611,30 @@ export class PgInventoryStore implements InventoryStore {
       ORDER BY created_at ASC
     `;
     return rows.map(rowToLine);
+  }
+
+  async insertDerivation(derivation: NewDerivation): Promise<InventoryDerivationRecord> {
+    const [row] = await this.sql`
+      INSERT INTO kitchen.inventory_derivations (ulid, derived_item_ulid, sources, recipe_ulid)
+      VALUES (
+        ${derivation.ulid}, ${derivation.derived_item_ulid}, ${JSON.stringify(derivation.sources)},
+        ${derivation.recipe_ulid}
+      )
+      RETURNING *
+    `;
+    return rowToDerivation(row!);
+  }
+
+  async getDerivationsByDerivedItemUlids(ulids: string[]): Promise<Map<string, InventoryDerivationRecord>> {
+    const map = new Map<string, InventoryDerivationRecord>();
+    if (ulids.length === 0) return map;
+    const rows = await this.sql`
+      SELECT * FROM kitchen.inventory_derivations WHERE derived_item_ulid IN ${this.sql(ulids)}
+    `;
+    for (const row of rows) {
+      const d = rowToDerivation(row);
+      map.set(d.derived_item_ulid, d);
+    }
+    return map;
   }
 }

@@ -8,6 +8,7 @@
  */
 
 import type {
+  DerivedFromView,
   InventoryItemRecord,
   InventoryItemView,
   ShelfLifeClass,
@@ -78,6 +79,30 @@ export function normalizeLexiconLine(text: string): string {
   return text.trim().toUpperCase().replace(/\s+/g, ' ');
 }
 
+const HALF_DOZEN_PATTERN = /\bhalf[- ]dozen\b/i;
+const DOZEN_PATTERN = /\bdozen\b/i;
+const PACKAGE_COUNT_PATTERN = /(\d+)\s*-?\s*(?:ct|count|pk|pack|pcs?|pieces?)\b/i;
+
+/**
+ * Extract a sealed-unit count from a free-form package-size string ("3 ct",
+ * "12-pack", "6 pk", "dozen"), or null when the string carries no discernible
+ * count. Used by receipt intake to seed `units_total` on a multipack (§
+ * count-vs-fraction principle) — a plain size like "16 oz" or "1 lb" has no
+ * count and stays fraction-modeled. Requires a count of 2+: "1 ct" describes a
+ * single unit, not a multipack.
+ */
+export function parsePackageCount(size: string | null | undefined): number | null {
+  if (!size) return null;
+  const text = size.trim();
+  if (!text) return null;
+  if (HALF_DOZEN_PATTERN.test(text)) return 6;
+  if (DOZEN_PATTERN.test(text)) return 12;
+  const match = text.match(PACKAGE_COUNT_PATTERN);
+  if (!match) return null;
+  const n = parseInt(match[1]!, 10);
+  return Number.isFinite(n) && n >= 2 ? n : null;
+}
+
 /** ISO date (YYYY-MM-DD) for a Date, or null. */
 export function toIsoDate(date: Date | null): string | null {
   if (!date) return null;
@@ -91,7 +116,8 @@ export function toIsoDate(date: Date | null): string | null {
 export function toItemView(
   record: InventoryItemRecord,
   productName: string | null,
-  now = new Date()
+  now = new Date(),
+  derivedFrom: DerivedFromView | null = null
 ): InventoryItemView {
   const today = new Date(now.toISOString().slice(0, 10));
   return {
@@ -103,6 +129,8 @@ export function toItemView(
     batch_ulid: record.batch_ulid,
     state: record.state,
     on_hand_fraction: record.on_hand_fraction,
+    units_total: record.units_total,
+    units_remaining: record.units_remaining,
     needs_info: record.needs_info,
     acquired_at: toIsoDate(record.acquired_at)!,
     opened_at: toIsoDate(record.opened_at),
@@ -112,6 +140,7 @@ export function toItemView(
     days_until_eat_by: dayDiff(today, record.eat_by),
     age_days: dayDiff(record.acquired_at, today),
     notes: record.notes,
+    derived_from: derivedFrom,
     created_at: record.created_at.toISOString(),
     updated_at: record.updated_at.toISOString(),
   };

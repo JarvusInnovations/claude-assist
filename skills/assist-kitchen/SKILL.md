@@ -95,10 +95,11 @@ in doubt, read the spec.
 
 - `scripts/kitchen-axi inventory list [--state S] [--closed] [--limit N]` — on-hand items in eat-first (eat_by ascending) order; --state filters, --closed includes finished/tossed
 - `scripts/kitchen-axi inventory show <ulid>` — one inventory item with derived eat_by / days-until / age
-- `scripts/kitchen-axi inventory add [--raw-label T] [--product-ulid U] [--store S] [--acquired-at DATE] [--fraction F] [--state S] [--needs-info] [--shelf-life C] [--notes T] [--ulid U]` — create an item directly (manual/verbal purchase or seed); idempotent when --ulid supplied
-- `scripts/kitchen-axi inventory event <ulid> <opened|finished|tossed> [--fraction F] [--at DATE]` — explicit state change; for tossed, --fraction is the AMOUNT TOSSED (partial toss decrements + stays alive, terminal only at zero remainder or when omitted)
+- `scripts/kitchen-axi inventory add [--raw-label T] [--product-ulid U] [--store S] [--acquired-at DATE] [--fraction F] [--units-total N] [--state S] [--needs-info] [--shelf-life C] [--notes T] [--ulid U]` — create an item directly (manual/verbal purchase or seed); --units-total makes it a counted item (sealed multipack) instead of fraction-modeled; idempotent when --ulid supplied
+- `scripts/kitchen-axi inventory event <ulid> <opened|finished|finished-unit|tossed> [--fraction F] [--at DATE]` — explicit state change; for tossed, --fraction is the AMOUNT TOSSED (partial toss decrements + stays alive, terminal only at zero remainder or when omitted); finished-unit is a counted item's integer one-unit decrement
 - `scripts/kitchen-axi inventory remark "<free text>" [--at DATE]` — free-text event resolver — matches a remark to an item and infers opened/finished/tossed; prints matched/unmatched honestly (unmatched is normal, not an error)
 - `scripts/kitchen-axi inventory questions [--limit N]` — open needs-info items as one-time questions
+- `scripts/kitchen-axi inventory convert --from <ulid>[:amount]… --to '<derived spec json>' [--at DATE]` — prep transform: decrement source item(s) (count or fraction) and create a NEW derived item with its own clock + derived-from provenance — distinct from consumption and from finished/tossed
 
 ### Receipts
 

@@ -11,8 +11,9 @@
  *   GET    /kitchen/inventory/:ulid        - single item
  *   POST   /kitchen/inventory              - create an item (manual / seed)
  *   POST   /kitchen/inventory/events       - free-text event resolver
- *   POST   /kitchen/inventory/:ulid/events - explicit opened|finished|tossed
+ *   POST   /kitchen/inventory/:ulid/events - explicit opened|finished|finished-unit|tossed
  *   POST   /kitchen/inventory/:ulid/label  - multipart: label photo(s) → resolve needs-info
+ *   POST   /kitchen/inventory/convert      - prep transform: decrement source(s), create a derived item
  * Products & lexicon (agentic seed + reads):
  *   POST   /kitchen/products               GET /kitchen/products
  *   POST   /kitchen/lexicon                GET /kitchen/lexicon
@@ -25,11 +26,17 @@ import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import multipart from '@fastify/multipart';
 import { ULID_PATTERN } from '../ulid.js';
 import { InvalidTransitionError } from '../inventory-state.js';
-import { LabelParserUnavailableError, type InventoryPipeline } from '../services/inventory.js';
+import {
+  ConversionValidationError,
+  LabelParserUnavailableError,
+  NotCountedItemError,
+  type InventoryPipeline,
+} from '../services/inventory.js';
 import {
   INVENTORY_EVENT_TYPES,
   INVENTORY_STATES,
   SHELF_LIFE_CLASSES,
+  type ConvertInput,
   type InventoryEventType,
   type InventoryPhotoPart,
   type InventoryState,
@@ -269,6 +276,10 @@ export const registerInventoryRoutes: FastifyPluginAsync<InventoryRoutesConfig> 
           reply.status(409);
           return { error: err.message };
         }
+        if (err instanceof NotCountedItemError) {
+          reply.status(400);
+          return { error: err.message };
+        }
         throw err;
       }
     }
@@ -353,6 +364,30 @@ export const registerInventoryRoutes: FastifyPluginAsync<InventoryRoutesConfig> 
       } catch (err) {
         if (err instanceof InvalidTransitionError) {
           reply.status(409);
+          return { error: err.message };
+        }
+        throw err;
+      }
+    }
+  );
+
+  // ── Conversions (prep transforms) ─────────────────────────────────────────────
+
+  fastify.post<{ Body: ConvertInput }>(
+    '/kitchen/inventory/convert',
+    { schema: { body: CONVERT_BODY_SCHEMA } },
+    async (request, reply) => {
+      try {
+        const result = await inventory.convert(request.body);
+        reply.status(201);
+        return result;
+      } catch (err) {
+        if (err instanceof InvalidTransitionError) {
+          reply.status(409);
+          return { error: err.message };
+        }
+        if (err instanceof ConversionValidationError) {
+          reply.status(400);
           return { error: err.message };
         }
         throw err;
@@ -453,10 +488,48 @@ const ITEM_BODY_SCHEMA = {
     batch_ulid: { type: 'string' },
     acquired_at: { type: 'string' },
     on_hand_fraction: { type: 'number', minimum: 0, maximum: 1 },
+    units_total: { type: 'integer', minimum: 1 },
     state: { type: 'string', enum: [...INVENTORY_STATES] },
     needs_info: { type: 'boolean' },
     shelf_life_class: { type: 'string', enum: [...SHELF_LIFE_CLASSES] },
     notes: { type: 'string', maxLength: 2000 },
+  },
+} as const;
+
+const CONVERT_SOURCE_SCHEMA = {
+  type: 'object',
+  required: ['item_ulid'],
+  additionalProperties: false,
+  properties: {
+    item_ulid: { type: 'string', pattern: ULID_PATTERN.source },
+    amount: { type: 'number', minimum: 0 },
+  },
+} as const;
+
+const CONVERT_DERIVED_SCHEMA = {
+  type: 'object',
+  required: ['name'],
+  additionalProperties: false,
+  properties: {
+    name: { type: 'string', minLength: 1, maxLength: 200 },
+    shelf_life_class: { type: 'string', enum: [...SHELF_LIFE_CLASSES] },
+    on_hand_fraction: { type: 'number', minimum: 0, maximum: 1 },
+    units_total: { type: 'integer', minimum: 1 },
+    store: { type: 'string', maxLength: 200 },
+    notes: { type: 'string', maxLength: 2000 },
+    acquired_at: { type: 'string' },
+    recipe_ulid: { type: 'string' },
+  },
+} as const;
+
+const CONVERT_BODY_SCHEMA = {
+  type: 'object',
+  required: ['sources', 'derived'],
+  additionalProperties: false,
+  properties: {
+    sources: { type: 'array', minItems: 1, items: CONVERT_SOURCE_SCHEMA },
+    derived: CONVERT_DERIVED_SCHEMA,
+    at: { type: 'string' },
   },
 } as const;
 

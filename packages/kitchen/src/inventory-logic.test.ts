@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { InvalidTransitionError, isTerminal, transitionInventory } from './inventory-state.js';
-import { deriveEatBy, dayDiff, toIsoDate, SHELF_LIFE_WINDOWS } from './inventory-derive.js';
+import { deriveEatBy, dayDiff, toIsoDate, SHELF_LIFE_WINDOWS, parsePackageCount } from './inventory-derive.js';
 import { matchScore, parseRemark } from './inventory-remark.js';
 
 describe('inventory state machine', () => {
@@ -16,6 +16,35 @@ describe('inventory state machine', () => {
     expect(isTerminal('tossed')).toBe(true);
     expect(() => transitionInventory('finished', 'opened')).toThrow(InvalidTransitionError);
     expect(() => transitionInventory('tossed', 'finished')).toThrow(InvalidTransitionError);
+  });
+
+  it('finished-unit is legal from stocked/open (same preconditions as finished) and terminal-rejects', () => {
+    expect(transitionInventory('stocked', 'finished-unit')).toBe('finished');
+    expect(transitionInventory('open', 'finished-unit')).toBe('finished');
+    expect(() => transitionInventory('finished', 'finished-unit')).toThrow(InvalidTransitionError);
+    expect(() => transitionInventory('tossed', 'finished-unit')).toThrow(InvalidTransitionError);
+    expect(() => transitionInventory('dismissed', 'finished-unit')).toThrow(InvalidTransitionError);
+  });
+});
+
+describe('package count parsing (§ count-vs-fraction seeding)', () => {
+  it('extracts a discernible multipack count', () => {
+    expect(parsePackageCount('3 ct')).toBe(3);
+    expect(parsePackageCount('12-ct')).toBe(12);
+    expect(parsePackageCount('4-pack')).toBe(4);
+    expect(parsePackageCount('6 pk')).toBe(6);
+    expect(parsePackageCount('8 pcs')).toBe(8);
+    expect(parsePackageCount('dozen')).toBe(12);
+    expect(parsePackageCount('half dozen')).toBe(6);
+  });
+
+  it('returns null for a plain size (no count) or a single-unit count', () => {
+    expect(parsePackageCount('16 oz')).toBeNull();
+    expect(parsePackageCount('1 lb')).toBeNull();
+    expect(parsePackageCount('1 ct')).toBeNull(); // a single unit, not a multipack
+    expect(parsePackageCount(null)).toBeNull();
+    expect(parsePackageCount(undefined)).toBeNull();
+    expect(parsePackageCount('')).toBeNull();
   });
 });
 

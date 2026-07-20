@@ -263,6 +263,68 @@ describe('inventory routes', () => {
     expect(terminal.statusCode).toBe(409);
   });
 
+  it("POST /kitchen/inventory/:ulid/events 'finished-unit' decrements a counted item; 400 on a fraction item", async () => {
+    const counted = await fastify.inject({
+      method: 'POST',
+      url: '/kitchen/inventory',
+      payload: { raw_label: 'Canned beans 3pk', shelf_life_class: 'pantry', acquired_at: '2026-07-01', units_total: 3 },
+    });
+    const item = counted.json();
+    expect(item.units_remaining).toBe(3);
+
+    const res = await fastify.inject({
+      method: 'POST',
+      url: `/kitchen/inventory/${item.ulid}/events`,
+      payload: { type: 'finished-unit', at: '2026-07-10' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().units_remaining).toBe(2);
+    expect(res.json().state).toBe('stocked');
+
+    const { item: fractionItem } = await pipeline.createItem({ raw_label: 'Milk', shelf_life_class: 'fridge_short', acquired_at: '2026-07-01' });
+    const bad = await fastify.inject({
+      method: 'POST',
+      url: `/kitchen/inventory/${fractionItem.ulid}/events`,
+      payload: { type: 'finished-unit' },
+    });
+    expect(bad.statusCode).toBe(400);
+  });
+
+  it('POST /kitchen/inventory/convert decrements sources and creates a derived item; 400 on unknown source, 409 on terminal', async () => {
+    const eggs = await pipeline.createItem({ raw_label: 'Egg dozen', shelf_life_class: 'fridge_long', acquired_at: '2026-07-01', units_total: 12 });
+
+    const res = await fastify.inject({
+      method: 'POST',
+      url: '/kitchen/inventory/convert',
+      payload: {
+        sources: [{ item_ulid: eggs.item.ulid, amount: 6 }],
+        derived: { name: 'Hard-boiled eggs', shelf_life_class: 'fridge_short', units_total: 6 },
+        at: '2026-07-10',
+      },
+    });
+    expect(res.statusCode).toBe(201);
+    const body = res.json();
+    expect(body.sources[0].units_remaining).toBe(6);
+    expect(body.derived.units_total).toBe(6);
+    expect(body.derivation.sources[0].item_ulid).toBe(eggs.item.ulid);
+
+    const unknown = await fastify.inject({
+      method: 'POST',
+      url: '/kitchen/inventory/convert',
+      payload: { sources: [{ item_ulid: generateUlid() }], derived: { name: 'X' } },
+    });
+    expect(unknown.statusCode).toBe(400);
+
+    const { item: terminal } = await pipeline.createItem({ raw_label: 'Old milk', shelf_life_class: 'fridge_short', acquired_at: '2026-07-01' });
+    await pipeline.applyEvent(terminal.ulid, 'finished', {});
+    const terminalRes = await fastify.inject({
+      method: 'POST',
+      url: '/kitchen/inventory/convert',
+      payload: { sources: [{ item_ulid: terminal.ulid }], derived: { name: 'X' } },
+    });
+    expect(terminalRes.statusCode).toBe(409);
+  });
+
   it('POST /kitchen/products then /kitchen/lexicon are creatable for the seed port', async () => {
     const p = await fastify.inject({ method: 'POST', url: '/kitchen/products', payload: { name: 'Oat Milk', shelf_life_class: 'fridge_short', aliases: ['oatmilk'] } });
     expect(p.statusCode).toBe(201);
