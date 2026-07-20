@@ -19,7 +19,16 @@ export interface ToonTable {
   rows: string[][];
 }
 
-/** CSV field splitter handling `"`-quoting and `""` escapes. */
+/**
+ * CSV field splitter for gws-axi output. Inside a quoted field, an embedded
+ * quote may be escaped two ways: doubled (`""`, RFC-4180) or backslash-escaped
+ * (`\"`, which is what gws-axi actually emits for HTML/quoted content in event
+ * descriptions). Both are handled; a lone `\` before any other char is taken
+ * literally-next (so `\\` → `\`). Missing this backslash case truncated the row
+ * at the first `\"` and dropped every column after it — silently declassifying
+ * any meeting whose description carried a link (e.g. an agenda-doc anchor),
+ * which then vanished from both join-alerts and briefings.
+ */
 export function parseCsvRow(line: string): string[] {
   const out: string[] = [];
   let i = 0;
@@ -28,7 +37,10 @@ export function parseCsvRow(line: string): string[] {
     if (line[i] === '"') {
       i++;
       while (i < line.length) {
-        if (line[i] === '"' && line[i + 1] === '"') {
+        if (line[i] === '\\' && i + 1 < line.length) {
+          field += line[i + 1];
+          i += 2;
+        } else if (line[i] === '"' && line[i + 1] === '"') {
           field += '"';
           i += 2;
         } else if (line[i] === '"') {

@@ -27,6 +27,20 @@ describe('parseCsvRow', () => {
   it('treats empty quoted fields as empty strings', () => {
     expect(parseCsvRow('a,"","",b')).toEqual(['a', '', '', 'b']);
   });
+
+  it('unescapes backslash-escaped quotes without truncating the row', () => {
+    // gws-axi emits `\"` for embedded quotes (e.g. an HTML anchor in a meeting
+    // description). The parser must keep reading columns AFTER such a field —
+    // regression for meetings that vanished from alerts/briefings when their
+    // description carried a link and the trailing hangoutLink column was lost.
+    expect(
+      parseCsvRow('id,"<a href=\\"https://docs.example/x\\">agenda</a>","https://meet.google.com/abc"')
+    ).toEqual(['id', '<a href="https://docs.example/x">agenda</a>', 'https://meet.google.com/abc']);
+  });
+
+  it('takes a backslash-escaped backslash literally', () => {
+    expect(parseCsvRow('"a\\\\b",x')).toEqual(['a\\b', 'x']);
+  });
 });
 
 describe('parseToonTable', () => {
