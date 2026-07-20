@@ -428,11 +428,27 @@ All tables instance-agnostic empty schema, ULID keys, `kitchen` schema
   (nullable — null while `needs_info`), `raw_label` (text — the receipt line or
   display name when no product; nullable), `store` (nullable), `batch_ulid`
   (nullable), `state` (enum `stocked | open | finished | tossed | dismissed`),
-  `on_hand_fraction` (numeric 0..1, directional; default 1.0), `needs_info`
+  `on_hand_fraction` (numeric 0..1, directional; default 1.0), `units_total` /
+  `units_remaining` (integer, both nullable, migration
+  `007-kitchen-inventory-units-and-derivations.sql` — the **sealed-unit count
+  model**, see § count-vs-fraction below; both null (the default) means the
+  item is fraction-modeled, unchanged; both set together, never one without the
+  other, `0 <= units_remaining <= units_total`), `needs_info`
   (bool), `acquired_at` (date), `opened_at` (date, nullable), `closed_at` (date,
   nullable — finished/tossed/dismissed date), `eat_by` (date, nullable — **derived**,
   materialized for ordering; recomputed on open), `shelf_life_class` (enum
   snapshot, nullable), `notes` (nullable), `created_at`, `updated_at`.
+- **`kitchen.inventory_derivations`** — one row per derived (prepared) item,
+  written by a `convert` event (migration
+  `007-kitchen-inventory-units-and-derivations.sql`, see § Conversions):
+  `ulid`, `derived_item_ulid` (unique FK into `inventory_items` — 1:1, a
+  derived item is always freshly created by exactly one conversion), `sources`
+  (JSONB array `[{item_ulid, amount, amount_kind: 'fraction'|'count'}]` — the
+  source item(s) consumed and how much of each, in each source's OWN unit),
+  `recipe_ulid` (nullable — the recipe/conversion that fixes the derived
+  item's macros, when applicable), `created_at`. Deliberately minimal — enough
+  for eat-first reasoning and later macro inheritance, not a full lineage
+  graph (no chained derivation queries, no cascade beyond the one hop).
 - **`kitchen.purchase_batches`** — one shopping event: `ulid` (client-supplied
   for receipt idempotency), `source` (enum `receipt | manual`), `store`
   (nullable), `store_undetermined` (bool, default false — set true when the
@@ -468,7 +484,12 @@ default; `unknown` (and any null window) yields `eat_by = null`.
 `{stocked,open} --tossed--> tossed`, `{stocked,open} --dismissed--> dismissed`.
 `finished`/`tossed`/`dismissed` are terminal. Opening
 stamps `opened_at` and re-derives `eat_by`; finishing stamps `closed_at` and
-sets `on_hand_fraction` to 0.
+sets `on_hand_fraction` to 0. `finished-unit` (counted items only — see
+§ count-vs-fraction below) shares `finished`'s legal preconditions
+(`{stocked,open}`, terminal-rejecting), but its CONCRETE next state is
+data-dependent (zero remaining → terminal `finished`; otherwise back to
+`stocked` with a fresh clock) — computed by the pipeline, not the pure
+transition table.
 
 `dismissed` is the "this line does not belong in inventory at all" terminal
 state (see § Non-inventory dismissal). It is deliberately **not** a food-waste
@@ -488,7 +509,46 @@ only transitions to terminal `tossed` (with `closed_at`, fraction 0) when no
 fraction is supplied (full toss) or the remainder reaches zero. Every toss
 appends `tossed <amount> <date>` to the item's `notes` so waste amounts stay
 recoverable for telemetry. These semantics are shared verbatim by the explicit
-event endpoint and the free-text resolver.
+event endpoint and the free-text resolver. A full toss or whole-item `finished`
+on a counted item also zeroes `units_remaining` — the sealed remainder is gone
+too.
+
+### Unit counts (§ count-vs-fraction)
+
+A discrete multipack of individually-sealed atomic units (a can 3-pack, an egg
+dozen, a sausage-link pack, a yogurt 4-pack) tracks `units_total`/
+`units_remaining` instead of `on_hand_fraction`, as **one row** — no fan-out
+per sealed unit (that fan-out mechanism is a different axis: N *bought* units
+of a product each already become their own item row per the receipt line's
+`quantity`; any one of those rows may itself be a multipack with its own
+`units_total`). Opening a counted item behaves exactly like opening a
+fraction-modeled one — `opened_at` stamps and `eat_by` re-derives from the
+opened window — because opening means "I broke the seal and am now consuming
+from one unit"; only that one open unit runs the perishable clock, and the
+still-sealed remainder is shelf-stable at the unopened window regardless.
+
+The counted sibling of `finished` is the **`finished-unit`** event (`POST
+/inventory/:ulid/events` with `type: 'finished-unit'`, no `fraction`) — an
+integer decrement of `units_remaining` by exactly one:
+
+- **Counted items only.** A `finished-unit` event against a fraction-modeled
+  item (`units_total` null) is rejected (`400`, `NotCountedItemError`) — use
+  `finished`/`tossed` there.
+- **Reaching zero remaining** transitions the item to terminal `finished`
+  (`closed_at` stamped, `on_hand_fraction` zeroed) — identical outcome to a
+  whole-item `finished`.
+- **Otherwise** the item reverts to `stocked`, `opened_at` clears, and `eat_by`
+  re-derives from the **unopened** window off `acquired_at` — the unit that was
+  just finished carried the opened clock, but the next-to-open unit was never
+  itself opened, so it starts its own (unopened) clock, not a continuation of
+  the just-finished unit's.
+
+Receipt-scan seeding: when a lexicon line's (or its mapped product's)
+`package_size` carries a discernible count ("3 ct", "12-pack", "6 pk", "dozen"
+→ 12, "half dozen" → 6; a plain size like "16 oz" carries none), each
+fanned-out item from that line is seeded `units_total = units_remaining =` the
+parsed count instead of the default fraction of 1. A count of 1 ("1 ct")
+describes a single unit, not a multipack, and is left fraction-modeled.
 
 ### API
 
@@ -503,7 +563,8 @@ not assume one convention): single-resource creates/mutations return the
 (`{ batches, count }`, `{ items, count }`, `{ questions, count }`,
 `{ products, count }`, `{ lines, count }`); compound reads/results return named
 objects (`GET /receipts/:ulid` → `{ batch, lines }`; label →
-`{ item, product }`; free-text resolver → `{ matched, item?, event? }`). The
+`{ item, product }`; free-text resolver → `{ matched, item?, event? }`;
+`POST /inventory/convert` → `{ sources, derived, derivation }`). The
 shape stated on each endpoint below is exact.
 
 Receipts:
@@ -564,17 +625,23 @@ Item mutation:
 
 - `POST /inventory` — create an item directly (manual/verbal purchase, or the
   agentic seed port). JSON `{ ulid?, product_ulid?, raw_label?, store?,
-  batch_ulid?, acquired_at? (ISO date), on_hand_fraction?, state?, needs_info?,
-  shelf_life_class?, notes? }`. ULID optional (server-generates when absent);
-  idempotent when supplied. Returns the **bare** `InventoryItem` (`201`/`200`).
+  batch_ulid?, acquired_at? (ISO date), on_hand_fraction?, units_total?,
+  state?, needs_info?, shelf_life_class?, notes? }`. `units_total` makes it a
+  **counted** item (`units_remaining` starts equal to it); omitted stays
+  fraction-modeled — see § count-vs-fraction. ULID optional (server-generates
+  when absent); idempotent when supplied. Returns the **bare** `InventoryItem`
+  (`201`/`200`).
 - `POST /inventory/:ulid/events` — explicit state change. JSON
-  `{ type: 'opened'|'finished'|'tossed', fraction? (0..1), at? (ISO date) }`.
+  `{ type: 'opened'|'finished'|'finished-unit'|'tossed', fraction? (0..1), at? (ISO date) }`.
   `fraction` semantics per type: `opened` — absolute remaining fraction
   (omitted = unchanged); `tossed` — **amount tossed** (partial toss decrements
   and stays alive; terminal only at zero remainder or when omitted, per the
-  state-machine rules above); `finished` ignores it (always terminal + zeroed).
-  Returns the **bare** updated `InventoryItem`. `404` unknown item; `409`
-  `InvalidTransitionError` on a terminal item.
+  state-machine rules above); `finished` ignores it (always terminal + zeroed,
+  and zeroes `units_remaining` too on a counted item); `finished-unit` ignores
+  it (see § count-vs-fraction — integer one-unit decrement, counted items
+  only). Returns the **bare** updated `InventoryItem`. `404` unknown item;
+  `409` `InvalidTransitionError` on a terminal item; `400`
+  `NotCountedItemError` for `finished-unit` against a fraction-modeled item.
 - `POST /inventory/events` — **free-text event resolver**. JSON
   `{ remark (string, required), at? (ISO date) }`. Best-effort matches the
   remark against open/stocked items (string/alias, directional), infers the
@@ -648,6 +715,26 @@ Item mutation:
   future receipts are unaffected. Returns
   `{ item: InventoryItem, dismissed_count, non_inventory }`, where
   `dismissed_count` is the total items dismissed (≥ 1).
+- `POST /inventory/convert` — **conversion (prep transform)** event, see
+  § Conversions. JSON `{ sources: [{ item_ulid, amount? }], derived: { name,
+  shelf_life_class?, on_hand_fraction?, units_total?, store?, notes?,
+  acquired_at?, recipe_ulid? }, at? (ISO date) }`. `sources` (≥ 1): each
+  `amount` is interpreted per that SOURCE's own on-hand model — a whole-unit
+  integer for a counted source, a fraction (0..1) for a divisible one; omitted
+  fully consumes the source (all remaining units, or the whole remaining
+  fraction). `derived`: `name` required; exactly one of `on_hand_fraction` /
+  `units_total` describes the new item's quantity model (defaults to a whole
+  fraction-modeled item, `on_hand_fraction: 1`, when neither is given);
+  `recipe_ulid` is optional provenance only (no macro computation in this
+  surface). Decrements every source (reaching zero on any source terminates it
+  `finished`, mirroring `finished-unit`/full-toss) and creates ONE new
+  `stocked` item with its own `eat_by` (derived the same way a fresh item's
+  is) and a `kitchen.inventory_derivations` row linking it to its sources.
+  Returns `{ sources: InventoryItem[], derived: InventoryItem, derivation:
+  InventoryDerivation }` (`201`). `400` `ConversionValidationError` — no
+  sources, missing `derived.name`, an unknown source ULID, or a non-integer
+  `amount` against a counted source; `409` `InvalidTransitionError` — a source
+  is already terminal (nothing left to spend).
 
 Products & lexicon (agentic seed + reads):
 
@@ -671,12 +758,22 @@ Products & lexicon (agentic seed + reads):
   product_ulid, inventory_item_ulid, created_at }`. `quantity` is the
   physical-unit count the line represents (≥ 1; default 1).
 - **InventoryItem**: `{ ulid, product_ulid, product_name, raw_label, store,
-  batch_ulid, state, on_hand_fraction, needs_info, acquired_at, opened_at,
-  closed_at, eat_by, shelf_life_class, days_until_eat_by, age_days, notes,
-  created_at, updated_at }`. `product_name` is the joined product name (falls
-  back to `raw_label`); `days_until_eat_by`/`age_days` are derived integers
-  (null when undeterminable). Dates are ISO date strings (`YYYY-MM-DD`);
-  timestamps are ISO date-time.
+  batch_ulid, state, on_hand_fraction, units_total, units_remaining,
+  needs_info, acquired_at, opened_at, closed_at, eat_by, shelf_life_class,
+  days_until_eat_by, age_days, notes, derived_from, created_at, updated_at }`.
+  `product_name` is the joined product name (falls back to `raw_label`);
+  `days_until_eat_by`/`age_days` are derived integers (null when
+  undeterminable). `units_total`/`units_remaining` are both null for a
+  fraction-modeled item (§ count-vs-fraction). `derived_from` is null unless
+  the item was created by a `convert` event, in which case it is
+  `{ sources: DerivationSource[], recipe_ulid }` (the same shape carried on
+  `InventoryDerivation`, joined for read convenience). Dates are ISO date
+  strings (`YYYY-MM-DD`); timestamps are ISO date-time.
+- **InventoryDerivation**: `{ ulid, derived_item_ulid, sources, recipe_ulid,
+  created_at }`. `sources` is `DerivationSource[]` —
+  `{ item_ulid, amount, amount_kind: 'fraction'|'count' }` per source consumed,
+  `amount` in that source's own unit. `recipe_ulid` is nullable (provenance
+  only).
 - **Product**: `{ ulid, name, shelf_life_class, aliases, nutrition_per_100g,
   ingredients, package_size, shelf_life_days_unopened, shelf_life_days_opened,
   created_at, updated_at }`. `nutrition_per_100g` (nullable) is `{ calories,
@@ -693,6 +790,8 @@ Products & lexicon (agentic seed + reads):
   count when `count > 1` (e.g. `… ×2`).
 - **Label response**: `{ item: InventoryItem, product: Product, resolved_count }`.
 - **Dismiss response**: `{ item: InventoryItem, dismissed_count, non_inventory }`.
+- **Convert response**: `{ sources: InventoryItem[], derived: InventoryItem,
+  derivation: InventoryDerivation }`.
 
 ### Store extraction & precedence
 
@@ -783,6 +882,70 @@ food waste:
   silently dropping it). This is the mirror image of a label scan: a label maps
   the line to a product; a non-inventory dismissal maps it to "not inventory".
 
+### Conversions
+
+Meal prep is a **transformation**, not consumption: a `POST /inventory/convert`
+event decrements one or more source items and creates a NEW inventory item —
+the **derived item** — with its own identity, shelf-life clock, quantity, and
+provenance. This is distinct from both halves of the existing model:
+
+- **Not a consumption entry.** `convert` never touches `kitchen.entries` and
+  posts no journal entry — no macros, no estimation. One-tap consumption of a
+  now-existing derived item (eating the jar) is a separate, later capability,
+  out of scope here.
+- **Not finished/tossed.** Those are terminal with no replacement; a
+  conversion's sources may go terminal as a SIDE EFFECT of being fully spent
+  (see below), but the event's defining act is creating the derived item, not
+  closing out the source.
+
+**Decrementing sources.** Each source's `amount` is interpreted per that
+source's OWN on-hand model (§ count-vs-fraction) — a counted source takes a
+whole-unit integer, a divisible source takes a fraction (0..1); omitted fully
+consumes the source. A source reaching zero (all units spent, or the fraction
+exhausted) transitions to terminal `finished`, exactly mirroring
+`finished-unit`/a full toss; otherwise it stays alive at the decremented
+quantity with its state/`opened_at`/`eat_by` untouched — spending SOME of a
+source doesn't touch which unit (if any) is currently open. A terminal source
+(nothing left to spend) is rejected (`409`).
+
+**Creating the derived item.** One new `stocked` item, `eat_by` derived the
+same way any fresh item's is (from its `shelf_life_class` + `acquired_at`,
+defaulting to the conversion's `at`/now); its quantity is EITHER a fraction
+(`on_hand_fraction`, default 1 when neither is given) OR a count
+(`units_total`), per the same discriminating test as any other item. It has no
+`product_ulid` — a derived item is identified by its own `raw_label` (the
+conversion's `derived.name`), not a durable product (a jar of overnight oats
+isn't a SKU the lexicon would ever see again).
+
+**Provenance.** A `kitchen.inventory_derivations` row links the derived item to
+its sources (`item_ulid` + the exact `amount`/`amount_kind` consumed from
+each) and, optionally, a `recipe_ulid` — the recipe/conversion that fixes the
+derived item's macros (provenance only in this surface; the derived item
+itself carries no macros yet, since a kitchen recipe's macro output isn't part
+of this module's inventory shape). Deliberately **minimal, not a full lineage
+graph**: one hop back to direct sources, no chained "what did THIS source come
+from" queries, no cascading updates if a source is later corrected. It exists
+to (a) let the eat-first planner reason across the transform (aging yogurt
+"used up" by becoming jars is visible as the yogurt's depletion plus the jars'
+existence, and the jars' provenance explains why) and (b) leave a hook for
+later macro inheritance, not to model a full recipe graph.
+
+**Derived items are first-class eat-first stock.** They carry `eat_by` and
+`state` exactly like any other item, so they join the ordinary
+`GET /inventory` eat-by ordering with no special-casing — the planner sees a
+freshly-made overnight-oats jar sitting at whatever eat-by its own shelf-life
+class earns it, right alongside everything else.
+
+Examples: 12 raw eggs (counted) → 6 hard-boiled eggs (`sources: [{item_ulid,
+amount: 6}]`, `derived: {units_total: 6, shelf_life_class: 'fridge_short'}`) —
+the egg carton keeps 6 remaining, sealed and unopened-clocked; 1 divisible bag
+of dry quinoa → ~3 cups cooked quinoa (`sources: [{item_ulid, amount: 0.3}]`
+— a directional estimate of "about 1 cup out of the whole bag", `derived:
+{on_hand_fraction: 1, shelf_life_class: 'fridge_short'}`); oats + yogurt +
+soymilk + fruit (four fraction sources, one conversion call each or batched
+into one `sources` array) → 3 overnight-oats jars (`derived: {units_total:
+3}`).
+
 ### Model tiering (phase 2)
 
 - Receipt line extraction uses the **cheap** tier (`KITCHEN_RECEIPT_MODEL`,
@@ -853,9 +1016,12 @@ and write the kitchen without hand-rolled `curl`.
     source), `resolve`-style close-outs are NOT here (entries have no such
     state); `delete <ulid>`.
   - `inventory` — list (eat-first order; `--state`, `--closed`),
-    `show <ulid>`, `add` (manual/seed create), `event <ulid> <opened|finished|
-    tossed> [--fraction]`, `remark "<free text>"` (the resolver; prints
-    matched/unmatched honestly), `questions`.
+    `show <ulid>`, `add` (manual/seed create; `--units-total` makes it a
+    counted item), `event <ulid> <opened|finished|finished-unit|tossed>
+    [--fraction]`, `remark "<free text>"` (the resolver; prints
+    matched/unmatched honestly), `questions`, `convert --from
+    <ulid>[:amount]… --to '<derived spec json>'` (prep transform — see
+    § Conversions).
   - `receipts` — list, `show <ulid>` (batch + line outcomes), `scan <photo…>`
     (multipart post; meta as a form field per the module's part-type rule).
   - `recipes` — list (merged view), `push` (agent-authored recipe JSON),
@@ -891,3 +1057,18 @@ and write the kitchen without hand-rolled `curl`.
   computed at every serving surface, never pre-baked into the stored/transmitted
   fields. This keeps the multiplier idempotent (always rescales from base) and the
   wire unambiguous (a macro field never silently means something scaled).
+- **Count tracks sealed units; fraction tracks divisible stock.** The
+  discriminating test for how an inventory item models its on-hand quantity:
+  *can you consume a non-integer amount of it in one sitting?* Yes → it's
+  divisible, use a fraction (a tub, bag, jar, bottle). No, it comes as
+  individually-sealed atomic units → use an integer count (a can multipack, an
+  egg dozen, a sausage-link pack). A counted item is still ONE row — the count
+  model is not a fan-out — and consumption of it is a whole-unit decrement
+  (`finished-unit`); only the currently-opened unit runs the perishable clock,
+  the sealed remainder is still shelf-stable at the unopened window. A
+  directional fraction is an acceptable stand-in until an item is known to be a
+  multipack, but a fraction stored against a sealed pack (e.g. `0.67` for "2 of
+  3 cans left") is a lossy approximation of "N whole units left," not the
+  truth — receipt intake seeds the count model directly whenever the package
+  size carries a discernible count, so this shouldn't need correcting after the
+  fact.
