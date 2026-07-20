@@ -14,6 +14,7 @@
  *   POST   /kitchen/inventory/:ulid/events - explicit opened|finished|finished-unit|tossed
  *   POST   /kitchen/inventory/:ulid/label  - multipart: label photo(s) → resolve needs-info
  *   POST   /kitchen/inventory/convert      - prep transform: decrement source(s), create a derived item
+ *   POST   /kitchen/inventory/:ulid/consume - one-tap known-macro log + deplete, ONE atomic operation
  * Products & lexicon (agentic seed + reads):
  *   POST   /kitchen/products               GET /kitchen/products
  *   POST   /kitchen/lexicon                GET /kitchen/lexicon
@@ -27,6 +28,9 @@ import multipart from '@fastify/multipart';
 import { ULID_PATTERN } from '../ulid.js';
 import { InvalidTransitionError } from '../inventory-state.js';
 import {
+  ConsumeIneligibleError,
+  ConsumeNotConfiguredError,
+  ConsumeValidationError,
   ConversionValidationError,
   LabelParserUnavailableError,
   NotCountedItemError,
@@ -36,6 +40,7 @@ import {
   INVENTORY_EVENT_TYPES,
   INVENTORY_STATES,
   SHELF_LIFE_CLASSES,
+  type ConsumeInput,
   type ConvertInput,
   type InventoryEventType,
   type InventoryPhotoPart,
@@ -395,6 +400,38 @@ export const registerInventoryRoutes: FastifyPluginAsync<InventoryRoutesConfig> 
     }
   );
 
+  // ── Consume from inventory (one-tap known-macro log + deplete) ───────────────
+
+  fastify.post<{ Params: { ulid: string }; Body: ConsumeInput }>(
+    '/kitchen/inventory/:ulid/consume',
+    { schema: { body: CONSUME_BODY_SCHEMA } },
+    async (request, reply) => {
+      try {
+        const result = await inventory.consume(request.params.ulid, request.body);
+        if (!result) {
+          reply.status(404);
+          return { error: 'Inventory item not found' };
+        }
+        reply.status(result.created ? 201 : 200);
+        return result;
+      } catch (err) {
+        if (err instanceof InvalidTransitionError) {
+          reply.status(409);
+          return { error: err.message };
+        }
+        if (err instanceof ConsumeIneligibleError || err instanceof ConsumeValidationError) {
+          reply.status(400);
+          return { error: err.message };
+        }
+        if (err instanceof ConsumeNotConfiguredError) {
+          reply.status(503);
+          return { error: err.message };
+        }
+        throw err;
+      }
+    }
+  );
+
   // ── Products ──────────────────────────────────────────────────────────────────
 
   fastify.post<{ Body: Record<string, unknown> }>(
@@ -493,6 +530,21 @@ const ITEM_BODY_SCHEMA = {
     needs_info: { type: 'boolean' },
     shelf_life_class: { type: 'string', enum: [...SHELF_LIFE_CLASSES] },
     notes: { type: 'string', maxLength: 2000 },
+  },
+} as const;
+
+const CONSUME_BODY_SCHEMA = {
+  type: 'object',
+  required: ['ulid'],
+  additionalProperties: false,
+  properties: {
+    // The consumption entry's client-generated ULID — the idempotency key.
+    ulid: { type: 'string', pattern: ULID_PATTERN.source },
+    // Counted items only (whole sealed units consumed this tap); a fraction
+    // item always fully finishes in one consume, so this must be 1/omitted
+    // there (enforced in the pipeline, which has the item's on-hand model).
+    quantity: { type: 'integer', minimum: 1 },
+    at: { type: 'string' },
   },
 } as const;
 

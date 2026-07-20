@@ -179,7 +179,14 @@ function parseNumeric(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function rowToEntry(row: Record<string, unknown>): EntryRecord {
+/**
+ * Exported so `services/consume-store.ts` (claude-assist#110's atomic
+ * entry+deplete write, which crosses into `kitchen.entries` from the
+ * inventory side of the module) can map a raw entries row without
+ * duplicating this mapping — the two stores must never drift on what an
+ * entries row means.
+ */
+export function rowToEntry(row: Record<string, unknown>): EntryRecord {
   return {
     ulid: row.ulid as string,
     logged_at: row.logged_at as Date,

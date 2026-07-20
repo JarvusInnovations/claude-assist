@@ -1,11 +1,21 @@
 import { describe, expect, it } from 'bun:test';
 import type { FastifyBaseLogger } from 'fastify';
 import { MemoryInventoryStore } from '../inventory-memory-store.js';
-import { ConversionValidationError, InventoryPipeline, NotCountedItemError } from './inventory.js';
+import { MemoryEntryStore } from '../memory-store.js';
+import { MemoryConsumeStore } from './consume-memory-store.js';
+import {
+  ConsumeIneligibleError,
+  ConsumeNotConfiguredError,
+  ConsumeValidationError,
+  ConversionValidationError,
+  InventoryPipeline,
+  NotCountedItemError,
+} from './inventory.js';
 import { InvalidTransitionError } from '../inventory-state.js';
 import type { ReceiptParser, ReceiptParseInput } from './receipt-parser.js';
 import type { LabelParser, LabelParseInput } from './label-parser.js';
 import type { InventoryPhotoPart, ParsedLabel, ParsedReceipt } from '../inventory-types.js';
+import type { RecipeRecord } from '../types.js';
 
 const log = {
   info: () => {},
@@ -976,5 +986,190 @@ describe('inventory read ordering', () => {
     const items = await pipeline.listInventory({});
     expect(items[0]!.raw_label).toBe('Fresh fish'); // soonest eat-by
     expect(items[items.length - 1]!.raw_label).toBe('Mystery jar'); // null eat-by last
+  });
+});
+
+describe('consume from inventory (claude-assist#110 — one-tap known-macro log + deplete)', () => {
+  const RECIPE: RecipeRecord = {
+    ulid: ULID(50),
+    name: 'Overnight oats',
+    components: [
+      { label: 'oats', default_qty_g: 240, per_100g: { calories: 380, protein_g: 13, sat_fat_g: 1.2 } },
+      { label: 'yogurt', default_qty_g: 300, per_100g: { calories: 60, protein_g: 10, sat_fat_g: 0.2 } },
+    ],
+    source: 'pushed',
+    created_at: new Date(),
+    updated_at: new Date(),
+  };
+  // computeRecipeMacros(RECIPE): calories 240*3.8+300*0.6=912+180=1092, protein
+  // 240*0.13+300*0.1=31.2+30=61.2, sat_fat 240*0.012+300*0.002=2.88+0.6=3.48.
+
+  function harness(recipes: RecipeRecord[] = [RECIPE]) {
+    const store = new MemoryInventoryStore();
+    const entries = new MemoryEntryStore();
+    const consumeStore = new MemoryConsumeStore(entries, store);
+    const pipeline = new InventoryPipeline(store, null, null, log, {
+      consumeStore,
+      resolveRecipe: async (ulid) => recipes.find((r) => r.ulid === ulid) ?? null,
+    });
+    return { store, entries, consumeStore, pipeline };
+  }
+
+  it('consumes a counted derived item: 1 of 3 jars — exact macros, integer decrement, source reselect/estimated', async () => {
+    const { pipeline, entries } = harness();
+    const { item: oats } = await pipeline.createItem({ raw_label: 'Rolled oats', shelf_life_class: 'pantry', acquired_at: '2026-07-01' });
+    const { derived } = await pipeline.convert({
+      sources: [{ item_ulid: oats.ulid }],
+      derived: { name: 'Overnight oats jar', shelf_life_class: 'fridge_short', units_total: 3, recipe_ulid: RECIPE.ulid },
+      at: '2026-07-17',
+    });
+    expect(derived.units_remaining).toBe(3);
+
+    const result = await pipeline.consume(derived.ulid, { ulid: ULID(60) });
+    expect(result).not.toBeNull();
+    expect(result!.created).toBe(true);
+    expect(result!.entry.ulid).toBe(ULID(60));
+    expect(result!.entry.source).toBe('reselect');
+    expect(result!.entry.status).toBe('estimated');
+    expect(result!.entry.label).toBe('Overnight oats jar');
+    // Exactly 1/3 of the recipe's deterministic totals — no model call.
+    expect(result!.entry.calories).toBe(364); // 1092 / 3
+    expect(result!.entry.protein_g).toBe(20.4); // 61.2 / 3
+    expect(result!.entry.sat_fat_g).toBe(1.2); // round1(3.48 / 3)
+    expect(result!.entry.confidence).toBe(1);
+
+    // Depletion: integer decrement, item stays alive (finished-unit semantics).
+    expect(result!.item.units_remaining).toBe(2);
+    expect(result!.item.state).toBe('stocked');
+    expect(result!.item.opened_at).toBeNull();
+
+    // The entry is really in the store, not just the returned snapshot.
+    expect(entries.records.get(ULID(60))?.inventory_item_ulid).toBe(derived.ulid);
+  });
+
+  it('the third and final unit consumed finishes the item (units_remaining reaches 0)', async () => {
+    const { pipeline } = harness();
+    const { item: oats } = await pipeline.createItem({ raw_label: 'Rolled oats', shelf_life_class: 'pantry', acquired_at: '2026-07-01' });
+    const { derived } = await pipeline.convert({
+      sources: [{ item_ulid: oats.ulid }],
+      derived: { name: 'Overnight oats jar', shelf_life_class: 'fridge_short', units_total: 1, recipe_ulid: RECIPE.ulid },
+      at: '2026-07-17',
+    });
+
+    const result = await pipeline.consume(derived.ulid, { ulid: ULID(61) });
+    expect(result!.item.state).toBe('finished');
+    expect(result!.item.units_remaining).toBe(0);
+    expect(result!.item.on_hand_fraction).toBe(0);
+  });
+
+  it('consumes a fraction-modeled derived item: finishes it in one tap, macros scaled by on_hand_fraction', async () => {
+    const { pipeline } = harness();
+    const { item: quinoa } = await pipeline.createItem({ raw_label: 'Dry quinoa', shelf_life_class: 'pantry', acquired_at: '2026-07-01' });
+    const { derived } = await pipeline.convert({
+      sources: [{ item_ulid: quinoa.ulid, amount: 0.3 }],
+      derived: { name: 'Cooked quinoa', shelf_life_class: 'fridge_short', on_hand_fraction: 1, recipe_ulid: RECIPE.ulid },
+      at: '2026-07-17',
+    });
+    expect(derived.on_hand_fraction).toBe(1);
+
+    const result = await pipeline.consume(derived.ulid, { ulid: ULID(62) });
+    expect(result!.entry.calories).toBe(1092); // full recipe total — on_hand_fraction was 1
+    expect(result!.item.state).toBe('finished');
+    expect(result!.item.on_hand_fraction).toBe(0);
+  });
+
+  it('rejects a quantity greater than units_remaining (400-mapped ConsumeValidationError)', async () => {
+    const { pipeline } = harness();
+    const { item: oats } = await pipeline.createItem({ raw_label: 'Rolled oats', shelf_life_class: 'pantry', acquired_at: '2026-07-01' });
+    const { derived } = await pipeline.convert({
+      sources: [{ item_ulid: oats.ulid }],
+      derived: { name: 'Overnight oats jar', shelf_life_class: 'fridge_short', units_total: 2, recipe_ulid: RECIPE.ulid },
+      at: '2026-07-17',
+    });
+    await expect(pipeline.consume(derived.ulid, { ulid: ULID(63), quantity: 3 })).rejects.toThrow(ConsumeValidationError);
+  });
+
+  it('rejects a non-1 quantity against a fraction-modeled item', async () => {
+    const { pipeline } = harness();
+    const { item: quinoa } = await pipeline.createItem({ raw_label: 'Dry quinoa', shelf_life_class: 'pantry', acquired_at: '2026-07-01' });
+    const { derived } = await pipeline.convert({
+      sources: [{ item_ulid: quinoa.ulid, amount: 0.3 }],
+      derived: { name: 'Cooked quinoa', shelf_life_class: 'fridge_short', on_hand_fraction: 1, recipe_ulid: RECIPE.ulid },
+      at: '2026-07-17',
+    });
+    await expect(pipeline.consume(derived.ulid, { ulid: ULID(64), quantity: 2 })).rejects.toThrow(ConsumeValidationError);
+  });
+
+  it('rejects an item with no recipe-linked derivation (400-mapped ConsumeIneligibleError)', async () => {
+    const { pipeline } = harness();
+    const { item } = await pipeline.createItem({ raw_label: 'Plain yogurt tub', shelf_life_class: 'fridge_short', acquired_at: '2026-07-01' });
+    await expect(pipeline.consume(item.ulid, { ulid: ULID(65) })).rejects.toThrow(ConsumeIneligibleError);
+  });
+
+  it('rejects a derived item whose conversion carried no recipe_ulid', async () => {
+    const { pipeline } = harness();
+    const { item: quinoa } = await pipeline.createItem({ raw_label: 'Dry quinoa', shelf_life_class: 'pantry', acquired_at: '2026-07-01' });
+    const { derived } = await pipeline.convert({
+      sources: [{ item_ulid: quinoa.ulid, amount: 0.3 }],
+      derived: { name: 'Cooked quinoa', shelf_life_class: 'fridge_short', on_hand_fraction: 1 }, // no recipe_ulid
+      at: '2026-07-17',
+    });
+    await expect(pipeline.consume(derived.ulid, { ulid: ULID(66) })).rejects.toThrow(ConsumeIneligibleError);
+  });
+
+  it('rejects a recipe_ulid that fails to resolve (unknown recipe)', async () => {
+    const { pipeline } = harness([]); // resolveRecipe never finds anything
+    const { item: oats } = await pipeline.createItem({ raw_label: 'Rolled oats', shelf_life_class: 'pantry', acquired_at: '2026-07-01' });
+    const { derived } = await pipeline.convert({
+      sources: [{ item_ulid: oats.ulid }],
+      derived: { name: 'Overnight oats jar', shelf_life_class: 'fridge_short', units_total: 3, recipe_ulid: RECIPE.ulid },
+      at: '2026-07-17',
+    });
+    await expect(pipeline.consume(derived.ulid, { ulid: ULID(67) })).rejects.toThrow(ConsumeIneligibleError);
+  });
+
+  it('rejects an already-terminal item (409-mapped InvalidTransitionError), even before eligibility is checked', async () => {
+    const { pipeline } = harness();
+    const { item } = await pipeline.createItem({ raw_label: 'Old milk', shelf_life_class: 'fridge_short', acquired_at: '2026-07-01' });
+    await pipeline.applyEvent(item.ulid, 'finished', {});
+    await expect(pipeline.consume(item.ulid, { ulid: ULID(68) })).rejects.toThrow(InvalidTransitionError);
+  });
+
+  it('404s (returns null) for an unknown item', async () => {
+    const { pipeline } = harness();
+    const result = await pipeline.consume(ULID(99), { ulid: ULID(69) });
+    expect(result).toBeNull();
+  });
+
+  it('503s (ConsumeNotConfiguredError) when the pipeline has no consumeStore/resolveRecipe wired', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log); // no consume config
+    const { item } = await pipeline.createItem({ raw_label: 'Rolled oats', shelf_life_class: 'pantry', acquired_at: '2026-07-01' });
+    await expect(pipeline.consume(item.ulid, { ulid: ULID(70) })).rejects.toThrow(ConsumeNotConfiguredError);
+  });
+
+  it('idempotent replay: succeeds with no duplicate entry and no double-deplete, even after the item went terminal', async () => {
+    const { pipeline, entries } = harness();
+    const { item: oats } = await pipeline.createItem({ raw_label: 'Rolled oats', shelf_life_class: 'pantry', acquired_at: '2026-07-01' });
+    const { derived } = await pipeline.convert({
+      sources: [{ item_ulid: oats.ulid }],
+      derived: { name: 'Overnight oats jar', shelf_life_class: 'fridge_short', units_total: 1, recipe_ulid: RECIPE.ulid },
+      at: '2026-07-17',
+    });
+
+    const first = await pipeline.consume(derived.ulid, { ulid: ULID(71) });
+    expect(first!.created).toBe(true);
+    expect(first!.item.state).toBe('finished'); // the only unit — the item is now terminal
+
+    // A replay of the SAME client-generated entry ulid must still succeed
+    // (the offline app retries on every reconnect) rather than 409 against
+    // the terminal state the first attempt itself produced.
+    const replay = await pipeline.consume(derived.ulid, { ulid: ULID(71) });
+    expect(replay!.created).toBe(false);
+    expect(replay!.entry).toEqual(first!.entry);
+    expect(replay!.item.state).toBe('finished');
+    expect(replay!.item.units_remaining).toBe(0);
+
+    expect(entries.records.size).toBe(1); // no duplicate entry
   });
 });

@@ -7,7 +7,12 @@
 
 import type { ComponentQuantity, NutritionFields, RecipeRecord } from '../types.js';
 
-function round1(n: number): number {
+/**
+ * Round to one decimal place. Exported so other deterministic macro math
+ * (e.g. `services/inventory.ts`'s consume-from-inventory macro scaling,
+ * claude-assist#110) rounds the same way instead of re-deriving it.
+ */
+export function round1(n: number): number {
   return Math.round(n * 10) / 10;
 }
 
