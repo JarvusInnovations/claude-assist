@@ -182,9 +182,12 @@ export function prepNodeLink(nodeId: string): string {
  *
  * The URL slot is the alert's single tappable action, and tap-to-join is its
  * primary job — so an action link from `alertUrl` (Join/Map) always keeps the
- * slot, and the prep link rides in the body text instead. Only when the alert
- * has no action link does the prep link take the URL slot (labeled "Prep").
- * No prep, or a prep never rendered to Tana (no node id) → payload unchanged.
+ * slot. When a join/map link claims it, the prep is referenced by its home
+ * ("Prep in today's note") rather than embedded as a raw URL in the body — no
+ * alert ever puts a dead, untappable link in its body text. Only when the
+ * alert has no action link does the prep link take the URL slot (labeled
+ * "Prep"). No prep, or a prep never rendered to Tana (no node id) → payload
+ * carries no prep reference.
  */
 export function buildAlertPayload(
   item: AlertPlanItem,
