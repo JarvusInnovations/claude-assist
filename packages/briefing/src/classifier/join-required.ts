@@ -119,7 +119,10 @@ export function hasPhysicalLocation(location: string): boolean {
 
 export function detectVenue(event: CalendarEvent): VenueKind {
   const conferencing =
-    !!event.hangoutLink || locationHasUrl(event.location) || URL_RE.test(event.description);
+    !!event.joinUrl ||
+    !!event.hangoutLink ||
+    locationHasUrl(event.location) ||
+    URL_RE.test(event.description);
   const physical = hasPhysicalLocation(event.location);
   // Physical wins for lead-time purposes when travel is implied; but a Meet link
   // on a physically-located event still reads as attendable remotely → video.
@@ -135,14 +138,24 @@ export function detectVenue(event: CalendarEvent): VenueKind {
 const HTTP_URL_RE = /https?:\/\/[^\s<>"')]+/i;
 
 /**
- * The clickable link for a "Join" action on an alert, checked in the same
- * priority order as `detectVenue`: hangoutLink, then location, then
- * description. Returns null when none of those hold an explicit http(s) link —
- * a bare domain mention (e.g. "zoom.us/j/1" with no scheme, which still counts
+ * The clickable link for a "Join" action on an alert, checked in priority
+ * order: `joinUrl`, then `hangoutLink`, then location, then description.
+ *
+ * `joinUrl` is gws-axi's structured, provider-uniform link (resolved from
+ * conferenceData) and goes first — it's populated for Teams/Zoom/Webex, where
+ * `hangoutLink` is always empty and the only other place a link might appear
+ * is a calendar-CLI-truncated description. `hangoutLink` stays next as a
+ * Meet-specific fallback for the rare case conferenceData/join_url is empty
+ * but hangoutLink is set. Location/description regex-scraping are the last
+ * resort for events gws-axi didn't resolve at all.
+ *
+ * Returns null when none of those hold an explicit http(s) link — a bare
+ * domain mention (e.g. "zoom.us/j/1" with no scheme, which still counts
  * toward `detectVenue`'s conferencing check) isn't trivially safe to turn into
  * a link, so it's left out rather than guessed at.
  */
 export function conferencingUrl(event: CalendarEvent): string | null {
+  if (event.joinUrl) return event.joinUrl;
   if (event.hangoutLink) return event.hangoutLink;
   return (
     event.location.match(HTTP_URL_RE)?.[0].replace(/[.,;:]+$/, '') ??

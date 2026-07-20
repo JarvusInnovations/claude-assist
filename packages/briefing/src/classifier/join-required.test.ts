@@ -23,6 +23,7 @@ function mkEvent(over: Partial<CalendarEvent> = {}): CalendarEvent {
     myResponse: 'accepted',
     attendeeCount: 3,
     location: '',
+    joinUrl: '',
     hangoutLink: 'https://meet.google.com/abc-defg-hij',
     description: '',
     status: 'confirmed',
@@ -191,11 +192,50 @@ describe('detectVenue', () => {
   it('a conferencing URL still wins even alongside a physical-looking location', () => {
     expect(detectVenue(mkEvent({ location: '1234 Market St, 5th Floor' }))).toBe('video');
   });
+
+  // A present joinUrl is the same class of video signal as hangoutLink — it's
+  // gws-axi's structured, provider-uniform link, so it counts on its own even
+  // when hangoutLink/location/description hold nothing.
+  it('a present joinUrl alone is a video signal, with no hangoutLink or URL elsewhere', () => {
+    const event = mkEvent({
+      hangoutLink: '',
+      location: 'Microsoft Teams Meeting',
+      description: '',
+      joinUrl: 'https://teams.microsoft.com/l/meetup-join/example',
+    });
+    expect(detectVenue(event)).toBe('video');
+  });
 });
 
 describe('conferencingUrl', () => {
-  it('prefers hangoutLink when present', () => {
+  it('prefers joinUrl over hangoutLink when both are present', () => {
+    expect(
+      conferencingUrl(
+        mkEvent({ joinUrl: 'https://teams.microsoft.com/l/meetup-join/example' })
+      )
+    ).toBe('https://teams.microsoft.com/l/meetup-join/example');
+  });
+
+  it('falls back to hangoutLink when joinUrl is empty', () => {
     expect(conferencingUrl(mkEvent())).toBe('https://meet.google.com/abc-defg-hij');
+  });
+
+  // The bug this regression-tests (issue #115): externally-organized Teams/
+  // Zoom/Webex meetings carry no hangoutLink, and the join link only in the
+  // description — which the calendar CLI truncates. gws-axi 0.17.0's
+  // structured `join_url` column resolves the link even when hangoutLink and
+  // location/description scraping come up empty.
+  it('resolves a Join link for a Teams-shaped event via joinUrl alone', () => {
+    expect(
+      conferencingUrl(
+        mkEvent({
+          hangoutLink: '',
+          location: 'Microsoft Teams Meeting',
+          description: '',
+          joinUrl: 'https://teams.microsoft.com/l/meetup-join/example',
+        })
+      )
+    ).toBe('https://teams.microsoft.com/l/meetup-join/example');
   });
 
   it('falls back to an http(s) URL in the location', () => {
