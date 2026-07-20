@@ -16,8 +16,14 @@ import { decodeToonRows } from '../toon.js';
 
 const execFileAsync = promisify(execFile);
 
-/** Columns we always request so the classifier has what it needs. */
-const FIELDS = 'status,attendees,location,description,hangoutLink';
+/**
+ * Columns we always request so the classifier has what it needs. `join_url` is
+ * the provider-uniform join link resolved from structured conferenceData
+ * (populated for Teams/Zoom/Webex, and for Meet meetings too); `hangoutLink`
+ * stays requested as a fallback for Meet meetings where conferenceData/join_url
+ * comes back empty.
+ */
+const FIELDS = 'status,attendees,location,description,hangoutLink,join_url';
 
 export interface CalendarReadResult {
   events: CalendarEvent[];
@@ -70,8 +76,8 @@ export async function fetchEvents(opts: FetchEventsOptions): Promise<CalendarRea
 /**
  * Parse gws-axi's TOON output for `calendar events`. The relevant frame is:
  *
- *   events[3]{id,summary,start,end,my_response,attachments,status,attendees,...}:
- *     abc_20260710,Office,2026-07-10,2026-07-11,"","",ok,"","",...
+ *   events[3]{id,summary,start,end,my_response,attachments,status,attendees,...,join_url}:
+ *     abc_20260710,Office,2026-07-10,2026-07-11,"","",ok,"",...,""
  *
  * The canonical TOON decoder handles the header + indented rows (including
  * backslash-escaped quotes/newlines in fields). Returns [] when no `events`
@@ -114,6 +120,7 @@ function rowToEvent(rec: Record<string, string>): CalendarEvent {
     myResponse,
     attendeeCount: parseAttendeeCount(get('attendees')),
     location: get('location'),
+    joinUrl: get('join_url'),
     hangoutLink: get('hangoutLink'),
     description: get('description'),
     status: get('status'),

@@ -38,7 +38,14 @@ export interface CalendarEvent {
   attendeeCount: number;
   /** Physical location, if any (may hold a conferencing URL — see hasUrl). */
   location: string;
-  /** Google Meet link, if any. */
+  /**
+   * Provider-uniform join link from gws-axi's structured `join_url` column
+   * (resolved from conferenceData; populated for Teams/Zoom/Webex, and for
+   * Meet via hangoutLink when conferenceData itself is empty). Preferred over
+   * `hangoutLink`/location/description scraping — see `conferencingUrl`.
+   */
+  joinUrl: string;
+  /** Google Meet link, if any. Kept as a fallback alongside `joinUrl`. */
   hangoutLink: string;
   /** Free-text description (only when requested from gws-axi). */
   description: string;

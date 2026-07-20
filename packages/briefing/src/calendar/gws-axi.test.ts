@@ -5,7 +5,7 @@ import {
   parseEventsToon,
   stripInstanceSuffix,
 } from './gws-axi.js';
-import { classifyEvent } from '../classifier/join-required.js';
+import { classifyEvent, conferencingUrl, detectVenue } from '../classifier/join-required.js';
 
 // A verbatim-shaped gws-axi `calendar events --fields status,attendees,location,
 // description,hangoutLink` frame (columns reordered as the CLI emits them).
@@ -87,6 +87,83 @@ describe('parseEventsToon — TOON escaping regression', () => {
     ].join('\n');
     const [event] = parseEventsToon(withNewline);
     expect(event!.description).toBe('Line one\nLine two');
+  });
+});
+
+describe('parseEventsToon — join_url (gws-axi 0.17.0)', () => {
+  // Externally-organized Teams/Zoom/Webex meetings carry no hangoutLink and no
+  // usable link in location/description — the bug this fixture regression-tests
+  // (issue #115). gws-axi 0.17.0's structured `join_url` column is the fix: it
+  // resolves the link from conferenceData even when hangoutLink is empty.
+  const TEAMS = [
+    'account: user@example.com',
+    'count: 1',
+    'events[1]{id,summary,start,end,my_response,attendees,location,description,hangoutLink,join_url}:',
+    '  teams1_20260721T190000Z,Vendor sync,"2026-07-21T15:00:00-04:00","2026-07-21T15:30:00-04:00",' +
+      'accepted,"2 (1 accepted, 1 needsAction)","Microsoft Teams Meeting","",' +
+      '"","https://teams.microsoft.com/l/meetup-join/example-conference-id"',
+    'help[1]:',
+    '  Run `gws-axi calendar get <id>`',
+  ].join('\n');
+
+  // A Meet meeting: hangoutLink is populated, join_url comes back empty (Meet
+  // meetings resolve their link via hangoutLink rather than conferenceData).
+  const MEET = [
+    'account: user@example.com',
+    'count: 1',
+    'events[1]{id,summary,start,end,my_response,attendees,location,description,hangoutLink,join_url}:',
+    '  meet1_20260721T190000Z,Design review,"2026-07-21T15:00:00-04:00","2026-07-21T15:30:00-04:00",' +
+      'accepted,"2 (1 accepted, 1 needsAction)","","",' +
+      '"https://meet.google.com/abc-defg-hij",""',
+    'help[1]:',
+    '  Run `gws-axi calendar get <id>`',
+  ].join('\n');
+
+  // A physical, no-conferencing meeting: join_url and hangoutLink both empty.
+  const PHYSICAL = [
+    'account: user@example.com',
+    'count: 1',
+    'events[1]{id,summary,start,end,my_response,attendees,location,description,hangoutLink,join_url}:',
+    '  room1_20260721T190000Z,Onsite kickoff,"2026-07-21T15:00:00-04:00","2026-07-21T15:30:00-04:00",' +
+      'accepted,"2 (1 accepted, 1 needsAction)","100 Main St, 5th Floor","",' +
+      '"",""',
+    'help[1]:',
+    '  Run `gws-axi calendar get <id>`',
+  ].join('\n');
+
+  it('parses join_url onto the event, ahead of an empty hangoutLink', () => {
+    const [event] = parseEventsToon(TEAMS);
+    expect(event!.joinUrl).toBe('https://teams.microsoft.com/l/meetup-join/example-conference-id');
+    expect(event!.hangoutLink).toBe('');
+  });
+
+  it('a Teams-shaped fixture (no hangoutLink, name-only location, join_url present) yields a Join link and classifies join-required with a video venue', () => {
+    const [event] = parseEventsToon(TEAMS);
+    expect(conferencingUrl(event!)).toBe(
+      'https://teams.microsoft.com/l/meetup-join/example-conference-id'
+    );
+    expect(detectVenue(event!)).toBe('video');
+    const classification = classifyEvent(event!);
+    expect(classification.joinRequired).toBe(true);
+    expect(classification.venue).toBe('video');
+  });
+
+  it('a Meet fixture (hangoutLink present, join_url empty) still resolves a Join link via the hangoutLink fallback', () => {
+    const [event] = parseEventsToon(MEET);
+    expect(event!.joinUrl).toBe('');
+    expect(event!.hangoutLink).toBe('https://meet.google.com/abc-defg-hij');
+    expect(conferencingUrl(event!)).toBe('https://meet.google.com/abc-defg-hij');
+    const classification = classifyEvent(event!);
+    expect(classification.joinRequired).toBe(true);
+    expect(classification.venue).toBe('video');
+  });
+
+  it('a physical/no-link fixture still yields no join link', () => {
+    const [event] = parseEventsToon(PHYSICAL);
+    expect(event!.joinUrl).toBe('');
+    expect(event!.hangoutLink).toBe('');
+    expect(conferencingUrl(event!)).toBeNull();
+    expect(detectVenue(event!)).toBe('physical');
   });
 });
 

@@ -30,6 +30,7 @@ function mkEvent(over: Partial<CalendarEvent> = {}): CalendarEvent {
     myResponse: 'accepted',
     attendeeCount: 3,
     location: '',
+    joinUrl: '',
     hangoutLink: 'https://meet.google.com/abc',
     description: '',
     status: 'confirmed',

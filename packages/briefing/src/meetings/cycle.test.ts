@@ -40,6 +40,7 @@ function ev(opts: EvOpts = {}): CalendarEvent {
     myResponse: 'accepted',
     attendeeCount: 3,
     location: '',
+    joinUrl: '',
     hangoutLink: 'https://meet.google.com/x',
     description: '',
     status: 'confirmed',

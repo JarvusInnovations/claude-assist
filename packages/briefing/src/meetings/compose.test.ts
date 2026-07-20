@@ -15,6 +15,7 @@ function ev(over: Partial<CalendarEvent> = {}): CalendarEvent {
     myResponse: 'accepted',
     attendeeCount: 4,
     location: 'Room 5',
+    joinUrl: '',
     hangoutLink: '',
     description: 'Agenda: statuses',
     status: 'confirmed',
