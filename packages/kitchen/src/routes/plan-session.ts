@@ -18,6 +18,7 @@ import {
   gatherPlanningContext,
   composePreloadPrompt,
   PLAN_SESSION_TITLE,
+  PLAN_SESSION_GROUP,
   type PlanningContextConfig,
 } from '../services/plan-session.js';
 
@@ -44,7 +45,7 @@ export const registerPlanSessionRoutes: FastifyPluginAsync<PlanSessionRoutesConf
     const ctx = await gatherPlanningContext({ pipeline, inventory }, contextConfig);
     const preloadPrompt = composePreloadPrompt(ctx);
 
-    const record = await spawner.spawn({ preloadPrompt, title: PLAN_SESSION_TITLE });
+    const record = await spawner.spawn({ preloadPrompt, title: PLAN_SESSION_TITLE, group: PLAN_SESSION_GROUP });
 
     if (record.status === 'not_configured') {
       reply.status(503);

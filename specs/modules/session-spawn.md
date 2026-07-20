@@ -13,13 +13,19 @@ data and never enters this repo. Meal-planning is the first configured caller; t
 machinery is generic (any module can request a warm session with its own
 context).
 
+A caller may also tag its request with a short **group** — a caller identity
+(e.g. `kitchen`) passed to the spawn command as `SESSION_SPAWN_GROUP` (see
+§ Caller group). What the command does with that tag — routing sessions to a
+per-caller workspace, tagging metadata, ignoring it entirely — is instance
+configuration, outside this module's concern.
+
 ## Runtime shape
 
 The module decorates the Fastify instance with a single service,
 `fastify.sessionSpawner`, implementing the `SessionSpawner` interface. Any
 module (a route handler in kitchen, a future scheduler) calls
-`sessionSpawner.spawn(request)` with its own `preloadPrompt` + `title`. The
-service:
+`sessionSpawner.spawn(request)` with its own `preloadPrompt` + `title`, and
+optionally a caller `group` tag. The service:
 
 1. Runs the configured spawn command with the preload prompt (see § Spawn
    command contract).
@@ -63,7 +69,7 @@ failed — a slow warm or a hung command must fail loud, never hang the caller.
 
 ## Spawn command contract
 
-Given a `SpawnRequest { preloadPrompt, title }`, the service:
+Given a `SpawnRequest { preloadPrompt, title, group? }`, the service:
 
 1. Writes `preloadPrompt` to a **temporary file** (owner-only mode, in the OS
    temp dir).
@@ -73,7 +79,8 @@ Given a `SpawnRequest { preloadPrompt, title }`, the service:
    prompt from that file; the prompt is never passed as a shell-visible argument.
 3. Runs the command (`argv[0]` with the remaining args), capturing stdout and
    stderr, bounded by the timeout above. The command runs with a **sanitized
-   environment** (see § Sanitized environment).
+   environment** (see § Sanitized environment), plus `SESSION_SPAWN_GROUP` when
+   a valid `group` was given (see § Caller group).
 4. **Success** ⇔ the command exits `0` **and** stdout contains at least one
    `https://` URL. The **takeover link is the first `https://` URL in stdout.**
 5. **Failure** ⇔ non-zero exit, timeout, **or** exit `0` with no `https://` URL
@@ -118,6 +125,31 @@ So the stripped env is the concrete enforcement of the honest-billing boundary:
 a spawned human session inherits ambient/subscription auth, never the service's
 metered API credentials. A spawner test asserts the child env omits all three
 stripped keys while preserving unrelated vars (e.g. `PATH`).
+
+## Caller group
+
+A caller may set `SpawnRequest.group` — a short tag identifying *which caller*
+requested the spawn (e.g. `kitchen`). When present and valid, the service adds
+`SESSION_SPAWN_GROUP=<group>` to the child env passed to the spawn command
+(alongside the sanitized env above). When absent — or invalid — the variable is
+omitted entirely; the instance wrapper is expected to fall back to a default
+when it sees no `SESSION_SPAWN_GROUP`.
+
+- **Validation.** `group` must match `^[a-z0-9-]{1,32}$` (lowercase
+  alphanumerics and hyphens, 1-32 chars). This is defensive: an unsanitized
+  caller-supplied string is never interpolated into a child process
+  environment. An invalid value is **not** an error — the spawn proceeds as if
+  `group` were absent, with a warning logged (`spawnId`, the rejected value).
+  A misbehaving caller degrades to "no group tag," never a broken spawn.
+- **What it's for.** The toolkit does not know or care what a group is used
+  for. The first caller, meal-planning, tags its requests `kitchen`; the
+  instance's spawn command can use that to route the warm session into a
+  caller-specific workspace, tag session metadata, or ignore it — all instance
+  configuration, none of it in this repo.
+- **Scope.** One tag per request, not a list — a caller is one thing (a route,
+  a scheduler), and its group is fixed at the call site (see
+  `PLAN_SESSION_GROUP` in the kitchen module's caller code as the pattern:
+  export the group as a constant next to the session title).
 
 ## Dispatch-and-redact
 
@@ -187,6 +219,12 @@ interface SpawnRequest {
   preloadPrompt: string;
   /** Short human label for the session, used in the push title (e.g. "meal-planning"). */
   title: string;
+  /**
+   * Optional short caller tag (e.g. "kitchen"), passed to the spawn command as
+   * SESSION_SPAWN_GROUP. Must match ^[a-z0-9-]{1,32}$; invalid ⇒ treated as
+   * absent (see § Caller group).
+   */
+  group?: string;
 }
 
 type SpawnStatus = 'spawned' | 'failed' | 'not_configured';
@@ -215,7 +253,10 @@ configured command. The success fixture echoes a fake takeover line
 argument; failure fixtures exit non-zero or print no URL. `SESSION_SPAWN_CMD`
 in tests points at the fixture, so the full path — command run, link extracted,
 dispatch, redaction, record returned — exercises end-to-end against a fake
-dispatcher without touching any real session tooling.
+dispatcher without touching any real session tooling. Spawner tests reuse the
+injectable exec seam (`config.execFile`) to assert the captured child env
+carries `SESSION_SPAWN_GROUP` when a valid `group` was requested, and omits it
+when `group` is absent or invalid.
 
 ## Principles
 

@@ -167,6 +167,13 @@ export async function gatherPlanningContext(
 export const PLAN_SESSION_TITLE = 'meal-planning';
 
 /**
+ * The caller group tag handed to the spawner (`SpawnRequest.group`), so the
+ * configured spawn command can route/organize kitchen-spawned sessions
+ * separately from other callers. See specs/modules/session-spawn.md.
+ */
+export const PLAN_SESSION_GROUP = 'kitchen';
+
+/**
  * Compose the warm-start preload prompt from the gathered context. Pure and
  * exported for tests. Names only the owner's own kitchen state — no instance
  * data beyond what the owner already logged.

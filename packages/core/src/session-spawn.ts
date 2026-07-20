@@ -25,6 +25,14 @@ export interface SpawnRequest {
   preloadPrompt: string;
   /** Short human label for the session, used in the push title (e.g. "meal-planning"). */
   title: string;
+  /**
+   * Optional short caller tag (e.g. "kitchen"), passed to the spawn command as
+   * `SESSION_SPAWN_GROUP` so the command can route/organize sessions by caller.
+   * Must match `^[a-z0-9-]{1,32}$`; an invalid value is treated as absent (see
+   * the session-spawn module spec). What the command does with it is instance
+   * configuration, outside this module's concern.
+   */
+  group?: string;
 }
 
 export type SpawnStatus = 'spawned' | 'failed' | 'not_configured';

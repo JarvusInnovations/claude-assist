@@ -164,6 +164,8 @@ describe('POST /api/kitchen/plan-session', () => {
     // The endpoint handed the spawner a real preload prompt.
     expect(spawner.requests[0]!.title).toBe('meal-planning');
     expect(spawner.requests[0]!.preloadPrompt).toContain('meal-planning');
+    // Tags the request with the kitchen caller group.
+    expect(spawner.requests[0]!.group).toBe('kitchen');
   });
 
   it('unconfigured (no sessionSpawner decorator): 503', async () => {
