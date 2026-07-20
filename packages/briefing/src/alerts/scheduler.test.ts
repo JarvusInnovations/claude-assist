@@ -245,11 +245,22 @@ describe('buildAlertPayload prep links', () => {
     expect(payload.body).not.toContain('Prep:');
   });
 
-  it('a join link keeps the URL slot; the prep link rides in the body', () => {
+  it('a join link keeps the URL slot; the prep is referenced by its home, not a body link', () => {
     const payload = buildAlertPayload(mkItem(), mkPrep());
     expect(payload.url).toBe('https://meet.google.com/abc');
     expect(payload.urlTitle).toBe('Join');
-    expect(payload.body).toContain(`Prep: ${prepNodeLink('prepNode123')}`);
+    // No raw link embedded in the body — Pushover's single slot went to Join,
+    // and neither the join link nor the prep link is duplicated as body text.
+    expect(payload.body).not.toContain('https://meet.google.com/abc');
+    expect(payload.body).not.toContain(prepNodeLink('prepNode123'));
+    expect(payload.body).toContain("Prep in today's note");
+  });
+
+  it('a video alert never puts the raw join link in the body (it is the button)', () => {
+    const payload = buildAlertPayload(mkItem(), null);
+    expect(payload.url).toBe('https://meet.google.com/abc');
+    expect(payload.urlTitle).toBe('Join');
+    expect(payload.body).not.toContain('http');
   });
 
   it('no prep → payload unchanged', () => {
@@ -282,7 +293,10 @@ describe('runAlertCycle prep links', () => {
     expect(sent).toHaveLength(1);
     expect(sent[0]!.url).toBe('https://meet.google.com/abc');
     expect(sent[0]!.urlTitle).toBe('Join');
-    expect(sent[0]!.body).toContain(prepNodeLink('prepNode123'));
+    // The join link is the tappable button, not raw body text; prep points home.
+    expect(sent[0]!.body).not.toContain('https://meet.google.com/abc');
+    expect(sent[0]!.body).not.toContain(prepNodeLink('prepNode123'));
+    expect(sent[0]!.body).toContain("Prep in today's note");
   });
 
   it('puts the prep link in the URL slot when the alert has no action link', async () => {

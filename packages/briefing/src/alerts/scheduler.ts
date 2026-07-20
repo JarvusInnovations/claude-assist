@@ -143,8 +143,11 @@ export function alertBody(item: AlertPlanItem): string {
     ? item.event.start.slice(11, 16)
     : item.event.start;
   parts.push(`Starts ${when}.`);
-  if (item.event.hangoutLink) parts.push(item.event.hangoutLink);
-  else if (item.event.location) parts.push(item.event.location);
+  // Never embed the join link as body text — it lives in the tappable URL slot
+  // (alertUrl). A physical/name-only location is plain context, not a link, so
+  // it stays; a raw hangoutLink in the body would just duplicate the button as
+  // untappable text.
+  if (!item.event.hangoutLink && item.event.location) parts.push(item.event.location);
   return parts.join(' ');
 }
 
@@ -179,9 +182,12 @@ export function prepNodeLink(nodeId: string): string {
  *
  * The URL slot is the alert's single tappable action, and tap-to-join is its
  * primary job — so an action link from `alertUrl` (Join/Map) always keeps the
- * slot, and the prep link rides in the body text instead. Only when the alert
- * has no action link does the prep link take the URL slot (labeled "Prep").
- * No prep, or a prep never rendered to Tana (no node id) → payload unchanged.
+ * slot. When a join/map link claims it, the prep is referenced by its home
+ * ("Prep in today's note") rather than embedded as a raw URL in the body — no
+ * alert ever puts a dead, untappable link in its body text. Only when the
+ * alert has no action link does the prep link take the URL slot (labeled
+ * "Prep"). No prep, or a prep never rendered to Tana (no node id) → payload
+ * carries no prep reference.
  */
 export function buildAlertPayload(
   item: AlertPlanItem,
@@ -192,6 +198,10 @@ export function buildAlertPayload(
   const prepUrl = prep?.deliveredNodeId ? prepNodeLink(prep.deliveredNodeId) : null;
 
   if (!prepUrl) return { title, body: alertBody(item), ...action };
-  if (action.url) return { title, body: `${alertBody(item)} Prep: ${prepUrl}`, ...action };
+  // Pushover offers a single URL button. When a join/map link claims it, the
+  // prep link would otherwise land as raw text in the body — untappable from
+  // the notification. Point at the prep's durable home (today's day note)
+  // instead of embedding a dead link; the join button stays the one action.
+  if (action.url) return { title, body: `${alertBody(item)} Prep in today's note.`, ...action };
   return { title, body: alertBody(item), url: prepUrl, urlTitle: 'Prep' };
 }
