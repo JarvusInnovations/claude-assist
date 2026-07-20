@@ -19,6 +19,7 @@ import type {
   PurchaseBatchRecord,
   ShelfLifeClass,
 } from './inventory-types.js';
+import { deriveEatBy, normalizeLexiconLine } from './inventory-derive.js';
 
 // ── Normalized insert payloads ───────────────────────────────────────────────
 
@@ -353,7 +354,46 @@ export class PgInventoryStore implements InventoryStore {
         non_inventory = EXCLUDED.non_inventory
       RETURNING *
     `;
-    return rowToLexicon(row!);
+    const record = rowToLexicon(row!);
+    // claude-assist#102: a product mapping retro-resolves pending needs_info
+    // items carrying the same (store, line_text) — see § Receipt lexicon
+    // (specs/modules/kitchen.md). A skip marker (null product_ulid) has
+    // nothing to attach, so it's a no-op here.
+    if (record.product_ulid) {
+      await this.retroResolveLexiconMatches(record);
+    }
+    return record;
+  }
+
+  /**
+   * Resolve every open (`stocked`/`open`) `needs_info` item sharing this
+   * lexicon line's `(store, normalized raw_label)` — the same attach +
+   * clear-needs_info + re-derive-eat_by resolution `resolveLabel`'s fan-out
+   * applies to same-batch siblings, triggered here from the lexicon-upsert
+   * side instead of a scanned item. Each item's `eat_by` is re-derived from
+   * its OWN acquired/opened clock — distinct physical units.
+   */
+  private async retroResolveLexiconMatches(lexicon: LexiconRecord): Promise<void> {
+    if (!lexicon.product_ulid) return;
+    const product = await this.getProduct(lexicon.product_ulid);
+    const rows = await this.sql`
+      SELECT * FROM kitchen.inventory_items
+      WHERE needs_info = TRUE AND state IN ('stocked', 'open')
+        AND store = ${lexicon.store} AND raw_label IS NOT NULL
+    `;
+    for (const row of rows) {
+      const item = rowToItem(row);
+      if (normalizeLexiconLine(item.raw_label!) !== lexicon.line_text) continue;
+      const cls = lexicon.shelf_life_class ?? product?.shelf_life_class ?? 'unknown';
+      const eatBy = deriveEatBy({
+        shelfLifeClass: cls,
+        acquiredAt: item.acquired_at,
+        openedAt: item.opened_at,
+        daysUnopenedOverride: product?.shelf_life_days_unopened,
+        daysOpenedOverride: product?.shelf_life_days_opened,
+      });
+      await this.resolveNeedsInfo(item.ulid, { product_ulid: lexicon.product_ulid, shelf_life_class: cls, eat_by: eatBy });
+    }
   }
 
   async getLexicon(store: string, lineText: string): Promise<LexiconRecord | null> {

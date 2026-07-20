@@ -346,6 +346,16 @@ the planning conversation happens after takeover.
   estimation; cheap/fast tiers for mechanical extraction jobs (phase 2
   receipts/labels). Unhinted photos (share-intake) get a cheapest-vision
   classify-then-route pass.
+- **Printed text in frame is authoritative over visual inference.** When a
+  meal photo shows printed text describing the food — an order sticker, a
+  packaging label, a menu board, or a nutrition panel in frame — the
+  estimator reads and trusts that text for identity, size, and ingredients
+  ahead of what the eye alone would infer, and confidence rises when the
+  text corroborates the visual read. The estimation prompt carries this
+  instruction explicitly; a photo with no legible text behaves exactly as
+  before. This is the meal-estimation instance of capture path 1's rule
+  (`specs/diet-journal.md` § Capture paths): the lazy shot with the label in
+  frame is the *most* accurate technique, not the least.
 
 ## Integration seams
 
@@ -400,6 +410,20 @@ All tables instance-agnostic empty schema, ULID keys, `kitchen` schema
   `(store, line_text)` means a later label scan can overwrite a skip marker with
   a real product mapping, or a dismissal can overwrite a stale product mapping
   with a skip marker — last write wins, monotonic in intent.
+  **Seeding a product mapping retro-resolves pending questions**: any
+  upsert that carries a non-null `product_ulid` (the label-resolve write, the
+  agentic seed path `POST /lexicon`, or any future caller of
+  `store.upsertLexicon`) also resolves every `needs_info` item still on hand
+  (`stocked`/`open`) sharing the same `(store, normalized line_text)` — attach
+  `product_ulid`, clear `needs_info`, re-derive `eat_by` from each item's own
+  `acquired_at`/`opened_at` — the identical resolution the label-scan fan-out
+  applies to same-batch siblings (§ POST /inventory/:ulid/label), just
+  triggered from the lexicon side instead of a scanned item. A skip-marker
+  upsert (`product_ulid` null) never triggers this — there is no product to
+  attach. Already-resolved, dismissed, or terminal items are untouched (the
+  match is scoped to open `needs_info` items only), so the questions queue
+  holds only genuinely-unanswered identities, never ones a later mapping
+  already answered.
 - **`kitchen.inventory_items`** — one physical unit: `ulid`, `product_ulid`
   (nullable — null while `needs_info`), `raw_label` (text — the receipt line or
   display name when no product; nullable), `store` (nullable), `batch_ulid`
@@ -822,10 +846,12 @@ and write the kitchen without hand-rolled `curl`.
 - **Command surface** (each a thin veneer over one documented endpoint — the
   CLI adds no semantics the API lacks):
   - `entries` — list (since/limit), `show <ulid>`, `log` (note and/or
-    `--recipe` + component quantities; the deliberate no-model path),
-    `patch <ulid>` (note/label re-queue, macro override, portion multiplier),
-    `resolve`-style close-outs are NOT here (entries have no such state);
-    `delete <ulid>`.
+    `--recipe` + component quantities, optional `--at` to set `logged_at`;
+    the deliberate no-model path), `patch <ulid>` (note/label re-queue, macro
+    override, portion multiplier, `--at` to backdate `logged_at` — a metadata
+    edit like the multiplier: never re-queues estimation, never changes
+    source), `resolve`-style close-outs are NOT here (entries have no such
+    state); `delete <ulid>`.
   - `inventory` — list (eat-first order; `--state`, `--closed`),
     `show <ulid>`, `add` (manual/seed create), `event <ulid> <opened|finished|
     tossed> [--fraction]`, `remark "<free text>"` (the resolver; prints

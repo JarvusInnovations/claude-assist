@@ -66,6 +66,18 @@ export function deriveEatBy(inputs: EatByInputs): Date | null {
   return addDays(inputs.acquiredAt, days);
 }
 
+/**
+ * Normalize a receipt line / raw label for exact-string lexicon matching
+ * (upper + collapse whitespace). Canonical home for this normalization — both
+ * the receipt parser's lexicon lookups (services/inventory.ts) and the
+ * lexicon-upsert retro-resolve (inventory-store.ts, inventory-memory-store.ts)
+ * key off this same function so a line always normalizes identically
+ * everywhere it's compared.
+ */
+export function normalizeLexiconLine(text: string): string {
+  return text.trim().toUpperCase().replace(/\s+/g, ' ');
+}
+
 /** ISO date (YYYY-MM-DD) for a Date, or null. */
 export function toIsoDate(date: Date | null): string | null {
   if (!date) return null;

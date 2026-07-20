@@ -20,13 +20,15 @@ export const ENTRIES_HELP = `kitchen-axi entries <subcommand> [args] [--json]
   show <ulid>                          one entry, full nutrition/source/status
   log [note…] [--recipe ULID]          log a deliberate no-model entry
        [--component "label=grams"]…      (repeatable; recipe → deterministic macros)
+       [--at TIME]                       set logged_at (ISO or YYYY-MM-DD); default now
   patch <ulid> [flags]                 edit note/label (re-queue), macro override
-                                         (terminal), or --multiplier M (post-hoc rescale)
+                                         (terminal), --multiplier M (post-hoc rescale),
+                                         or --at TIME (backdate logged_at)
   delete <ulid>                        remove from all rollups
 
   Macros on the wire are the BASE; effective = base × portion_multiplier. A
-  macro flag on patch sets a terminal manual override; --multiplier only
-  rescales, never re-queues estimation or changes source.`;
+  macro flag on patch sets a terminal manual override; --multiplier and --at
+  only touch their own field — neither re-queues estimation nor changes source.`;
 
 const DETAIL_SCHEMA: FieldDef[] = [
   field("ulid"),
@@ -102,20 +104,38 @@ function parseComponent(raw: string): { label: string; quantity_g: number } {
   return { label, quantity_g: qty };
 }
 
-async function logEntry(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"], ["recipe", "component"]);
+/**
+ * Pure: build the `entry` JSON part's fields (everything but the ulid, which
+ * the caller generates) from `entries log`'s parsed positionals/flags —
+ * including `--at` → `logged_at` (claude-assist#111; the field is already
+ * accepted by `POST /entries`, this only wires the CLI flag to it). Exported
+ * so the arg-parse → `logged_at` wiring is unit-testable without a live
+ * server.
+ */
+export function buildLogEntryFields(
+  positionals: string[],
+  flags: Record<string, string | boolean>,
+  components: Array<{ label: string; quantity_g: number }>
+): Record<string, unknown> {
   const note = positionals.join(" ").trim();
   const recipe = typeof flags.recipe === "string" ? flags.recipe : undefined;
-  const components = collectFlag(args, "component").map(parseComponent);
 
   if (!note && !recipe) {
     throw new AxiError("entries log needs a note and/or --recipe", "VALIDATION_ERROR", [ENTRIES_HELP]);
   }
 
-  const entry: Record<string, unknown> = { ulid: generateUlid() };
+  const entry: Record<string, unknown> = {};
   if (note) entry.note = note;
   if (recipe) entry.recipe_ulid = recipe;
   if (components.length) entry.component_quantities = components;
+  if (typeof flags.at === "string") entry.logged_at = validateDate(flags.at, "--at", ENTRIES_HELP);
+  return entry;
+}
+
+async function logEntry(args: string[]): Promise<string> {
+  const { positionals, flags } = parseArgs(args, ["json"], ["recipe", "component", "at"]);
+  const components = collectFlag(args, "component").map(parseComponent);
+  const entry: Record<string, unknown> = { ulid: generateUlid(), ...buildLogEntryFields(positionals, flags, components) };
 
   const form = new FormData();
   form.append("entry", JSON.stringify(entry));
@@ -133,10 +153,14 @@ async function logEntry(args: string[]): Promise<string> {
   ]);
 }
 
-async function patchEntry(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"], ["note", "label", "portion-basis", "calories", "protein", "fat", "sat-fat", "carbs", "sodium", "multiplier"]);
-  const ulid = requirePositional(positionals, 0, "entry ulid", ENTRIES_HELP);
-
+/**
+ * Pure: build the PATCH body from `entries patch`'s parsed flags, including
+ * `--at` → `logged_at` (claude-assist#111; a metadata edit like
+ * `--multiplier` — the server field already never re-queues estimation or
+ * changes source). Exported so the arg-parse → `logged_at` wiring is
+ * unit-testable without a live server.
+ */
+export function buildPatchBody(flags: Record<string, string | boolean>): Record<string, unknown> {
   const body: Record<string, unknown> = {};
   if (typeof flags.note === "string") body.note = flags.note;
   if (typeof flags.label === "string") body.label = flags.label;
@@ -156,10 +180,20 @@ async function patchEntry(args: string[]): Promise<string> {
   if (typeof flags.multiplier === "string") {
     body.portion_multiplier = parseNumberFlag(flags.multiplier, "multiplier", ENTRIES_HELP, { min: 0.0001, max: 20 });
   }
+  if (typeof flags.at === "string") {
+    body.logged_at = validateDate(flags.at, "--at", ENTRIES_HELP);
+  }
 
   if (Object.keys(body).length === 0) {
     throw new AxiError("entries patch needs at least one field to change", "VALIDATION_ERROR", [ENTRIES_HELP]);
   }
+  return body;
+}
+
+async function patchEntry(args: string[]): Promise<string> {
+  const { positionals, flags } = parseArgs(args, ["json"], ["note", "label", "portion-basis", "calories", "protein", "fat", "sat-fat", "carbs", "sodium", "multiplier", "at"]);
+  const ulid = requirePositional(positionals, 0, "entry ulid", ENTRIES_HELP);
+  const body = buildPatchBody(flags);
 
   const updated = await api.patch(`/api/kitchen/entries/${encodeURIComponent(ulid)}`, body);
   if (flags.json) return rawJson(updated);

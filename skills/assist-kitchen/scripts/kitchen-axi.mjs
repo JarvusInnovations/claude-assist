@@ -575,12 +575,12 @@ var COMMAND_GROUPS = [
       { usage: "entries list [--since DATE] [--limit N]", summary: "newest-first consumption entries (base macros + portion_multiplier; effective = base \xD7 multiplier)" },
       { usage: "entries show <ulid>", summary: "one entry with full nutrition, source, and status" },
       {
-        usage: 'entries log [note\u2026] [--recipe ULID] [--component "label=grams"]\u2026',
-        summary: "log a deliberate, no-model entry (note and/or recipe + component quantities); recipe-referenced entries are computed deterministically"
+        usage: 'entries log [note\u2026] [--recipe ULID] [--component "label=grams"]\u2026 [--at TIME]',
+        summary: "log a deliberate, no-model entry (note and/or recipe + component quantities); recipe-referenced entries are computed deterministically; --at sets logged_at (default now)"
       },
       {
-        usage: "entries patch <ulid> [--note T] [--label T] [--calories N] [--protein N] [--fat N] [--sat-fat N] [--carbs N] [--sodium N] [--portion-basis T] [--multiplier M]",
-        summary: "edit an entry: note/label re-queue estimation; any macro sets a terminal manual override; --multiplier rescales the base post-hoc (never re-queues, never changes source)"
+        usage: "entries patch <ulid> [--note T] [--label T] [--calories N] [--protein N] [--fat N] [--sat-fat N] [--carbs N] [--sodium N] [--portion-basis T] [--multiplier M] [--at TIME]",
+        summary: "edit an entry: note/label re-queue estimation; any macro sets a terminal manual override; --multiplier rescales the base post-hoc and --at backdates logged_at (neither re-queues, neither changes source)"
       },
       { usage: "entries delete <ulid>", summary: "remove an entry from all rollups" }
     ]
@@ -1182,13 +1182,15 @@ var ENTRIES_HELP = `kitchen-axi entries <subcommand> [args] [--json]
   show <ulid>                          one entry, full nutrition/source/status
   log [note\u2026] [--recipe ULID]          log a deliberate no-model entry
        [--component "label=grams"]\u2026      (repeatable; recipe \u2192 deterministic macros)
+       [--at TIME]                       set logged_at (ISO or YYYY-MM-DD); default now
   patch <ulid> [flags]                 edit note/label (re-queue), macro override
-                                         (terminal), or --multiplier M (post-hoc rescale)
+                                         (terminal), --multiplier M (post-hoc rescale),
+                                         or --at TIME (backdate logged_at)
   delete <ulid>                        remove from all rollups
 
   Macros on the wire are the BASE; effective = base \xD7 portion_multiplier. A
-  macro flag on patch sets a terminal manual override; --multiplier only
-  rescales, never re-queues estimation or changes source.`;
+  macro flag on patch sets a terminal manual override; --multiplier and --at
+  only touch their own field \u2014 neither re-queues estimation nor changes source.`;
 var DETAIL_SCHEMA = [
   field("ulid"),
   field("logged_at", "logged"),
@@ -1257,18 +1259,23 @@ function parseComponent(raw) {
   }
   return { label, quantity_g: qty };
 }
-async function logEntry(args) {
-  const { positionals, flags } = parseArgs(args, ["json"], ["recipe", "component"]);
+function buildLogEntryFields(positionals, flags, components) {
   const note = positionals.join(" ").trim();
   const recipe = typeof flags.recipe === "string" ? flags.recipe : void 0;
-  const components = collectFlag(args, "component").map(parseComponent);
   if (!note && !recipe) {
     throw new AxiError("entries log needs a note and/or --recipe", "VALIDATION_ERROR", [ENTRIES_HELP]);
   }
-  const entry = { ulid: generateUlid() };
+  const entry = {};
   if (note) entry.note = note;
   if (recipe) entry.recipe_ulid = recipe;
   if (components.length) entry.component_quantities = components;
+  if (typeof flags.at === "string") entry.logged_at = validateDate(flags.at, "--at", ENTRIES_HELP);
+  return entry;
+}
+async function logEntry(args) {
+  const { positionals, flags } = parseArgs(args, ["json"], ["recipe", "component", "at"]);
+  const components = collectFlag(args, "component").map(parseComponent);
+  const entry = { ulid: generateUlid(), ...buildLogEntryFields(positionals, flags, components) };
   const form = new FormData();
   form.append("entry", JSON.stringify(entry));
   const record = await api.postForm("/api/kitchen/entries", form);
@@ -1281,9 +1288,7 @@ async function logEntry(args) {
     ])
   ]);
 }
-async function patchEntry(args) {
-  const { positionals, flags } = parseArgs(args, ["json"], ["note", "label", "portion-basis", "calories", "protein", "fat", "sat-fat", "carbs", "sodium", "multiplier"]);
-  const ulid = requirePositional(positionals, 0, "entry ulid", ENTRIES_HELP);
+function buildPatchBody(flags) {
   const body = {};
   if (typeof flags.note === "string") body.note = flags.note;
   if (typeof flags.label === "string") body.label = flags.label;
@@ -1302,9 +1307,18 @@ async function patchEntry(args) {
   if (typeof flags.multiplier === "string") {
     body.portion_multiplier = parseNumberFlag(flags.multiplier, "multiplier", ENTRIES_HELP, { min: 1e-4, max: 20 });
   }
+  if (typeof flags.at === "string") {
+    body.logged_at = validateDate(flags.at, "--at", ENTRIES_HELP);
+  }
   if (Object.keys(body).length === 0) {
     throw new AxiError("entries patch needs at least one field to change", "VALIDATION_ERROR", [ENTRIES_HELP]);
   }
+  return body;
+}
+async function patchEntry(args) {
+  const { positionals, flags } = parseArgs(args, ["json"], ["note", "label", "portion-basis", "calories", "protein", "fat", "sat-fat", "carbs", "sodium", "multiplier", "at"]);
+  const ulid = requirePositional(positionals, 0, "entry ulid", ENTRIES_HELP);
+  const body = buildPatchBody(flags);
   const updated = await api.patch(`/api/kitchen/entries/${encodeURIComponent(ulid)}`, body);
   if (flags.json) return rawJson(updated);
   return renderDetail("entry", updated, DETAIL_SCHEMA);
@@ -1778,7 +1792,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "49f1917" : "dev";
+var VERSION = true ? "7a8a57b" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)
