@@ -31,6 +31,50 @@ import { generateSpawnId } from './ulid.js';
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * Injectable exec seam. Defaults to the promisified `execFile`; tests inject a
+ * fake to capture the argv + options (notably the sanitized `env`) without
+ * running a real command.
+ */
+export type ExecFileFn = (
+  file: string,
+  args: string[],
+  options: { timeout: number; maxBuffer: number; env: NodeJS.ProcessEnv },
+) => Promise<{ stdout: string; stderr: string }>;
+
+/**
+ * Claude programmatic-auth environment variables that MUST be stripped from the
+ * spawn command's environment.
+ *
+ * WHY: the spawn command warms an INTERACTIVE Remote-Control session that has to
+ * authenticate as the human's claude.ai *subscription* login (the ambient auth
+ * in the user's `~/.claude`). The server process, by contrast, carries metered
+ * programmatic API credentials in its own env. If those leak into the child,
+ * two things break: (1) RC rejects the spawn outright ("Remote Control requires
+ * a claude.ai subscription login, not oauth_token"), and (2) it would violate
+ * the single-invoker / honest-billing boundary — a human-driven interactive
+ * session must never run on the service's metered API credentials. So a spawned
+ * session inherits everything else (PATH, HOME, …) but NONE of these.
+ */
+export const STRIPPED_AUTH_ENV_VARS = [
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+] as const;
+
+/**
+ * A shallow copy of `process.env` with the Claude programmatic-auth variables
+ * removed, so the spawned interactive session falls back to ambient/subscription
+ * auth. Everything else the child needs (PATH, HOME, …) is preserved.
+ */
+function sanitizedSpawnEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of STRIPPED_AUTH_ENV_VARS) {
+    delete env[key];
+  }
+  return env;
+}
+
 /** Default wall-clock bound for a spawn command. Overridable via config. */
 export const DEFAULT_SPAWN_TIMEOUT_MS = 120_000;
 
@@ -60,12 +104,15 @@ export interface SessionSpawnerConfig {
   log: FastifyBaseLogger;
   /** Wall-clock bound per spawn (default 120s). */
   timeoutMs?: number;
+  /** Exec seam (default: promisified `execFile`). Tests inject a fake. */
+  execFile?: ExecFileFn;
 }
 
 export function createSessionSpawner(config: SessionSpawnerConfig): SessionSpawner {
   const { notify, log } = config;
   const command = config.command && config.command.length > 0 ? config.command : undefined;
   const timeoutMs = config.timeoutMs ?? DEFAULT_SPAWN_TIMEOUT_MS;
+  const exec: ExecFileFn = config.execFile ?? execFileAsync;
 
   /** Dispatch a failure push (no link) and return the failed record. */
   async function fail(spawnId: string, title: string, reason: string): Promise<SpawnRecord> {
@@ -109,9 +156,14 @@ export function createSessionSpawner(config: SessionSpawnerConfig): SessionSpawn
 
       let stdout: string;
       try {
-        const result = await execFileAsync(bin!, argv, {
+        // Run with a SANITIZED env: the Claude programmatic-auth vars are
+        // stripped so the spawned interactive session authenticates as the
+        // human's claude.ai subscription, not the service's metered API creds.
+        // See STRIPPED_AUTH_ENV_VARS.
+        const result = await exec(bin!, argv, {
           timeout: timeoutMs,
           maxBuffer: MAX_BUFFER_BYTES,
+          env: sanitizedSpawnEnv(),
         });
         stdout = result.stdout;
       } catch (err) {

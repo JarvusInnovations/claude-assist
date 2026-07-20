@@ -7,7 +7,7 @@ import type {
   NotifyInput,
   NotifyResult,
 } from '@jarvus/claude-assist-core';
-import { createSessionSpawner } from './spawner.js';
+import { createSessionSpawner, STRIPPED_AUTH_ENV_VARS } from './spawner.js';
 
 const SUCCESS = new URL('./__fixtures__/spawn-success.sh', import.meta.url).pathname;
 const FAIL = new URL('./__fixtures__/spawn-fail.sh', import.meta.url).pathname;
@@ -147,6 +147,55 @@ describe('SessionSpawner', () => {
     expect(record.status).toBe('failed');
     expect(record.reason).toContain('timed out');
     expect(notify.calls[0]!.url).toBeUndefined();
+  });
+
+  it('BILLING BOUNDARY: strips Claude programmatic-auth vars from the child env, keeps the rest', async () => {
+    const notify = new FakeDispatcher();
+    const log = captureLogger();
+
+    // Seed the parent env with the metered-auth vars (as the server would carry
+    // from its .env) plus an unrelated var that MUST survive.
+    const priorEnv = { ...process.env };
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = 'oauth-secret';
+    process.env.ANTHROPIC_API_KEY = 'api-secret';
+    process.env.ANTHROPIC_AUTH_TOKEN = 'auth-secret';
+    process.env.SPAWN_TEST_SENTINEL = 'keep-me';
+
+    try {
+      // Injected exec captures the options.env the spawner passes and returns a
+      // synthetic success without running anything.
+      let capturedEnv: NodeJS.ProcessEnv | undefined;
+      const spawner = createSessionSpawner({
+        command: ['some-rc-tool', 'spawn'],
+        notify,
+        log,
+        execFile: async (_file, _args, options) => {
+          capturedEnv = options.env;
+          return { stdout: 'https://example.test/rc/session_ENV', stderr: '' };
+        },
+      });
+
+      const record = await spawner.spawn({ preloadPrompt: 'brief', title: 'meal-planning' });
+      expect(record.status).toBe('spawned');
+
+      expect(capturedEnv).toBeDefined();
+      // Every stripped key is absent from the child env...
+      for (const key of STRIPPED_AUTH_ENV_VARS) {
+        expect(capturedEnv![key]).toBeUndefined();
+        expect(key in capturedEnv!).toBe(false);
+      }
+      // ...while unrelated vars (PATH, our sentinel) are preserved intact.
+      expect(capturedEnv!.SPAWN_TEST_SENTINEL).toBe('keep-me');
+      expect(capturedEnv!.PATH).toBe(process.env.PATH);
+      // The parent process env is untouched (we copied, not mutated).
+      expect(process.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('oauth-secret');
+    } finally {
+      // Restore the parent env exactly.
+      for (const key of Object.keys(process.env)) {
+        if (!(key in priorEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, priorEnv);
+    }
   });
 
   it('unconfigured (no command): returns not_configured and dispatches nothing', async () => {

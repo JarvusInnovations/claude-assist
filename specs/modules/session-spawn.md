@@ -72,7 +72,8 @@ Given a `SpawnRequest { preloadPrompt, title }`, the service:
    flag (e.g. `--preload-file`) receives the path. The command reads the preload
    prompt from that file; the prompt is never passed as a shell-visible argument.
 3. Runs the command (`argv[0]` with the remaining args), capturing stdout and
-   stderr, bounded by the timeout above.
+   stderr, bounded by the timeout above. The command runs with a **sanitized
+   environment** (see § Sanitized environment).
 4. **Success** ⇔ the command exits `0` **and** stdout contains at least one
    `https://` URL. The **takeover link is the first `https://` URL in stdout.**
 5. **Failure** ⇔ non-zero exit, timeout, **or** exit `0` with no `https://` URL
@@ -85,6 +86,38 @@ The contract the configured command must honor: *read a preload prompt from the
 file path given as its last argument, warm an RC session, and print a takeover
 URL as the first `https://` URL on stdout.* Everything else about the command is
 opaque to this module.
+
+## Sanitized environment
+
+The spawn command is invoked with a **shallow copy of the service's environment
+with the Claude programmatic-auth variables stripped**:
+
+- `CLAUDE_CODE_OAUTH_TOKEN`
+- `ANTHROPIC_API_KEY`
+- `ANTHROPIC_AUTH_TOKEN`
+
+Everything else the child needs (`PATH`, `HOME`, and the rest) is preserved
+untouched; the service's own `process.env` is copied, never mutated.
+
+**Why.** The command warms an *interactive* Remote-Control session that must
+authenticate as the human's **claude.ai subscription** — the ambient login in
+the user's `~/.claude`. The service process, though, carries metered
+programmatic API credentials in its own environment. If those inherit into the
+child, two things break at once:
+
+1. **RC refuses the spawn** — an inherited `CLAUDE_CODE_OAUTH_TOKEN` overrides
+   subscription auth and the command fails with *"Remote Control requires a
+   claude.ai subscription login, not oauth_token."*
+2. **The billing boundary is violated** — a human-driven interactive session
+   would run on the service's metered API credentials. This module only *pulls
+   the trigger*; the human then reasons under their own subscription. Leaking the
+   service's metered creds into that session collapses the single-invoker /
+   honest-billing seam this whole module exists to keep clean.
+
+So the stripped env is the concrete enforcement of the honest-billing boundary:
+a spawned human session inherits ambient/subscription auth, never the service's
+metered API credentials. A spawner test asserts the child env omits all three
+stripped keys while preserving unrelated vars (e.g. `PATH`).
 
 ## Dispatch-and-redact
 
