@@ -5,6 +5,7 @@ import { parseArgs, collectFlag, parseNumberFlag, splitCsv } from "./args.js";
 import { sumEffective, effectiveMacro } from "./format.js";
 import { commandReferenceText, COMMAND_GROUPS } from "./reference.js";
 import { spliceGeneratedRegions, commandReferenceMarkdown } from "./skill.js";
+import { buildLogEntryFields, buildPatchBody } from "./commands/entries.js";
 
 describe("resolveServer", () => {
   it("defaults to localhost and strips trailing slashes from the env override", () => {
@@ -92,6 +93,53 @@ describe("receipts scan multipart part-type rule", () => {
     expect(typeof meta).toBe("string");
     expect(meta).not.toBeInstanceOf(Blob);
     expect(JSON.parse(meta as string)).toEqual({ ulid: "01ABC", store: "Corner Market" });
+  });
+});
+
+describe("entries --at wiring (claude-assist#111)", () => {
+  it("buildLogEntryFields carries --at through as logged_at", () => {
+    const { positionals, flags } = parseArgs(
+      ["had", "eggs", "--at", "2026-07-18T08:00:00Z"],
+      ["json"],
+      ["recipe", "component", "at"],
+    );
+    const entry = buildLogEntryFields(positionals, flags, []);
+    expect(entry.note).toBe("had eggs");
+    expect(entry.logged_at).toBe("2026-07-18T08:00:00Z");
+  });
+
+  it("buildLogEntryFields accepts a date-only --at and omits logged_at when absent", () => {
+    const withAt = parseArgs(["snack", "--at", "2026-07-18"], ["json"], ["recipe", "component", "at"]);
+    expect(buildLogEntryFields(withAt.positionals, withAt.flags, []).logged_at).toBe("2026-07-18");
+
+    const withoutAt = parseArgs(["snack"], ["json"], ["recipe", "component", "at"]);
+    expect(buildLogEntryFields(withoutAt.positionals, withoutAt.flags, []).logged_at).toBeUndefined();
+  });
+
+  it("buildLogEntryFields rejects an unparseable --at before any network call", () => {
+    const { positionals, flags } = parseArgs(["snack", "--at", "not-a-date"], ["json"], ["recipe", "component", "at"]);
+    expect(() => buildLogEntryFields(positionals, flags, [])).toThrow(AxiError);
+  });
+
+  it("buildPatchBody carries --at through as logged_at, composable with other fields", () => {
+    const { flags } = parseArgs(
+      ["01ABC", "--multiplier", "0.5", "--at", "2026-07-01T12:00:00Z"],
+      ["json"],
+      ["note", "label", "portion-basis", "calories", "protein", "fat", "sat-fat", "carbs", "sodium", "multiplier", "at"],
+    );
+    const body = buildPatchBody(flags);
+    expect(body.logged_at).toBe("2026-07-01T12:00:00Z");
+    expect(body.portion_multiplier).toBe(0.5);
+  });
+
+  it("buildPatchBody with only --at never touches note/label/macro fields (metadata-only edit)", () => {
+    const { flags } = parseArgs(
+      ["01ABC", "--at", "2026-06-15"],
+      ["json"],
+      ["note", "label", "portion-basis", "calories", "protein", "fat", "sat-fat", "carbs", "sodium", "multiplier", "at"],
+    );
+    const body = buildPatchBody(flags);
+    expect(body).toEqual({ logged_at: "2026-06-15" });
   });
 });
 
