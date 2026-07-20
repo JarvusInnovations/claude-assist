@@ -92,6 +92,7 @@
       "dependencies": {
         "@anthropic-ai/sdk": "^0.71.2",
         "@jarvus/claude-assist-core": "workspace:*",
+        "@toon-format/toon": "2.3.0",
         "fastify": "^5.7.1",
         "fastify-plugin": "^5.1.0",
         "postgres": "^3.4.8",

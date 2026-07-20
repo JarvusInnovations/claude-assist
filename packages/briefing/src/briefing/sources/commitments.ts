@@ -17,7 +17,7 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { parseToonTable, rowRecord } from '../../toon.js';
+import { decodeToonRows } from '../../toon.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -73,10 +73,9 @@ export async function fetchOpenCommitments(
 
 /** Parse the commitments CLI's TOON output, annotating overdue/due-today. */
 export function parseCommitments(output: string, todayIso: string): OpenCommitment[] {
-  const table = parseToonTable(output, 'commitments');
-  if (!table) return [];
-  return table.rows.map((values) => {
-    const rec = rowRecord(table.columns, values);
+  const rows = decodeToonRows(output, 'commitments');
+  if (!rows) return [];
+  return rows.map((rec) => {
     const rawDue = rec.due_date ?? '';
     const dueDate = rawDue && rawDue !== 'null' ? rawDue : null;
     return {
