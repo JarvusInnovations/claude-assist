@@ -63,14 +63,34 @@ export const STRIPPED_AUTH_ENV_VARS = [
 ] as const;
 
 /**
+ * Validation rule for a caller-supplied `group` tag: lowercase alphanumerics
+ * and hyphens, 1-32 chars. Anything else is rejected (treated as absent)
+ * rather than passed unsanitized into a child process environment.
+ */
+const GROUP_SLUG_RE = /^[a-z0-9-]{1,32}$/;
+
+/** True iff `group` is a safe slug per `GROUP_SLUG_RE`. */
+export function isValidSpawnGroup(group: string): boolean {
+  return GROUP_SLUG_RE.test(group);
+}
+
+/**
  * A shallow copy of `process.env` with the Claude programmatic-auth variables
  * removed, so the spawned interactive session falls back to ambient/subscription
  * auth. Everything else the child needs (PATH, HOME, …) is preserved.
+ *
+ * When `group` is given, sets `SESSION_SPAWN_GROUP` on the child env so the
+ * configured spawn command can route/organize sessions by caller — a short
+ * caller tag, e.g. "kitchen". Caller-supplied and MUST already be validated
+ * (see `isValidSpawnGroup`) before it reaches here.
  */
-function sanitizedSpawnEnv(): NodeJS.ProcessEnv {
+function sanitizedSpawnEnv(group?: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const key of STRIPPED_AUTH_ENV_VARS) {
     delete env[key];
+  }
+  if (group) {
+    env.SESSION_SPAWN_GROUP = group;
   }
   return env;
 }
@@ -142,6 +162,18 @@ export function createSessionSpawner(config: SessionSpawnerConfig): SessionSpawn
       return { status: 'not_configured', spawnId };
     }
 
+    // Validate the caller-supplied group tag defensively: an invalid value is
+    // dropped (treated as absent) with a warning, never passed unsanitized
+    // into the child env, and never errors the spawn.
+    let group: string | undefined;
+    if (request.group !== undefined) {
+      if (isValidSpawnGroup(request.group)) {
+        group = request.group;
+      } else {
+        log.warn({ spawnId, group: request.group }, 'Session spawn: invalid group tag ignored');
+      }
+    }
+
     // Write the preload prompt to an owner-only temp file; the command receives
     // the PATH as its final argument (never the prompt as a shell-visible arg).
     let dir: string | undefined;
@@ -163,7 +195,7 @@ export function createSessionSpawner(config: SessionSpawnerConfig): SessionSpawn
         const result = await exec(bin!, argv, {
           timeout: timeoutMs,
           maxBuffer: MAX_BUFFER_BYTES,
-          env: sanitizedSpawnEnv(),
+          env: sanitizedSpawnEnv(group),
         });
         stdout = result.stdout;
       } catch (err) {

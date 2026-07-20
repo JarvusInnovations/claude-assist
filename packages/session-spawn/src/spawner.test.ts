@@ -198,6 +198,79 @@ describe('SessionSpawner', () => {
     }
   });
 
+  it('CALLER GROUP: a valid group is added to the child env as SESSION_SPAWN_GROUP', async () => {
+    const notify = new FakeDispatcher();
+    const log = captureLogger();
+
+    let capturedEnv: NodeJS.ProcessEnv | undefined;
+    const spawner = createSessionSpawner({
+      command: ['some-rc-tool', 'spawn'],
+      notify,
+      log,
+      execFile: async (_file, _args, options) => {
+        capturedEnv = options.env;
+        return { stdout: 'https://example.test/rc/session_GRP', stderr: '' };
+      },
+    });
+
+    const record = await spawner.spawn({ preloadPrompt: 'brief', title: 'meal-planning', group: 'kitchen' });
+
+    expect(record.status).toBe('spawned');
+    expect(capturedEnv).toBeDefined();
+    expect(capturedEnv!.SESSION_SPAWN_GROUP).toBe('kitchen');
+  });
+
+  it('CALLER GROUP: an absent group means SESSION_SPAWN_GROUP is not set', async () => {
+    const notify = new FakeDispatcher();
+    const log = captureLogger();
+
+    let capturedEnv: NodeJS.ProcessEnv | undefined;
+    const spawner = createSessionSpawner({
+      command: ['some-rc-tool', 'spawn'],
+      notify,
+      log,
+      execFile: async (_file, _args, options) => {
+        capturedEnv = options.env;
+        return { stdout: 'https://example.test/rc/session_NOGRP', stderr: '' };
+      },
+    });
+
+    const record = await spawner.spawn({ preloadPrompt: 'brief', title: 'meal-planning' });
+
+    expect(record.status).toBe('spawned');
+    expect(capturedEnv).toBeDefined();
+    expect('SESSION_SPAWN_GROUP' in capturedEnv!).toBe(false);
+  });
+
+  it('CALLER GROUP: an invalid group is dropped (not passed to the child env) and does not error the spawn', async () => {
+    const notify = new FakeDispatcher();
+    const log = captureLogger();
+
+    let capturedEnv: NodeJS.ProcessEnv | undefined;
+    const spawner = createSessionSpawner({
+      command: ['some-rc-tool', 'spawn'],
+      notify,
+      log,
+      execFile: async (_file, _args, options) => {
+        capturedEnv = options.env;
+        return { stdout: 'https://example.test/rc/session_BADGRP', stderr: '' };
+      },
+    });
+
+    // Uppercase, spaces, and shell-metacharacters must all be rejected.
+    for (const badGroup of ['Kitchen', 'kitchen tag', 'kitchen;rm -rf', 'a'.repeat(33)]) {
+      capturedEnv = undefined;
+      const record = await spawner.spawn({ preloadPrompt: 'brief', title: 'meal-planning', group: badGroup });
+
+      expect(record.status).toBe('spawned');
+      expect(capturedEnv).toBeDefined();
+      expect('SESSION_SPAWN_GROUP' in capturedEnv!).toBe(false);
+    }
+
+    const logs = log.lines.join('\n');
+    expect(logs).toContain('invalid group');
+  });
+
   it('unconfigured (no command): returns not_configured and dispatches nothing', async () => {
     const notify = new FakeDispatcher();
     const log = captureLogger();
