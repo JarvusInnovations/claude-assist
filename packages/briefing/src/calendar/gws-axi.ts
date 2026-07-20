@@ -12,7 +12,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { CalendarEvent, ResponseStatus } from '../types.js';
-import { parseToonTable, rowRecord } from '../toon.js';
+import { decodeToonRows } from '../toon.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -73,13 +73,15 @@ export async function fetchEvents(opts: FetchEventsOptions): Promise<CalendarRea
  *   events[3]{id,summary,start,end,my_response,attachments,status,attendees,...}:
  *     abc_20260710,Office,2026-07-10,2026-07-11,"","",ok,"","",...
  *
- * The header line declares column order; the next N indented lines are the
- * rows, each a CSV record with `""`-style quoting. Exported for tests.
+ * The canonical TOON decoder handles the header + indented rows (including
+ * backslash-escaped quotes/newlines in fields). Returns [] when no `events`
+ * frame is present; throws on malformed output, which `fetchEvents` catches and
+ * degrades to `{ events: [], error }`. Exported for tests.
  */
 export function parseEventsToon(output: string): CalendarEvent[] {
-  const table = parseToonTable(output, 'events');
-  if (!table) return [];
-  return table.rows.map((values) => rowToEvent(rowRecord(table.columns, values)));
+  const rows = decodeToonRows(output, 'events');
+  if (!rows) return [];
+  return rows.map((rec) => rowToEvent(rec));
 }
 
 const RESPONSE_VALUES: ResponseStatus[] = [

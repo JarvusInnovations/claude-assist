@@ -237,7 +237,7 @@ export {
   fetchEvents,
   type CalendarReadResult,
 } from './calendar/gws-axi.js';
-export { parseToonTable, parseCsvRow, rowRecord } from './toon.js';
+export { decodeToonRows, sliceNamedBlock } from './toon.js';
 export {
   classifyEvent,
   isAmbiguous,

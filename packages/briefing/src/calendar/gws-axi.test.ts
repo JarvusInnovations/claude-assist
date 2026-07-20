@@ -5,6 +5,7 @@ import {
   parseEventsToon,
   stripInstanceSuffix,
 } from './gws-axi.js';
+import { classifyEvent } from '../classifier/join-required.js';
 
 // A verbatim-shaped gws-axi `calendar events --fields status,attendees,location,
 // description,hangoutLink` frame (columns reordered as the CLI emits them).
@@ -45,6 +46,47 @@ describe('parseEventsToon', () => {
 
   it('returns [] when no events frame is present', () => {
     expect(parseEventsToon('account: x\ncount: 0')).toEqual([]);
+  });
+});
+
+describe('parseEventsToon — TOON escaping regression', () => {
+  // A meeting whose description carries an HTML anchor (embedded `\"`) followed
+  // by a populated `hangoutLink` column. The old hand-rolled CSV splitter
+  // truncated the row at the first `\"` and dropped every column after it —
+  // losing the hangoutLink, so the event silently fell out of alerts/briefings.
+  const LINKED = [
+    'account: user@example.com',
+    'count: 1',
+    'events[1]{id,summary,start,end,my_response,attendees,location,description,hangoutLink}:',
+    '  abc_20260720T190000Z,Partner Review,"2026-07-20T15:00:00-04:00","2026-07-20T15:30:00-04:00",' +
+      'accepted,"3 (2 accepted, 1 needsAction)","",' +
+      '"Agenda: <a href=\\"https://docs.example/x\\">doc</a>","https://meet.google.com/abc-defg-hij"',
+    'help[1]:',
+    '  Run `gws-axi calendar get <id>`',
+  ].join('\n');
+
+  it('keeps the hangoutLink column intact past an embedded-quote description', () => {
+    const [event] = parseEventsToon(LINKED);
+    expect(event!.description).toBe('Agenda: <a href="https://docs.example/x">doc</a>');
+    expect(event!.hangoutLink).toBe('https://meet.google.com/abc-defg-hij');
+    expect(event!.attendeeCount).toBe(3);
+  });
+
+  it('classifies the recovered event as join-required', () => {
+    const [event] = parseEventsToon(LINKED);
+    const classification = classifyEvent(event!);
+    expect(classification.joinRequired).toBe(true);
+    expect(classification.venue).toBe('video');
+  });
+
+  it('decodes an escaped newline in a description to a real newline', () => {
+    const withNewline = [
+      'count: 1',
+      'events[1]{id,summary,start,end,my_response,attendees,location,description,hangoutLink}:',
+      '  d1,Focus,2026-07-20,2026-07-21,"","","","Line one\\nLine two",""',
+    ].join('\n');
+    const [event] = parseEventsToon(withNewline);
+    expect(event!.description).toBe('Line one\nLine two');
   });
 });
 
