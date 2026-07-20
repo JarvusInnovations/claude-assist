@@ -13,6 +13,8 @@
 import type { FastifyBaseLogger } from 'fastify';
 import type {
   BatchLineView,
+  ConsumeInput,
+  ConsumeResult,
   ConvertInput,
   ConvertResult,
   DerivationSource,
@@ -39,13 +41,16 @@ import type {
   ReceiptInput,
   ShelfLifeClass,
 } from '../inventory-types.js';
-import type { InventoryStore, NewItem } from '../inventory-store.js';
+import type { InventoryStore, ItemStateUpdate, NewItem } from '../inventory-store.js';
 import { deriveEatBy, normalizeLexiconLine, parsePackageCount, toItemView, toIsoDate } from '../inventory-derive.js';
 import { InvalidTransitionError, isTerminal, transitionInventory } from '../inventory-state.js';
 import { matchScore, parseRemark } from '../inventory-remark.js';
 import { generateUlid } from '../ulid.js';
 import type { ReceiptParser } from './receipt-parser.js';
 import type { LabelParser } from './label-parser.js';
+import type { ConsumeStore } from './consume-store.js';
+import { computeRecipeMacros, round1 } from './recipes.js';
+import type { NutritionFields, RecipeRecord } from '../types.js';
 
 /** Thrown when a label intake is attempted with no label parser configured. */
 export class LabelParserUnavailableError extends Error {
@@ -71,6 +76,42 @@ export class ConversionValidationError extends Error {
   }
 }
 
+/**
+ * Thrown by `consume()` when the item does not qualify for one-tap consume
+ * (specs/modules/kitchen.md § Consume from inventory — eligibility rule): its
+ * macros are not deterministically knowable, because it carries no
+ * recipe-linked derivation provenance, or that provenance's recipe can't be
+ * resolved / has no components. Mapped to `400` at the route — the app
+ * should route this item through the normal photo/reselect path instead.
+ */
+export class ConsumeIneligibleError extends Error {
+  constructor(itemUlid: string, reason: string) {
+    super(`Inventory item ${itemUlid} is not consume-eligible: ${reason}`);
+    this.name = 'ConsumeIneligibleError';
+  }
+}
+
+/** Thrown on malformed `consume` input (bad quantity, nothing on hand) — a 400 at the route. */
+export class ConsumeValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ConsumeValidationError';
+  }
+}
+
+/**
+ * Thrown when `consume()` is called but the module wasn't wired with a
+ * `consumeStore` and/or `resolveRecipe` (deployment/config gap, not a
+ * per-item problem) — mapped to `503` at the route, mirroring
+ * `LabelParserUnavailableError`.
+ */
+export class ConsumeNotConfiguredError extends Error {
+  constructor() {
+    super('Consume-from-inventory requires both consumeStore and resolveRecipe to be configured');
+    this.name = 'ConsumeNotConfiguredError';
+  }
+}
+
 export interface InventoryPipelineConfig {
   /** Directional fraction decrement per matched consumption entry (default 0.34). */
   depletionStep?: number;
@@ -80,6 +121,22 @@ export interface InventoryPipelineConfig {
    * pipeline stays entry-store-agnostic.
    */
   linkEntry?: (entryUlid: string, itemUlid: string) => Promise<void>;
+  /**
+   * Atomic cross-table writer for `consume()` (claude-assist#110): inserts
+   * the consumption entry and depletes the item in ONE transaction. Required
+   * for `consume()` to succeed — absent, `consume()` throws
+   * `ConsumeNotConfiguredError`.
+   */
+  consumeStore?: ConsumeStore;
+  /**
+   * Resolve a recipe by ulid across BOTH persisted (DB) and sheet-sourced
+   * recipes — the same merged universe `KitchenPipeline.listAllRecipes()`
+   * serves. `consume()` uses this to compute a derived item's inherited
+   * macros from its conversion's `recipe_ulid` provenance. Required for
+   * `consume()` to succeed — absent, `consume()` throws
+   * `ConsumeNotConfiguredError`.
+   */
+  resolveRecipe?: (recipeUlid: string) => Promise<RecipeRecord | null>;
 }
 
 /** The minimal entry shape the depletion matcher needs (avoids importing EntryRecord). */
@@ -100,6 +157,8 @@ export class InventoryPipeline {
 
   private depletionStep: number;
   private linkEntry?: (entryUlid: string, itemUlid: string) => Promise<void>;
+  private consumeStore?: ConsumeStore;
+  private resolveRecipe?: (recipeUlid: string) => Promise<RecipeRecord | null>;
   private inflight = new Set<Promise<unknown>>();
 
   constructor(
@@ -111,6 +170,8 @@ export class InventoryPipeline {
   ) {
     this.depletionStep = config.depletionStep ?? 0.34;
     this.linkEntry = config.linkEntry;
+    this.consumeStore = config.consumeStore;
+    this.resolveRecipe = config.resolveRecipe;
   }
 
   // ── Receipt intake ────────────────────────────────────────────────────────
@@ -750,6 +811,164 @@ export class InventoryPipeline {
     return { updated: updated!, consumed: consume, kind: 'fraction' };
   }
 
+  // ── Consume from inventory (one-tap known-macro log + deplete) ──────────────
+
+  /**
+   * The atomic "eat a prepared item" action (claude-assist#110,
+   * specs/modules/kitchen.md § Consume from inventory): for a
+   * consume-eligible item, creates a consumption journal entry carrying the
+   * item's EXACT known macros (no model call) and depletes the item, in ONE
+   * atomic operation via `this.consumeStore` — a failure of either side
+   * leaves NEITHER applied.
+   *
+   * Returns `null` when the item doesn't exist (→ 404 at the route). Throws:
+   * - `InvalidTransitionError` — the item is already terminal (`409`).
+   * - `ConsumeValidationError` — a bad `quantity`, or nothing on hand (`400`).
+   * - `ConsumeIneligibleError` — the item carries no recipe-linked macro
+   *   provenance, or that recipe can't be resolved / has no components (`400`).
+   * - `ConsumeNotConfiguredError` — the module wasn't wired with a
+   *   `consumeStore`/`resolveRecipe` (`503`).
+   *
+   * **Idempotency** (mirrors the entry-ingest ULID pattern): `input.ulid` is
+   * the entry's client-generated ULID. A replay is detected BEFORE any
+   * terminal/eligibility validation runs against the current item — this
+   * matters because the first successful consume may have already driven
+   * the item terminal (a fraction consume always fully finishes it), and a
+   * replay must still succeed rather than 409 against its own side effect.
+   * `this.consumeStore.consume()` itself also idempotency-checks inside the
+   * same transaction, as a race-safety net for near-simultaneous replays.
+   *
+   * **Eligibility & macro inheritance**: an item qualifies only when its
+   * derivation provenance (`derived_from.recipe_ulid`, set by a `convert`
+   * event — see § Conversions) resolves to a recipe with at least one
+   * component. The recipe's deterministic total macros
+   * (`computeRecipeMacros`, no model call) are scaled by the SHARE of the
+   * derived batch this consume spends: `quantity / units_total` for a
+   * counted item (one jar out of N), or the item's current
+   * `on_hand_fraction` for a fraction item (consuming finishes whatever
+   * fraction of the batch remains). This is the only macro-inheritance
+   * channel today — an item with no recipe-linked provenance has no
+   * deterministically-known macros and is rejected, per the plan's
+   * eligibility rule.
+   *
+   * **Depletion** mirrors `finished-unit` for a counted item (integer
+   * decrement of `quantity` units; zero remaining goes terminal `finished`,
+   * otherwise reverts to `stocked` with a fresh unopened `eat_by`) and
+   * `finished` for a fraction item (always fully terminal — a fraction
+   * consume is a single all-or-nothing tap, so `quantity` must be omitted or
+   * `1` there).
+   */
+  async consume(itemUlid: string, input: ConsumeInput): Promise<ConsumeResult | null> {
+    const item = await this.store.getItem(itemUlid);
+    if (!item) return null;
+
+    if (!this.consumeStore || !this.resolveRecipe) {
+      throw new ConsumeNotConfiguredError();
+    }
+
+    // Idempotency short-circuit — see method doc. Checked before terminal/
+    // eligibility validation so a replay of an already-fully-consumed item
+    // succeeds instead of 409ing against the first attempt's own effect.
+    const existingEntry = await this.consumeStore.peekEntry(input.ulid);
+    if (existingEntry) {
+      return { entry: existingEntry, item: await this.viewOf(item), created: false };
+    }
+
+    if (isTerminal(item.state)) {
+      throw new InvalidTransitionError(item.state, 'finished');
+    }
+
+    const quantity = input.quantity ?? 1;
+    if (!Number.isInteger(quantity) || quantity < 1) {
+      throw new ConsumeValidationError('quantity must be a positive integer');
+    }
+
+    const at = parseDate(input.at);
+    let itemUpdate: ItemStateUpdate;
+    let share: number;
+
+    if (item.units_total != null && item.units_remaining != null) {
+      // Counted item: finished-unit semantics, generalized to `quantity` units.
+      if (quantity > item.units_remaining) {
+        throw new ConsumeValidationError(
+          `quantity (${quantity}) exceeds units_remaining (${item.units_remaining}) for item ${itemUlid}`
+        );
+      }
+      share = quantity / item.units_total;
+      const remaining = item.units_remaining - quantity;
+      itemUpdate =
+        remaining === 0
+          ? { state: 'finished', closed_at: at, on_hand_fraction: 0, units_remaining: 0 }
+          : {
+              state: 'stocked',
+              opened_at: null,
+              eat_by: deriveEatBy({ shelfLifeClass: item.shelf_life_class, acquiredAt: item.acquired_at, openedAt: null }),
+              units_remaining: remaining,
+            };
+    } else {
+      // Fraction item: finished semantics — a consume always fully finishes it.
+      if (quantity !== 1) {
+        throw new ConsumeValidationError(
+          `item ${itemUlid} is fraction-modeled — consume always finishes it in one tap (quantity must be 1 or omitted)`
+        );
+      }
+      if (item.on_hand_fraction <= 0) {
+        throw new ConsumeValidationError(`item ${itemUlid} has nothing on hand to consume`);
+      }
+      share = item.on_hand_fraction;
+      itemUpdate = { state: 'finished', closed_at: at, on_hand_fraction: 0 };
+    }
+
+    const derivedFrom = await this.derivedFromFor(item.ulid);
+    const nutrition = scaleNutrition(await this.resolveConsumeMacros(item, derivedFrom), share);
+    const loggedAt = input.at ? new Date(input.at) : new Date();
+
+    const { entry, item: updatedItemRecord, created } = await this.consumeStore.consume(
+      {
+        ulid: input.ulid,
+        logged_at: loggedAt,
+        label: item.raw_label,
+        nutrition,
+        source: 'reselect',
+        status: 'estimated',
+        inventory_item_ulid: itemUlid,
+      },
+      itemUlid,
+      itemUpdate
+    );
+
+    return {
+      entry,
+      item: await this.viewOf(updatedItemRecord, created ? derivedFrom : undefined),
+      created,
+    };
+  }
+
+  /**
+   * Consume-eligibility + macro resolution (§ consume doc above). Throws
+   * `ConsumeIneligibleError` when the item carries no usable recipe-linked
+   * provenance — never returns a partial/guessed nutrition object.
+   */
+  private async resolveConsumeMacros(
+    item: InventoryItemRecord,
+    derivedFrom: DerivedFromView | null
+  ): Promise<NutritionFields> {
+    if (!derivedFrom?.recipe_ulid) {
+      throw new ConsumeIneligibleError(
+        item.ulid,
+        'no known macros — not derived from a recipe-linked conversion (§ Consume from inventory eligibility rule)'
+      );
+    }
+    const recipe = await this.resolveRecipe!(derivedFrom.recipe_ulid);
+    if (!recipe || recipe.components.length === 0) {
+      throw new ConsumeIneligibleError(
+        item.ulid,
+        `derivation recipe ${derivedFrom.recipe_ulid} not found or has no components`
+      );
+    }
+    return computeRecipeMacros(recipe);
+  }
+
   // ── Free-text event resolver ─────────────────────────────────────────────────
 
   /**
@@ -837,8 +1056,8 @@ export class InventoryPipeline {
       // Null raw_label → a unique key per item (never merged with anything).
       const key =
         i.raw_label != null
-          ? `${i.store ?? ''} ${normalizeLine(i.raw_label)}`
-          : `${i.ulid}`;
+          ? `${i.store ?? ''}\x00${normalizeLine(i.raw_label)}`
+          : `\x01${i.ulid}`;
       const bucket = groups.get(key);
       if (bucket) {
         bucket.push(i);
@@ -1121,6 +1340,26 @@ export function candidateStrings(item: InventoryItemRecord, product?: ProductRec
 
 function clampFraction(n: number): number {
   return Math.max(0, Math.min(1, Math.round(n * 1000) / 1000));
+}
+
+/**
+ * Scale a deterministic macro total by the SHARE of it this consume spends
+ * (§ consume from inventory doc above). `confidence`/`portion_basis` are
+ * carried through unscaled — a recipe-computed total is exactly confidence
+ * `1` regardless of what fraction of it one consume tap accounts for.
+ */
+export function scaleNutrition(total: NutritionFields, share: number): NutritionFields {
+  const scale = (v: number | null): number | null => (v === null ? null : round1(v * share));
+  return {
+    calories: scale(total.calories),
+    protein_g: scale(total.protein_g),
+    fat_g: scale(total.fat_g),
+    sat_fat_g: scale(total.sat_fat_g),
+    carbs_g: scale(total.carbs_g),
+    sodium_mg: scale(total.sodium_mg),
+    confidence: total.confidence,
+    portion_basis: total.portion_basis,
+  };
 }
 
 /** Project a derivation row to the provenance shape embedded on the item view. */

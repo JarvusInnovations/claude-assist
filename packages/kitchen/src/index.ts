@@ -27,6 +27,7 @@ import { PgInventoryStore } from './inventory-store.js';
 import { KitchenReceiptParser } from './services/receipt-parser.js';
 import { KitchenLabelParser } from './services/label-parser.js';
 import { InventoryPipeline } from './services/inventory.js';
+import { PgConsumeStore } from './services/consume-store.js';
 import { registerInventoryRoutes } from './routes/inventory.js';
 import type { EventResolution } from './inventory-types.js';
 import type { RecipeRecord } from './types.js';
@@ -105,11 +106,30 @@ export default createPlugin('kitchen', async (fastify: FastifyInstance, options:
     ? new KitchenLabelParser({ apiKey: config.anthropicApiKey, model: config.estimationModel }, fastify.log)
     : null;
 
+  // `pipeline` (KitchenPipeline) is declared here and assigned below so
+  // `inventory`'s `resolveRecipe` closure can reference it — the two
+  // pipelines have a genuine mutual dependency (inventory.consume() needs
+  // pipeline.listAllRecipes() for macro inheritance; pipeline's
+  // onEntryEstimated needs inventory.matchAndDeplete()). Both references are
+  // inside callbacks invoked only at request time, long after both are
+  // constructed, so the forward reference is safe.
+  let pipeline: KitchenPipeline;
+
   const inventory = new InventoryPipeline(inventoryStore, receiptParser, labelParser, fastify.log, {
     linkEntry: (entryUlid, itemUlid) => entryStore.linkInventoryItem(entryUlid, itemUlid),
+    // Atomic entry+deplete write for consume() (claude-assist#110) — see
+    // services/consume-store.ts for why this crosses into kitchen.entries.
+    consumeStore: new PgConsumeStore(fastify.sql),
+    // Macro inheritance for consume(): resolve a derived item's provenance
+    // recipe across the SAME merged (sheet + pushed + promoted) universe the
+    // reselect strip serves.
+    resolveRecipe: async (recipeUlid) => {
+      const all = await pipeline.listAllRecipes();
+      return all.find((r) => r.ulid === recipeUlid) ?? null;
+    },
   });
 
-  const pipeline = new KitchenPipeline(entryStore, recipeStore, estimator, fastify.log, {
+  pipeline = new KitchenPipeline(entryStore, recipeStore, estimator, fastify.log, {
     concurrency: config.concurrency,
     readSheetRecipes,
     // Depletion matcher: an estimated entry plausibly depletes an on-hand item.

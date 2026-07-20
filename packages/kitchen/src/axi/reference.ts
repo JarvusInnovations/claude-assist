@@ -57,6 +57,10 @@ export const COMMAND_GROUPS: CommandGroup[] = [
         usage: "inventory convert --from <ulid>[:amount]… --to '<derived spec json>' [--at DATE]",
         summary: "prep transform: decrement source item(s) (count or fraction) and create a NEW derived item with its own clock + derived-from provenance — distinct from consumption and from finished/tossed",
       },
+      {
+        usage: "inventory consume <item-ulid> [--quantity N] [--at DATE] [--ulid ENTRY_ULID]",
+        summary: "one-tap: log a consumption entry with the item's EXACT known macros (no model call) and deplete it, in ONE atomic step; only recipe-linked derived items qualify (else 400); idempotent on --ulid",
+      },
     ],
   },
   {

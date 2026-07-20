@@ -1,4 +1,5 @@
 import { api } from "../client.js";
+import { generateUlid } from "../../ulid.js";
 import { AxiError } from "axi-sdk-js";
 import {
   parseArgs,
@@ -10,6 +11,7 @@ import {
   parseNumberFlag,
 } from "../args.js";
 import { renderList, renderDetail, renderObject, renderOutput, renderHelp, field, type FieldDef } from "../toon.js";
+import { ENTRY_ROW_SCHEMA } from "../format.js";
 import { cliInvocation } from "../invocation.js";
 import { SHELF_LIFE_CLASSES } from "../reference.js";
 
@@ -25,6 +27,8 @@ export const INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json
   questions [--limit N]                     open needs-info items as questions
   convert --from <ulid>[:amount]… --to '<json>' [--at DATE]
                                              prep transform: decrement source(s), create a derived item
+  consume <item-ulid> [--quantity N] [--at DATE] [--ulid ENTRY_ULID]
+                                             one-tap: log + deplete a known-macro item, ONE atomic step
 
   states: stocked, open, finished, tossed. For 'event … tossed', --fraction is
   the AMOUNT TOSSED — a partial toss decrements on_hand_fraction and keeps the
@@ -43,7 +47,20 @@ export const INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json
   "shelf_life_class": "...", "units_total": N} for a counted derived item, or
   {"name": "...", "shelf_life_class": "...", "on_hand_fraction": 1} for a
   divisible one (fields: shelf_life_class?, on_hand_fraction?, units_total?,
-  store?, notes?, acquired_at?, recipe_ulid?).`;
+  store?, notes?, acquired_at?, recipe_ulid?).
+
+  'consume' is the one-tap "eat a prepared item" action: it creates a
+  consumption entry with the item's EXACT known macros (no model call,
+  source reselect) AND depletes the item, in ONE atomic step — a failure of
+  either side leaves neither applied. Only items with known macros qualify
+  (a derived item whose conversion carried a --to recipe_ulid that resolves
+  to a recipe with components); anything else 400s — use the normal
+  photo/reselect path there. --quantity is whole sealed units for a COUNTED
+  item (default 1); a fraction-modeled item always fully finishes in one
+  tap, so --quantity must be omitted or 1 there. --ulid supplies the
+  consumption entry's ULID explicitly (idempotency key for a retry); omitted,
+  the CLI generates one. Replaying the same --ulid is a safe no-op: no
+  duplicate entry, no double-deplete.`;
 
 const ITEM_ROW_SCHEMA: FieldDef[] = [
   field("ulid"),
@@ -108,6 +125,8 @@ export async function inventoryCommand(args: string[]): Promise<string> {
       return questions(rest);
     case "convert":
       return convert(rest);
+    case "consume":
+      return consumeItem(rest);
     default:
       throw new AxiError(`Unknown inventory subcommand: ${sub}`, "VALIDATION_ERROR", [INVENTORY_HELP]);
   }
@@ -249,6 +268,32 @@ async function convert(args: string[]): Promise<string> {
   return renderOutput([
     renderList("sources", result.sources ?? [], ITEM_ROW_SCHEMA),
     renderDetail("derived", result.derived, ITEM_DETAIL_SCHEMA),
+  ]);
+}
+
+async function consumeItem(args: string[]): Promise<string> {
+  const { positionals, flags } = parseArgs(args, ["json"], ["quantity", "at", "ulid"]);
+  const itemUlid = requirePositional(positionals, 0, "item ulid", INVENTORY_HELP);
+
+  const body: Record<string, unknown> = { ulid: typeof flags.ulid === "string" ? flags.ulid : generateUlid() };
+  if (typeof flags.quantity === "string") {
+    body.quantity = parseNumberFlag(flags.quantity, "quantity", INVENTORY_HELP, { min: 1 });
+  }
+  if (typeof flags.at === "string") body.at = validateDate(flags.at, "--at", INVENTORY_HELP);
+
+  const result = await api.post(`/api/kitchen/inventory/${encodeURIComponent(itemUlid)}/consume`, body);
+  if (flags.json) return rawJson(result);
+
+  const cli = cliInvocation();
+  return renderOutput([
+    renderObject({ created: result?.created ?? null }),
+    renderDetail("entry", result?.entry, ENTRY_ROW_SCHEMA),
+    renderDetail("item", result?.item, ITEM_DETAIL_SCHEMA),
+    renderHelp([
+      result?.created
+        ? `Logged + depleted in one atomic step — run \`${cli} entries show ${result?.entry?.ulid}\` to see the entry`
+        : `Replay of an already-consumed request — entry ${result?.entry?.ulid} was NOT re-created, item was NOT re-depleted`,
+    ]),
   ]);
 }
 

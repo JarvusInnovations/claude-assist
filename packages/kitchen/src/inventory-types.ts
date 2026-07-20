@@ -6,6 +6,8 @@
  * sync with the routes.
  */
 
+import type { EntryRecord } from './types.js';
+
 export type ShelfLifeClass =
   | 'pantry'
   | 'frozen'
@@ -408,4 +410,33 @@ export interface ConvertResult {
   sources: InventoryItemView[];
   derived: InventoryItemView;
   derivation: InventoryDerivationRecord;
+}
+
+// ── Consume from inventory (§ Consume from inventory) ───────────────────────
+
+/**
+ * What a client POSTs to `/inventory/:ulid/consume` (`:ulid` is the ITEM).
+ * `ulid` here is the ENTRY's client-generated ULID — the idempotency key for
+ * the whole atomic action (a replay creates no duplicate entry and does not
+ * deplete the item again). `quantity` only applies to a counted item (whole
+ * sealed units consumed in this one tap, default 1); a fraction-modeled item
+ * always fully finishes in one consume, so `quantity` must be omitted or 1
+ * there.
+ */
+export interface ConsumeInput {
+  ulid: string;
+  quantity?: number;
+  at?: string;
+}
+
+/**
+ * Response of `POST /inventory/:ulid/consume`: the created consumption entry
+ * (exact known macros, source `reselect`, status `estimated`) plus the
+ * depleted item, written in ONE atomic operation.
+ */
+export interface ConsumeResult {
+  entry: EntryRecord;
+  item: InventoryItemView;
+  /** False on an idempotent replay of `ulid` — neither table was touched again. */
+  created: boolean;
 }

@@ -564,7 +564,8 @@ not assume one convention): single-resource creates/mutations return the
 `{ products, count }`, `{ lines, count }`); compound reads/results return named
 objects (`GET /receipts/:ulid` → `{ batch, lines }`; label →
 `{ item, product }`; free-text resolver → `{ matched, item?, event? }`;
-`POST /inventory/convert` → `{ sources, derived, derivation }`). The
+`POST /inventory/convert` → `{ sources, derived, derivation }`;
+`POST /inventory/:ulid/consume` → `{ entry, item, created }`). The
 shape stated on each endpoint below is exact.
 
 Receipts:
@@ -735,6 +736,29 @@ Item mutation:
   sources, missing `derived.name`, an unknown source ULID, or a non-integer
   `amount` against a counted source; `409` `InvalidTransitionError` — a source
   is already terminal (nothing left to spend).
+- `POST /inventory/:ulid/consume` — **consume from inventory (one-tap
+  known-macro log + deplete)**, see § Consume from inventory. `:ulid` is the
+  ITEM. JSON `{ ulid (required — the consumption entry's client-generated
+  ULID, the idempotency key), quantity? (integer >= 1), at? (ISO date-time) }`.
+  Atomically (ONE transaction — see § Consume from inventory § Atomicity):
+  creates a consumption entry carrying the item's EXACT known macros (no
+  model call, `source: 'reselect'`, `status: 'estimated'`) and depletes the
+  item — an integer decrement of `quantity` units (default 1, finished-unit
+  semantics) for a counted item, or a full `finished` for a fraction item
+  (which always fully finishes in one tap; `quantity` must be omitted or `1`
+  there). Only a **consume-eligible** item qualifies — see § Consume from
+  inventory § Eligibility; an ineligible item is rejected, not silently
+  estimated. Idempotent on `ulid`: a replay creates no duplicate entry and
+  does not deplete the item again, even when the first attempt already drove
+  the item terminal. Returns `{ entry: Entry, item: InventoryItem, created }`
+  (`201` when `created`, `200` on an idempotent replay). `404` unknown item;
+  `409` `InvalidTransitionError` — the item is already terminal; `400`
+  `ConsumeValidationError` — a bad `quantity` (exceeds `units_remaining`, or
+  anything but `1`/omitted against a fraction item), or nothing on hand;
+  `400` `ConsumeIneligibleError` — the item carries no recipe-linked macro
+  provenance, or that provenance's recipe can't be resolved / has no
+  components; `503` — the instance isn't wired for consume (no
+  `consumeStore`/recipe resolver configured).
 
 Products & lexicon (agentic seed + reads):
 
@@ -792,6 +816,12 @@ Products & lexicon (agentic seed + reads):
 - **Dismiss response**: `{ item: InventoryItem, dismissed_count, non_inventory }`.
 - **Convert response**: `{ sources: InventoryItem[], derived: InventoryItem,
   derivation: InventoryDerivation }`.
+- **Consume response**: `{ entry: Entry, item: InventoryItem, created }`. The
+  `Entry` shape is the phase-1 entry wire shape (`specs/modules/kitchen.md`
+  § API — the same shape `POST /entries` returns), stamped
+  `source: 'reselect'`, `status: 'estimated'`, and `inventory_item_ulid` set
+  to the consumed item. `created` is `false` on an idempotent replay (neither
+  table was touched again).
 
 ### Store extraction & precedence
 
@@ -891,8 +921,8 @@ provenance. This is distinct from both halves of the existing model:
 
 - **Not a consumption entry.** `convert` never touches `kitchen.entries` and
   posts no journal entry — no macros, no estimation. One-tap consumption of a
-  now-existing derived item (eating the jar) is a separate, later capability,
-  out of scope here.
+  now-existing derived item (eating the jar) is `POST /inventory/:ulid/consume`
+  — see § Consume from inventory, below.
 - **Not finished/tossed.** Those are terminal with no replacement; a
   conversion's sources may go terminal as a SIDE EFFECT of being fully spent
   (see below), but the event's defining act is creating the derived item, not
@@ -921,14 +951,17 @@ isn't a SKU the lexicon would ever see again).
 its sources (`item_ulid` + the exact `amount`/`amount_kind` consumed from
 each) and, optionally, a `recipe_ulid` — the recipe/conversion that fixes the
 derived item's macros (provenance only in this surface; the derived item
-itself carries no macros yet, since a kitchen recipe's macro output isn't part
-of this module's inventory shape). Deliberately **minimal, not a full lineage
-graph**: one hop back to direct sources, no chained "what did THIS source come
-from" queries, no cascading updates if a source is later corrected. It exists
-to (a) let the eat-first planner reason across the transform (aging yogurt
-"used up" by becoming jars is visible as the yogurt's depletion plus the jars'
-existence, and the jars' provenance explains why) and (b) leave a hook for
-later macro inheritance, not to model a full recipe graph.
+itself carries no STORED macros — `kitchen.inventory_items` has no macro
+columns. `recipe_ulid` is the macro-inheritance hook § Consume from inventory
+reads: it computes the item's macros on demand from the recipe rather than
+persisting them, so nothing here needs to change to support it).
+Deliberately **minimal, not a full lineage graph**: one hop back to direct
+sources, no chained "what did THIS source come from" queries, no cascading
+updates if a source is later corrected. It exists to (a) let the eat-first
+planner reason across the transform (aging yogurt "used up" by becoming jars
+is visible as the yogurt's depletion plus the jars' existence, and the jars'
+provenance explains why) and (b) back the on-demand macro inheritance
+§ Consume from inventory uses, not to model a full recipe graph.
 
 **Derived items are first-class eat-first stock.** They carry `eat_by` and
 `state` exactly like any other item, so they join the ordinary
@@ -945,6 +978,89 @@ of dry quinoa → ~3 cups cooked quinoa (`sources: [{item_ulid, amount: 0.3}]`
 soymilk + fruit (four fraction sources, one conversion call each or batched
 into one `sources` array) → 3 overnight-oats jars (`derived: {units_total:
 3}`).
+
+### Consume from inventory
+
+`POST /inventory/:ulid/consume` (claude-assist#110,
+`plans/consume-from-inventory.md`) is the one-tap "eat a prepared item"
+action: the re-select strip's inventory-sourced sibling, and the purest case
+of *logging must beat not-logging* (`specs/diet-journal.md` § Principles). A
+portioned inventory item whose macros are already known — inherited from the
+conversion/recipe that made it (§ Conversions) — logs to the journal AND
+depletes in one tap: no photo, no model call, no correction.
+
+**Eligibility.** An item qualifies only when its derivation provenance
+(`derived_from.recipe_ulid`, written by the `convert` that created it) resolves
+to a recipe — DB-persisted (`pushed`/`promoted`) or meal-bank sheet-sourced,
+the same merged universe the reselect strip serves — carrying at least one
+component. This is the ONLY macro-inheritance channel today: a raw item with
+no recipe-linked derivation has no deterministically-known macros and is
+rejected (`400 ConsumeIneligibleError`) — it needs the normal photo/reselect
+path, not one-tap consume. An already-terminal item is rejected regardless of
+eligibility (`409`, checked first, mirroring `convert`'s terminal-source
+check).
+
+**Macro inheritance (deterministic, no model call).** The recipe's total
+macros are computed exactly as a direct recipe-logged entry's are
+(`computeRecipeMacros`, § API `POST /entries`), then scaled by the SHARE of
+the derived batch this one consume spends:
+
+- **Counted item** (`units_total` set): `share = quantity / units_total` —
+  `quantity` (default 1) whole units out of the batch the conversion produced.
+  E.g. 3 overnight-oats jars from one recipe application → each jar's entry
+  carries exactly 1/3 of the recipe's total macros.
+- **Fraction item**: `share = on_hand_fraction` — a fraction consume always
+  fully finishes the item in one tap (see § Depletion below), so it accounts
+  for whatever share of the original batch is still on hand.
+
+The resulting entry is `source: 'reselect'`, `status: 'estimated'`,
+`portion_basis`/`confidence` carried through from the recipe computation
+unscaled (a recipe-computed total is exactly confidence `1` regardless of
+what share one tap accounts for), `label` = the item's `raw_label`, and
+`inventory_item_ulid` = the consumed item — set in the SAME insert, not a
+follow-up link (contrast the depletion matcher's best-effort, separate
+`linkEntry` call).
+
+**Depletion** reuses the existing state-transition semantics exactly:
+
+- **Counted item** — `finished-unit` semantics generalized to `quantity`
+  units: an integer decrement of `units_remaining`. Reaching zero goes
+  terminal `finished` (identical outcome to a whole-item finish); otherwise
+  the item reverts to `stocked` with `opened_at` cleared and `eat_by`
+  re-derived from the **unopened** window off `acquired_at` — same rule as
+  `finished-unit`, since the unit just consumed carried the opened clock but
+  the next-to-open unit never itself opened.
+- **Fraction item** — `finished` semantics: always fully terminal
+  (`closed_at` stamped, `on_hand_fraction` zeroed). A fraction consume is a
+  single all-or-nothing tap; `quantity` must be omitted or `1` there
+  (`400 ConsumeValidationError` otherwise) — there is no partial consume the
+  way there's a partial toss.
+
+**Atomicity is a hard requirement.** The entry-create and the
+inventory-depletion are ONE atomic operation: a failure of either side
+leaves NEITHER applied — never a logged-but-not-depleted entry, never a
+depleted item with no matching entry. This is enforced by a single store-level
+method (`ConsumeStore.consume`, `packages/kitchen/src/services/consume-store.ts`)
+that wraps both writes in one Postgres transaction (`sql.begin`) rather than
+composing two separate store calls at the service layer — the gap `convert`
+still has (three separate, non-transactional writes: each source's decrement,
+the derived item's insert, and the derivation's insert), flagged in its own
+review and deliberately NOT repeated here. `kitchen.entries` and
+`kitchen.inventory_items` are each owned by their own store interface for
+testability everywhere else in the module; this is the one path that
+deliberately crosses that boundary, and it exists only for this requirement.
+
+**Idempotency.** `ulid` in the request body is the consumption entry's
+client-generated ULID — the idempotency key, mirroring entry-ingest ULID
+idempotency (§ API `POST /entries`) so the offline app's queue replay is safe.
+A replay is detected BEFORE any terminal/eligibility validation runs against
+the item's CURRENT state — this matters because the first successful consume
+may already have driven the item terminal (a fraction consume always fully
+finishes it), and a replay must still succeed (no duplicate entry, no
+double-deplete) rather than 409 against its own side effect. The atomic store
+call also idempotency-checks inside its own transaction (`ON CONFLICT
+(ulid) DO NOTHING` on the entry insert), as a race-safety net for
+near-simultaneous replays.
 
 ### Model tiering (phase 2)
 
@@ -1021,7 +1137,10 @@ and write the kitchen without hand-rolled `curl`.
     [--fraction]`, `remark "<free text>"` (the resolver; prints
     matched/unmatched honestly), `questions`, `convert --from
     <ulid>[:amount]… --to '<derived spec json>'` (prep transform — see
-    § Conversions).
+    § Conversions), `consume <item-ulid> [--quantity N] [--at DATE]
+    [--ulid ENTRY_ULID]` (the one-tap known-macro log + deplete — see
+    § Consume from inventory; the agentic path until the app's consume shelf
+    ships).
   - `receipts` — list, `show <ulid>` (batch + line outcomes), `scan <photo…>`
     (multipart post; meta as a form field per the module's part-type rule).
   - `recipes` — list (merged view), `push` (agent-authored recipe JSON),

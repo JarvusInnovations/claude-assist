@@ -1,10 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { MemoryInventoryStore } from '../inventory-memory-store.js';
+import { MemoryEntryStore } from '../memory-store.js';
+import { MemoryConsumeStore } from '../services/consume-memory-store.js';
 import { InventoryPipeline } from '../services/inventory.js';
 import type { ReceiptParser } from '../services/receipt-parser.js';
 import type { LabelParser, LabelParseInput } from '../services/label-parser.js';
 import type { InventoryPhotoPart, ParsedLabel, ParsedReceipt } from '../inventory-types.js';
+import type { RecipeRecord } from '../types.js';
 import { generateUlid } from '../ulid.js';
 import { registerInventoryRoutes } from './inventory.js';
 
@@ -323,6 +326,99 @@ describe('inventory routes', () => {
       payload: { sources: [{ item_ulid: terminal.ulid }], derived: { name: 'X' } },
     });
     expect(terminalRes.statusCode).toBe(409);
+  });
+
+  it('POST /kitchen/inventory/:ulid/consume — one atomic call: exact-macro entry + deplete; 404/400/409/503 per case', async () => {
+    // A dedicated app wired with the consume atomicity store + a recipe
+    // resolver (the shared `pipeline` in the outer beforeEach has neither).
+    const app = Fastify({ logger: false });
+    const s = new MemoryInventoryStore();
+    const e = new MemoryEntryStore();
+    const recipe: RecipeRecord = {
+      ulid: generateUlid(),
+      name: 'Overnight oats',
+      components: [{ label: 'oats', default_qty_g: 240, per_100g: { calories: 380, protein_g: 13, sat_fat_g: 1.2 } }],
+      source: 'pushed',
+      created_at: new Date(),
+      updated_at: new Date(),
+    };
+    const pl = new InventoryPipeline(s, null, null, app.log, {
+      consumeStore: new MemoryConsumeStore(e, s),
+      resolveRecipe: async (ulid) => (ulid === recipe.ulid ? recipe : null),
+    });
+    await app.register(registerInventoryRoutes, { inventory: pl });
+    await app.ready();
+
+    const { item: rawOats } = await pl.createItem({ raw_label: 'Rolled oats', shelf_life_class: 'pantry', acquired_at: '2026-07-01' });
+    const { derived } = await pl.convert({
+      sources: [{ item_ulid: rawOats.ulid }],
+      derived: { name: 'Overnight oats jar', shelf_life_class: 'fridge_short', units_total: 2, recipe_ulid: recipe.ulid },
+      at: '2026-07-17',
+    });
+
+    const entryUlid = generateUlid();
+    const res = await app.inject({
+      method: 'POST',
+      url: `/kitchen/inventory/${derived.ulid}/consume`,
+      payload: { ulid: entryUlid },
+    });
+    expect(res.statusCode).toBe(201);
+    const body = res.json();
+    expect(body.created).toBe(true);
+    expect(body.entry.ulid).toBe(entryUlid);
+    expect(body.entry.source).toBe('reselect');
+    expect(body.entry.status).toBe('estimated');
+    expect(body.entry.calories).toBe(456); // half of 240*3.8=912
+    expect(body.item.units_remaining).toBe(1);
+    expect(body.item.state).toBe('stocked');
+
+    // Idempotent replay: same 201/200 contract as receipts/batches — a
+    // replay of an already-created row returns 200, not 201.
+    const replay = await app.inject({
+      method: 'POST',
+      url: `/kitchen/inventory/${derived.ulid}/consume`,
+      payload: { ulid: entryUlid },
+    });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json().created).toBe(false);
+    expect(replay.json().item.units_remaining).toBe(1); // not depleted again
+
+    // 404: unknown item.
+    const missing = await app.inject({
+      method: 'POST',
+      url: `/kitchen/inventory/${generateUlid()}/consume`,
+      payload: { ulid: generateUlid() },
+    });
+    expect(missing.statusCode).toBe(404);
+
+    // 400: ineligible item (no recipe-linked derivation).
+    const { item: plain } = await pl.createItem({ raw_label: 'Plain yogurt', shelf_life_class: 'fridge_short', acquired_at: '2026-07-01' });
+    const ineligible = await app.inject({
+      method: 'POST',
+      url: `/kitchen/inventory/${plain.ulid}/consume`,
+      payload: { ulid: generateUlid() },
+    });
+    expect(ineligible.statusCode).toBe(400);
+
+    // 409: terminal item.
+    await pl.applyEvent(plain.ulid, 'finished', {});
+    const terminal = await app.inject({
+      method: 'POST',
+      url: `/kitchen/inventory/${plain.ulid}/consume`,
+      payload: { ulid: generateUlid() },
+    });
+    expect(terminal.statusCode).toBe(409);
+
+    await app.close();
+
+    // 503: the shared `pipeline` (outer beforeEach) has no consumeStore/resolveRecipe wired.
+    const { item: unwired } = await pipeline.createItem({ raw_label: 'Rolled oats', shelf_life_class: 'pantry', acquired_at: '2026-07-01' });
+    const notConfigured = await fastify.inject({
+      method: 'POST',
+      url: `/kitchen/inventory/${unwired.ulid}/consume`,
+      payload: { ulid: generateUlid() },
+    });
+    expect(notConfigured.statusCode).toBe(503);
   });
 
   it('POST /kitchen/products then /kitchen/lexicon are creatable for the seed port', async () => {
