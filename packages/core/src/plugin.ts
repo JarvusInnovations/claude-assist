@@ -3,6 +3,7 @@ import fp from 'fastify-plugin';
 import type postgres from 'postgres';
 import type { Scheduler } from './scheduler.js';
 import type { NotifyDispatcher, HeartbeatRegistry } from './notify.js';
+import type { SessionSpawner } from './session-spawn.js';
 import type { Ledger } from './ledger.js';
 
 /**
@@ -28,6 +29,14 @@ declare module 'fastify' {
      * an action they perform at execution time.
      */
     ledger?: Ledger;
+    /**
+     * Session-spawn service — warms an interactive session through a configured
+     * command and dispatches its takeover link through `notify`. Present only
+     * when the session-spawn module is loaded; callers guard with
+     * `fastify.sessionSpawner?.…`. When present but unconfigured
+     * (`SESSION_SPAWN_CMD` unset), `spawn()` returns a `not_configured` record.
+     */
+    sessionSpawner?: SessionSpawner;
   }
 }
 

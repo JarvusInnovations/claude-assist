@@ -65,3 +65,11 @@ export type {
 
 // Audit-ledger contract (direct-write surface)
 export type { Ledger, LedgerActor, LedgerRecordInput } from './ledger.js';
+
+// Session-spawn contract (warm an interactive session, dispatch its takeover link)
+export type {
+  SpawnRequest,
+  SpawnStatus,
+  SpawnRecord,
+  SessionSpawner,
+} from './session-spawn.js';

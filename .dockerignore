@@ -47,6 +47,11 @@
 !packages/notify/migrations/
 !packages/notify/migrations/**
 
+# packages/session-spawn (stateless — no migrations)
+!packages/session-spawn/package.json
+!packages/session-spawn/tsconfig.json
+!packages/session-spawn/src/**
+
 # packages/slack-urgency
 !packages/slack-urgency/package.json
 !packages/slack-urgency/tsconfig.json
