@@ -603,6 +603,10 @@ var COMMAND_GROUPS = [
       {
         usage: "inventory convert --from <ulid>[:amount]\u2026 --to '<derived spec json>' [--at DATE]",
         summary: "prep transform: decrement source item(s) (count or fraction) and create a NEW derived item with its own clock + derived-from provenance \u2014 distinct from consumption and from finished/tossed"
+      },
+      {
+        usage: "inventory consume <item-ulid> [--quantity N] [--at DATE] [--ulid ENTRY_ULID]",
+        summary: "one-tap: log a consumption entry with the item's EXACT known macros (no model call) and deplete it, in ONE atomic step; only recipe-linked derived items qualify (else 400); idempotent on --ulid"
       }
     ]
   },
@@ -1348,6 +1352,8 @@ var INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json]
   questions [--limit N]                     open needs-info items as questions
   convert --from <ulid>[:amount]\u2026 --to '<json>' [--at DATE]
                                              prep transform: decrement source(s), create a derived item
+  consume <item-ulid> [--quantity N] [--at DATE] [--ulid ENTRY_ULID]
+                                             one-tap: log + deplete a known-macro item, ONE atomic step
 
   states: stocked, open, finished, tossed. For 'event \u2026 tossed', --fraction is
   the AMOUNT TOSSED \u2014 a partial toss decrements on_hand_fraction and keeps the
@@ -1366,7 +1372,20 @@ var INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json]
   "shelf_life_class": "...", "units_total": N} for a counted derived item, or
   {"name": "...", "shelf_life_class": "...", "on_hand_fraction": 1} for a
   divisible one (fields: shelf_life_class?, on_hand_fraction?, units_total?,
-  store?, notes?, acquired_at?, recipe_ulid?).`;
+  store?, notes?, acquired_at?, recipe_ulid?).
+
+  'consume' is the one-tap "eat a prepared item" action: it creates a
+  consumption entry with the item's EXACT known macros (no model call,
+  source reselect) AND depletes the item, in ONE atomic step \u2014 a failure of
+  either side leaves neither applied. Only items with known macros qualify
+  (a derived item whose conversion carried a --to recipe_ulid that resolves
+  to a recipe with components); anything else 400s \u2014 use the normal
+  photo/reselect path there. --quantity is whole sealed units for a COUNTED
+  item (default 1); a fraction-modeled item always fully finishes in one
+  tap, so --quantity must be omitted or 1 there. --ulid supplies the
+  consumption entry's ULID explicitly (idempotency key for a retry); omitted,
+  the CLI generates one. Replaying the same --ulid is a safe no-op: no
+  duplicate entry, no double-deplete.`;
 var ITEM_ROW_SCHEMA = [
   field("ulid"),
   field("product_name", "name"),
@@ -1426,6 +1445,8 @@ async function inventoryCommand(args) {
       return questions(rest);
     case "convert":
       return convert(rest);
+    case "consume":
+      return consumeItem(rest);
     default:
       throw new AxiError(`Unknown inventory subcommand: ${sub}`, "VALIDATION_ERROR", [INVENTORY_HELP]);
   }
@@ -1551,6 +1572,26 @@ async function convert(args) {
   return renderOutput2([
     renderList("sources", result.sources ?? [], ITEM_ROW_SCHEMA),
     renderDetail("derived", result.derived, ITEM_DETAIL_SCHEMA)
+  ]);
+}
+async function consumeItem(args) {
+  const { positionals, flags } = parseArgs(args, ["json"], ["quantity", "at", "ulid"]);
+  const itemUlid = requirePositional(positionals, 0, "item ulid", INVENTORY_HELP);
+  const body = { ulid: typeof flags.ulid === "string" ? flags.ulid : generateUlid() };
+  if (typeof flags.quantity === "string") {
+    body.quantity = parseNumberFlag(flags.quantity, "quantity", INVENTORY_HELP, { min: 1 });
+  }
+  if (typeof flags.at === "string") body.at = validateDate(flags.at, "--at", INVENTORY_HELP);
+  const result = await api.post(`/api/kitchen/inventory/${encodeURIComponent(itemUlid)}/consume`, body);
+  if (flags.json) return rawJson(result);
+  const cli = cliInvocation();
+  return renderOutput2([
+    renderObject({ created: result?.created ?? null }),
+    renderDetail("entry", result?.entry, ENTRY_ROW_SCHEMA),
+    renderDetail("item", result?.item, ITEM_DETAIL_SCHEMA),
+    renderHelp([
+      result?.created ? `Logged + depleted in one atomic step \u2014 run \`${cli} entries show ${result?.entry?.ulid}\` to see the entry` : `Replay of an already-consumed request \u2014 entry ${result?.entry?.ulid} was NOT re-created, item was NOT re-depleted`
+    ])
   ]);
 }
 function validateShelfLife(value) {
@@ -1854,7 +1895,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "7a8a57b" : "dev";
+var VERSION = true ? "9e5ab65" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)

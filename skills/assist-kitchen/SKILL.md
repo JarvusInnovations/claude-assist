@@ -100,6 +100,7 @@ in doubt, read the spec.
 - `scripts/kitchen-axi inventory remark "<free text>" [--at DATE]` — free-text event resolver — matches a remark to an item and infers opened/finished/tossed; prints matched/unmatched honestly (unmatched is normal, not an error)
 - `scripts/kitchen-axi inventory questions [--limit N]` — open needs-info items as one-time questions
 - `scripts/kitchen-axi inventory convert --from <ulid>[:amount]… --to '<derived spec json>' [--at DATE]` — prep transform: decrement source item(s) (count or fraction) and create a NEW derived item with its own clock + derived-from provenance — distinct from consumption and from finished/tossed
+- `scripts/kitchen-axi inventory consume <item-ulid> [--quantity N] [--at DATE] [--ulid ENTRY_ULID]` — one-tap: log a consumption entry with the item's EXACT known macros (no model call) and deplete it, in ONE atomic step; only recipe-linked derived items qualify (else 400); idempotent on --ulid
 
 ### Receipts
 
