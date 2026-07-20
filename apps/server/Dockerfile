@@ -12,6 +12,7 @@ COPY packages/chat/package.json packages/chat/package.json
 COPY packages/sessions/package.json packages/sessions/package.json
 COPY packages/google/package.json packages/google/package.json
 COPY packages/notify/package.json packages/notify/package.json
+COPY packages/session-spawn/package.json packages/session-spawn/package.json
 COPY packages/slack-urgency/package.json packages/slack-urgency/package.json
 COPY packages/briefing/package.json packages/briefing/package.json
 COPY packages/pages/package.json packages/pages/package.json
@@ -32,6 +33,7 @@ COPY packages/chat packages/chat
 COPY packages/sessions packages/sessions
 COPY packages/google packages/google
 COPY packages/notify packages/notify
+COPY packages/session-spawn packages/session-spawn
 COPY packages/slack-urgency packages/slack-urgency
 COPY packages/briefing packages/briefing
 COPY packages/pages packages/pages
@@ -46,6 +48,7 @@ RUN cd packages/chat && bun run build
 RUN cd packages/sessions && bun run build
 RUN cd packages/google && bun run build
 RUN cd packages/notify && bun run build
+RUN cd packages/session-spawn && bun run build
 RUN cd packages/slack-urgency && bun run build
 RUN cd packages/briefing && bun run build
 RUN cd packages/pages && bun run build
