@@ -13,6 +13,7 @@ import slackUrgencyPlugin from '@jarvus/claude-assist-slack-urgency';
 import briefingPlugin from '@jarvus/claude-assist-briefing';
 import chatPlugin, { parseContextCommands } from '@jarvus/claude-assist-chat';
 import notifyPlugin from '@jarvus/claude-assist-notify';
+import sessionSpawnPlugin, { parseSpawnCommand } from '@jarvus/claude-assist-session-spawn';
 import pagesPlugin, { registerPagesPublicRoutes } from '@jarvus/claude-assist-pages';
 import ledgerPlugin from '@jarvus/claude-assist-ledger';
 import { join, dirname } from 'node:path';
@@ -172,6 +173,20 @@ await fastify.register(
       });
     } else {
       api.log.info('Notify module disabled');
+    }
+
+    // Session-spawn module — registered after notify (needs fastify.notify for
+    // takeover-link dispatch) and BEFORE kitchen so its fastify.sessionSpawner
+    // decorator is available to the kitchen plan-session route. Disabled (no
+    // decorator) when SESSION_SPAWN_CMD is unset → the route 503s.
+    if (fastify.config.ENABLE_SESSION_SPAWN) {
+      api.log.info('Session-spawn module enabled');
+      await api.register(sessionSpawnPlugin, {
+        command: parseSpawnCommand(fastify.config.SESSION_SPAWN_CMD, fastify.log),
+        timeoutMs: fastify.config.SESSION_SPAWN_TIMEOUT_MS,
+      });
+    } else {
+      api.log.info('Session-spawn module disabled');
     }
 
     // Register plugins conditionally based on environment

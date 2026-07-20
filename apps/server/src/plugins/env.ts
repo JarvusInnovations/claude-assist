@@ -215,6 +215,18 @@ const schema = {
     NOTIFY_STALENESS_CRON: { type: 'string' },
     NOTIFY_DIGEST_FLUSH_CRON: { type: 'string' },
 
+    // Session-spawn module (warm an interactive session, ping the phone with a
+    // takeover link — the app-initiated gather-and-ping "spawn" half).
+    ENABLE_SESSION_SPAWN: { type: 'boolean', default: true },
+    // The spawn command as a JSON argv array of strings (same convention as
+    // CHAT_CONTEXT_COMMANDS). Given a preload prompt (appended as a temp-file
+    // path in the final argv slot), the command warms an RC session and prints
+    // a takeover URL to stdout. Unset ⇒ spawning disabled (callers 503). Which
+    // command + its working directory + auth are instance data, never in-repo.
+    SESSION_SPAWN_CMD: { type: 'string' },
+    // Wall-clock bound per spawn (ms); a slow/hung command fails loud.
+    SESSION_SPAWN_TIMEOUT_MS: { type: 'number', default: 120_000 },
+
     // Ledger module (derived audit ledger + direct-write surface)
     ENABLE_LEDGER: { type: 'boolean', default: true },
     // Cron for the incremental derivation pass (default every 15 minutes).
@@ -387,6 +399,11 @@ declare module 'fastify' {
       NOTIFY_DISABLE_STALENESS: boolean;
       NOTIFY_STALENESS_CRON?: string;
       NOTIFY_DIGEST_FLUSH_CRON?: string;
+
+      // Session-spawn module
+      ENABLE_SESSION_SPAWN: boolean;
+      SESSION_SPAWN_CMD?: string;
+      SESSION_SPAWN_TIMEOUT_MS: number;
 
       // Ledger module
       ENABLE_LEDGER: boolean;

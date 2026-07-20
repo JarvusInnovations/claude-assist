@@ -33,6 +33,7 @@
     "@jarvus/claude-assist-ledger": "workspace:*",
     "@jarvus/claude-assist-notify": "workspace:*",
     "@jarvus/claude-assist-pages": "workspace:*",
+    "@jarvus/claude-assist-session-spawn": "workspace:*",
     "@jarvus/claude-assist-sessions": "workspace:*",
     "@jarvus/claude-assist-slack-urgency": "workspace:*",
     "fastify": "^5.7.1",
