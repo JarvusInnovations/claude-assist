@@ -42,6 +42,16 @@ export function transitionInventory(state: InventoryState, event: InventoryTrans
       if (state === 'stocked' || state === 'open') return 'finished';
       throw new InvalidTransitionError(state, event);
 
+    case 'finished-unit':
+      // Same legal preconditions as `finished` — a counted item's whole-item
+      // terminal close is still reachable from stocked/open. The CONCRETE next
+      // state (whether the item goes terminal or reverts to a fresh sealed
+      // unit) depends on units_remaining after the decrement, which only the
+      // pipeline knows; this call just validates legality (mirrors the
+      // `tossed` pattern, where the pipeline may also override this result).
+      if (state === 'stocked' || state === 'open') return 'finished';
+      throw new InvalidTransitionError(state, event);
+
     case 'tossed':
       if (state === 'stocked' || state === 'open') return 'tossed';
       throw new InvalidTransitionError(state, event);

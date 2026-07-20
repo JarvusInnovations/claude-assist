@@ -13,8 +13,13 @@
 import type { FastifyBaseLogger } from 'fastify';
 import type {
   BatchLineView,
+  ConvertInput,
+  ConvertResult,
+  DerivationSource,
+  DerivedFromView,
   DismissResolution,
   EventResolution,
+  InventoryDerivationRecord,
   InventoryEventType,
   InventoryItemInput,
   InventoryItemRecord,
@@ -35,7 +40,7 @@ import type {
   ShelfLifeClass,
 } from '../inventory-types.js';
 import type { InventoryStore, NewItem } from '../inventory-store.js';
-import { deriveEatBy, normalizeLexiconLine, toItemView, toIsoDate } from '../inventory-derive.js';
+import { deriveEatBy, normalizeLexiconLine, parsePackageCount, toItemView, toIsoDate } from '../inventory-derive.js';
 import { InvalidTransitionError, isTerminal, transitionInventory } from '../inventory-state.js';
 import { matchScore, parseRemark } from '../inventory-remark.js';
 import { generateUlid } from '../ulid.js';
@@ -47,6 +52,22 @@ export class LabelParserUnavailableError extends Error {
   constructor() {
     super('Label extraction requires a configured model (KITCHEN_ESTIMATION_MODEL / API key)');
     this.name = 'LabelParserUnavailableError';
+  }
+}
+
+/** Thrown when a count-only event (`finished-unit`) targets a fraction-modeled item. */
+export class NotCountedItemError extends Error {
+  constructor(itemUlid: string) {
+    super(`Inventory item ${itemUlid} is fraction-modeled, not counted (no units_total) — use 'finished' or 'tossed'`);
+    this.name = 'NotCountedItemError';
+  }
+}
+
+/** Thrown on malformed `convert` input (missing fields, unknown source, bad amount) — a 400 at the route. */
+export class ConversionValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ConversionValidationError';
   }
 }
 
@@ -202,6 +223,13 @@ export class InventoryPipeline {
         daysUnopenedOverride: product?.shelf_life_days_unopened,
         daysOpenedOverride: product?.shelf_life_days_opened,
       });
+      // Sealed-unit count model (§ count-vs-fraction principle): a package
+      // size that carries a discernible count ("3 ct", "12-pack") seeds
+      // units_total on EACH fanned-out item (one multipack per physical unit
+      // bought — orthogonal to the receipt line's own `quantity` fan-out).
+      // The lexicon line's package_size wins over the product's; no count
+      // found (a plain size like "16 oz") leaves the item fraction-modeled.
+      const unitsTotal = parsePackageCount(lexicon.package_size ?? product?.package_size ?? null);
       const firstUlid = await this.fanOutItems(quantity, () => ({
         ulid: generateUlid(),
         product_ulid: productUlid,
@@ -210,6 +238,8 @@ export class InventoryPipeline {
         batch_ulid: batch.ulid,
         state: 'stocked',
         on_hand_fraction: 1,
+        units_total: unitsTotal,
+        units_remaining: unitsTotal,
         needs_info: false,
         acquired_at: batch.purchased_at,
         eat_by: eatBy,
@@ -502,15 +532,47 @@ export class InventoryPipeline {
    *   (state `tossed`) only when the remainder reaches zero or no fraction was
    *   supplied (full toss). The tossed amount is appended to the item's
    *   `notes` (`tossed <amount> <date>`) so waste telemetry stays possible.
-   * - `finished`: always terminal and zeroing.
+   * - `finished`: always terminal and zeroing (on_hand_fraction AND, when the
+   *   item is counted, units_remaining — a whole-item finish means none left).
+   * - `finished-unit`: counted items only (§ count-vs-fraction principle) — an
+   *   integer decrement of ONE sealed unit. Reaching zero remaining goes
+   *   terminal `finished`, same as a whole-item finish; otherwise the item
+   *   reverts to `stocked` with a fresh unopened-window eat_by — the unit that
+   *   was just finished carried the opened clock, but the sealed remainder was
+   *   never itself opened, so the next-to-open unit starts its own clock from
+   *   `acquired_at`, not from the just-finished unit's `opened_at`.
    */
   private async applyEventToRecord(
     item: InventoryItemRecord,
     type: InventoryEventType,
     opts: { fraction?: number; at?: string }
   ): Promise<InventoryItemRecord | null> {
-    const nextState = transitionInventory(item.state, type); // throws on terminal
     const at = parseDate(opts.at);
+
+    if (type === 'finished-unit') {
+      if (item.units_total == null || item.units_remaining == null) {
+        throw new NotCountedItemError(item.ulid);
+      }
+      if (isTerminal(item.state)) throw new InvalidTransitionError(item.state, 'finished-unit');
+      const remaining = Math.max(0, item.units_remaining - 1);
+      if (remaining === 0) {
+        return this.store.updateItemState(item.ulid, {
+          state: 'finished',
+          closed_at: at,
+          on_hand_fraction: 0,
+          units_remaining: 0,
+        });
+      }
+      const eatBy = deriveEatBy({ shelfLifeClass: item.shelf_life_class, acquiredAt: item.acquired_at, openedAt: null });
+      return this.store.updateItemState(item.ulid, {
+        state: 'stocked',
+        opened_at: null,
+        eat_by: eatBy,
+        units_remaining: remaining,
+      });
+    }
+
+    const nextState = transitionInventory(item.state, type); // throws on terminal
 
     if (type === 'opened') {
       const eatBy = deriveEatBy({
@@ -547,21 +609,145 @@ export class InventoryPipeline {
         });
       }
 
-      // Full toss (or the remainder hit zero): terminal.
+      // Full toss (or the remainder hit zero): terminal. A counted item's
+      // sealed remainder is tossed too — the whole item is gone.
       return this.store.updateItemState(item.ulid, {
         state: nextState,
         closed_at: at,
         on_hand_fraction: 0,
+        ...(item.units_total != null ? { units_remaining: 0 } : {}),
         notes,
       });
     }
 
-    // finished: terminal, zero the fraction, stamp closed_at.
+    // finished: terminal, zero the fraction (and, for a counted item, the
+    // remaining units — a whole-item finish means none left), stamp closed_at.
     return this.store.updateItemState(item.ulid, {
       state: nextState,
       closed_at: at,
       on_hand_fraction: 0,
+      ...(item.units_total != null ? { units_remaining: 0 } : {}),
     });
+  }
+
+  // ── Conversions (prep transforms) ────────────────────────────────────────────
+
+  /**
+   * A `convert` event: meal prep is a TRANSFORMATION, not consumption. Decrements
+   * one or more source items (per each source's own count/fraction model — see
+   * `applyConversionDecrement`) and creates a NEW derived item with its own
+   * identity, shelf-life clock, quantity, and derived-from provenance (the
+   * sources + optionally the recipe/conversion that fixes its macros). Distinct
+   * from a consumption entry (this never touches kitchen.entries) and from
+   * finished/tossed (those are terminal with no new item). The derived item is
+   * first-class eat-first stock — it joins the ordinary eat-by ordering like any
+   * other stocked item.
+   *
+   * Throws (plain Error, → 400 at the route) when a source is unknown, already
+   * terminal, or supplied a non-integer amount against a counted item.
+   */
+  async convert(input: ConvertInput): Promise<ConvertResult> {
+    if (!input.sources || input.sources.length === 0) {
+      throw new ConversionValidationError('convert requires at least one source item');
+    }
+    if (!input.derived?.name?.trim()) {
+      throw new ConversionValidationError('convert requires derived.name');
+    }
+    const at = parseDate(input.at);
+
+    const sourceRecords: InventoryItemRecord[] = [];
+    const provenance: DerivationSource[] = [];
+    for (const src of input.sources) {
+      const item = await this.store.getItem(src.item_ulid);
+      if (!item) throw new ConversionValidationError(`convert source item not found: ${src.item_ulid}`);
+      if (isTerminal(item.state)) {
+        throw new InvalidTransitionError(item.state, 'finished'); // a terminal item has nothing left to spend
+      }
+      const { updated, consumed, kind } = await this.applyConversionDecrement(item, src.amount, at);
+      sourceRecords.push(updated);
+      provenance.push({ item_ulid: item.ulid, amount: consumed, amount_kind: kind });
+    }
+
+    const derived = input.derived;
+    const acquiredAt = parseDate(derived.acquired_at ?? input.at);
+    const cls: ShelfLifeClass = derived.shelf_life_class ?? 'unknown';
+    const eatBy = deriveEatBy({ shelfLifeClass: cls, acquiredAt, openedAt: null });
+    const unitsTotal = derived.units_total ?? null;
+    const { record: derivedRecord } = await this.store.insertItemIfAbsent({
+      ulid: generateUlid(),
+      product_ulid: null,
+      raw_label: derived.name.trim(),
+      store: derived.store ?? null,
+      batch_ulid: null,
+      state: 'stocked',
+      on_hand_fraction: unitsTotal != null ? 1 : (derived.on_hand_fraction ?? 1),
+      units_total: unitsTotal,
+      units_remaining: unitsTotal,
+      needs_info: false,
+      acquired_at: acquiredAt,
+      eat_by: eatBy,
+      shelf_life_class: cls,
+      notes: derived.notes ?? null,
+    });
+
+    const derivation = await this.store.insertDerivation({
+      ulid: generateUlid(),
+      derived_item_ulid: derivedRecord.ulid,
+      sources: provenance,
+      recipe_ulid: derived.recipe_ulid ?? null,
+    });
+
+    return {
+      sources: await this.viewsOf(sourceRecords),
+      derived: await this.viewOf(derivedRecord, { sources: provenance, recipe_ulid: derivation.recipe_ulid }),
+      derivation,
+    };
+  }
+
+  /**
+   * Decrement one conversion source by `amount`, interpreted per the source's
+   * OWN on-hand model: a counted item (units_total/units_remaining both set)
+   * takes a whole-unit integer count; a fraction-modeled item takes a fraction
+   * (0..1). Omitted `amount` fully consumes the source (all remaining units, or
+   * the whole remaining fraction). Reaching zero goes terminal `finished`
+   * (mirrors `finished-unit`/full-toss); otherwise the item stays alive with
+   * the decremented quantity, state/opened_at/eat_by unchanged — spending SOME
+   * of a source doesn't touch which unit (if any) is currently open. Returns
+   * the updated record plus the normalized amount/kind actually recorded, for
+   * the derivation's provenance.
+   */
+  private async applyConversionDecrement(
+    item: InventoryItemRecord,
+    amount: number | undefined,
+    at: Date
+  ): Promise<{ updated: InventoryItemRecord; consumed: number; kind: 'fraction' | 'count' }> {
+    if (item.units_total != null && item.units_remaining != null) {
+      const consume = amount === undefined ? item.units_remaining : amount;
+      if (!Number.isInteger(consume) || consume < 1) {
+        throw new ConversionValidationError(
+          `convert source ${item.ulid} is counted — amount must be a whole-unit integer >= 1`
+        );
+      }
+      const remaining = Math.max(0, item.units_remaining - consume);
+      const updated =
+        remaining === 0
+          ? await this.store.updateItemState(item.ulid, {
+              state: 'finished',
+              closed_at: at,
+              on_hand_fraction: 0,
+              units_remaining: 0,
+            })
+          : await this.store.updateItemState(item.ulid, { state: item.state, units_remaining: remaining });
+      return { updated: updated!, consumed: Math.min(consume, item.units_remaining), kind: 'count' };
+    }
+
+    const consume = clampFraction(amount === undefined ? item.on_hand_fraction : amount);
+    const remaining = clampFraction(item.on_hand_fraction - consume);
+    const updated =
+      remaining <= 0
+        ? await this.store.updateItemState(item.ulid, { state: 'finished', closed_at: at, on_hand_fraction: 0 })
+        : await this.store.updateItemState(item.ulid, { state: item.state, on_hand_fraction: remaining });
+    return { updated: updated!, consumed: consume, kind: 'fraction' };
   }
 
   // ── Free-text event resolver ─────────────────────────────────────────────────
@@ -750,6 +936,9 @@ export class InventoryPipeline {
           daysUnopenedOverride: product?.shelf_life_days_unopened,
           daysOpenedOverride: product?.shelf_life_days_opened,
         });
+    // Sealed-unit count model: an explicit units_total makes this a counted
+    // item (units_remaining starts full); omitted stays fraction-modeled.
+    const unitsTotal = input.units_total ?? null;
     const newItem: NewItem = {
       ulid: input.ulid ?? generateUlid(),
       product_ulid: input.product_ulid ?? null,
@@ -758,6 +947,8 @@ export class InventoryPipeline {
       batch_ulid: input.batch_ulid ?? null,
       state: input.state ?? 'stocked',
       on_hand_fraction: input.on_hand_fraction ?? 1,
+      units_total: unitsTotal,
+      units_remaining: unitsTotal,
       needs_info: needsInfo,
       acquired_at: acquiredAt,
       eat_by: eatBy,
@@ -863,14 +1054,34 @@ export class InventoryPipeline {
     return this.store.getProductsByUlids(ulids);
   }
 
-  private async viewOf(item: InventoryItemRecord): Promise<InventoryItemView> {
+  /**
+   * `derivedFrom` may be pre-supplied by a caller that just wrote the
+   * derivation row (the `convert` path) to skip a redundant read-after-write;
+   * omitted, it's looked up (null for the common non-derived item).
+   */
+  private async viewOf(item: InventoryItemRecord, derivedFrom?: DerivedFromView | null): Promise<InventoryItemView> {
     const product = item.product_ulid ? await this.store.getProduct(item.product_ulid) : null;
-    return toItemView(item, product?.name ?? null);
+    const resolved = derivedFrom !== undefined ? derivedFrom : await this.derivedFromFor(item.ulid);
+    return toItemView(item, product?.name ?? null, new Date(), resolved);
   }
 
   private async viewsOf(items: InventoryItemRecord[]): Promise<InventoryItemView[]> {
     const products = await this.productMap(items);
-    return items.map((i) => toItemView(i, i.product_ulid ? products.get(i.product_ulid)?.name ?? null : null));
+    const derivations = await this.store.getDerivationsByDerivedItemUlids(items.map((i) => i.ulid));
+    return items.map((i) =>
+      toItemView(
+        i,
+        i.product_ulid ? products.get(i.product_ulid)?.name ?? null : null,
+        new Date(),
+        derivations.has(i.ulid) ? toDerivedFromView(derivations.get(i.ulid)!) : null
+      )
+    );
+  }
+
+  private async derivedFromFor(itemUlid: string): Promise<DerivedFromView | null> {
+    const map = await this.store.getDerivationsByDerivedItemUlids([itemUlid]);
+    const d = map.get(itemUlid);
+    return d ? toDerivedFromView(d) : null;
   }
 
   private detach(p: Promise<unknown>): void {
@@ -910,6 +1121,11 @@ export function candidateStrings(item: InventoryItemRecord, product?: ProductRec
 
 function clampFraction(n: number): number {
   return Math.max(0, Math.min(1, Math.round(n * 1000) / 1000));
+}
+
+/** Project a derivation row to the provenance shape embedded on the item view. */
+function toDerivedFromView(d: InventoryDerivationRecord): DerivedFromView {
+  return { sources: d.sources, recipe_ulid: d.recipe_ulid };
 }
 
 function dedupeAliases(aliases: string[]): string[] {

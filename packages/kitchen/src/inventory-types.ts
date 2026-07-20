@@ -39,10 +39,19 @@ export type BatchSource = 'receipt' | 'manual';
 export type BatchStatus = 'parsing' | 'parsed' | 'failed';
 export type LineMatchOutcome = 'pending' | 'matched' | 'unmatched' | 'skipped';
 
-/** Explicit inventory event types (state-changing). */
-export type InventoryEventType = 'opened' | 'finished' | 'tossed';
+/**
+ * Explicit inventory event types (state-changing). `finished-unit` is the
+ * counted-item sibling of `finished`: an integer decrement of one sealed unit
+ * rather than a whole-item terminal close (see § count-vs-fraction principle).
+ */
+export type InventoryEventType = 'opened' | 'finished' | 'finished-unit' | 'tossed';
 
-export const INVENTORY_EVENT_TYPES: readonly InventoryEventType[] = ['opened', 'finished', 'tossed'];
+export const INVENTORY_EVENT_TYPES: readonly InventoryEventType[] = [
+  'opened',
+  'finished',
+  'finished-unit',
+  'tossed',
+];
 
 /**
  * Reference nutrition per 100g on a product. Any field null = unknown.
@@ -121,6 +130,16 @@ export interface InventoryItemRecord {
   batch_ulid: string | null;
   state: InventoryState;
   on_hand_fraction: number;
+  /**
+   * Sealed-unit count model (§ count-vs-fraction principle): a discrete
+   * multipack of individually-sealed atomic units (can 3-pack, egg dozen,
+   * sausage-link pack, yogurt 4-pack) tracks `units_total`/`units_remaining`
+   * instead of `on_hand_fraction`, as ONE row (no fan-out). Both null =
+   * fraction-modeled (the default, unchanged); both set together — never one
+   * without the other.
+   */
+  units_total: number | null;
+  units_remaining: number | null;
   needs_info: boolean;
   acquired_at: Date;
   opened_at: Date | null;
@@ -141,6 +160,8 @@ export interface InventoryItemInput {
   batch_ulid?: string | null;
   acquired_at?: string;
   on_hand_fraction?: number;
+  /** Sealed-unit count (mutually exclusive with on_hand_fraction — see InventoryItemRecord). */
+  units_total?: number;
   state?: InventoryState;
   needs_info?: boolean;
   shelf_life_class?: ShelfLifeClass | null;
@@ -157,6 +178,8 @@ export interface InventoryItemView {
   batch_ulid: string | null;
   state: InventoryState;
   on_hand_fraction: number;
+  units_total: number | null;
+  units_remaining: number | null;
   needs_info: boolean;
   acquired_at: string;
   opened_at: string | null;
@@ -166,8 +189,34 @@ export interface InventoryItemView {
   days_until_eat_by: number | null;
   age_days: number | null;
   notes: string | null;
+  /** Derived-from provenance (§ Conversions) — null unless created by `convert`. */
+  derived_from: DerivedFromView | null;
   created_at: string;
   updated_at: string;
+}
+
+/** One consumed source in a conversion's provenance. */
+export interface DerivationSource {
+  item_ulid: string;
+  /** Amount consumed from that source, in ITS OWN unit (fraction 0..1 or a whole-unit count). */
+  amount: number;
+  amount_kind: 'fraction' | 'count';
+}
+
+/** A row in kitchen.inventory_derivations — provenance for one derived item. */
+export interface InventoryDerivationRecord {
+  ulid: string;
+  derived_item_ulid: string;
+  sources: DerivationSource[];
+  /** Optional recipe/conversion reference that fixes the derived item's macros (provenance only). */
+  recipe_ulid: string | null;
+  created_at: Date;
+}
+
+/** The provenance shape embedded on a derived item's view. */
+export interface DerivedFromView {
+  sources: DerivationSource[];
+  recipe_ulid: string | null;
 }
 
 /** A row in kitchen.purchase_batches. */
@@ -319,4 +368,44 @@ export interface EventResolution {
   matched: boolean;
   item?: InventoryItemView;
   event?: ResolvedEvent;
+}
+
+// ── Conversions (prep transforms — § Conversions) ───────────────────────────
+
+/**
+ * One source consumed by a conversion. `amount` is interpreted per the
+ * SOURCE item's own on-hand model: an integer unit count for a counted item,
+ * a fraction (0..1) for a divisible one. Omitted = fully consumes the source
+ * (the whole remaining count, or the whole remaining fraction).
+ */
+export interface ConversionSourceInput {
+  item_ulid: string;
+  amount?: number;
+}
+
+/** The new item a conversion creates. Exactly one of on_hand_fraction/units_total applies. */
+export interface ConversionDerivedInput {
+  name: string;
+  shelf_life_class?: ShelfLifeClass;
+  on_hand_fraction?: number;
+  units_total?: number;
+  store?: string | null;
+  notes?: string | null;
+  acquired_at?: string;
+  /** Optional recipe/conversion that fixes the derived item's macros (provenance only). */
+  recipe_ulid?: string | null;
+}
+
+/** What a client POSTs to /inventory/convert. */
+export interface ConvertInput {
+  sources: ConversionSourceInput[];
+  derived: ConversionDerivedInput;
+  at?: string;
+}
+
+/** Response of a conversion: the decremented sources + the new derived item + its provenance. */
+export interface ConvertResult {
+  sources: InventoryItemView[];
+  derived: InventoryItemView;
+  derivation: InventoryDerivationRecord;
 }

@@ -210,6 +210,7 @@ export {
   toIsoDate,
   addDays,
   dayDiff,
+  parsePackageCount,
 } from './inventory-derive.js';
 export {
   transitionInventory,
@@ -226,11 +227,13 @@ export {
   type NewBatch,
   type NewBatchLine,
   type NewLexicon,
+  type NewDerivation,
 } from './inventory-store.js';
 export { MemoryInventoryStore } from './inventory-memory-store.js';
 export {
   InventoryPipeline,
   LabelParserUnavailableError,
+  NotCountedItemError,
   normalizeLine,
   candidateStrings,
   parseDate,

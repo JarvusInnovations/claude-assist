@@ -6,6 +6,7 @@
 import type {
   BatchLineRecord,
   BatchStatus,
+  InventoryDerivationRecord,
   InventoryItemRecord,
   InventoryState,
   LexiconRecord,
@@ -18,6 +19,7 @@ import type {
   ItemStateUpdate,
   NewBatch,
   NewBatchLine,
+  NewDerivation,
   NewItem,
   NewLexicon,
   NewProduct,
@@ -40,6 +42,7 @@ export class MemoryInventoryStore implements InventoryStore {
   readonly items = new Map<string, InventoryItemRecord>();
   readonly batches = new Map<string, PurchaseBatchRecord>();
   readonly lines = new Map<string, BatchLineRecord>();
+  readonly derivations = new Map<string, InventoryDerivationRecord>(); // key: derived_item_ulid
 
   private lexKey(store: string, lineText: string): string {
     return `${store}\x00${lineText}`;
@@ -174,6 +177,8 @@ export class MemoryInventoryStore implements InventoryStore {
       batch_ulid: item.batch_ulid,
       state: item.state,
       on_hand_fraction: item.on_hand_fraction,
+      units_total: item.units_total ?? null,
+      units_remaining: item.units_remaining ?? null,
       needs_info: item.needs_info,
       acquired_at: item.acquired_at,
       opened_at: null,
@@ -218,6 +223,7 @@ export class MemoryInventoryStore implements InventoryStore {
     if (update.opened_at !== undefined) i.opened_at = update.opened_at;
     if (update.closed_at !== undefined) i.closed_at = update.closed_at;
     if (update.on_hand_fraction !== undefined) i.on_hand_fraction = update.on_hand_fraction;
+    if (update.units_remaining !== undefined) i.units_remaining = update.units_remaining;
     if (update.eat_by !== undefined) i.eat_by = update.eat_by;
     if (update.notes !== undefined) i.notes = update.notes;
     i.updated_at = new Date();
@@ -326,5 +332,20 @@ export class MemoryInventoryStore implements InventoryStore {
       .filter((l) => l.batch_ulid === batchUlid)
       .sort((a, b) => a.created_at.getTime() - b.created_at.getTime())
       .map((l) => structuredClone(l));
+  }
+
+  async insertDerivation(derivation: NewDerivation): Promise<InventoryDerivationRecord> {
+    const record: InventoryDerivationRecord = { ...derivation, created_at: new Date() };
+    this.derivations.set(derivation.derived_item_ulid, record);
+    return structuredClone(record);
+  }
+
+  async getDerivationsByDerivedItemUlids(ulids: string[]): Promise<Map<string, InventoryDerivationRecord>> {
+    const map = new Map<string, InventoryDerivationRecord>();
+    for (const ulid of ulids) {
+      const d = this.derivations.get(ulid);
+      if (d) map.set(ulid, structuredClone(d));
+    }
+    return map;
   }
 }

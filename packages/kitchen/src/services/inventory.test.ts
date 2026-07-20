@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'bun:test';
 import type { FastifyBaseLogger } from 'fastify';
 import { MemoryInventoryStore } from '../inventory-memory-store.js';
-import { InventoryPipeline } from './inventory.js';
+import { ConversionValidationError, InventoryPipeline, NotCountedItemError } from './inventory.js';
+import { InvalidTransitionError } from '../inventory-state.js';
 import type { ReceiptParser, ReceiptParseInput } from './receipt-parser.js';
 import type { LabelParser, LabelParseInput } from './label-parser.js';
 import type { InventoryPhotoPart, ParsedLabel, ParsedReceipt } from '../inventory-types.js';
@@ -747,6 +748,220 @@ describe('non-inventory dismissal', () => {
     const view = await pipeline.getBatchView(ULID(41));
     expect(view!.lines[0]!.match_outcome).toBe('unmatched');
     expect(view!.lines[0]!.inventory_item_ulid).not.toBeNull();
+  });
+});
+
+describe('unit-count model (§ count-vs-fraction)', () => {
+  it('a receipt line with a lexicon package count seeds units_total/units_remaining, not a fraction', async () => {
+    const store = new MemoryInventoryStore();
+    const product = await store.insertProduct({
+      ulid: ULID(60),
+      name: 'Sparkling Water',
+      shelf_life_class: 'pantry',
+      aliases: [],
+      nutrition_per_100g: null,
+      ingredients: null,
+      package_size: '12 oz',
+      shelf_life_days_unopened: null,
+      shelf_life_days_opened: null,
+    });
+    await store.upsertLexicon({
+      ulid: ULID(61),
+      store: 'Example Grocer',
+      line_text: 'SPARKLING WATER 3PK',
+      product_ulid: product.ulid,
+      package_size: '3 ct',
+      shelf_life_class: 'pantry',
+    });
+    const parser = new FakeReceiptParser({ store: 'Example Grocer', lines: [{ text: 'SPARKLING WATER 3PK' }] });
+    const pipeline = new InventoryPipeline(store, parser, null, log);
+    await pipeline.ingestReceipt({ ulid: ULID(62), store: 'Example Grocer', purchased_at: '2026-07-18' }, [photo]);
+    await pipeline.settle();
+
+    const [item] = await pipeline.listInventory({});
+    expect(item!.units_total).toBe(3);
+    expect(item!.units_remaining).toBe(3);
+    expect(item!.on_hand_fraction).toBe(1); // present but unused for a counted item
+  });
+
+  it('a plain package size (no count) stays fraction-modeled, unchanged', async () => {
+    const store = new MemoryInventoryStore();
+    const product = await store.insertProduct({
+      ulid: ULID(63),
+      name: 'Feta Cheese',
+      shelf_life_class: 'fridge_short',
+      aliases: [],
+      nutrition_per_100g: null,
+      ingredients: null,
+      package_size: '8 oz',
+      shelf_life_days_unopened: null,
+      shelf_life_days_opened: null,
+    });
+    await store.upsertLexicon({
+      ulid: ULID(64),
+      store: 'Example Grocer',
+      line_text: 'FETA CHEESE',
+      product_ulid: product.ulid,
+      package_size: '8 oz',
+      shelf_life_class: 'fridge_short',
+    });
+    const parser = new FakeReceiptParser({ store: 'Example Grocer', lines: [{ text: 'FETA CHEESE' }] });
+    const pipeline = new InventoryPipeline(store, parser, null, log);
+    await pipeline.ingestReceipt({ ulid: ULID(65), store: 'Example Grocer', purchased_at: '2026-07-18' }, [photo]);
+    await pipeline.settle();
+
+    const [item] = await pipeline.listInventory({});
+    expect(item!.units_total).toBeNull();
+    expect(item!.units_remaining).toBeNull();
+    expect(item!.on_hand_fraction).toBe(1);
+  });
+
+  it("'finished-unit' decrements one sealed unit; only the opened unit carries the opened-clock; sealed remainder keeps unopened shelf-life", async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    const { item } = await pipeline.createItem({
+      raw_label: 'Canned Beans 3pk',
+      shelf_life_class: 'pantry', // unopened 365 / opened 180
+      acquired_at: '2026-07-01',
+      units_total: 3,
+    });
+    expect(item.units_remaining).toBe(3);
+
+    const opened = await pipeline.applyEvent(item.ulid, 'opened', { at: '2026-07-05' });
+    expect(opened!.state).toBe('open');
+    expect(opened!.eat_by).toBe('2027-01-01'); // pantry opened window, 180 days from 07-05
+
+    const one = await pipeline.applyEvent(item.ulid, 'finished-unit', { at: '2026-07-20' });
+    expect(one!.units_remaining).toBe(2);
+    // Reverts to stocked with a fresh unopened-window clock (the next unit is
+    // still sealed — it was never itself opened).
+    expect(one!.state).toBe('stocked');
+    expect(one!.opened_at).toBeNull();
+    expect(one!.eat_by).toBe('2027-07-01'); // pantry UNOPENED window, 365 days from acquired_at
+
+    const two = await pipeline.applyEvent(item.ulid, 'finished-unit', { at: '2026-08-01' });
+    expect(two!.units_remaining).toBe(1);
+    expect(two!.state).toBe('stocked');
+
+    const three = await pipeline.applyEvent(item.ulid, 'finished-unit', { at: '2026-08-15' });
+    expect(three!.units_remaining).toBe(0);
+    expect(three!.state).toBe('finished'); // zero remaining → terminal
+    expect(three!.closed_at).toBe('2026-08-15');
+
+    // Terminal now — a further finished-unit rejects.
+    await expect(pipeline.applyEvent(item.ulid, 'finished-unit', {})).rejects.toThrow(InvalidTransitionError);
+  });
+
+  it("'finished-unit' on a fraction-modeled item throws NotCountedItemError", async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    const { item } = await pipeline.createItem({ raw_label: 'Milk', shelf_life_class: 'fridge_short', acquired_at: '2026-07-01' });
+    await expect(pipeline.applyEvent(item.ulid, 'finished-unit', {})).rejects.toThrow(NotCountedItemError);
+  });
+
+  it("a whole-item 'finished' on a counted item zeroes units_remaining too", async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    const { item } = await pipeline.createItem({ raw_label: 'Egg dozen', shelf_life_class: 'fridge_long', acquired_at: '2026-07-01', units_total: 12 });
+    expect((await pipeline.getItemView(item.ulid))!.units_remaining).toBe(12);
+    const finished = await pipeline.applyEvent(item.ulid, 'finished', {});
+    expect(finished!.state).toBe('finished');
+    expect(finished!.units_remaining).toBe(0);
+  });
+});
+
+describe('conversions (prep transforms — § Conversions)', () => {
+  it('converts a counted source (6 of 12 eggs) into a counted derived item with provenance', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    const { item: eggs } = await pipeline.createItem({
+      raw_label: 'Egg dozen', shelf_life_class: 'fridge_long', acquired_at: '2026-07-01', units_total: 12,
+    });
+
+    const result = await pipeline.convert({
+      sources: [{ item_ulid: eggs.ulid, amount: 6 }],
+      derived: { name: 'Hard-boiled eggs', shelf_life_class: 'fridge_short', units_total: 6 },
+      at: '2026-07-10',
+    });
+
+    expect(result.sources.length).toBe(1);
+    expect(result.sources[0]!.units_remaining).toBe(6); // 12 - 6
+    expect(result.sources[0]!.state).toBe('stocked'); // still alive, half the pack left
+
+    expect(result.derived.raw_label).toBe('Hard-boiled eggs');
+    expect(result.derived.units_total).toBe(6);
+    expect(result.derived.units_remaining).toBe(6);
+    expect(result.derived.eat_by).toBe('2026-07-24'); // fridge_short unopened 14 days from 07-10
+    expect(result.derived.derived_from?.sources).toEqual([{ item_ulid: eggs.ulid, amount: 6, amount_kind: 'count' }]);
+
+    // Provenance persists on a fresh read too.
+    const reread = await pipeline.getItemView(result.derived.ulid);
+    expect(reread!.derived_from?.sources[0]!.item_ulid).toBe(eggs.ulid);
+
+    // The derived item is first-class eat-first stock.
+    const onHand = await pipeline.listInventory({});
+    expect(onHand.some((i) => i.ulid === result.derived.ulid)).toBe(true);
+  });
+
+  it('converts a fraction source (some quinoa) into a divisible derived item; omitted amount fully consumes', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    const { item: quinoa } = await pipeline.createItem({
+      raw_label: 'Dry quinoa', shelf_life_class: 'pantry', acquired_at: '2026-07-01',
+    });
+    expect(quinoa.on_hand_fraction).toBe(1);
+
+    const result = await pipeline.convert({
+      sources: [{ item_ulid: quinoa.ulid, amount: 0.3 }],
+      derived: { name: 'Cooked quinoa', shelf_life_class: 'fridge_short', on_hand_fraction: 1, recipe_ulid: null },
+      at: '2026-07-10',
+    });
+    expect(result.sources[0]!.on_hand_fraction).toBeCloseTo(0.7, 5);
+    expect(result.sources[0]!.state).toBe('stocked');
+    expect(result.derived.on_hand_fraction).toBe(1);
+    expect(result.derived.units_total).toBeNull();
+    expect(result.derived.derived_from?.sources[0]!.amount_kind).toBe('fraction');
+
+    // A second conversion with NO amount fully consumes the remainder.
+    const second = await pipeline.convert({
+      sources: [{ item_ulid: quinoa.ulid }],
+      derived: { name: 'More cooked quinoa', shelf_life_class: 'fridge_short' },
+      at: '2026-07-12',
+    });
+    expect(second.sources[0]!.on_hand_fraction).toBe(0);
+    expect(second.sources[0]!.state).toBe('finished');
+  });
+
+  it('rejects a terminal source (nothing left to spend)', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    const { item } = await pipeline.createItem({ raw_label: 'Old milk', shelf_life_class: 'fridge_short', acquired_at: '2026-07-01' });
+    await pipeline.applyEvent(item.ulid, 'finished', {});
+    await expect(
+      pipeline.convert({ sources: [{ item_ulid: item.ulid }], derived: { name: 'Something' } })
+    ).rejects.toThrow(InvalidTransitionError);
+  });
+
+  it('rejects an unknown source and a missing derived name', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    await expect(
+      pipeline.convert({ sources: [{ item_ulid: '01JMISSINGMISSINGMISSING0' }], derived: { name: 'X' } })
+    ).rejects.toThrow(ConversionValidationError);
+
+    const { item } = await pipeline.createItem({ raw_label: 'Milk', shelf_life_class: 'fridge_short', acquired_at: '2026-07-01' });
+    await expect(
+      pipeline.convert({ sources: [{ item_ulid: item.ulid }], derived: { name: '' } })
+    ).rejects.toThrow(ConversionValidationError);
+  });
+
+  it('rejects a non-integer amount against a counted source', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    const { item } = await pipeline.createItem({ raw_label: 'Egg dozen', shelf_life_class: 'fridge_long', acquired_at: '2026-07-01', units_total: 12 });
+    await expect(
+      pipeline.convert({ sources: [{ item_ulid: item.ulid, amount: 2.5 }], derived: { name: 'Eggs' } })
+    ).rejects.toThrow(ConversionValidationError);
   });
 });
 
