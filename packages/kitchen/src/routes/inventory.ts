@@ -10,6 +10,7 @@
  *   GET    /kitchen/inventory/questions    - open needs-info questions
  *   GET    /kitchen/inventory/:ulid        - single item
  *   POST   /kitchen/inventory              - create an item (manual / seed)
+ *   PATCH  /kitchen/inventory/:ulid        - reconcile: correct quantities/model/state (observation, not event)
  *   POST   /kitchen/inventory/events       - free-text event resolver
  *   POST   /kitchen/inventory/:ulid/events - explicit opened|finished|finished-unit|tossed
  *   POST   /kitchen/inventory/:ulid/label  - multipart: label photo(s) → resolve needs-info
@@ -34,6 +35,7 @@ import {
   ConversionValidationError,
   LabelParserUnavailableError,
   NotCountedItemError,
+  ReconcileValidationError,
   type InventoryPipeline,
 } from '../services/inventory.js';
 import {
@@ -45,6 +47,7 @@ import {
   type InventoryEventType,
   type InventoryPhotoPart,
   type InventoryState,
+  type ReconcileInput,
   type ShelfLifeClass,
 } from '../inventory-types.js';
 
@@ -222,6 +225,45 @@ export const registerInventoryRoutes: FastifyPluginAsync<InventoryRoutesConfig> 
       const { item, created } = await inventory.createItem(body as never);
       reply.status(created ? 201 : 200);
       return item;
+    }
+  );
+
+  // ── Reconcile (§ Reconcile — correction, not consumption) ─────────────────────
+
+  fastify.patch<{ Params: { ulid: string }; Body: ReconcileInput }>(
+    '/kitchen/inventory/:ulid',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          additionalProperties: false,
+          minProperties: 1,
+          properties: {
+            on_hand_fraction: { type: 'number', exclusiveMinimum: 0, maximum: 1 },
+            units_total: { type: ['integer', 'null'], minimum: 1 },
+            units_remaining: { type: ['integer', 'null'], minimum: 1 },
+            state: { type: 'string', enum: ['stocked', 'open'] },
+            opened_at: { type: ['string', 'null'] },
+            notes: { type: 'string', maxLength: 2000 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      try {
+        const item = await inventory.reconcileItem(request.params.ulid, request.body ?? {});
+        if (!item) {
+          reply.status(404);
+          return { error: 'Inventory item not found' };
+        }
+        return item;
+      } catch (err) {
+        if (err instanceof ReconcileValidationError || err instanceof NotCountedItemError) {
+          reply.status(400);
+          return { error: err.message };
+        }
+        throw err;
+      }
     }
   );
 

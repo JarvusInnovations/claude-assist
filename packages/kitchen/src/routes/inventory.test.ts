@@ -488,4 +488,31 @@ describe('inventory routes', () => {
     expect(l.statusCode).toBe(201);
     expect(l.json().line_text).toBe('OAT MILK');
   });
+
+  it('PATCH /kitchen/inventory/:ulid reconciles quantities/model/state; 400 invalid; 404 unknown', async () => {
+    const { item } = await pipeline.createItem({ raw_label: 'Soymilk', shelf_life_class: 'fridge_short', acquired_at: '2026-07-17' });
+    await pipeline.applyEvent(item.ulid, 'opened', { at: '2026-07-19', fraction: 0.34 });
+
+    const fixed = await fastify.inject({ method: 'PATCH', url: `/kitchen/inventory/${item.ulid}`, payload: { on_hand_fraction: 0.75 } });
+    expect(fixed.statusCode).toBe(200);
+    expect(fixed.json().on_hand_fraction).toBe(0.75);
+    expect(fixed.json().opened_at).toBe('2026-07-19'); // clock untouched
+    expect(fixed.json().notes).toContain('reconciled');
+
+    // Reclassify to counted while correcting state to sealed.
+    const counted = await fastify.inject({ method: 'PATCH', url: `/kitchen/inventory/${item.ulid}`, payload: { units_total: 3, units_remaining: 2, state: 'stocked' } });
+    expect(counted.statusCode).toBe(200);
+    expect(counted.json().units_remaining).toBe(2);
+    expect(counted.json().state).toBe('stocked');
+    expect(counted.json().opened_at).toBeNull();
+
+    const bad = await fastify.inject({ method: 'PATCH', url: `/kitchen/inventory/${item.ulid}`, payload: { on_hand_fraction: 0.5 } });
+    expect(bad.statusCode).toBe(400); // fraction on a counted item
+
+    const empty = await fastify.inject({ method: 'PATCH', url: `/kitchen/inventory/${item.ulid}`, payload: {} });
+    expect(empty.statusCode).toBe(400); // minProperties: 1
+
+    const missing = await fastify.inject({ method: 'PATCH', url: `/kitchen/inventory/${generateUlid()}`, payload: { on_hand_fraction: 0.5 } });
+    expect(missing.statusCode).toBe(404);
+  });
 });

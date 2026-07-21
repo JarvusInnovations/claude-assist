@@ -1348,6 +1348,10 @@ var INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json]
        [--units-total N] makes it a COUNTED item (sealed multipack); omitted stays fraction-modeled
   event <ulid> <opened|finished|finished-unit|tossed>   explicit state change
        [--fraction F] [--at DATE]
+  recount <ulid> [--fraction F] [--units-remaining N] [--units-total N]
+       [--uncounted] [--state stocked|open] [--opened-at DATE] [--notes T]
+                                             RECONCILE the ledger to observed reality \u2014
+                                             a correction, NOT a consumption event
   remark "<free text>" [--at DATE]          free-text event resolver (honest match)
   questions [--limit N]                     open needs-info items as questions
   convert [--from <ulid>[:amount]\u2026] --to '<json>' [--at DATE]
@@ -1378,6 +1382,19 @@ var INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json]
   {"name": "...", "shelf_life_class": "...", "on_hand_fraction": 1} for a
   divisible one (fields: shelf_life_class?, on_hand_fraction?, units_total?,
   store?, notes?, acquired_at?, recipe_ulid?).
+
+  'recount' is THE way to fix a ledger that disagrees with the fridge ("it's
+  actually 75% full", "this is really 2 of 3 cans", "this carton was never
+  opened"). It never touches clocks: opened_at moves only via an explicit
+  --opened-at, and --state stocked clears it (stocked means sealed) with
+  eat_by re-derived from the true state + product overrides. --units-total N
+  (with optional --units-remaining) reclassifies a fraction item as a COUNTED
+  multipack; --uncounted reverts a counted item to the fraction model.
+  --state can also resurrect a mis-finished/mis-tossed item. Do NOT fix the
+  ledger by re-firing 'event \u2026 opened --fraction' \u2014 that stamps a bogus
+  opened clock. Never pre-log planned consumption (e.g. a batch-day run that
+  hasn't happened); log events when they actually happen and recount when
+  reality disagrees.
 
   'consume' is the one-tap "eat a prepared item" action: it creates a
   consumption entry with the item's EXACT known macros (no model call,
@@ -1444,6 +1461,8 @@ async function inventoryCommand(args) {
       return addItem(rest);
     case "event":
       return itemEvent(rest);
+    case "recount":
+      return recountItem(rest);
     case "remark":
       return remark(rest);
     case "questions":
@@ -1509,6 +1528,32 @@ async function itemEvent(args) {
   if (typeof flags.fraction === "string") body.fraction = parseNumberFlag(flags.fraction, "fraction", INVENTORY_HELP, { min: 0, max: 1 });
   if (typeof flags.at === "string") body.at = validateDate(flags.at, "--at", INVENTORY_HELP);
   const item = await api.post(`/api/kitchen/inventory/${encodeURIComponent(ulid)}/events`, body);
+  if (flags.json) return rawJson(item);
+  return renderDetail("item", item, ITEM_DETAIL_SCHEMA);
+}
+async function recountItem(args) {
+  const { positionals, flags } = parseArgs(args, ["json", "uncounted"], ["fraction", "units-remaining", "units-total", "state", "opened-at", "notes"]);
+  const ulid = requirePositional(positionals, 0, "item ulid", INVENTORY_HELP);
+  const body = {};
+  if (typeof flags.fraction === "string") body.on_hand_fraction = parseNumberFlag(flags.fraction, "fraction", INVENTORY_HELP, { min: 0, max: 1 });
+  if (typeof flags["units-remaining"] === "string") body.units_remaining = parseNumberFlag(flags["units-remaining"], "units-remaining", INVENTORY_HELP, { min: 1 });
+  if (typeof flags["units-total"] === "string") body.units_total = parseNumberFlag(flags["units-total"], "units-total", INVENTORY_HELP, { min: 1 });
+  if (flags.uncounted) {
+    body.units_total = null;
+    body.units_remaining = null;
+  }
+  if (typeof flags.state === "string") {
+    if (flags.state !== "stocked" && flags.state !== "open") {
+      throw new AxiError("recount --state must be stocked or open (a correction never closes an item \u2014 use events for that)", "VALIDATION_ERROR", [INVENTORY_HELP]);
+    }
+    body.state = flags.state;
+  }
+  if (typeof flags["opened-at"] === "string") body.opened_at = validateDate(flags["opened-at"], "--opened-at", INVENTORY_HELP);
+  if (typeof flags.notes === "string") body.notes = flags.notes;
+  if (Object.keys(body).length === 0) {
+    throw new AxiError("recount needs at least one correction (e.g. --fraction 0.75)", "VALIDATION_ERROR", [INVENTORY_HELP]);
+  }
+  const item = await api.patch(`/api/kitchen/inventory/${encodeURIComponent(ulid)}`, body);
   if (flags.json) return rawJson(item);
   return renderDetail("item", item, ITEM_DETAIL_SCHEMA);
 }
@@ -1897,7 +1942,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "816fcbc" : "dev";
+var VERSION = true ? "2587d63" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)

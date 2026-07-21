@@ -39,6 +39,7 @@ import type {
   PurchaseBatchRecord,
   PurchaseBatchView,
   ReceiptInput,
+  ReconcileInput,
   ShelfLifeClass,
 } from '../inventory-types.js';
 import type { InventoryStore, ItemStateUpdate, NewItem } from '../inventory-store.js';
@@ -73,6 +74,14 @@ export class ConversionValidationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'ConversionValidationError';
+  }
+}
+
+/** Thrown on an invalid reconcile (§ Reconcile — contradictory or ineligible correction) — a 400 at the route. */
+export class ReconcileValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ReconcileValidationError';
   }
 }
 
@@ -624,7 +633,7 @@ export class InventoryPipeline {
           units_remaining: 0,
         });
       }
-      const eatBy = deriveEatBy({ shelfLifeClass: item.shelf_life_class, acquiredAt: item.acquired_at, openedAt: null });
+      const eatBy = await this.eatByFromTruth(item, null);
       return this.store.updateItemState(item.ulid, {
         state: 'stocked',
         opened_at: null,
@@ -636,17 +645,15 @@ export class InventoryPipeline {
     const nextState = transitionInventory(item.state, type); // throws on terminal
 
     if (type === 'opened') {
-      const eatBy = deriveEatBy({
-        shelfLifeClass: item.shelf_life_class,
-        acquiredAt: item.acquired_at,
-        openedAt: at,
-        // No product join here — the item's snapshot class drives it; product
-        // overrides were already folded into eat_by at stock/label time.
-      });
+      // The clock anchors to the EFFECTIVE opened date — the original
+      // opened_at when one exists (a re-open is an idempotent no-op and must
+      // not extend the window), else this event's date.
+      const effectiveOpenedAt = item.opened_at ?? at;
+      const eatBy = await this.eatByFromTruth(item, effectiveOpenedAt);
       const fraction = opts.fraction ?? item.on_hand_fraction;
       return this.store.updateItemState(item.ulid, {
         state: nextState,
-        opened_at: item.opened_at ?? at,
+        opened_at: effectiveOpenedAt,
         on_hand_fraction: fraction,
         eat_by: eatBy,
       });
@@ -689,6 +696,147 @@ export class InventoryPipeline {
       on_hand_fraction: 0,
       ...(item.units_total != null ? { units_remaining: 0 } : {}),
     });
+  }
+
+  /**
+   * Derive eat_by from the item's true state, folding in the linked product's
+   * precise day-window overrides (label-derived) when one exists. Every path
+   * that re-derives a clock (opened, finished-unit revert, reconcile) goes
+   * through here so overrides are never silently dropped.
+   */
+  private async eatByFromTruth(item: InventoryItemRecord, openedAt: Date | null): Promise<Date | null> {
+    const product = item.product_ulid ? await this.store.getProduct(item.product_ulid) : null;
+    return deriveEatBy({
+      shelfLifeClass: item.shelf_life_class,
+      acquiredAt: item.acquired_at,
+      openedAt,
+      daysUnopenedOverride: product?.shelf_life_days_unopened ?? null,
+      daysOpenedOverride: product?.shelf_life_days_opened ?? null,
+    });
+  }
+
+  // ── Reconcile (§ Reconcile — corrections are observations, not events) ──────
+
+  /**
+   * Bring an item's ledger into line with observed reality: on-hand fraction,
+   * unit counts, unit model (fraction ↔ counted), and state — WITHOUT firing
+   * consumption-event semantics. A reconcile never advances or resets a clock:
+   * `opened_at` changes only when explicitly supplied, or is cleared when the
+   * corrected state is `stocked` (stocked MEANS sealed). `eat_by` always
+   * re-derives from the corrected truth (product overrides included). An
+   * explicit non-terminal `state` may resurrect a mis-closed item
+   * (`closed_at` clears). Every reconcile appends a `reconciled <date>: …`
+   * line to `notes` so corrections stay auditable as corrections.
+   */
+  async reconcileItem(itemUlid: string, input: ReconcileInput): Promise<InventoryItemView | null> {
+    const item = await this.store.getItem(itemUlid);
+    if (!item) return null;
+
+    const hasAny =
+      input.on_hand_fraction !== undefined ||
+      input.units_total !== undefined ||
+      input.units_remaining !== undefined ||
+      input.state !== undefined ||
+      input.opened_at !== undefined ||
+      input.notes !== undefined;
+    if (!hasAny) throw new ReconcileValidationError('reconcile needs at least one field');
+
+    if (isTerminal(item.state) && input.state === undefined) {
+      throw new ReconcileValidationError(
+        `item is ${item.state} (terminal) — pass state: 'stocked'|'open' to resurrect it as part of the correction`
+      );
+    }
+    const state: InventoryState = input.state ?? item.state;
+
+    // ── Unit model: counted (units_total set), fraction (null), or unchanged ──
+    let unitsTotal = item.units_total;
+    let unitsRemaining = item.units_remaining;
+    if (input.units_total !== undefined) {
+      if (input.units_total === null) {
+        if (input.units_remaining != null) {
+          throw new ReconcileValidationError('units_total: null reverts to the fraction model — units_remaining must be omitted or null');
+        }
+        unitsTotal = null;
+        unitsRemaining = null;
+      } else {
+        if (!Number.isInteger(input.units_total) || input.units_total < 1) {
+          throw new ReconcileValidationError('units_total must be an integer >= 1 (or null to revert to fraction)');
+        }
+        unitsTotal = input.units_total;
+        unitsRemaining = input.units_remaining !== undefined && input.units_remaining !== null
+          ? input.units_remaining
+          : (item.units_remaining ?? input.units_total);
+      }
+    } else if (input.units_remaining !== undefined) {
+      if (item.units_total == null) throw new NotCountedItemError(item.ulid);
+      if (input.units_remaining === null) {
+        throw new ReconcileValidationError('units_remaining: null only accompanies units_total: null (fraction-model revert)');
+      }
+      unitsRemaining = input.units_remaining;
+    }
+    if (unitsTotal != null && unitsRemaining != null) {
+      if (!Number.isInteger(unitsRemaining) || unitsRemaining < 1 || unitsRemaining > unitsTotal) {
+        throw new ReconcileValidationError(
+          `units_remaining must be an integer in 1..units_total (${unitsTotal}) — a zero count is a 'finished' event, not a correction`
+        );
+      }
+    }
+
+    // ── On-hand fraction: fraction-modeled items only ──
+    let fraction = item.on_hand_fraction;
+    if (input.on_hand_fraction !== undefined) {
+      if (unitsTotal != null) {
+        throw new ReconcileValidationError('on_hand_fraction applies to fraction-modeled items — recount a counted item via units_remaining');
+      }
+      if (!(input.on_hand_fraction > 0 && input.on_hand_fraction <= 1)) {
+        throw new ReconcileValidationError("on_hand_fraction must be in (0, 1] — zero on hand is a 'finished'/'tossed' event, not a correction");
+      }
+      fraction = input.on_hand_fraction;
+    }
+
+    // ── Clock: never inferred. Explicit opened_at wins; a corrected `stocked`
+    //    state clears it (stocked means sealed); otherwise unchanged. ──
+    let openedAt = item.opened_at;
+    if (input.opened_at !== undefined) {
+      openedAt = input.opened_at === null ? null : parseDate(input.opened_at);
+    }
+    if (state === 'stocked') {
+      if (input.opened_at != null) {
+        throw new ReconcileValidationError("state 'stocked' means sealed — it cannot carry an opened_at");
+      }
+      openedAt = null;
+    }
+    if (state === 'open' && openedAt === null) {
+      throw new ReconcileValidationError("state 'open' needs an opened_at — supply one (or it must already exist)");
+    }
+
+    const eatBy = await this.eatByFromTruth({ ...item, opened_at: openedAt }, openedAt);
+
+    const changes: string[] = [];
+    if (state !== item.state) changes.push(`state ${item.state}→${state}`);
+    if (input.units_total !== undefined && unitsTotal !== item.units_total) {
+      changes.push(unitsTotal === null ? 'reverted to fraction model' : `counted ${unitsRemaining}/${unitsTotal}`);
+    } else if (unitsRemaining !== item.units_remaining) {
+      changes.push(`units ${item.units_remaining}→${unitsRemaining}`);
+    }
+    if (fraction !== item.on_hand_fraction) changes.push(`fraction ${item.on_hand_fraction}→${fraction}`);
+    if (toIsoDate(openedAt) !== toIsoDate(item.opened_at)) {
+      changes.push(`opened_at ${toIsoDate(item.opened_at) ?? 'null'}→${toIsoDate(openedAt) ?? 'null'}`);
+    }
+    const summary = `reconciled ${toIsoDate(new Date())}: ${changes.length ? changes.join(', ') : 'no-op'}${input.notes ? ` — ${input.notes}` : ''}`;
+
+    const updated = await this.store.updateItemState(item.ulid, {
+      state,
+      opened_at: openedAt,
+      // Resurrecting a mis-closed item clears closed_at.
+      ...(isTerminal(item.state) ? { closed_at: null } : {}),
+      on_hand_fraction: fraction,
+      units_total: unitsTotal,
+      units_remaining: unitsRemaining,
+      eat_by: eatBy,
+      notes: item.notes ? `${item.notes}\n${summary}` : summary,
+    });
+    return updated ? this.viewOf(updated) : null;
   }
 
   // ── Conversions (prep transforms) ────────────────────────────────────────────
@@ -989,6 +1137,16 @@ export class InventoryPipeline {
     if (!best) return { matched: false };
 
     try {
+      if (parsed.type === 'recount') {
+        // A pure quantity observation routes to § Reconcile — a correction,
+        // not a consumption event; no clock is touched.
+        const item = await this.reconcileItem(best.ulid, { on_hand_fraction: parsed.fraction ?? undefined });
+        return {
+          matched: true,
+          item: item ?? undefined,
+          event: { type: 'recount', fraction: parsed.fraction },
+        };
+      }
       // Same shared application as the explicit endpoint: a `tossed` fraction
       // is the amount tossed (partial toss decrements rather than terminates);
       // opened/finished ignore the parsed fraction.
@@ -1000,7 +1158,8 @@ export class InventoryPipeline {
         event: { type: parsed.type, fraction: parsed.fraction },
       };
     } catch {
-      // Terminal item matched (already finished/tossed) — treat as unmatched.
+      // Terminal item matched (already finished/tossed), or the recount was
+      // invalid for the matched item (e.g. counted model) — treat as unmatched.
       return { matched: false };
     }
   }

@@ -364,9 +364,9 @@ export interface ParsedLabel {
   aliases: string[];
 }
 
-/** What the free-text resolver decided for a remark. */
+/** What the free-text resolver decided for a remark. `recount` routes to § Reconcile, not the event machine. */
 export interface ResolvedEvent {
-  type: InventoryEventType;
+  type: InventoryEventType | 'recount';
   fraction: number | null;
 }
 
@@ -374,6 +374,24 @@ export interface EventResolution {
   matched: boolean;
   item?: InventoryItemView;
   event?: ResolvedEvent;
+}
+
+/**
+ * A § Reconcile correction (PATCH /inventory/:ulid) — an OBSERVATION of
+ * reality, never a consumption event. Quantities/model/state are set
+ * directly; clocks are never inferred (`opened_at` moves only when explicitly
+ * supplied, and a corrected `stocked` state clears it); `eat_by` re-derives
+ * from the corrected truth. `units_total: null` reverts a counted item to the
+ * fraction model; a number (re)classifies it as counted.
+ */
+export interface ReconcileInput {
+  on_hand_fraction?: number;
+  units_total?: number | null;
+  units_remaining?: number | null;
+  state?: 'stocked' | 'open';
+  opened_at?: string | null;
+  /** Free-text context appended to the auto-written `reconciled …` notes line. */
+  notes?: string;
 }
 
 // ── Conversions (prep transforms — § Conversions) ───────────────────────────
