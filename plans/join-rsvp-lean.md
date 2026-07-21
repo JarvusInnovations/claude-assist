@@ -1,10 +1,10 @@
 ---
-status: in-progress
+status: done
 depends: []
 specs:
   - specs/modules/briefing.md
 issues: []
-pr:
+pr: 124
 ---
 
 # Plan: Join alerts lean on RSVP + call link, not attendee count
@@ -56,7 +56,7 @@ the model (Haiku) residue pass and alert scheduling, unchanged.
       `no-other-attendees`.
 - [x] Full briefing suite green (408 pass); reason-string + scheduler tests
       updated for the new behavior.
-- [ ] `bun run build` green; PR CI green; deployed.
+- [x] `bun run build` green; PR CI green; deployed 2026-07-21.
 
 ## Risks / unknowns
 
@@ -71,8 +71,16 @@ the model (Haiku) residue pass and alert scheduling, unchanged.
 
 ## Notes
 
-(populated at closeout)
+- Shipped + deployed 2026-07-21 (PR #124). The day's already-passed NSF/AP017
+  meetings weren't backfilled — the fix applies to the next alert cycle forward.
+- No new `CalendarEvent` field was needed: `myResponse === ''` (no attendee
+  list) is the registration-stub signature and rides the video branch to
+  `conferencing+not-declined`.
 
 ## Follow-ups
 
-(populated at closeout)
+- **Duplicate calendar entries** — a webinar can appear twice (real invite +
+  no-reply@teams stub). Today the stub carried no own link → `no-venue` → silent,
+  so the pair still yielded one alert. If a stub ever carries its own link the
+  scheduler would double-alert; dedup by series/time is the scheduler's concern,
+  not the classifier's. Worth a scheduler-side dedup pass if it recurs.
