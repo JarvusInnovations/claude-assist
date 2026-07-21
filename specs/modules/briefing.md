@@ -4,10 +4,10 @@ Two pipelines share one calendar read path and one classifier: the **daily
 briefing** (a digest of the day's meetings, commitments, and other sources)
 and **join-required alerts** (a tappable push shortly before a meeting
 starts). This file currently documents only the piece both pipelines depend
-on most heavily — venue detection and join-link resolution — back-specced
-opportunistically per the repo convention (`specs/README.md`); the rest of
-the module (briefing composition, alert scheduling, meeting prep) is
-implemented but not yet written up here.
+on most heavily — venue detection, join-link resolution, and the
+join-required decision — back-specced opportunistically per the repo
+convention (`specs/README.md`); the rest of the module (briefing composition,
+alert scheduling, meeting prep) is implemented but not yet written up here.
 
 ## Calendar read path
 
@@ -58,9 +58,63 @@ scraped from truncatable free text — the fix is to prefer it, ahead of
 a conferencing signal is needed. This module now depends on **gws-axi
 >= 0.17.0** for that field.
 
+## Join-required decision
+
+Whether an event earns a join alert is decided deterministically where the
+signals are unambiguous, with a narrow ambiguous residue handed to a Haiku
+pass. A per-series override always wins first (the one-tap correction path).
+Absent an override, the order is:
+
+1. **Declined** (`myResponse === 'declined'`) → no alert. The owner opting out
+   is the strongest signal there is.
+2. **All-day** → no alert (holds, "Office", OOO spans — not a meeting to join).
+3. **Hard-noise summary** (focus / hold / block / placeholder / DND / OOO /
+   PTO / lunch / commute / WFH …) → no alert, regardless of venue. Calendar
+   scaffolding, not meetings.
+4. **No venue** (no join link, no conferencing-name, no physical location) →
+   no alert. Nothing to join.
+5. **Video venue (a call link) the owner hasn't declined → join-required,
+   regardless of attendee count.** This is the decisive rule: a real
+   conferencing link is a stronger "this is a joinable meeting" signal than
+   the attendee list. An **accepted** RSVP fires immediately (an explicit yes
+   wins even over soft-ambiguous wording); otherwise a **soft-ambiguous**
+   signal (a `tentative` response, or `optional`/`maybe`/`FYI`/`?`-tailed
+   wording) routes to the model, and everything else fires. The attendee count
+   is **not** consulted for video events.
+6. **Physical venue** (a real address, no call link) → the attendee heuristic
+   still applies: fewer than two attendees reads as a personal block or a
+   solo hold and does not alert; two or more, absent soft-ambiguity, alert
+   (soft-ambiguous → model).
+
+### Why the call link beats the attendee count
+
+The attendee count was a proxy for "is this a real, shared meeting." It breaks
+for the flows that carry a join link but no attendee list: Microsoft Teams /
+Zoom **registration and webinar events** land on the calendar as a stub (or a
+"Hosted virtually … link in the description" placeholder) with the owner as
+the only attendee — or none — so a `>= 2 attendees` gate silently drops
+exactly the calls the owner registered for. Broken or partial attendee syncs
+on ordinary 1:1s fail the same way. Since a genuine call link already means
+"there is something to join," the count adds only false negatives there; the
+owner suppresses the rare unwanted call-link event by **declining** it, which
+rule 1 already honors. The count is kept only for physical events, where "no
+other attendees" genuinely distinguishes a meeting from a personal block.
+
+## Principles
+
+**Local**
+
+- **Lean on the RSVP and the call link, not the attendee count.** For anything
+  with a conferencing link, the owner's response (declined suppresses, accepted
+  fires) and the mere presence of the link decide the alert; the attendee list
+  is unreliable for registration/webinar/broken-sync events and is not
+  consulted. Bias toward alerting a not-declined call and let the owner decline
+  the ones they don't want — a missed pillar meeting costs far more than a
+  dismissible extra push.
+
 ## Applies to
 
 `packages/briefing/src/calendar/gws-axi.ts` (field request + row parsing),
 `packages/briefing/src/classifier/join-required.ts` (`detectVenue`,
-`conferencingUrl`), `packages/briefing/src/alerts/scheduler.ts` (`alertUrl`,
-the alert's tappable action link).
+`conferencingUrl`, `classifyEvent`), `packages/briefing/src/alerts/scheduler.ts`
+(`alertUrl`, the alert's tappable action link).

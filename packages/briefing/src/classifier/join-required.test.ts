@@ -60,8 +60,13 @@ describe('deterministic noise classes fire nothing', () => {
     expect(c.reason).toStartWith('noise-pattern:');
   });
 
-  it('no other attendees (solo block)', () => {
-    const c = classifyEvent(mkEvent({ attendeeCount: 1 }));
+  it('no other attendees on a PHYSICAL event (solo block)', () => {
+    // The attendee heuristic only applies to physical venues now — a solo
+    // physical event reads as a personal block. (A solo *video* event fires;
+    // see the registration-stub / RSVP-lean cases below.)
+    const c = classifyEvent(
+      mkEvent({ attendeeCount: 1, hangoutLink: '', location: '100 Main St' })
+    );
     expect(c.joinRequired).toBe(false);
     expect(c.reason).toBe('no-other-attendees');
   });
@@ -74,10 +79,10 @@ describe('deterministic noise classes fire nothing', () => {
 });
 
 describe('join-required cases fire', () => {
-  it('video call with other attendees', () => {
+  it('video call the owner accepted', () => {
     const c = classifyEvent(mkEvent());
     expect(c.joinRequired).toBe(true);
-    expect(c.reason).toBe('conferencing+attendees');
+    expect(c.reason).toBe('rsvp-accepted+conferencing');
     expect(c.venue).toBe('video');
   });
 
@@ -99,9 +104,75 @@ describe('join-required cases fire', () => {
   });
 });
 
+// The regression this whole change fixes: registration/webinar flows and
+// broken syncs carry a real call link but no attendee list, so the old
+// `>= 2 attendees` gate dropped exactly the calls the owner registered for.
+describe('call-link events lean on the RSVP + link, not the attendee count', () => {
+  it('accepted Zoom webinar with only the owner as attendee still fires (the NSF case)', () => {
+    const c = classifyEvent(
+      mkEvent({
+        summary: 'NSF PESOSE Q&A Discussion',
+        myResponse: 'accepted',
+        attendeeCount: 1,
+        hangoutLink: '',
+        location: 'https://nsf.zoomgov.com/w/1656678966',
+      })
+    );
+    expect(c.joinRequired).toBe(true);
+    expect(c.reason).toBe('rsvp-accepted+conferencing');
+    expect(c.venue).toBe('video');
+  });
+
+  it('registration stub with no attendee list (myResponse "") and a link fires (the Teams webinar case)', () => {
+    const c = classifyEvent(
+      mkEvent({
+        summary: 'AP017 Committee Meeting',
+        myResponse: '',
+        attendeeCount: 0,
+        hangoutLink: '',
+        location: 'Hosted virtually on Microsoft Virtual Events (link in the description)',
+        description: 'https://events.gcc.teams.microsoft.com/event/8230b01f',
+      })
+    );
+    expect(c.joinRequired).toBe(true);
+    expect(c.reason).toBe('conferencing+not-declined');
+    expect(c.venue).toBe('video');
+  });
+
+  it('unanswered (needsAction) call-link event with no other attendees still fires', () => {
+    const c = classifyEvent(
+      mkEvent({ myResponse: 'needsAction', attendeeCount: 1 })
+    );
+    expect(c.joinRequired).toBe(true);
+    expect(c.reason).toBe('conferencing+not-declined');
+  });
+
+  it('a declined call-link event never fires, no matter the link', () => {
+    const c = classifyEvent(mkEvent({ myResponse: 'declined', attendeeCount: 1 }));
+    expect(c.joinRequired).toBe(false);
+    expect(c.reason).toBe('declined');
+  });
+
+  it('a tentative call-link stub routes to the model, not an auto-fire', () => {
+    const c = classifyEvent(mkEvent({ myResponse: 'tentative', attendeeCount: 1 }));
+    expect(isAmbiguous(c)).toBe(true);
+    expect(c.joinRequired).toBe(false);
+  });
+
+  it('an accepted call fires even with soft-ambiguous wording (explicit yes wins)', () => {
+    const c = classifyEvent(
+      mkEvent({ summary: 'Team sync (optional)', myResponse: 'accepted', attendeeCount: 1 })
+    );
+    expect(c.joinRequired).toBe(true);
+    expect(c.reason).toBe('rsvp-accepted+conferencing');
+  });
+});
+
 describe('ambiguous residue routes to the model', () => {
-  it('optional in the summary', () => {
-    const c = classifyEvent(mkEvent({ summary: 'Team sync (optional)' }));
+  it('optional in the summary (not yet accepted)', () => {
+    // Soft-ambiguity routes to the model only when the owner hasn't accepted —
+    // an explicit accept is decisive (see the RSVP-lean cases).
+    const c = classifyEvent(mkEvent({ summary: 'Team sync (optional)', myResponse: 'needsAction' }));
     expect(isAmbiguous(c)).toBe(true);
     expect(c.joinRequired).toBe(false); // conservative until the model rules
   });
@@ -175,7 +246,7 @@ describe('detectVenue', () => {
     const c = classifyEvent(event);
     expect(c.venue).toBe('video');
     expect(c.joinRequired).toBe(true);
-    expect(c.reason).toBe('conferencing+attendees');
+    expect(c.reason).toBe('rsvp-accepted+conferencing');
   });
 
   it('a street address stays physical', () => {
