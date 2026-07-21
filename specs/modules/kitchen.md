@@ -48,8 +48,9 @@ It is the owner's **post-hoc** "I only ate half of that" knob: after an entry is
 logged (by photo, recipe, or manual override), the multiplier rescales how much
 of the entry actually counts, without touching the per-field macro estimate.
 
-**Base vs effective — the wire rule.** The entry's stored macro fields
-(`calories`, `protein_g`, `fat_g`, `sat_fat_g`, `carbs_g`, `sodium_mg`) are the
+**Base vs effective — the wire rule.** The entry's stored nutrition fields
+(the panel — see § Nutrition panel: `calories`, `protein_g`, `fat_g`,
+`sat_fat_g`, `carbs_g`, `sugar_g`, `fiber_g`, `sodium_mg`) are the
 **base**: the amount as estimated, recipe-computed, or manually overridden. The
 entry wire shape (POST / GET / list responses) carries those base fields
 **exactly as stored, unscaled**, alongside `portion_multiplier`. **Every consumer
@@ -58,6 +59,39 @@ is the one rule, applied everywhere — entry tiles, day-group totals, the brief
 daily totals, and any future macro consumer. The wire never carries pre-multiplied
 macros; base-on-the-wire is unambiguous (a macro field always means the base) and
 lossless (no division needed to recover the base).
+
+## Nutrition panel
+
+An entry's nutrition is an **eight-field panel**: `calories`, `protein_g`,
+`fat_g`, `sat_fat_g`, `carbs_g`, `sugar_g`, `fiber_g`, `sodium_mg`. Each field is
+a number or `null` (unknown is `null`, never `0` — a missing value must not read
+as "zero of it"). `sugar_g` and `fiber_g` join the original six: `sugar_g` and
+`sodium_mg` are ceilings the owner overshoots and feels; `fiber_g` is a floor the
+owner has to aim at — the three the daily view surfaces beyond calories/protein.
+
+**Every source fills the whole panel it can.** The panel is only useful if it's
+complete regardless of *how* a meal was logged:
+
+- **Model-estimated** entries (photo / note) — the estimator returns all eight
+  fields; its prompt and output schema enumerate the full panel (so `sugar_g` and
+  `fiber_g` are estimated alongside the rest, not left null).
+- **Recipe / component-computed** entries (a reselect recipe, a `--recipe` log,
+  and the derived-item macros § Consume from inventory reads) — computed from the
+  recipe's per-ingredient `per_100g` reference, which carries the **full panel**
+  (not just `calories`/`protein_g`/`sat_fat_g`). `computeRecipeMacros` sums every
+  panel field across the components × logged quantities, so a deterministically
+  logged meal no longer silently drops `sodium_mg` / `sugar_g` / `fiber_g` /
+  `fat_g` / `carbs_g` to null. A component may still omit a field it genuinely
+  doesn't know; the sum then treats that component's contribution to that field
+  as unknown, not zero (a field is null in the total only when no component
+  carried it).
+- **Reselect-clone** ("recent") entries copy the source entry's base panel
+  verbatim, so they inherit whatever it had.
+- **Manual override** sets whichever panel fields the owner pins.
+
+The daily rollup sums the full panel. The eight fields are the canonical set the
+whole module (storage, estimator, recipes, rollup, patch-override keys, the
+meal-template contract's `per_100g`, and the client displays) agrees on.
 
 Consequences of this choice:
 
