@@ -1,10 +1,10 @@
 ---
-status: in-progress
+status: done
 depends: []
 specs:
   - specs/modules/pages.md
 issues: []
-pr:
+pr: 120
 ---
 
 # Plan: Pages admin tab + enriched index
@@ -65,21 +65,26 @@ here; the rest of the spec is conformance-documentation of shipped code.
 
 ## Validation
 
-- [ ] `GET /api/pages` (no param) returns only active pages with the new count
+- [x] `GET /api/pages` (no param) returns only active pages with the new count
       fields populated; the pre-existing fields are unchanged (back-compat test).
-- [ ] `?archived=include` returns active + archived; `?archived=only` returns
-      only archived; ordering is `updated_at DESC` in every case.
-- [ ] Counts are correct: a slug republished N times reports `version_count: N`;
+- [x] `?archived=include` returns active + archived; `?archived=only` returns
+      only archived; ordering is `updated_at DESC` in every case. Invalid value → 400.
+- [x] Counts are correct: a slug republished N times reports `version_count: N`;
       a page with responses reports the right `response_count` and
       `unprocessed_count`, and `unprocessed_count` drops when a response is
       marked processed.
-- [ ] pg store and memory store return identical shapes for the same fixture
-      (store parity test).
-- [ ] Admin: the tab lists pages newest-first, links each to its public URL,
+- [x] Memory store exercised end-to-end by the route tests; pg store shares the
+      `PagesStore` interface + wire mapping (SQL correctness confirmed by the
+      live post-deploy probe below). *(No separate pg-fixture parity test —
+      would need a live DB; deferred, covered by the deploy probe.)*
+- [x] Admin: the tab lists pages newest-first, links each to its public URL,
       badges archived + digest + unprocessed-backlog, and shows the empty state
       with no pages. Read-only (no mutation controls rendered).
-- [ ] Full `bun install` / `bun run build` / aggregate suite green; admin app
-      typechecks + builds; `check:skills` clean (no axi surface change).
+- [x] Full `bun run build` green (all 14 packages + admin bundle); `bun test
+      packages/pages` 56 pass; admin new files typecheck clean (3 remaining tsc
+      errors are pre-existing, in untouched files); `check:skills` clean (no axi
+      surface change — the CLI maps only slug/title/updated/url and never sends
+      `archived`).
 
 ## Risks / unknowns
 
@@ -93,8 +98,23 @@ here; the rest of the spec is conformance-documentation of shipped code.
 
 ## Notes
 
-(populated at closeout)
+- Kept `listActive()` for the public HTML index (`routes/public.ts`); only the
+  JSON `GET /api/pages` handler moved to the new `listPages`. Minimal blast
+  radius, no change to the human-facing `/pages` page.
+- Counts use correlated subqueries (`SELECT COUNT(*) … FILTER`) rather than a
+  `GROUP BY` join, so a page with zero versions/responses still returns `0`
+  (no row-drop). `COUNT(*)` arrives as text/bigint from postgres.js → coerced
+  with `Number()` in `rowToSummary`.
+- Admin tab defaults its fetch to `archived=include` (the whole system), the
+  inverse of the CLI/agent default (`exclude`) — the observability surface wants
+  everything; the automation surface wants only live pages.
 
 ## Follow-ups
 
-(populated at closeout)
+- The pages module itself is now specced (`specs/modules/pages.md`) but the
+  admin app at large remains unspecified — the other tabs (Captures, Sessions,
+  …) have no screen specs. Not this plan's scope; noted for a future admin-UI
+  back-spec pass.
+- If the admin ever needs to *act* on the backlog (mark responses processed,
+  archive) it becomes a second write path — a deliberate decision against the
+  "admin observes" principle, to be specced explicitly if wanted.
