@@ -1,10 +1,10 @@
 ---
-status: planned
+status: done
 depends: []
 specs:
   - specs/modules/kitchen.md
 issues: []
-pr:
+pr: 126
 ---
 
 # Plan: Prepared-dish shelf-life class
@@ -57,14 +57,14 @@ scope: per-dish shelf-life learning, and any UI.
 
 ## Validation
 
-- [ ] `prepared` window is `(4, 4)`; a `prepared` item made day 0 and *opened*
+- [x] `prepared` window is `(4, 4)`; a `prepared` item made day 0 and *opened*
       day 2 still has `eat_by` = day 4 (make-date anchoring), not day 6.
-- [ ] A source-less `convert` with no `shelf_life_class` yields a `prepared`
+- [x] A source-less `convert` with no `shelf_life_class` yields a `prepared`
       derived item with a non-null `eat_by` ~4 days out (regression on the jar
       case); an explicit `produce` override still wins.
-- [ ] Enum migration applies cleanly; `check` + full kitchen suite green;
+- [x] Enum migration applies cleanly; `check` + full kitchen suite green;
       `check:skills` clean after the guidance/help edit.
-- [ ] pg + memory stores agree on the derived `eat_by` for a `prepared` item.
+- [x] pg + memory stores agree on the derived `eat_by` for a `prepared` item.
 
 ## Risks / unknowns
 
@@ -78,7 +78,11 @@ scope: per-dish shelf-life learning, and any UI.
 
 ## Notes
 
-(populated at closeout)
+- Shipped + deployed 2026-07-21 (PR #126). Migration 008 (`ADD VALUE IF NOT
+  EXISTS 'prepared'`) applied cleanly inside the per-file transaction — the
+  PG-12+ "not used same-txn" path held, no non-transactional fallback needed.
+- Live-verified: a source-less `convert` with no `shelf_life_class` returns
+  `shelf_life_class: prepared`, `eat_by` = make-date + 4 (07-21 → 07-25).
 
 ## Follow-ups
 
