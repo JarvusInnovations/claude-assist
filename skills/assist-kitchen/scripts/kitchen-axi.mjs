@@ -601,8 +601,8 @@ var COMMAND_GROUPS = [
       { usage: 'inventory remark "<free text>" [--at DATE]', summary: "free-text event resolver \u2014 matches a remark to an item and infers opened/finished/tossed; prints matched/unmatched honestly (unmatched is normal, not an error)" },
       { usage: "inventory questions [--limit N]", summary: "open needs-info items as one-time questions" },
       {
-        usage: "inventory convert --from <ulid>[:amount]\u2026 --to '<derived spec json>' [--at DATE]",
-        summary: "prep transform: decrement source item(s) (count or fraction) and create a NEW derived item with its own clock + derived-from provenance \u2014 distinct from consumption and from finished/tossed"
+        usage: "inventory convert [--from <ulid>[:amount]\u2026] --to '<derived spec json>' [--at DATE]",
+        summary: `prep transform: create a NEW derived item with its own clock + provenance, optionally decrementing source item(s) (count or fraction); --from is OPTIONAL \u2014 with none it is a source-less "I made this" that decrements nothing. Pass --to recipe_ulid to make the item one-tap consume-eligible. THIS is how prepped food reaches the consume shelf \u2014 never plain 'inventory add'`
       },
       {
         usage: "inventory consume <item-ulid> [--quantity N] [--at DATE] [--ulid ENTRY_ULID]",
@@ -1350,8 +1350,8 @@ var INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json]
        [--fraction F] [--at DATE]
   remark "<free text>" [--at DATE]          free-text event resolver (honest match)
   questions [--limit N]                     open needs-info items as questions
-  convert --from <ulid>[:amount]\u2026 --to '<json>' [--at DATE]
-                                             prep transform: decrement source(s), create a derived item
+  convert [--from <ulid>[:amount]\u2026] --to '<json>' [--at DATE]
+                                             prep transform: create a derived item, optionally decrementing source(s)
   consume <item-ulid> [--quantity N] [--at DATE] [--ulid ENTRY_ULID]
                                              one-tap: log + deplete a known-macro item, ONE atomic step
 
@@ -1364,11 +1364,16 @@ var INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json]
   decrement of one sealed unit \u2014 reaching zero goes terminal, otherwise the
   item reverts to a fresh unopened clock for the next unit.
 
-  'convert' turns source stock into a NEW derived item (meal prep, not
-  consumption). --from is repeatable; an omitted amount fully consumes that
-  source (all remaining units for a counted item, the whole remaining fraction
-  for a divisible one) \u2014 an integer amount for a counted source, a fraction
-  0..1 for a divisible one. --to is a JSON object: {"name": "...",
+  'convert' creates a NEW derived item from meal prep (not consumption).
+  --from is OPTIONAL and repeatable: with sources it decrements each (an
+  omitted amount fully consumes that source \u2014 all remaining units for a
+  counted item, the whole remaining fraction for a divisible one; an integer
+  amount for a counted source, a fraction 0..1 for a divisible one); with NO
+  --from it is a source-less "I made this" \u2014 it registers the prepared item
+  without decrementing any tracked stock (use when the raw inputs were loose,
+  already logged, or not worth tracking). Pass --to '{\u2026,"recipe_ulid":"\u2026"}'
+  to make the derived item one-tap consume-eligible (see 'consume'). --to is
+  a JSON object: {"name": "...",
   "shelf_life_class": "...", "units_total": N} for a counted derived item, or
   {"name": "...", "shelf_life_class": "...", "on_hand_fraction": 1} for a
   divisible one (fields: shelf_life_class?, on_hand_fraction?, units_total?,
@@ -1553,9 +1558,6 @@ function parseSource(raw) {
 async function convert(args) {
   const { flags } = parseArgs(args, ["json"], ["from", "to", "at"]);
   const fromValues = collectFlag(args, "from");
-  if (fromValues.length === 0) {
-    throw new AxiError("convert needs at least one --from <ulid>[:amount]", "VALIDATION_ERROR", [INVENTORY_HELP]);
-  }
   const toRaw = typeof flags.to === "string" ? flags.to : void 0;
   if (!toRaw) throw new AxiError("convert needs --to '<derived spec json>'", "VALIDATION_ERROR", [INVENTORY_HELP]);
   const derived = parseJson(toRaw, "--to", INVENTORY_HELP);
@@ -1895,7 +1897,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "9e5ab65" : "dev";
+var VERSION = true ? "816fcbc" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)

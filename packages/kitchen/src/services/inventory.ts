@@ -708,17 +708,16 @@ export class InventoryPipeline {
    * terminal, or supplied a non-integer amount against a counted item.
    */
   async convert(input: ConvertInput): Promise<ConvertResult> {
-    if (!input.sources || input.sources.length === 0) {
-      throw new ConversionValidationError('convert requires at least one source item');
-    }
     if (!input.derived?.name?.trim()) {
       throw new ConversionValidationError('convert requires derived.name');
     }
     const at = parseDate(input.at);
 
+    // `sources` is optional: a source-less conversion registers a prepared
+    // item ("I made this") with empty provenance, decrementing nothing.
     const sourceRecords: InventoryItemRecord[] = [];
     const provenance: DerivationSource[] = [];
-    for (const src of input.sources) {
+    for (const src of input.sources ?? []) {
       const item = await this.store.getItem(src.item_ulid);
       if (!item) throw new ConversionValidationError(`convert source item not found: ${src.item_ulid}`);
       if (isTerminal(item.state)) {

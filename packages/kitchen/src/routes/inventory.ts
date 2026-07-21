@@ -576,10 +576,12 @@ const CONVERT_DERIVED_SCHEMA = {
 
 const CONVERT_BODY_SCHEMA = {
   type: 'object',
-  required: ['sources', 'derived'],
+  required: ['derived'],
   additionalProperties: false,
   properties: {
-    sources: { type: 'array', minItems: 1, items: CONVERT_SOURCE_SCHEMA },
+    // Optional: a source-less conversion registers a prepared item
+    // ("I made this") without decrementing any tracked stock.
+    sources: { type: 'array', minItems: 0, items: CONVERT_SOURCE_SCHEMA },
     derived: CONVERT_DERIVED_SCHEMA,
     at: { type: 'string' },
   },

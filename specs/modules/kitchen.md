@@ -717,9 +717,11 @@ Item mutation:
   `{ item: InventoryItem, dismissed_count, non_inventory }`, where
   `dismissed_count` is the total items dismissed (≥ 1).
 - `POST /inventory/convert` — **conversion (prep transform)** event, see
-  § Conversions. JSON `{ sources: [{ item_ulid, amount? }], derived: { name,
+  § Conversions. JSON `{ sources?: [{ item_ulid, amount? }], derived: { name,
   shelf_life_class?, on_hand_fraction?, units_total?, store?, notes?,
-  acquired_at?, recipe_ulid? }, at? (ISO date) }`. `sources` (≥ 1): each
+  acquired_at?, recipe_ulid? }, at? (ISO date) }`. `sources` is **optional**
+  (`[]` or omitted → a source-less conversion that decrements nothing,
+  § Source-less conversions); when present, each
   `amount` is interpreted per that SOURCE's own on-hand model — a whole-unit
   integer for a counted source, a fraction (0..1) for a divisible one; omitted
   fully consumes the source (all remaining units, or the whole remaining
@@ -727,13 +729,15 @@ Item mutation:
   `units_total` describes the new item's quantity model (defaults to a whole
   fraction-modeled item, `on_hand_fraction: 1`, when neither is given);
   `recipe_ulid` is optional provenance only (no macro computation in this
-  surface). Decrements every source (reaching zero on any source terminates it
-  `finished`, mirroring `finished-unit`/full-toss) and creates ONE new
-  `stocked` item with its own `eat_by` (derived the same way a fresh item's
-  is) and a `kitchen.inventory_derivations` row linking it to its sources.
+  surface — but it is what makes the derived item consume-eligible, § Consume
+  from inventory § Eligibility). Decrements every source given (reaching zero on
+  any source terminates it `finished`, mirroring `finished-unit`/full-toss) and
+  creates ONE new `stocked` item with its own `eat_by` (derived the same way a
+  fresh item's is) and a `kitchen.inventory_derivations` row linking it to its
+  sources (empty when source-less).
   Returns `{ sources: InventoryItem[], derived: InventoryItem, derivation:
-  InventoryDerivation }` (`201`). `400` `ConversionValidationError` — no
-  sources, missing `derived.name`, an unknown source ULID, or a non-integer
+  InventoryDerivation }` (`201`). `400` `ConversionValidationError` —
+  missing `derived.name`, an unknown source ULID, or a non-integer
   `amount` against a counted source; `409` `InvalidTransitionError` — a source
   is already terminal (nothing left to spend).
 - `POST /inventory/:ulid/consume` — **consume from inventory (one-tap
@@ -915,9 +919,11 @@ food waste:
 ### Conversions
 
 Meal prep is a **transformation**, not consumption: a `POST /inventory/convert`
-event decrements one or more source items and creates a NEW inventory item —
-the **derived item** — with its own identity, shelf-life clock, quantity, and
-provenance. This is distinct from both halves of the existing model:
+event creates a NEW inventory item — the **derived item** — with its own
+identity, shelf-life clock, quantity, and provenance, optionally decrementing
+one or more source items it was made from. The defining act is **creating the
+derived item**; decrementing sources is an optional side effect (see § Source-
+less conversions). This is distinct from both halves of the existing model:
 
 - **Not a consumption entry.** `convert` never touches `kitchen.entries` and
   posts no journal entry — no macros, no estimation. One-tap consumption of a
@@ -937,6 +943,24 @@ exhausted) transitions to terminal `finished`, exactly mirroring
 quantity with its state/`opened_at`/`eat_by` untouched — spending SOME of a
 source doesn't touch which unit (if any) is currently open. A terminal source
 (nothing left to spend) is rejected (`409`).
+
+**Source-less conversions (register a prepared item).** `sources` is
+**optional** — a conversion may carry zero of them. This is the *"I prepped
+this"* path: you hand-built a jar of overnight oats, hard-boiled a batch of
+eggs, cooked a pot of quinoa, and you want the prepared item on the shelf, but
+the raw inputs were bought loose, already logged, or simply aren't worth
+tracking as their own inventory rows. A source-less convert creates the derived
+item exactly as above (its own clock, quantity, and — critically — its
+`derived.recipe_ulid`) with an **empty provenance** list; nothing is
+decremented. This matters because **`convert` is the only path that mints a
+consume-eligible item** (§ Consume from inventory § Eligibility): an item's
+one-tap `consume` macros come from its conversion's `recipe_ulid`, so a prepared
+food that never went through a `convert` can never reach the consume shelf. A
+plain `POST /inventory` (`inventory add`) makes an ordinary tracked item with no
+recipe provenance — correct for groceries, wrong for a prepared meal you intend
+to one-tap-log later. Requiring sources would force that wrong path whenever the
+raw inputs aren't tracked; making them optional is what lets *"I made three oat
+jars"* land as three shelf-ready items.
 
 **Creating the derived item.** One new `stocked` item, `eat_by` derived the
 same way any fresh item's is (from its `shelf_life_class` + `acquired_at`,
