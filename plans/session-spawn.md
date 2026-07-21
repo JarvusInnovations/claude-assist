@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 depends: []
 specs:
   - specs/modules/session-spawn.md
@@ -86,3 +86,7 @@ at — the toolkit knows only "a command that returns a takeover link."
 ## Follow-ups
 
 (populated at closeout)
+
+## Closeout (2026-07-21, sweep)
+
+Generic SessionSpawner + /api/kitchen/plan-session shipped (claude-assist #105/#106/#119) — all 7 validation boxes passed, deployed, exercised live by the Plan-meals flow 7/19.
