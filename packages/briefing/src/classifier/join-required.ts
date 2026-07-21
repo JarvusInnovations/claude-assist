@@ -1,12 +1,18 @@
 /**
  * Join-required classifier — deterministic core.
  *
- * An event earns an alert when it's a real meeting the owner must join: it has a
- * venue (conferencing link or physical location) AND other attendees AND the owner
- * hasn't declined AND it isn't an all-day / hold / focus-block pattern. The
- * obvious cases resolve here for free; the genuinely ambiguous residue
- * (`joinRequired: null`) is handed to the Haiku pass (llm.ts). A per-series
- * override always wins — that's the one-tap correction path.
+ * An event earns an alert when it's a real meeting the owner must join. For a
+ * VIDEO venue (a call link), the decision leans on the RSVP and the link, not
+ * the attendee count: a not-declined call fires regardless of how many
+ * attendees are listed (an explicit accept wins even over soft-ambiguous
+ * wording; tentative/optional routes to the model) — Teams/Zoom registration &
+ * webinar flows carry a link but no attendee list, so an attendee gate would
+ * drop exactly the calls the owner registered for. For a PHYSICAL venue the
+ * attendee heuristic stays (2+ attendees distinguishes a meeting from a solo
+ * hold). Declined / all-day / hold / focus-block patterns never alert. The
+ * obvious cases resolve here for free; the genuinely ambiguous residue is
+ * handed to the Haiku pass (llm.ts). A per-series override always wins — that's
+ * the one-tap correction path.
  *
  * Lead times: video calls alert 1 min out (just enough to tab over — alerts
  * landing earlier than that get dismissed and forgotten); physical locations
@@ -199,26 +205,44 @@ export function classifyEvent(
       source: 'deterministic',
     };
   }
-
-  const hasOthers = event.attendeeCount >= 2;
-  if (!hasOthers) {
-    return { joinRequired: false, reason: 'no-other-attendees', venue, source: 'deterministic' };
-  }
   if (venue === 'none') {
     return { joinRequired: false, reason: 'no-venue', venue, source: 'deterministic' };
   }
 
-  // Structurally join-worthy. Clean → decisive; soft-ambiguous → model residue.
+  // Video venue (a real call link): lean on the RSVP and the link, not the
+  // attendee count. Teams/Zoom registration + webinar flows land as a stub with
+  // the owner as the only attendee (or none), and broken syncs on ordinary
+  // calls fail the same way — so a `>= 2 attendees` gate silently drops exactly
+  // the calls the owner registered for. An explicit accept fires (winning even
+  // over soft-ambiguous wording); a tentative/optional signal routes to the
+  // model; otherwise a not-declined call fires. The owner suppresses unwanted
+  // call-link events by declining (handled above).
+  if (venue === 'video') {
+    if (event.myResponse === 'accepted') {
+      return {
+        joinRequired: true,
+        reason: 'rsvp-accepted+conferencing',
+        venue,
+        source: 'deterministic',
+      };
+    }
+    if (hasSoftAmbiguity(event)) {
+      return { joinRequired: false, reason: 'ambiguous', venue, source: 'deterministic' };
+    }
+    return { joinRequired: true, reason: 'conferencing+not-declined', venue, source: 'deterministic' };
+  }
+
+  // Physical venue: "no other attendees" still distinguishes a real meeting
+  // from a personal block or a solo hold, so the attendee heuristic stays.
+  const hasOthers = event.attendeeCount >= 2;
+  if (!hasOthers) {
+    return { joinRequired: false, reason: 'no-other-attendees', venue, source: 'deterministic' };
+  }
   if (hasSoftAmbiguity(event)) {
     return { joinRequired: false, reason: 'ambiguous', venue, source: 'deterministic' };
   }
 
-  return {
-    joinRequired: true,
-    reason: venue === 'physical' ? 'location+attendees' : 'conferencing+attendees',
-    venue,
-    source: 'deterministic',
-  };
+  return { joinRequired: true, reason: 'location+attendees', venue, source: 'deterministic' };
 }
 
 /** True when the event needs the model's judgment (structural pass + soft signal). */

@@ -57,7 +57,8 @@ describe('resolveAlertPlan', () => {
   });
 
   it('resolves ambiguous events via the model when present', async () => {
-    const events = [mkEvent({ summary: 'Team sync (optional)' })];
+    // Not-yet-accepted so soft-ambiguity routes to the model (an accept fires).
+    const events = [mkEvent({ summary: 'Team sync (optional)', myResponse: 'needsAction' })];
     const joined = await resolveAlertPlan({ events, overrides: new Map(), model: fakeModel(true) });
     expect(joined[0]!.classification.source).toBe('model');
     expect(joined[0]!.classification.joinRequired).toBe(true);
@@ -88,7 +89,9 @@ describe('alertingItems', () => {
   it('keeps only join-required schedulable items, in fire order', async () => {
     const early = mkEvent({ id: 'e1', seriesId: 'e1', startMs: 2_000_000, start: '2026-07-10T10:00:00-04:00' });
     const late = mkEvent({ id: 'e2', seriesId: 'e2', startMs: 5_000_000, start: '2026-07-10T12:00:00-04:00' });
-    const noise = mkEvent({ id: 'e3', seriesId: 'e3', attendeeCount: 1 });
+    // A solo PHYSICAL block still doesn't fire (the attendee heuristic applies
+    // to physical venues); a solo *video* call would now fire.
+    const noise = mkEvent({ id: 'e3', seriesId: 'e3', attendeeCount: 1, hangoutLink: '', location: '100 Main St' });
     const plan = await resolveAlertPlan({ events: [late, early, noise], overrides: new Map() });
     const alerting = alertingItems(plan);
     expect(alerting.map((i) => i.event.id)).toEqual(['e1', 'e2']);
