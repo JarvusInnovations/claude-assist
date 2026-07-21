@@ -730,7 +730,11 @@ export class InventoryPipeline {
 
     const derived = input.derived;
     const acquiredAt = parseDate(derived.acquired_at ?? input.at);
-    const cls: ShelfLifeClass = derived.shelf_life_class ?? 'unknown';
+    // A convert output is a prepared dish: default it to the `prepared` class
+    // (~4 days from the make date) so it always earns an eat-by and joins
+    // eat-first ordering, rather than falling to `unknown` (no eat-by). A
+    // caller that knows the dish keeps longer/shorter overrides it.
+    const cls: ShelfLifeClass = derived.shelf_life_class ?? 'prepared';
     const eatBy = deriveEatBy({ shelfLifeClass: cls, acquiredAt, openedAt: null });
     const unitsTotal = derived.units_total ?? null;
     const { record: derivedRecord } = await this.store.insertItemIfAbsent({

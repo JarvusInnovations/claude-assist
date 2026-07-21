@@ -22,6 +22,10 @@ export const SHELF_LIFE_WINDOWS: Record<ShelfLifeClass, { unopened: number | nul
   fridge_short: { unopened: 14, opened: 7 },
   produce: { unopened: 7, opened: 4 },
   very_perishable: { unopened: 3, opened: 2 },
+  // A cooked/assembled dish: ~4 days from the make date. Equal windows because
+  // it ages from acquired_at regardless of open state (see deriveEatBy) — a
+  // homemade jar doesn't get a fresh clock when you start eating it.
+  prepared: { unopened: 4, opened: 4 },
   unknown: { unopened: null, opened: null },
 };
 
@@ -50,14 +54,18 @@ export interface EatByInputs {
 /**
  * Derive eat_by from shelf-life class + acquired/opened dates. Opened items
  * measure from opened_at with the opened window; unopened from acquired_at
- * with the unopened window. Null window (unknown class, or missing override
- * with an unknown class) → null eat_by.
+ * with the unopened window. A `prepared` dish is the exception — it always
+ * measures from acquired_at (the make date), because opening a homemade dish
+ * doesn't grant it a fresh window. Null window (unknown class, or missing
+ * override with an unknown class) → null eat_by.
  */
 export function deriveEatBy(inputs: EatByInputs): Date | null {
   const cls = inputs.shelfLifeClass ?? 'unknown';
   const window = SHELF_LIFE_WINDOWS[cls] ?? SHELF_LIFE_WINDOWS.unknown;
 
-  if (inputs.openedAt) {
+  // Prepared dishes age from the make date; every other class resets to the
+  // opened window once the seal is broken.
+  if (inputs.openedAt && cls !== 'prepared') {
     const days = inputs.daysOpenedOverride ?? window.opened;
     if (days === null || days === undefined) return null;
     return addDays(inputs.openedAt, days);
