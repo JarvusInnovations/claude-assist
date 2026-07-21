@@ -13,10 +13,12 @@
 
 import type postgres from 'postgres';
 import type {
+  ArchivedFilter,
   ListResponsesFilter,
   NewResponseInput,
   PageRecord,
   PageResponseRecord,
+  PageSummaryRecord,
   PageVersionRecord,
   PublishInput,
   PublishResult,
@@ -33,6 +35,13 @@ export interface PagesStore {
 
   /** Active (non-archived) pages, newest-first by last publish. */
   listActive(): Promise<PageRecord[]>;
+
+  /**
+   * Pages with their aggregate status counts (versions, total + unprocessed
+   * responses), newest-activity-first. `archived` selects which pages appear
+   * (default `exclude` = active only, preserving the historical index set).
+   */
+  listPages(filter?: { archived?: ArchivedFilter }): Promise<PageSummaryRecord[]>;
 
   /** Idempotent: archiving an already-archived page leaves it as-is. */
   archive(slug: string): Promise<PageRecord | null>;
@@ -110,6 +119,22 @@ function rowToPage(row: PageRow): PageRecord {
     archivedAt: row.archived_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+/** A page row joined with its aggregate counts (COUNT(*) arrives as text/bigint). */
+type PageSummaryRow = PageRow & {
+  version_count: string | number;
+  response_count: string | number;
+  unprocessed_count: string | number;
+};
+
+function rowToSummary(row: PageSummaryRow): PageSummaryRecord {
+  return {
+    ...rowToPage(row),
+    versionCount: Number(row.version_count),
+    responseCount: Number(row.response_count),
+    unprocessedCount: Number(row.unprocessed_count),
   };
 }
 
@@ -212,6 +237,28 @@ export class PgPagesStore implements PagesStore {
       ORDER BY updated_at DESC
     `;
     return rows.map(rowToPage);
+  }
+
+  async listPages(filter: { archived?: ArchivedFilter } = {}): Promise<PageSummaryRecord[]> {
+    const archived = filter.archived ?? 'exclude';
+    const where =
+      archived === 'exclude'
+        ? this.sql`WHERE p.archived_at IS NULL`
+        : archived === 'only'
+          ? this.sql`WHERE p.archived_at IS NOT NULL`
+          : this.sql``;
+    const rows = await this.sql<PageSummaryRow[]>`
+      SELECT
+        p.*,
+        (SELECT COUNT(*) FROM pages.versions v WHERE v.page_id = p.id) AS version_count,
+        (SELECT COUNT(*) FROM pages.responses r WHERE r.page_id = p.id) AS response_count,
+        (SELECT COUNT(*) FROM pages.responses r
+          WHERE r.page_id = p.id AND r.processed_at IS NULL) AS unprocessed_count
+      FROM pages.pages p
+      ${where}
+      ORDER BY p.updated_at DESC
+    `;
+    return rows.map(rowToSummary);
   }
 
   async archive(slug: string): Promise<PageRecord | null> {

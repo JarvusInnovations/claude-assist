@@ -90,22 +90,42 @@ export const registerPagesApiRoutes: FastifyPluginAsync<PagesApiRoutesConfig> = 
     };
   });
 
-  // GET /pages - JSON index of active pages, newest-first (for agents/CLI;
-  // the human HTML index is the public GET /pages route outside /api).
-  fastify.get('/pages', async (request) => {
-    const pages = await store.listActive();
-    return {
-      pages: pages.map((p) => ({
-        slug: p.slug,
-        title: p.title,
-        url: pageUrl(request, p.slug, baseUrl),
-        digest_optin: p.digestOptin,
-        created_at: p.createdAt,
-        updated_at: p.updatedAt,
-      })),
-      count: pages.length,
-    };
-  });
+  // GET /pages - JSON index, newest-activity-first (for agents/CLI + the admin
+  // Pages tab; the human HTML index is the public GET /pages route outside
+  // /api). `archived` selects the set (default `exclude` = active only, the
+  // historical contract); each item carries aggregate status counts.
+  fastify.get<{ Querystring: { archived?: 'exclude' | 'include' | 'only' } }>(
+    '/pages',
+    {
+      schema: {
+        querystring: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            archived: { type: 'string', enum: ['exclude', 'include', 'only'] },
+          },
+        },
+      },
+    },
+    async (request) => {
+      const pages = await store.listPages({ archived: request.query.archived ?? 'exclude' });
+      return {
+        pages: pages.map((p) => ({
+          slug: p.slug,
+          title: p.title,
+          url: pageUrl(request, p.slug, baseUrl),
+          digest_optin: p.digestOptin,
+          archived_at: p.archivedAt,
+          version_count: p.versionCount,
+          response_count: p.responseCount,
+          unprocessed_count: p.unprocessedCount,
+          created_at: p.createdAt,
+          updated_at: p.updatedAt,
+        })),
+        count: pages.length,
+      };
+    }
+  );
 
   // POST /pages/:slug/responses - append-only. Dispatches a notify at notice
   // priority (or the digest tier when the page opted in).

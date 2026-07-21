@@ -23,12 +23,14 @@ import {
   CalendarClock,
   Zap,
   Tags,
+  FileText,
 } from "lucide-react";
 
 const navItems = [
   { path: "/", label: "Dashboard", icon: LayoutDashboard },
   { path: "/inbox", label: "Inbox", icon: Inbox },
   { path: "/captures", label: "Captures", icon: Layers },
+  { path: "/pages", label: "Pages", icon: FileText },
   { path: "/digest", label: "Digest", icon: MailCheck },
   { path: "/notifications", label: "Notifications", icon: Bell },
   { path: "/briefing", label: "Briefing", icon: CalendarClock },

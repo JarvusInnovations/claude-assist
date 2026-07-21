@@ -16,6 +16,7 @@ import { ActivityPage } from "@/pages/ActivityPage";
 import { SystemPage } from "@/pages/SystemPage";
 import { InboxPage } from "@/pages/InboxPage";
 import { CapturesPage } from "@/pages/CapturesPage";
+import { PagesPage } from "@/pages/PagesPage";
 import { NotificationsPage } from "@/pages/NotificationsPage";
 import { BriefingPage } from "@/pages/BriefingPage";
 import { DigestPage } from "@/pages/DigestPage";
@@ -38,6 +39,7 @@ function App() {
           <Route index element={<DashboardPage />} />
           <Route path="inbox" element={<InboxPage />} />
           <Route path="captures" element={<CapturesPage />} />
+          <Route path="pages" element={<PagesPage />} />
           <Route path="digest" element={<DigestPage />} />
           <Route path="notifications" element={<NotificationsPage />} />
           <Route path="briefing" element={<BriefingPage />} />
