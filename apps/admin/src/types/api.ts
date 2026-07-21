@@ -594,3 +594,23 @@ export interface ExecuteResponse {
   failed: number;
   results: ExecuteResult[];
 }
+
+// --- Pages module ---
+
+export interface PageSummary {
+  slug: string;
+  title: string;
+  url: string;
+  digest_optin: boolean;
+  archived_at: string | null;
+  version_count: number;
+  response_count: number;
+  unprocessed_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PageListResponse {
+  pages: PageSummary[];
+  count: number;
+}

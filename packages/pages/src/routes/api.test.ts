@@ -81,7 +81,7 @@ describe('pages API routes', () => {
   });
 
   describe('GET /pages (JSON index)', () => {
-    it('lists active pages with urls and excludes archived ones', async () => {
+    it('lists active pages with urls and excludes archived ones by default', async () => {
       await fastify.inject({
         method: 'POST',
         url: '/pages',
@@ -100,6 +100,74 @@ describe('pages API routes', () => {
       expect(json.count).toBe(1);
       expect(json.pages[0]).toMatchObject({ slug: 'active-page', title: 'Active' });
       expect(json.pages[0].url).toContain('/pages/active-page');
+    });
+
+    it('includes aggregate status counts on each item', async () => {
+      // publish twice → 2 versions; add 2 responses, mark 1 processed → 1 unprocessed
+      await fastify.inject({
+        method: 'POST',
+        url: '/pages',
+        payload: { slug: 'p', title: 'P v1', html: '<html/>' },
+      });
+      await fastify.inject({
+        method: 'POST',
+        url: '/pages',
+        payload: { slug: 'p', title: 'P v2', html: '<html/>' },
+      });
+      await fastify.inject({ method: 'POST', url: '/pages/p/responses', payload: { payload: { n: 1 } } });
+      const r2 = await fastify.inject({
+        method: 'POST',
+        url: '/pages/p/responses',
+        payload: { payload: { n: 2 } },
+      });
+      await fastify.inject({
+        method: 'POST',
+        url: `/pages/p/responses/${r2.json().id}/processed`,
+        payload: { processed_by: 'test' },
+      });
+
+      const json = (await fastify.inject({ method: 'GET', url: '/pages' })).json();
+      expect(json.pages[0]).toMatchObject({
+        slug: 'p',
+        title: 'P v2',
+        version_count: 2,
+        response_count: 2,
+        unprocessed_count: 1,
+        archived_at: null,
+      });
+    });
+
+    it('archived=include returns active + archived; archived=only returns just archived', async () => {
+      await fastify.inject({
+        method: 'POST',
+        url: '/pages',
+        payload: { slug: 'active-page', title: 'Active', html: '<html/>' },
+      });
+      await fastify.inject({
+        method: 'POST',
+        url: '/pages',
+        payload: { slug: 'gone-page', title: 'Gone', html: '<html/>' },
+      });
+      await fastify.inject({ method: 'POST', url: '/pages/gone-page/archive' });
+
+      const included = (
+        await fastify.inject({ method: 'GET', url: '/pages?archived=include' })
+      ).json();
+      expect(included.count).toBe(2);
+      expect(included.pages.map((p: { slug: string }) => p.slug).sort()).toEqual([
+        'active-page',
+        'gone-page',
+      ]);
+
+      const only = (await fastify.inject({ method: 'GET', url: '/pages?archived=only' })).json();
+      expect(only.count).toBe(1);
+      expect(only.pages[0].slug).toBe('gone-page');
+      expect(only.pages[0].archived_at).toBeTruthy();
+    });
+
+    it('rejects an invalid archived value with 400', async () => {
+      const response = await fastify.inject({ method: 'GET', url: '/pages?archived=nope' });
+      expect(response.statusCode).toBe(400);
     });
   });
 

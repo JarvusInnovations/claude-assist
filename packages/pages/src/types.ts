@@ -24,6 +24,20 @@ export interface PageVersionRecord {
   createdAt: Date;
 }
 
+/** Which pages the index returns. `exclude` = active only (default contract). */
+export type ArchivedFilter = 'exclude' | 'include' | 'only';
+
+/**
+ * A page plus its aggregate status counts — what the index endpoint and the
+ * admin Pages tab consume. `unprocessedCount` is the page's live "needs
+ * attention" signal (responses with `processed_at IS NULL`).
+ */
+export interface PageSummaryRecord extends PageRecord {
+  versionCount: number;
+  responseCount: number;
+  unprocessedCount: number;
+}
+
 export interface PageResponseRecord {
   id: number;
   pageId: number;

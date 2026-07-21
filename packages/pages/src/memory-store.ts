@@ -5,10 +5,12 @@
  */
 
 import type {
+  ArchivedFilter,
   ListResponsesFilter,
   NewResponseInput,
   PageRecord,
   PageResponseRecord,
+  PageSummaryRecord,
   PageVersionRecord,
   PublishInput,
   PublishResult,
@@ -89,6 +91,22 @@ export class MemoryPagesStore implements PagesStore {
       .filter((p) => p.archivedAt === null)
       .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
       .map((p) => ({ ...p }));
+  }
+
+  async listPages(filter: { archived?: ArchivedFilter } = {}): Promise<PageSummaryRecord[]> {
+    const archived = filter.archived ?? 'exclude';
+    const keep = (p: PageRecord): boolean =>
+      archived === 'include' ? true : archived === 'only' ? p.archivedAt !== null : p.archivedAt === null;
+    return [...this.pages.values()]
+      .filter(keep)
+      .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
+      .map((p) => ({
+        ...p,
+        versionCount: [...this.versions.values()].filter((v) => v.pageId === p.id).length,
+        responseCount: this.responses.filter((r) => r.pageId === p.id).length,
+        unprocessedCount: this.responses.filter((r) => r.pageId === p.id && r.processedAt === null)
+          .length,
+      }));
   }
 
   async archive(slug: string): Promise<PageRecord | null> {
