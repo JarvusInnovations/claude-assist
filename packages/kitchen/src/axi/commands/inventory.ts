@@ -25,8 +25,8 @@ export const INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json
        [--fraction F] [--at DATE]
   remark "<free text>" [--at DATE]          free-text event resolver (honest match)
   questions [--limit N]                     open needs-info items as questions
-  convert --from <ulid>[:amount]… --to '<json>' [--at DATE]
-                                             prep transform: decrement source(s), create a derived item
+  convert [--from <ulid>[:amount]…] --to '<json>' [--at DATE]
+                                             prep transform: create a derived item, optionally decrementing source(s)
   consume <item-ulid> [--quantity N] [--at DATE] [--ulid ENTRY_ULID]
                                              one-tap: log + deplete a known-macro item, ONE atomic step
 
@@ -39,11 +39,16 @@ export const INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json
   decrement of one sealed unit — reaching zero goes terminal, otherwise the
   item reverts to a fresh unopened clock for the next unit.
 
-  'convert' turns source stock into a NEW derived item (meal prep, not
-  consumption). --from is repeatable; an omitted amount fully consumes that
-  source (all remaining units for a counted item, the whole remaining fraction
-  for a divisible one) — an integer amount for a counted source, a fraction
-  0..1 for a divisible one. --to is a JSON object: {"name": "...",
+  'convert' creates a NEW derived item from meal prep (not consumption).
+  --from is OPTIONAL and repeatable: with sources it decrements each (an
+  omitted amount fully consumes that source — all remaining units for a
+  counted item, the whole remaining fraction for a divisible one; an integer
+  amount for a counted source, a fraction 0..1 for a divisible one); with NO
+  --from it is a source-less "I made this" — it registers the prepared item
+  without decrementing any tracked stock (use when the raw inputs were loose,
+  already logged, or not worth tracking). Pass --to '{…,"recipe_ulid":"…"}'
+  to make the derived item one-tap consume-eligible (see 'consume'). --to is
+  a JSON object: {"name": "...",
   "shelf_life_class": "...", "units_total": N} for a counted derived item, or
   {"name": "...", "shelf_life_class": "...", "on_hand_fraction": 1} for a
   divisible one (fields: shelf_life_class?, on_hand_fraction?, units_total?,
@@ -246,10 +251,9 @@ function parseSource(raw: string): { item_ulid: string; amount?: number } {
 
 async function convert(args: string[]): Promise<string> {
   const { flags } = parseArgs(args, ["json"], ["from", "to", "at"]);
+  // --from is optional: with none, this is a source-less conversion that
+  // registers a prepared item ("I made this") without decrementing stock.
   const fromValues = collectFlag(args, "from");
-  if (fromValues.length === 0) {
-    throw new AxiError("convert needs at least one --from <ulid>[:amount]", "VALIDATION_ERROR", [INVENTORY_HELP]);
-  }
   const toRaw = typeof flags.to === "string" ? flags.to : undefined;
   if (!toRaw) throw new AxiError("convert needs --to '<derived spec json>'", "VALIDATION_ERROR", [INVENTORY_HELP]);
   const derived = parseJson(toRaw, "--to", INVENTORY_HELP);

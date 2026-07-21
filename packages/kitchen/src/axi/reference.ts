@@ -54,8 +54,8 @@ export const COMMAND_GROUPS: CommandGroup[] = [
       { usage: 'inventory remark "<free text>" [--at DATE]', summary: "free-text event resolver — matches a remark to an item and infers opened/finished/tossed; prints matched/unmatched honestly (unmatched is normal, not an error)" },
       { usage: "inventory questions [--limit N]", summary: "open needs-info items as one-time questions" },
       {
-        usage: "inventory convert --from <ulid>[:amount]… --to '<derived spec json>' [--at DATE]",
-        summary: "prep transform: decrement source item(s) (count or fraction) and create a NEW derived item with its own clock + derived-from provenance — distinct from consumption and from finished/tossed",
+        usage: "inventory convert [--from <ulid>[:amount]…] --to '<derived spec json>' [--at DATE]",
+        summary: "prep transform: create a NEW derived item with its own clock + provenance, optionally decrementing source item(s) (count or fraction); --from is OPTIONAL — with none it is a source-less \"I made this\" that decrements nothing. Pass --to recipe_ulid to make the item one-tap consume-eligible. THIS is how prepped food reaches the consume shelf — never plain 'inventory add'",
       },
       {
         usage: "inventory consume <item-ulid> [--quantity N] [--at DATE] [--ulid ENTRY_ULID]",

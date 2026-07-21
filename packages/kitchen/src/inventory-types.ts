@@ -400,7 +400,8 @@ export interface ConversionDerivedInput {
 
 /** What a client POSTs to /inventory/convert. */
 export interface ConvertInput {
-  sources: ConversionSourceInput[];
+  /** Optional: omit/empty for a source-less "I made this" conversion. */
+  sources?: ConversionSourceInput[];
   derived: ConversionDerivedInput;
   at?: string;
 }

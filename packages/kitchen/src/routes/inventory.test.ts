@@ -328,6 +328,41 @@ describe('inventory routes', () => {
     expect(terminalRes.statusCode).toBe(409);
   });
 
+  it('POST /kitchen/inventory/convert is source-less ("I made this") when sources omitted — creates a recipe-linked derived item, decrements nothing', async () => {
+    const recipeUlid = generateUlid();
+    const res = await fastify.inject({
+      method: 'POST',
+      url: '/kitchen/inventory/convert',
+      payload: {
+        derived: { name: 'Overnight-oats jar', shelf_life_class: 'fridge_short', recipe_ulid: recipeUlid },
+        at: '2026-07-20',
+      },
+    });
+    expect(res.statusCode).toBe(201);
+    const body = res.json();
+    expect(body.sources).toEqual([]); // nothing decremented
+    expect(body.derived.raw_label).toBe('Overnight-oats jar');
+    expect(body.derivation.sources).toEqual([]); // empty provenance
+    expect(body.derivation.recipe_ulid).toBe(recipeUlid); // consume-eligibility hook
+
+    // Empty sources array behaves identically to omitting the key.
+    const emptyRes = await fastify.inject({
+      method: 'POST',
+      url: '/kitchen/inventory/convert',
+      payload: { sources: [], derived: { name: 'Boiled eggs', units_total: 6 } },
+    });
+    expect(emptyRes.statusCode).toBe(201);
+    expect(emptyRes.json().derived.units_total).toBe(6);
+
+    // Still rejects a missing derived.name.
+    const bad = await fastify.inject({
+      method: 'POST',
+      url: '/kitchen/inventory/convert',
+      payload: { derived: {} },
+    });
+    expect(bad.statusCode).toBe(400);
+  });
+
   it('POST /kitchen/inventory/:ulid/consume — one atomic call: exact-macro entry + deplete; 404/400/409/503 per case', async () => {
     // A dedicated app wired with the consume atomicity store + a recipe
     // resolver (the shared `pipeline` in the outer beforeEach has neither).

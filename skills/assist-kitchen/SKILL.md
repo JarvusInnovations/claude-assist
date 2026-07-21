@@ -62,6 +62,18 @@ in doubt, read the spec.
 - **Photos are ephemeral.** Meal and receipt/label photos are held in memory only for the
   model call and discarded on every outcome — never persisted. Records carry no image data,
   and there's nothing to re-OCR later. If a scan needs retrying, re-post the photo files.
+- **Prepped food is a `convert`, never a plain `inventory add`.** When the owner has
+  *prepared* something — overnight-oats jars, hard-boiled eggs, cooked quinoa, a batch of
+  anything — record it with `inventory convert`, not `inventory add`. Only a `convert` that
+  carries a `--to` `recipe_ulid` mints a **consume-eligible** item (the one-tap
+  `inventory consume` / the app's "Ready in your kitchen" shelf reads its macros from that
+  recipe). A plain `inventory add` makes an ordinary grocery-style item with no recipe
+  provenance — it can *never* reach the shelf, so a jar added that way is a dead end the
+  owner has to log the slow way forever. `--from` is **optional**: pass the raw sources to
+  decrement them, or omit it entirely for a source-less "I made this" when the inputs
+  weren't tracked. So: raw groceries → `inventory add`; anything you *made* → `inventory
+  convert --to '{…,"recipe_ulid":"…"}'`. If no recipe exists yet, `recipes push` one first
+  (its components fix the macros), then convert against it.
 
 ## Common workflows
 
@@ -74,6 +86,13 @@ in doubt, read the spec.
 - **"What's today looking like?"** → bare `scripts/kitchen-axi` (home view: effective totals,
   pending estimates, eat-first items, open questions).
 - **"What should I use up?"** → `scripts/kitchen-axi inventory list` (eat-first order).
+- **"I made a batch of X" (meal prep)** → record it as a **conversion** so it lands
+  consume-eligible, not a plain add. First ensure a recipe exists (`recipes list`; if not,
+  `recipes push '{"name":"…","components":[{"label":"…","default_qty_g":N,"per_100g":{"calories":N,"protein_g":N,"sat_fat_g":N}}]}'` — components fix the macros).
+  Then `scripts/kitchen-axi inventory convert --to '{"name":"<prepared item>","shelf_life_class":"<class>","units_total":<N jars/portions>,"recipe_ulid":"<recipe>"}'`,
+  adding `--from <ulid>[:amount]…` for each raw source you want decremented (omit `--from`
+  entirely if the inputs weren't tracked). The result is on the "Ready in your kitchen"
+  shelf for one-tap `inventory consume` later.
 - **"I opened / finished / tossed X"** → `scripts/kitchen-axi inventory remark "<what happened>"`,
   or `inventory event <ulid> <type>` when you have the item.
 - **"Scan this receipt"** → `scripts/kitchen-axi receipts scan <photo…> --store "<store>"`, then
@@ -99,7 +118,7 @@ in doubt, read the spec.
 - `scripts/kitchen-axi inventory event <ulid> <opened|finished|finished-unit|tossed> [--fraction F] [--at DATE]` — explicit state change; for tossed, --fraction is the AMOUNT TOSSED (partial toss decrements + stays alive, terminal only at zero remainder or when omitted); finished-unit is a counted item's integer one-unit decrement
 - `scripts/kitchen-axi inventory remark "<free text>" [--at DATE]` — free-text event resolver — matches a remark to an item and infers opened/finished/tossed; prints matched/unmatched honestly (unmatched is normal, not an error)
 - `scripts/kitchen-axi inventory questions [--limit N]` — open needs-info items as one-time questions
-- `scripts/kitchen-axi inventory convert --from <ulid>[:amount]… --to '<derived spec json>' [--at DATE]` — prep transform: decrement source item(s) (count or fraction) and create a NEW derived item with its own clock + derived-from provenance — distinct from consumption and from finished/tossed
+- `scripts/kitchen-axi inventory convert [--from <ulid>[:amount]…] --to '<derived spec json>' [--at DATE]` — prep transform: create a NEW derived item with its own clock + provenance, optionally decrementing source item(s) (count or fraction); --from is OPTIONAL — with none it is a source-less "I made this" that decrements nothing. Pass --to recipe_ulid to make the item one-tap consume-eligible. THIS is how prepped food reaches the consume shelf — never plain 'inventory add'
 - `scripts/kitchen-axi inventory consume <item-ulid> [--quantity N] [--at DATE] [--ulid ENTRY_ULID]` — one-tap: log a consumption entry with the item's EXACT known macros (no model call) and deplete it, in ONE atomic step; only recipe-linked derived items qualify (else 400); idempotent on --ulid
 
 ### Receipts
