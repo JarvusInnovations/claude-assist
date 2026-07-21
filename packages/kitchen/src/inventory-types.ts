@@ -15,6 +15,9 @@ export type ShelfLifeClass =
   | 'fridge_short'
   | 'produce'
   | 'very_perishable'
+  // A cooked/assembled dish (a convert's output) — ages from its make date,
+  // opening does not reset the clock. See inventory-derive SHELF_LIFE_WINDOWS.
+  | 'prepared'
   | 'unknown';
 
 export const SHELF_LIFE_CLASSES: readonly ShelfLifeClass[] = [
@@ -24,6 +27,7 @@ export const SHELF_LIFE_CLASSES: readonly ShelfLifeClass[] = [
   'fridge_short',
   'produce',
   'very_perishable',
+  'prepared',
   'unknown',
 ];
 

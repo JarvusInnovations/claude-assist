@@ -474,10 +474,29 @@ All tables instance-agnostic empty schema, ULID keys, `kitchen` schema
 **Shelf-life classes** (enum `kitchen.shelf_life_class`; code owns the
 default day windows in `src/inventory-derive.ts`, `(unopened, opened)`):
 `pantry` (365, 180), `frozen` (180, 90), `fridge_long` (60, 21), `fridge_short`
-(14, 7), `produce` (7, 4), `very_perishable` (3, 2), `unknown` (null, null — no
-eat-by until known). `eat_by` = `opened_at + opened_window` when opened, else
-`acquired_at + unopened_window`; product-level day overrides win over the class
-default; `unknown` (and any null window) yields `eat_by = null`.
+(14, 7), `produce` (7, 4), `very_perishable` (3, 2), `prepared` (4, 4),
+`unknown` (null, null — no eat-by until known). `eat_by` =
+`opened_at + opened_window` when opened, else `acquired_at + unopened_window`;
+product-level day overrides win over the class default; `unknown` (and any null
+window) yields `eat_by = null`.
+
+`prepared` is the class for a **cooked or assembled dish** — an overnight-oats
+jar, hard-boiled eggs, cooked grains, a batch of soup — the output of a
+`convert` (§ Conversions), not a purchased good. It carries two distinctions
+from the grocery classes:
+
+- **It ages from the make date, and opening does not reset the clock.** A
+  homemade jar is good ~4 days *from when it was made* whether or not you've
+  started it — you don't get a fresh window by cracking it open. So a `prepared`
+  item's `eat_by` anchors to `acquired_at + window` regardless of `opened_at`
+  (its `unopened`/`opened` windows are equal for exactly this reason), unlike a
+  grocery item where opening breaks a seal and starts a shorter clock.
+- **It is the default class a `convert` assigns its derived item** when the
+  caller names none (see § Conversions) — so a prepared dish always earns an
+  honest eat-by and joins eat-first ordering, instead of falling to `unknown`
+  (no eat-by, invisible to the planner). ~4 days is a directional central
+  estimate; a caller that knows better overrides it (e.g. `produce` for
+  hard-boiled eggs, which keep ~a week; `very_perishable` for cut fruit).
 
 **Inventory state machine** (`src/inventory-state.ts`):
 `stocked --opened--> open`, `{stocked,open} --finished--> finished`,
@@ -964,7 +983,13 @@ jars"* land as three shelf-ready items.
 
 **Creating the derived item.** One new `stocked` item, `eat_by` derived the
 same way any fresh item's is (from its `shelf_life_class` + `acquired_at`,
-defaulting to the conversion's `at`/now); its quantity is EITHER a fraction
+defaulting to the conversion's `at`/now). Its `shelf_life_class` defaults to
+**`prepared`** (§ Data model § Shelf-life classes — a cooked/assembled dish,
+~4 days from the make date) when `derived.shelf_life_class` is omitted, so a
+prepped item always earns an honest eat-by and joins eat-first ordering rather
+than falling to `unknown` (no eat-by, invisible to the planner); a caller that
+knows the dish keeps longer or shorter overrides it (`produce` for hard-boiled
+eggs, `very_perishable` for cut fruit). Its quantity is EITHER a fraction
 (`on_hand_fraction`, default 1 when neither is given) OR a count
 (`units_total`), per the same discriminating test as any other item. It has no
 `product_ulid` — a derived item is identified by its own `raw_label` (the

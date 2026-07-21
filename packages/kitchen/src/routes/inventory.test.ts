@@ -363,6 +363,30 @@ describe('inventory routes', () => {
     expect(bad.statusCode).toBe(400);
   });
 
+  it('POST /kitchen/inventory/convert defaults a derived dish to the `prepared` class (~4-day eat-by), overridable', async () => {
+    const res = await fastify.inject({
+      method: 'POST',
+      url: '/kitchen/inventory/convert',
+      payload: { derived: { name: 'Overnight-oats jar' }, at: '2026-07-20' },
+    });
+    expect(res.statusCode).toBe(201);
+    const item = res.json().derived;
+    expect(item.shelf_life_class).toBe('prepared');
+    expect(item.eat_by).toBe('2026-07-24'); // made 07-20 + 4 days — an honest eat-by, not null
+
+    // An explicit class still wins (hard-boiled eggs keep ~a week).
+    const eggs = await fastify.inject({
+      method: 'POST',
+      url: '/kitchen/inventory/convert',
+      payload: {
+        derived: { name: 'Hard-boiled eggs', shelf_life_class: 'produce', units_total: 6 },
+        at: '2026-07-20',
+      },
+    });
+    expect(eggs.json().derived.shelf_life_class).toBe('produce');
+    expect(eggs.json().derived.eat_by).toBe('2026-07-27'); // produce unopened = 7 days
+  });
+
   it('POST /kitchen/inventory/:ulid/consume — one atomic call: exact-macro entry + deplete; 404/400/409/503 per case', async () => {
     // A dedicated app wired with the consume atomicity store + a recipe
     // resolver (the shared `pipeline` in the outer beforeEach has neither).

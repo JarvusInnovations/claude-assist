@@ -89,10 +89,13 @@ in doubt, read the spec.
 - **"I made a batch of X" (meal prep)** → record it as a **conversion** so it lands
   consume-eligible, not a plain add. First ensure a recipe exists (`recipes list`; if not,
   `recipes push '{"name":"…","components":[{"label":"…","default_qty_g":N,"per_100g":{"calories":N,"protein_g":N,"sat_fat_g":N}}]}'` — components fix the macros).
-  Then `scripts/kitchen-axi inventory convert --to '{"name":"<prepared item>","shelf_life_class":"<class>","units_total":<N jars/portions>,"recipe_ulid":"<recipe>"}'`,
+  Then `scripts/kitchen-axi inventory convert --to '{"name":"<prepared item>","units_total":<N jars/portions>,"recipe_ulid":"<recipe>"}'`,
   adding `--from <ulid>[:amount]…` for each raw source you want decremented (omit `--from`
-  entirely if the inputs weren't tracked). The result is on the "Ready in your kitchen"
-  shelf for one-tap `inventory consume` later.
+  entirely if the inputs weren't tracked). The derived dish defaults to the **`prepared`**
+  shelf-life class (~4 days from when it was made); pass `"shelf_life_class":"produce"` for
+  something that keeps ~a week (hard-boiled eggs) or `"very_perishable"` for a 2-3-day item
+  (cut fruit). The result is on the "Ready in your kitchen" shelf for one-tap
+  `inventory consume` later.
 - **"I opened / finished / tossed X"** → `scripts/kitchen-axi inventory remark "<what happened>"`,
   or `inventory event <ulid> <type>` when you have the item.
 - **"Scan this receipt"** → `scripts/kitchen-axi receipts scan <photo…> --store "<store>"`, then

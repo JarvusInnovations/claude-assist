@@ -80,6 +80,21 @@ describe('eat-by derivation', () => {
     expect(SHELF_LIFE_WINDOWS.unknown.unopened).toBeNull();
   });
 
+  it('prepared class is ~4 days from the make date and ignores opened_at', () => {
+    // Window (4, 4); a prepared dish ages from acquired_at, not opened_at.
+    expect(SHELF_LIFE_WINDOWS.prepared).toEqual({ unopened: 4, opened: 4 });
+    const unopened = deriveEatBy({ shelfLifeClass: 'prepared', acquiredAt: acquired, openedAt: null });
+    expect(toIsoDate(unopened)).toBe('2026-07-05');
+    // Opened two days after it was made → STILL make_date + 4 (not opened + 4),
+    // because opening a homemade dish doesn't grant a fresh window.
+    const openedLater = deriveEatBy({
+      shelfLifeClass: 'prepared',
+      acquiredAt: acquired,
+      openedAt: new Date('2026-07-03'),
+    });
+    expect(toIsoDate(openedLater)).toBe('2026-07-05');
+  });
+
   it('dayDiff floors whole days and null-propagates', () => {
     expect(dayDiff(new Date('2026-07-01'), new Date('2026-07-05'))).toBe(4);
     expect(dayDiff(null, new Date())).toBeNull();
