@@ -1,10 +1,10 @@
 ---
-status: in-progress
+status: done
 depends: []
 specs:
   - specs/modules/kitchen.md
 issues: []
-pr:
+pr: 122
 ---
 
 # Plan: Source-less conversions + prep-recording guidance
@@ -61,7 +61,7 @@ a source-less convert instead — that's exactly what the jar migration does).
 - [x] `bun run build:skills` + `check:skills` clean; `inventory convert` help
       and generated reference describe optional `--from` + the shelf-eligibility
       rule.
-- [ ] Full `bun run build` green; PR CI green; deployed; live source-less
+- [x] Full `bun run build` green; PR CI green; deployed; live source-less
       convert against Postgres mints a consume-eligible item (the jar test).
 
 ## Risks / unknowns
@@ -73,7 +73,17 @@ a source-less convert instead — that's exactly what the jar migration does).
 
 ## Notes
 
-(populated at closeout)
+- **Live jar test (the closing acceptance test).** Through the *synced instance
+  CLI* (proving a fresh agent's path): pushed a 7-component "Overnight oats —
+  full build" recipe (computes to 492 kcal / 27 g protein / 1.9 g sat — faithful
+  to the actual jar; the pre-existing banked recipe computed only ~357, which
+  would have under-counted intake by ~150 kcal), then `inventory convert` with
+  **no `--from`** minted a recipe-linked "Overnight-oats jar #3", and finished
+  the old plain-`add`ed jar. A throwaway consume proved the live resolver:
+  `inventory consume` logged exactly **492.1 / 27.1 / 1.9** (`source: reselect`,
+  no model call) and depleted the item atomically — deleted afterward to keep
+  totals clean. The real jar is left `stocked` + eligible for a one-tap morning
+  log.
 
 ## Follow-ups
 
@@ -83,3 +93,12 @@ a source-less convert instead — that's exactly what the jar migration does).
   check/automation so the instance can't silently run a stale CLI.
 - **App "I prepped this" action** — a hari-capture surface over this endpoint so
   prep can be logged from the phone, not only the CLI. Separate plan.
+- **No "prepared dish" shelf-life class** — the jar minted with
+  `shelf_life_class: fridge_short` → `eat_by` 14 days out, but a prepared oat jar
+  is best within 3-4 days (its own notes say so). The taxonomy has no short
+  "prepared/leftovers" class, so a derived dish's `eat_by` overstates its life
+  and sinks it in eat-first ordering. Worth a `prepared`/`leftovers` class (or a
+  convert-time `eat_by`/shelf-life-days override for derived items).
+- **Meal-bank oat-jar accuracy** — the banked "Overnight oats" recipe (~357 kcal)
+  understates Chris's actual jars (~490-510). Reconcile the bank against the
+  full-build recipe pushed here. Doctrine/bank concern, not this module.
