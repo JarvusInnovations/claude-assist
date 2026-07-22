@@ -83,8 +83,16 @@ export interface ItemStateUpdate {
   opened_at?: Date | null;
   closed_at?: Date | null;
   on_hand_fraction?: number;
-  /** Present only when mutating a counted item's remaining-units count. */
-  units_remaining?: number;
+  /**
+   * Present only when mutating a counted item's remaining-units count; null
+   * (reconcile only) reverts the item to the fraction model.
+   */
+  units_remaining?: number | null;
+  /**
+   * Present only on a reconcile reclassify (§ Reconcile): a count makes the
+   * item counted, null reverts it to the fraction model. Events never set it.
+   */
+  units_total?: number | null;
   eat_by?: Date | null;
   /** Replacement notes value (e.g. with a waste line appended); omitted = unchanged. */
   notes?: string;
@@ -501,6 +509,7 @@ export class PgInventoryStore implements InventoryStore {
         closed_at = ${update.closed_at !== undefined ? update.closed_at : current.closed_at},
         on_hand_fraction = ${update.on_hand_fraction ?? current.on_hand_fraction},
         units_remaining = ${update.units_remaining !== undefined ? update.units_remaining : current.units_remaining},
+        units_total = ${update.units_total !== undefined ? update.units_total : current.units_total},
         eat_by = ${update.eat_by !== undefined ? update.eat_by : current.eat_by},
         notes = ${update.notes !== undefined ? update.notes : current.notes}
       WHERE ulid = ${ulid}

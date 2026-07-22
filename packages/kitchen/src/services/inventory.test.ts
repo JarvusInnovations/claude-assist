@@ -10,6 +10,7 @@ import {
   ConversionValidationError,
   InventoryPipeline,
   NotCountedItemError,
+  ReconcileValidationError,
 } from './inventory.js';
 import { InvalidTransitionError } from '../inventory-state.js';
 import type { ReceiptParser, ReceiptParseInput } from './receipt-parser.js';
@@ -1171,5 +1172,112 @@ describe('consume from inventory (claude-assist#110 — one-tap known-macro log 
     expect(replay!.item.units_remaining).toBe(0);
 
     expect(entries.records.size).toBe(1); // no duplicate entry
+  });
+});
+
+describe('reconcile (§ Reconcile — corrections are observations, not events)', () => {
+  it('recounts an open fraction item without touching opened_at or eat_by', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    const { item } = await pipeline.createItem({ raw_label: 'Soymilk', shelf_life_class: 'fridge_short', acquired_at: '2026-07-17' });
+    await pipeline.applyEvent(item.ulid, 'opened', { at: '2026-07-19', fraction: 0.34 });
+
+    const fixed = await pipeline.reconcileItem(item.ulid, { on_hand_fraction: 0.75 });
+    expect(fixed!.on_hand_fraction).toBe(0.75);
+    expect(fixed!.state).toBe('open');
+    expect(fixed!.opened_at).toBe('2026-07-19'); // clock untouched
+    expect(fixed!.eat_by).toBe('2026-07-26'); // opened 7/19 + fridge_short 7 — unchanged
+    expect(fixed!.notes).toContain('reconciled');
+    expect(fixed!.notes).toContain('0.34→0.75');
+  });
+
+  it('corrects a mis-opened item back to stocked: opened_at clears, eat_by re-derives from the unopened window + product overrides (egg-carton regression)', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    const eggs = await store.insertProduct({
+      ulid: ULID(80), name: 'Omega-3 Eggs', shelf_life_class: 'fridge_long', aliases: [],
+      nutrition_per_100g: null, ingredients: null, package_size: 'dozen',
+      shelf_life_days_unopened: 30, shelf_life_days_opened: 30,
+    });
+    const { item } = await pipeline.createItem({ product_ulid: eggs.ulid, shelf_life_class: 'fridge_long', acquired_at: '2026-07-17' });
+    // The bad correction workaround: 'opened --fraction 1' on a sealed carton.
+    const corrupted = await pipeline.applyEvent(item.ulid, 'opened', { at: '2026-07-21', fraction: 1 });
+    expect(corrupted!.state).toBe('open');
+    expect(corrupted!.eat_by).toBe('2026-08-20'); // opened 7/21 + product opened override 30
+
+    const fixed = await pipeline.reconcileItem(item.ulid, { state: 'stocked', notes: 'carton never actually opened' });
+    expect(fixed!.state).toBe('stocked');
+    expect(fixed!.opened_at).toBeNull(); // stocked means sealed — auto-cleared
+    expect(fixed!.eat_by).toBe('2026-08-16'); // acquired 7/17 + unopened override 30
+    expect(fixed!.notes).toContain('carton never actually opened');
+  });
+
+  it('reclassifies fraction→counted (the salmon port), supports finished-unit after, and reverts', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    const { item } = await pipeline.createItem({ raw_label: 'Salmon 3-pack', shelf_life_class: 'pantry', acquired_at: '2026-07-17' });
+    await pipeline.applyEvent(item.ulid, 'opened', { at: '2026-07-18', fraction: 0.67 });
+
+    const counted = await pipeline.reconcileItem(item.ulid, { units_total: 3, units_remaining: 2, state: 'stocked' });
+    expect(counted!.units_total).toBe(3);
+    expect(counted!.units_remaining).toBe(2);
+    expect(counted!.state).toBe('stocked');
+    expect(counted!.opened_at).toBeNull();
+    expect(counted!.eat_by).toBe('2027-07-17'); // sealed pantry window off acquired_at
+
+    const afterUnit = await pipeline.applyEvent(item.ulid, 'finished-unit', {});
+    expect(afterUnit!.units_remaining).toBe(1);
+    expect(afterUnit!.state).toBe('stocked');
+
+    const reverted = await pipeline.reconcileItem(item.ulid, { units_total: null, on_hand_fraction: 0.33 });
+    expect(reverted!.units_total).toBeNull();
+    expect(reverted!.units_remaining).toBeNull();
+    expect(reverted!.on_hand_fraction).toBe(0.33);
+  });
+
+  it('rejects zero quantities, terminal items without an explicit state, and contradictions', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    const { item } = await pipeline.createItem({ raw_label: 'Yogurt', shelf_life_class: 'fridge_short', acquired_at: '2026-07-17' });
+
+    await expect(pipeline.reconcileItem(item.ulid, { on_hand_fraction: 0 })).rejects.toThrow(ReconcileValidationError);
+    await expect(pipeline.reconcileItem(item.ulid, {})).rejects.toThrow(ReconcileValidationError);
+    // stocked cannot carry an opened_at.
+    await expect(pipeline.reconcileItem(item.ulid, { state: 'stocked', opened_at: '2026-07-19' })).rejects.toThrow(ReconcileValidationError);
+    // units_remaining on a fraction-modeled item.
+    await expect(pipeline.reconcileItem(item.ulid, { units_remaining: 2 })).rejects.toThrow(NotCountedItemError);
+    // open requires a clock.
+    await expect(pipeline.reconcileItem(item.ulid, { state: 'open', on_hand_fraction: 0.5 })).rejects.toThrow(ReconcileValidationError);
+
+    await pipeline.applyEvent(item.ulid, 'finished', { at: '2026-07-20' });
+    await expect(pipeline.reconcileItem(item.ulid, { on_hand_fraction: 0.5 })).rejects.toThrow(ReconcileValidationError);
+  });
+
+  it('resurrects a mis-finished item with an explicit state (closed_at clears)', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    const { item } = await pipeline.createItem({ raw_label: 'Feta', shelf_life_class: 'fridge_short', acquired_at: '2026-07-17' });
+    await pipeline.applyEvent(item.ulid, 'opened', { at: '2026-07-18' });
+    await pipeline.applyEvent(item.ulid, 'finished', { at: '2026-07-20' });
+
+    const back = await pipeline.reconcileItem(item.ulid, { state: 'open', opened_at: '2026-07-18', on_hand_fraction: 0.4 });
+    expect(back!.state).toBe('open');
+    expect(back!.closed_at).toBeNull();
+    expect(back!.on_hand_fraction).toBe(0.4);
+    expect(back!.eat_by).toBe('2026-07-25'); // opened 7/18 + fridge_short 7
+  });
+
+  it('remark recount routes to reconcile — fraction corrected, no clock stamped', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    const { item } = await pipeline.createItem({ raw_label: 'Soymilk', shelf_life_class: 'fridge_short', acquired_at: '2026-07-17' });
+    await pipeline.applyEvent(item.ulid, 'opened', { at: '2026-07-19', fraction: 0.34 });
+
+    const res = await pipeline.resolveRemark('the soymilk is actually 75% full');
+    expect(res.matched).toBe(true);
+    expect(res.event?.type).toBe('recount');
+    expect(res.item?.on_hand_fraction).toBe(0.75);
+    expect(res.item?.opened_at).toBe('2026-07-19'); // untouched
+    expect(res.item?.state).toBe('open');
   });
 });

@@ -224,6 +224,7 @@ export class MemoryInventoryStore implements InventoryStore {
     if (update.closed_at !== undefined) i.closed_at = update.closed_at;
     if (update.on_hand_fraction !== undefined) i.on_hand_fraction = update.on_hand_fraction;
     if (update.units_remaining !== undefined) i.units_remaining = update.units_remaining;
+    if (update.units_total !== undefined) i.units_total = update.units_total;
     if (update.eat_by !== undefined) i.eat_by = update.eat_by;
     if (update.notes !== undefined) i.notes = update.notes;
     i.updated_at = new Date();

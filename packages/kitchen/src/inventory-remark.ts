@@ -33,6 +33,44 @@ const FRACTION_RULES: FractionRule[] = [
   { factor: 0.15, pattern: /\b(a (?:bit|little|touch|splash)|some|a few|couple)\b/i },
 ];
 
+// ── Recount detection (§ Reconcile) ──────────────────────────────────────────
+// A remark that CORRECTS the ledger ("soymilk is actually 75% full", "the
+// carton is much fuller than tracked") is an observation, not a consumption
+// event — it routes to reconcile. Conservative: it needs BOTH a correction cue
+// and an explicit remaining quantity, or it stays with the verb rules /
+// unmatched.
+const RECOUNT_CUE = /\b(actually|really|turns out|recount(?:ed)?|correct(?:ed|ion)?|ledger|wrong|off by|fuller|more like|much (?:fuller|more)|still (?:have|got))\b/i;
+const PERCENT_PATTERN = /(\d{1,3})\s*(?:%|percent\b)/i;
+const RECOUNT_LEVEL_RULES: FractionRule[] = [
+  { factor: 1, pattern: /\b(unopened|untouched|(?:completely |totally )?full)\b/i },
+  { factor: 0.8, pattern: /\b(mostly|nearly|almost) full\b/i },
+  { factor: 0.75, pattern: /\bthree[- ]quarters\b|\b3\/4\b/i },
+  { factor: 0.5, pattern: /\bhalf\b|\b1\/2\b/i },
+  { factor: 0.25, pattern: /\b(a )?quarter\b|\b1\/4\b/i },
+  { factor: 0.1, pattern: /\b(almost|nearly) (?:empty|gone|out)\b/i },
+];
+
+/**
+ * Extract the corrected remaining fraction from a recount remark, or null.
+ * A remark carrying MORE THAN ONE percent is ambiguous by construction — a
+ * correction usually states both the wrong ledger value and the observed one
+ * ("ledger's 34% … actually 75%") with no deterministic winner — so it stays
+ * unmatched (the caller falls back to an explicit recount).
+ */
+function recountFraction(text: string): number | null {
+  const pcts = [...text.matchAll(new RegExp(PERCENT_PATTERN, 'gi'))];
+  if (pcts.length > 1) return null;
+  if (pcts.length === 1) {
+    const n = parseInt(pcts[0]![1]!, 10);
+    if (n >= 1 && n <= 100) return n / 100;
+    return null;
+  }
+  for (const rule of RECOUNT_LEVEL_RULES) {
+    if (rule.pattern.test(text)) return rule.factor;
+  }
+  return null;
+}
+
 // Stopwords stripped when deriving the search term. Verbs are removed
 // separately (via VERB_RULES patterns).
 const STOPWORDS = new Set([
@@ -41,41 +79,67 @@ const STOPWORDS = new Set([
   'rest', 'last', 'bit', 'little', 'touch', 'splash', 'few', 'couple', 'half',
   'quarter', 'most', 'three', 'quarters', 'threw', 'throw', 'away', 'into',
   'broke', 'done', 'no', 'more', 'gone', 'bad', 'went',
+  // Recount-remark filler (§ Reconcile)
+  'is', 'are', 'was', 'were', 'than', 'not', 'its', 'it', 'like', 'left',
+  'remaining', 'tracked', 'says', 'said', 'much', 'roughly', 'about',
 ]);
 
 export interface ParsedRemark {
-  type: InventoryEventType;
+  /** An event verb, or `recount` — a ledger correction that routes to § Reconcile. */
+  type: InventoryEventType | 'recount';
   fraction: number | null;
   /** Lowercased search term (may be empty when nothing meaningful remained). */
   term: string;
 }
 
-/** Parse a remark into an event, fraction, and search term, or null if no verb matched. */
+/**
+ * Parse a remark into an event (or recount), fraction, and search term, or
+ * null when neither a verb nor a confident recount matched. Verbs win: a
+ * remark that describes something HAPPENING ("tossed half…") is an event even
+ * when it also carries correction language; recount applies only to pure
+ * observations ("…is actually 75% full").
+ */
 export function parseRemark(remark: string): ParsedRemark | null {
   const text = remark.trim();
   if (!text) return null;
 
-  let type: InventoryEventType | null = null;
+  let type: InventoryEventType | 'recount' | null = null;
   for (const rule of VERB_RULES) {
     if (rule.pattern.test(text)) {
       type = rule.type;
       break;
     }
   }
-  if (!type) return null;
 
   let fraction: number | null = null;
-  for (const rule of FRACTION_RULES) {
-    if (rule.pattern.test(text)) {
-      fraction = rule.factor;
-      break;
+  if (type) {
+    for (const rule of FRACTION_RULES) {
+      if (rule.pattern.test(text)) {
+        fraction = rule.factor;
+        break;
+      }
+    }
+  } else {
+    // No verb — a correction cue plus an explicit remaining quantity reads as
+    // a recount; anything less stays unmatched (conservative by principle).
+    const level = recountFraction(text);
+    if (RECOUNT_CUE.test(text) && level !== null) {
+      type = 'recount';
+      fraction = level;
     }
   }
+  if (!type) return null;
 
-  // Strip verb phrases, then tokenize and drop stopwords/short tokens.
+  // Strip verb/cue/quantity phrases, then tokenize and drop stopwords/short tokens.
   let residue = text;
   for (const rule of VERB_RULES) {
     residue = residue.replace(rule.pattern, ' ');
+  }
+  if (type === 'recount') {
+    residue = residue.replace(RECOUNT_CUE, ' ').replace(PERCENT_PATTERN, ' ');
+    for (const rule of RECOUNT_LEVEL_RULES) {
+      residue = residue.replace(rule.pattern, ' ');
+    }
   }
   const term = residue
     .toLowerCase()

@@ -502,7 +502,12 @@ from the grocery classes:
 `stocked --opened--> open`, `{stocked,open} --finished--> finished`,
 `{stocked,open} --tossed--> tossed`, `{stocked,open} --dismissed--> dismissed`.
 `finished`/`tossed`/`dismissed` are terminal. Opening
-stamps `opened_at` and re-derives `eat_by`; finishing stamps `closed_at` and
+stamps `opened_at` and re-derives `eat_by` — always from the **effective**
+opened date (the original `opened_at` when one exists: a re-open is an
+idempotent no-op and must not extend the window) and always folding in the
+linked product's precise day-window overrides (every clock re-derivation —
+open, finished-unit revert, reconcile — goes through one helper so overrides
+are never silently dropped). Finishing stamps `closed_at` and
 sets `on_hand_fraction` to 0. `finished-unit` (counted items only — see
 § count-vs-fraction below) shares `finished`'s legal preconditions
 (`{stocked,open}`, terminal-rejecting), but its CONCRETE next state is
@@ -569,6 +574,50 @@ fanned-out item from that line is seeded `units_total = units_remaining =` the
 parsed count instead of the default fraction of 1. A count of 1 ("1 ct")
 describes a single unit, not a multipack, and is left fraction-modeled.
 
+### Reconcile — corrections are observations, not events
+
+The ledger drifts from reality structurally: `on_hand_fraction` is directional
+math over estimated per-use decrements, unit counts get seeded from
+assumptions, and reality always wins. **Reconcile** is the first-class
+correction affordance — a way to bring an item into line with what the owner
+actually observes ("the carton is ¾ full", "this is really 2 of 3 cans",
+"this was never opened") without routing through consumption-event semantics
+or raw DB edits.
+
+A reconcile is an **observation, not an event**. Its rules:
+
+- **It never touches clocks.** "I looked and it's ¾ full" says nothing about
+  *when* the item was opened, so `opened_at` changes only when explicitly
+  supplied. Correcting the state to `stocked` clears `opened_at` (stocked
+  *means* sealed); a corrected `open` state requires an `opened_at` (supplied,
+  or already present). `acquired_at` is untouchable.
+- **`eat_by` always re-derives from the corrected truth** — the resulting
+  state/`opened_at`, with product-level day-window overrides folded in.
+- **It can reclassify the unit model** (§ count-vs-fraction): supplying
+  `units_total` (+ optional `units_remaining`, defaulting to the existing
+  count or the new total) makes the item **counted**; `units_total: null`
+  reverts it to the fraction model. `units_remaining` alone recounts an
+  already-counted item. Zero quantities are rejected — "none left" is a
+  `finished`/`tossed` *event*, not a correction.
+- **It can resurrect a mis-closed item**: an explicit `state:
+  'stocked'|'open'` on a terminal item reopens it and clears `closed_at`. A
+  terminal item with no explicit state is rejected (the caller must own the
+  resurrection).
+- **Every reconcile appends an audit line** to the item's `notes`
+  (`reconciled <date>: <changes>[ — <caller context>]`), mirroring the
+  `tossed …` idiom, so corrections stay distinguishable from consumption in
+  provenance and telemetry.
+- **Never pre-log planned consumption.** The corrections that motivated this
+  (a dozen eggs pre-decremented for a batch-day run that never happened) were
+  inference ahead of evidence — events record what *happened*; reconcile
+  records what *is*.
+
+The free-text resolver participates: a remark that is a pure quantity
+observation with a correction cue ("the soymilk is actually 75% full") parses
+as a `recount` and routes here (fraction-modeled items only), never to the
+event machine. Anything less confident stays unmatched, per the resolver's
+conservative principle.
+
 ### API
 
 All under `/api/kitchen`. Error envelope `{ error }`, same conventions as
@@ -576,7 +625,8 @@ phase 1. Photos are memory-only for the request, never persisted (phase-1 rule).
 
 **Response wrapping is deliberate and contractual, per endpoint** (clients must
 not assume one convention): single-resource creates/mutations return the
-**bare** row (`POST /receipts` → `PurchaseBatch`; `POST /inventory` and
+**bare** row (`POST /receipts` → `PurchaseBatch`; `POST /inventory`,
+`PATCH /inventory/:ulid`, and
 `POST /inventory/:ulid/events` → `InventoryItem`; `POST /products` → `Product`;
 `POST /lexicon` → `LexiconLine`); list reads return a named plural + `count`
 (`{ batches, count }`, `{ items, count }`, `{ questions, count }`,
@@ -662,13 +712,27 @@ Item mutation:
   only). Returns the **bare** updated `InventoryItem`. `404` unknown item;
   `409` `InvalidTransitionError` on a terminal item; `400`
   `NotCountedItemError` for `finished-unit` against a fraction-modeled item.
+- `PATCH /inventory/:ulid` — **reconcile** (§ Reconcile — correction, not
+  consumption). JSON, at least one of `{ on_hand_fraction (0..1, exclusive
+  0), units_total (int ≥1 | null), units_remaining (int ≥1 | null), state
+  ('stocked'|'open'), opened_at (ISO date | null), notes }`. Applies the
+  § Reconcile rules: clocks never inferred, `eat_by` re-derived from
+  corrected truth with product overrides, `units_total` reclassifies the
+  unit model (null reverts to fraction), explicit `state` may resurrect a
+  terminal item (`closed_at` clears), and an audit line is appended to
+  `notes`. Returns the **bare** updated `InventoryItem`. `404` unknown item;
+  `400` `ReconcileValidationError` (contradictory or ineligible correction —
+  e.g. `stocked` with an `opened_at`, zero quantities, a fraction on a
+  counted item) or `NotCountedItemError` (`units_remaining` on a
+  fraction-modeled item).
 - `POST /inventory/events` — **free-text event resolver**. JSON
   `{ remark (string, required), at? (ISO date) }`. Best-effort matches the
   remark against open/stocked items (string/alias, directional), infers the
-  event type (opened/finished/tossed + fraction) from the remark, applies it,
-  and returns `{ matched: boolean, item?: InventoryItem, event?: { type,
-  fraction } }`. An unmatched remark is `{ matched: false }` — normal, not an
-  error (`200`).
+  event type (opened/finished/tossed + fraction) — or a `recount` correction
+  (§ Reconcile) when the remark is a pure quantity observation with a
+  correction cue — from the remark, applies it, and returns
+  `{ matched: boolean, item?: InventoryItem, event?: { type, fraction } }`.
+  An unmatched remark is `{ matched: false }` — normal, not an error (`200`).
 - `POST /inventory/:ulid/label` — multipart. Photo parts (`photo`/`photos`) +
   optional meta part **`label`** (JSON `{ name?, shelf_life_class?,
   package_size?, aliases?, ingredients? }`, field or file part). Runs the label

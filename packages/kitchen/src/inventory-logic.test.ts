@@ -127,6 +127,30 @@ describe('remark parsing', () => {
     expect(parseRemark('')).toBeNull();
   });
 
+  it('parses a pure quantity observation with a correction cue as a recount (§ Reconcile)', () => {
+    const simple = parseRemark('the feta is actually 60% full');
+    expect(simple?.type).toBe('recount');
+    expect(simple?.fraction).toBe(0.6);
+    expect(simple?.term).toBe('feta');
+
+    // Level words work without a percent.
+    const full = parseRemark('eggs carton is actually completely full, untouched');
+    expect(full?.type).toBe('recount');
+    expect(full?.fraction).toBe(1);
+  });
+
+  it('recount needs BOTH a cue and an unambiguous quantity; verbs still win', () => {
+    // Quantity but no correction cue → unmatched (could be anything).
+    expect(parseRemark('the yogurt is 50% full')).toBeNull();
+    // Cue but no quantity → unmatched.
+    expect(parseRemark('the ledger is wrong about the yogurt')).toBeNull();
+    // TWO percents (the wrong ledger value + the observed one) → ambiguous →
+    // unmatched; the real 2026-07-21 soymilk remark had exactly this shape.
+    expect(parseRemark("soymilk carton is much fuller than the ledger's 34%, roughly 75% remaining")).toBeNull();
+    // An event verb wins even alongside correction language.
+    expect(parseRemark('actually tossed half the tomatoes')?.type).toBe('tossed');
+  });
+
   it('scores matches conservatively', () => {
     expect(matchScore('feta', 'feta')).toBe(3);
     expect(matchScore('feta', 'Feta Cheese')).toBe(2);
