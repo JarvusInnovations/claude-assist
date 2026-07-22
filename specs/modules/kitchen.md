@@ -117,6 +117,88 @@ Consequences of this choice:
 Bounds: `0 < portion_multiplier ≤ 20` (the API rejects non-positive or absurd
 values). It is set via `PATCH /entries/:ulid`.
 
+## Expenditure & net energy (claude-assist#121)
+
+The module tracks intake; the actual weight-loss target is the daily energy
+**balance** — deficit = expenditure − intake. Expenditure is a first-class
+record so that balance is computable in-system instead of by manual Garmin
+pulls and hand math.
+
+**`kitchen.expenditures`** — one row per activity/burn: `ulid` (client-
+suppliable idempotency key, same convention as entries), `occurred_at`
+(ISO date-time — the activity's own moment, backdatable), `source`
+(`'strava' | 'health_connect' | 'garmin' | 'manual'`), `label` (e.g.
+`"Evening ride"`), `kcal` (numeric, required — active calories, not gross),
+`duration_min` (numeric, nullable), `avg_hr` (numeric, nullable),
+`created_at`/`updated_at`. Deletable
+(`DELETE /expenditures/:ulid`, same remove-from-rollups semantics as
+entries). No model estimation path — expenditure numbers always arrive
+stated (a device said it, or the owner did); the module never guesses a
+burn.
+
+**API**: `POST /kitchen/expenditures` (idempotent on ulid, returns the bare
+row, `201`/`200` replay), `GET /kitchen/expenditures?since&limit` →
+`{ expenditures, count }`, `DELETE /kitchen/expenditures/:ulid`.
+
+**The net line.** The daily rollup gains: `expenditure_kcal` (sum of the
+day's expenditure rows), `tdee_base_kcal` (instance-configured
+`KITCHEN_TDEE_BASE` — the owner's estimated non-exercise daily expenditure;
+absent config ⇒ the net line is simply omitted, never guessed), and
+`net_kcal = (tdee_base + expenditure) − intake` (positive = deficit). Home
+view, daily briefing, and the app's day header surface it alongside the
+intake total.
+
+**Framing rule (normative, not cosmetic):** exercise-calorie estimates are
+unreliable (±20–30%, HR-derived) and "eating back" exercise calories is a
+weight-loss trap. Every surface presents the net line as **context, not a
+spend-it budget** — the primary target stays intake-managed (the diet
+protocol's intake range), and no surface may render remaining-intake
+headroom *derived from* the day's burn. The value is seeing the honest
+balance, not licensing more intake.
+
+**Source architecture — one feed per data type, by reliability tier:**
+
+- **Exercise burns → Strava API (phase 2, the primary auto-feed).** Every
+  real workout lands in Strava (Garmin writes through, carrying Garmin's
+  own calorie computation), and it is the only listed source with a stable
+  official OAuth API suitable for unattended scheduled pulls. A scheduled
+  server-side sync posts recent activities as `source: 'strava'` rows,
+  ulids seeded from Strava activity ids so re-pulls are idempotent
+  replays.
+- **Weight → Health Connect via the capture app (phase 3).** The Android
+  Health Connect hub is the only path to the smart scale (and also
+  aggregates Garmin/Strava writers). The capture app reads it on-device
+  (`health` Flutter plugin) and posts **`kitchen.weigh_ins`** rows
+  (`ulid, occurred_at, weight_kg, source`) — specced in detail when that
+  phase drains. Weight is the goal metric and the empirical tuner for
+  `KITCHEN_TDEE_BASE`; until then the config stays a directional estimate.
+  App-bridge caveats (Android background-sync constraints, writer-varying
+  granularity) belong to that phase.
+- **Recovery signals → `garmin-pull` (not an expenditure feed).** Body
+  battery, stress, detailed sleep, resting HR exist nowhere else, but the
+  skill is authenticated-session replay — tolerable for a weekly,
+  human-adjacent batch (the training-loop plan's cadence), wrong as a
+  daily automated dependency. `source: 'garmin'` remains valid for
+  occasional manual-assisted imports; the deficit pipeline never depends
+  on it.
+
+Until any feed lands, `manual` entries via the CLI cover the need (v1).
+
+**Module boundary (what kitchen owns vs what rides on top).** The module
+owns the *primitives and the arithmetic*: the expenditure (and later
+weigh-in) records, their CRUD, and the deterministic net line — computed
+server-side so every surface reads one consistent number — plus the
+generic scheduled Strava sync (instance-credentialed, same precedent as
+the mail sync). Everything interpretive stays outside: the owner's
+targets and how to read a deficit are doctrine (agent-side); the
+`KITCHEN_TDEE_BASE` value is opaque instance config the module never
+guesses or auto-tunes (adjusting it against the weigh-in trend is an
+agent-judgment loop); session-replay pulls and training orchestration are
+API clients, not module code. And a deliberate anti-scope line: kitchen
+stores **just enough burn to compute the balance** — no routes, laps,
+splits, or training load. It is not an activity tracker; the exercise
+system of record stays upstream.
+
 ## Logged-at backdating
 
 Every entry carries `logged_at` — the moment the meal actually happened, which
