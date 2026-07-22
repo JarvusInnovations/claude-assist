@@ -50,7 +50,7 @@ import { matchScore, parseRemark } from '../inventory-remark.js';
 import { generateUlid } from '../ulid.js';
 import type { ReceiptParser } from './receipt-parser.js';
 import type { LabelParser } from './label-parser.js';
-import { derivePer100gFromServing } from './label-parser.js';
+import { convertNetContent, derivePer100gFromServing } from './label-parser.js';
 import type { ConsumeStore } from './consume-store.js';
 import { computeRecipeMacros, round1 } from './recipes.js';
 import type { NutritionFields, RecipeRecord } from '../types.js';
@@ -232,6 +232,11 @@ export class InventoryPipeline {
       if (batch.store == null) {
         await this.store.setBatchStoreResolution(batch.ulid, store, store == null);
       }
+      // Printed grand total (§ Prices) — transcribed by the parse, informational
+      // vs the lines' sum (tax/discounts make exact agreement rare).
+      if (parsed.total_cents != null) {
+        await this.store.setBatchTotal(batch.ulid, parsed.total_cents);
+      }
       for (const line of parsed.lines) {
         await this.resolveReceiptLine(batch, store, line);
       }
@@ -278,7 +283,7 @@ export class InventoryPipeline {
     // inventory". Skip stocking it, but record the line (never silently drop
     // it) so the batch stays a faithful receipt record.
     if (lexicon?.non_inventory) {
-      await this.recordSkippedLine(batch, rawText, quantity);
+      await this.recordSkippedLine(batch, rawText, quantity, line.price_cents ?? null);
       return;
     }
 
@@ -323,6 +328,7 @@ export class InventoryPipeline {
         batch_ulid: batch.ulid,
         raw_text: rawText,
         quantity,
+        price_cents: line.price_cents ?? null,
         match_outcome: 'matched',
         product_ulid: productUlid,
         inventory_item_ulid: firstUlid,
@@ -334,7 +340,7 @@ export class InventoryPipeline {
     // it): record it `skipped`, mint no item. Conservative — only fires on the
     // model's explicit flag; ambiguous lines fall through to needs_info below.
     if (line.non_food === true) {
-      await this.recordSkippedLine(batch, rawText, quantity);
+      await this.recordSkippedLine(batch, rawText, quantity, line.price_cents ?? null);
       return;
     }
 
@@ -360,23 +366,26 @@ export class InventoryPipeline {
       batch_ulid: batch.ulid,
       raw_text: rawText,
       quantity,
+      price_cents: line.price_cents ?? null,
       match_outcome: 'unmatched',
       product_ulid: null,
       inventory_item_ulid: firstUlid,
     });
   }
 
-  /** Record a batch line that stocks nothing (skipped), retaining the quantity. */
+  /** Record a batch line that stocks nothing (skipped), retaining the quantity + printed price. */
   private async recordSkippedLine(
     batch: PurchaseBatchRecord,
     rawText: string,
-    quantity: number
+    quantity: number,
+    priceCents: number | null = null
   ): Promise<void> {
     await this.store.insertLine({
       ulid: generateUlid(),
       batch_ulid: batch.ulid,
       raw_text: rawText,
       quantity,
+      price_cents: priceCents,
       match_outcome: 'skipped',
       product_ulid: null,
       inventory_item_ulid: null,
@@ -457,6 +466,7 @@ export class InventoryPipeline {
           nutrition_per_100g: null,
           ingredients: null,
           unit_model_hint: null,
+          net_content: null,
           aliases: [] as string[],
         };
 
@@ -469,6 +479,9 @@ export class InventoryPipeline {
     // per-100g column is only the fallback for labels printed per-100g.
     const derived = derivePer100gFromServing(parsed.serving_size_g, parsed.nutrition_per_serving);
     const nutrition = normalizeNutrition(derived ?? parsed.nutrition_per_100g);
+    // Net content (§ Prices' divisor): the model transcribed {value, unit};
+    // code converts deterministically.
+    const netContent = convertNetContent(parsed.net_content);
     const ingredients = meta.ingredients?.trim() || parsed.ingredients || null;
     const productInput: ProductInput & { name: string } = {
       name,
@@ -479,6 +492,8 @@ export class InventoryPipeline {
       nutrition_per_serving: normalizeNutrition(parsed.nutrition_per_serving),
       servings_per_container: parsed.servings_per_container,
       unit_model_hint: parsed.unit_model_hint,
+      net_content_g: netContent.net_content_g,
+      net_content_ml: netContent.net_content_ml,
       ingredients,
       package_size: packageSize,
     };
@@ -1006,15 +1021,15 @@ export class InventoryPipeline {
    * **Eligibility & macro inheritance**: an item qualifies only when its
    * derivation provenance (`derived_from.recipe_ulid`, set by a `convert`
    * event — see § Conversions) resolves to a recipe with at least one
-   * component. The recipe's deterministic total macros
-   * (`computeRecipeMacros`, no model call) are scaled by the SHARE of the
-   * derived batch this consume spends: `quantity / units_total` for a
-   * counted item (one jar out of N), or the item's current
-   * `on_hand_fraction` for a fraction item (consuming finishes whatever
-   * fraction of the batch remains). This is the only macro-inheritance
-   * channel today — an item with no recipe-linked provenance has no
-   * deterministically-known macros and is rejected, per the plan's
-   * eligibility rule.
+   * component. What the recipe DESCRIBES depends on the item's unit model
+   * (§ Consume — the per-unit recipe contract): for a **counted** item the
+   * recipe describes ONE sealed unit (the system-wide per-serving recipe
+   * convention), so the logged macros are `recipe × quantity`; for a
+   * **fraction** item it describes the whole batch, scaled by the item's
+   * current `on_hand_fraction` (consuming finishes whatever fraction
+   * remains). This is the only macro-inheritance channel today — an item
+   * with no recipe-linked provenance has no deterministically-known macros
+   * and is rejected, per the plan's eligibility rule.
    *
    * **Depletion** mirrors `finished-unit` for a counted item (integer
    * decrement of `quantity` units; zero remaining goes terminal `finished`,
@@ -1059,7 +1074,12 @@ export class InventoryPipeline {
           `quantity (${quantity}) exceeds units_remaining (${item.units_remaining}) for item ${itemUlid}`
         );
       }
-      share = quantity / item.units_total;
+      // The linked recipe describes ONE sealed unit of a counted item (the
+      // system-wide per-serving recipe convention — the reselect strip logs
+      // the same recipe whole), so N units = N × the recipe, never a share of
+      // it. The 2026-07-22 oat-jar incident: a per-jar recipe on a 3-jar
+      // batch logged ⅓ of a jar under the old whole-item division.
+      share = quantity;
       const remaining = item.units_remaining - quantity;
       itemUpdate =
         remaining === 0
@@ -1067,7 +1087,7 @@ export class InventoryPipeline {
           : {
               state: 'stocked',
               opened_at: null,
-              eat_by: deriveEatBy({ shelfLifeClass: item.shelf_life_class, acquiredAt: item.acquired_at, openedAt: null }),
+              eat_by: await this.eatByFromTruth(item, null),
               units_remaining: remaining,
             };
     } else {
@@ -1365,6 +1385,8 @@ export class InventoryPipeline {
       nutrition_per_serving: normalizeNutrition(input.nutrition_per_serving),
       servings_per_container: input.servings_per_container ?? null,
       unit_model_hint: input.unit_model_hint ?? null,
+      net_content_g: input.net_content_g ?? null,
+      net_content_ml: input.net_content_ml ?? null,
       ingredients: input.ingredients?.trim() || null,
       package_size: input.package_size ?? null,
       shelf_life_days_unopened: input.shelf_life_days_unopened ?? null,
@@ -1425,6 +1447,8 @@ export class InventoryPipeline {
       ),
       servings_per_container: input.servings_per_container ?? existing.servings_per_container,
       unit_model_hint: input.unit_model_hint ?? existing.unit_model_hint,
+      net_content_g: input.net_content_g ?? existing.net_content_g,
+      net_content_ml: input.net_content_ml ?? existing.net_content_ml,
       ingredients: (input.ingredients?.trim() || null) ?? existing.ingredients,
       package_size: input.package_size ?? existing.package_size,
     });
@@ -1629,6 +1653,7 @@ function toBatchView(b: PurchaseBatchRecord): PurchaseBatchView {
     status: b.status,
     parse_attempts: b.parse_attempts,
     last_error: b.last_error,
+    total_cents: b.total_cents,
     created_at: b.created_at.toISOString(),
     updated_at: b.updated_at.toISOString(),
   };
@@ -1640,6 +1665,7 @@ function toLineView(l: BatchLineView | import('../inventory-types.js').BatchLine
     batch_ulid: l.batch_ulid,
     raw_text: l.raw_text,
     quantity: l.quantity,
+    price_cents: l.price_cents,
     match_outcome: l.match_outcome,
     product_ulid: l.product_ulid,
     inventory_item_ulid: l.inventory_item_ulid,

@@ -54,7 +54,7 @@ When several photos are supplied they are complementary views of ONE product, no
    - produce: fresh fruit/vegetables.
    - very_perishable: fish, fresh berries, fresh herbs, prepared salads.
    - unknown: cannot tell.
-3. Read the package size as printed (e.g. "16 oz", "1 L", "12 ct"). Null if absent.
+3. Read the package size as printed (e.g. "16 oz", "1 L", "12 ct"). Null if absent. ALSO transcribe the package's printed NET CONTENT as a raw value + unit pair in "net_content" — prefer a printed metric figure when one exists (e.g. "16 oz (454g)" -> {"value": 454, "unit": "g"}; "64 fl oz" -> {"value": 64, "unit": "fl oz"}). Transcribe only — never convert units yourself. Null when no net content is legible.
 4. If a nutrition facts panel is visible, TRANSCRIBE IT AS PRINTED — do NOT do any arithmetic:
    - serving_size_g: the serving size in grams as printed on the panel (e.g. "per 55g serving" -> 55). If the serving is printed only in a volume/count unit with a gram equivalent in parentheses, use the gram number. Null if no gram serving size is readable.
    - servings_per_container: the printed "servings per container" number, if shown. Null otherwise.
@@ -79,6 +79,7 @@ Return ONLY a JSON object inside <label> tags. No markdown, no text outside the 
   "nutrition_per_100g": {"calories": 0, "protein_g": 0, "fat_g": 0, "sat_fat_g": 0, "carbs_g": 0, "sugar_g": 0, "fiber_g": 0, "sodium_mg": 0},
   "ingredients": "ingredients as printed (full, partial, or callouts), or null",
   "unit_model_hint": "counted|fraction|null",
+  "net_content": {"value": 0, "unit": "g"},
   "aliases": ["short", "names"]
 }
 </label>
@@ -172,6 +173,20 @@ export class KitchenLabelParser implements LabelParser {
     const unitModelHint =
       parsed.unit_model_hint === 'counted' || parsed.unit_model_hint === 'fraction' ? parsed.unit_model_hint : null;
 
+    let netContent: { value: number; unit: string } | null = null;
+    if (parsed.net_content && typeof parsed.net_content === 'object') {
+      const nc = parsed.net_content as Record<string, unknown>;
+      if (
+        typeof nc.value === 'number' &&
+        Number.isFinite(nc.value) &&
+        nc.value > 0 &&
+        typeof nc.unit === 'string' &&
+        nc.unit.trim()
+      ) {
+        netContent = { value: nc.value, unit: nc.unit.trim() };
+      }
+    }
+
     const ingredients =
       typeof parsed.ingredients === 'string' && parsed.ingredients.trim() ? parsed.ingredients.trim() : null;
 
@@ -189,9 +204,48 @@ export class KitchenLabelParser implements LabelParser {
       nutrition_per_100g: nutrition,
       ingredients,
       unit_model_hint: unitModelHint,
+      net_content: netContent,
       aliases,
     };
   }
+}
+
+/**
+ * Deterministic net-content conversion (§ Prices' divisor — the model
+ * transcribes {value, unit}; CODE converts): weight units → grams, volume
+ * units → ml. Unknown/count units ("ct", "pk") → both null (counts are the
+ * unit model's axis, not net content).
+ */
+export function convertNetContent(
+  netContent: { value: number; unit: string } | null
+): { net_content_g: number | null; net_content_ml: number | null } {
+  if (!netContent || netContent.value <= 0) return { net_content_g: null, net_content_ml: null };
+  const unit = netContent.unit.toLowerCase().replace(/[.\s]+/g, ' ').trim();
+  const v = netContent.value;
+  const round1 = (n: number) => Math.round(n * 10) / 10;
+
+  const WEIGHT_PER_UNIT_G: Record<string, number> = {
+    g: 1, gram: 1, grams: 1,
+    kg: 1000,
+    oz: 28.3495, ounce: 28.3495, ounces: 28.3495,
+    lb: 453.592, lbs: 453.592, pound: 453.592, pounds: 453.592,
+  };
+  const VOLUME_PER_UNIT_ML: Record<string, number> = {
+    ml: 1, milliliter: 1, milliliters: 1,
+    l: 1000, liter: 1000, liters: 1000, litre: 1000, litres: 1000,
+    'fl oz': 29.5735, 'fluid oz': 29.5735, 'fluid ounce': 29.5735, 'fluid ounces': 29.5735, floz: 29.5735,
+    qt: 946.353, quart: 946.353, quarts: 946.353,
+    pt: 473.176, pint: 473.176, pints: 473.176,
+    gal: 3785.41, gallon: 3785.41, gallons: 3785.41,
+  };
+
+  if (unit in WEIGHT_PER_UNIT_G) {
+    return { net_content_g: round1(v * WEIGHT_PER_UNIT_G[unit]!), net_content_ml: null };
+  }
+  if (unit in VOLUME_PER_UNIT_ML) {
+    return { net_content_g: null, net_content_ml: round1(v * VOLUME_PER_UNIT_ML[unit]!) };
+  }
+  return { net_content_g: null, net_content_ml: null };
 }
 
 function parsePanel(raw: unknown): Partial<NutritionPer100g> | null {

@@ -1304,18 +1304,26 @@ path, not one-tap consume. An already-terminal item is rejected regardless of
 eligibility (`409`, checked first, mirroring `convert`'s terminal-source
 check).
 
-**Macro inheritance (deterministic, no model call).** The recipe's total
-macros are computed exactly as a direct recipe-logged entry's are
-(`computeRecipeMacros`, § API `POST /entries`), then scaled by the SHARE of
-the derived batch this one consume spends:
+**Macro inheritance (deterministic, no model call) — the per-unit recipe
+contract.** The recipe's total macros are computed exactly as a direct
+recipe-logged entry's are (`computeRecipeMacros`, § API `POST /entries`).
+What the linked recipe DESCRIBES depends on the item's unit model:
 
-- **Counted item** (`units_total` set): `share = quantity / units_total` —
-  `quantity` (default 1) whole units out of the batch the conversion produced.
-  E.g. 3 overnight-oats jars from one recipe application → each jar's entry
-  carries exactly 1/3 of the recipe's total macros.
-- **Fraction item**: `share = on_hand_fraction` — a fraction consume always
-  fully finishes the item in one tap (see § Depletion below), so it accounts
-  for whatever share of the original batch is still on hand.
+- **Counted item** (`units_total` set): **the recipe describes ONE sealed
+  unit**, so the entry carries `recipe × quantity` (default 1). This is the
+  system-wide per-serving recipe convention — the reselect strip logs the
+  same recipe whole as one serving, and recipe authors naturally write "an
+  overnight-oats jar," not "three jars" — so consume and reselect agree on
+  what a recipe means. E.g. 3 oat jars, per-jar recipe linked → consuming one
+  jar logs exactly the recipe's totals. (Amended 2026-07-22: the original
+  contract here was `share = quantity / units_total` — the recipe as the
+  whole batch — which collided with the per-serving convention the moment a
+  real multipack landed: a per-jar recipe on a 3-jar batch logged ⅓ of a
+  jar.)
+- **Fraction item**: the recipe describes the **whole batch**, scaled by
+  `share = on_hand_fraction` — a fraction consume always fully finishes the
+  item in one tap (see § Depletion below), so it accounts for whatever share
+  of the original batch is still on hand.
 
 The resulting entry is `source: 'reselect'`, `status: 'estimated'`,
 `portion_basis`/`confidence` carried through from the recipe computation

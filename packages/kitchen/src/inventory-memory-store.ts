@@ -56,6 +56,8 @@ export class MemoryInventoryStore implements InventoryStore {
       nutrition_per_serving: product.nutrition_per_serving ?? null,
       servings_per_container: product.servings_per_container ?? null,
       unit_model_hint: product.unit_model_hint ?? null,
+      net_content_g: product.net_content_g ?? null,
+      net_content_ml: product.net_content_ml ?? null,
       created_at: now,
       updated_at: now,
     };
@@ -267,6 +269,7 @@ export class MemoryInventoryStore implements InventoryStore {
       source: batch.source,
       store: batch.store,
       store_undetermined: false,
+      total_cents: null,
       purchased_at: batch.purchased_at,
       status: 'parsing',
       parse_attempts: 0,
@@ -307,6 +310,14 @@ export class MemoryInventoryStore implements InventoryStore {
     }
   }
 
+  async setBatchTotal(ulid: string, totalCents: number | null): Promise<void> {
+    const b = this.batches.get(ulid);
+    if (b) {
+      b.total_cents = totalCents;
+      b.updated_at = new Date();
+    }
+  }
+
   async setBatchStoreResolution(
     ulid: string,
     store: string | null,
@@ -331,7 +342,12 @@ export class MemoryInventoryStore implements InventoryStore {
   }
 
   async insertLine(line: NewBatchLine): Promise<BatchLineRecord> {
-    const record: BatchLineRecord = { ...line, quantity: line.quantity ?? 1, created_at: new Date() };
+    const record: BatchLineRecord = {
+      ...line,
+      quantity: line.quantity ?? 1,
+      price_cents: line.price_cents ?? null,
+      created_at: new Date(),
+    };
     this.lines.set(line.ulid, record);
     return structuredClone(record);
   }
