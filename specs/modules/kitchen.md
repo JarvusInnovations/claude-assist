@@ -530,6 +530,16 @@ All tables instance-agnostic empty schema, ULID keys, `kitchen` schema
   legible lands — a verbatim panel, a partial list, front-of-pack callouts —
   null only when there is genuinely nothing.
 
+  **Net content (§ Prices' divisor).** The label scan also transcribes the
+  package's printed net content as a raw `{value, unit}` pair (e.g. `454 g`,
+  `64 fl oz`); **deterministic code** converts to `net_content_g` /
+  `net_content_ml` (numeric, nullable — grams for weight-stated packages,
+  ml for volume-stated; oz/lb/L conversions in code, never model
+  arithmetic). This is the per-gram denominator for cost reads
+  (`price_cents ÷ net_content_g`); `package_size` stays the verbatim
+  display string it always was. `servings_per_container × serving_size_g`
+  remains a directional fallback when no net content was legible.
+
   **The needs-nutrition signal**: an inventory item whose *linked product*
   carries no `nutrition_per_100g`, or a panel with any of the eight fields
   null, is flagged `needs_nutrition: true` on every item view (`GET
@@ -596,17 +606,56 @@ All tables instance-agnostic empty schema, ULID keys, `kitchen` schema
   store, so the null is a recorded gap, not a silent one), `purchased_at`
   (date), `status` (enum `parsing | parsed | failed` — the parse work queue,
   mirrors entry estimation), `parse_attempts`, `last_error`, `last_error_at`,
-  `created_at`, `updated_at`.
+  `total_cents` (int, nullable — the receipt's printed grand total, transcribed
+  as printed; see § Prices), `created_at`, `updated_at`.
 - **`kitchen.purchase_batch_lines`** — one parsed receipt line: `ulid`,
   `batch_ulid`, `raw_text`, `quantity` (int, default 1 — the physical-unit
   count the line represents; a multi-quantity/multibuy line records N here and
-  fans out to N items), `match_outcome` (enum `matched | unmatched | pending |
-  skipped`), `product_ulid` (nullable), `inventory_item_ulid` (nullable — the
-  representative item for the line; the earliest of the N fanned-out units),
-  `created_at`. `skipped` records a line the parse either honored a
-  non-inventory lexicon marker for OR the model judged clearly non-food — no
-  inventory item is created, but the line is retained (never silently dropped)
-  so the batch stays a faithful record of the receipt.
+  fans out to N items), `price_cents` (int, nullable — the line's printed
+  extended price; see § Prices), `match_outcome` (enum `matched | unmatched |
+  pending | skipped`), `product_ulid` (nullable), `inventory_item_ulid`
+  (nullable — the representative item for the line; the earliest of the N
+  fanned-out units), `created_at`. `skipped` records a line the parse either
+  honored a non-inventory lexicon marker for OR the model judged clearly
+  non-food — no inventory item is created, but the line is retained (never
+  silently dropped) so the batch stays a faithful record of the receipt.
+
+  **Prices (capture as printed, never computed).** The receipt parser already
+  reads every line's price to disambiguate quantities; prices are first-class
+  capture, not discard: each line's **printed extended price** (what was paid
+  for that line's units, in integer cents; the number physically printed on
+  the line) lands as `price_cents`, and the receipt's **printed grand total**
+  as `total_cents` — both transcribed verbatim, null when unreadable, never
+  invented or arithmetically derived by the model (the serving-size rule
+  again). Per-unit price for a multi-quantity line is a *read-time* division,
+  never stored. Tax, deposits, and discount adjustment lines are out of
+  scope: they ride only insofar as the printed line/total numbers already
+  reflect them — the module does no allocation. Lines-sum vs `total_cents`
+  disagreement is informational (tax/discounts make exact agreement rare) —
+  never a parse failure. **Boundary:** kitchen records the printed facts;
+  spend analysis, budgets, and price-history reads are consumers (the
+  personal-finance domain / agent judgment) — the module keeps no derived
+  price tables. Because a product link exists per line via the lexicon,
+  per-product per-store price history is derivable at read time for free.
+
+  **The total as a self-check (re-read, never reconcile).** The parse prompt
+  instructs the model to use the printed grand total as a soft checksum on
+  its own line extraction: after reading the lines, if their price sum is
+  materially off from the total (beyond a tax/deposit-sized margin), that is
+  a signal to RE-EXAMINE the photos — specifically for the multibuy failure
+  modes (emitting both a `N @ price` marker and its item line, capturing a
+  unit price where the extended price was printed, a missed or duplicated
+  line). The check may only ever trigger a re-read; the model must NEVER
+  adjust any number to force agreement — transcribe-as-printed always wins,
+  and a residual mismatch is simply reported (both numbers land; the
+  disagreement stays informational).
+
+  **By-weight lines (produce, bulk).** A weighed line prints its measure and
+  unit price ("1.42 lb @ 0.79/lb") alongside the extended price; only
+  `price_cents` (the extended price) is captured structurally — `raw_text`
+  retains the printed measure verbatim, and per-gram cost for weighed goods
+  is a read-time parse of `raw_text` (blessed; structured measure capture is
+  a follow-up only if that parse proves too flaky across stores).
 - **`kitchen.entries.inventory_item_ulid`** — added column (nullable, no FK):
   the item a consumption entry depleted (phase-1 "optional inventory-item
   link").
@@ -786,7 +835,9 @@ Receipts:
   immediately (`status: 'parsing'`), idempotent on ULID, and returns the
   **bare** `PurchaseBatch` (`201` created / `200` replay). A detached parse pass
   runs the cheap receipt model (`KITCHEN_RECEIPT_MODEL`) over the photos →
-  `{ store, lines[] }`. Each `line` carries `{ text, quantity, non_food }`. The
+  `{ store, total_cents, lines[] }`. Each `line` carries
+  `{ text, quantity, price_cents, non_food }` (§ Prices — printed values
+  transcribed verbatim, null when unreadable). The
   resolution of each line, in order:
   1. **Store.** See § Store extraction & precedence — the resolved store is
      written back onto the batch and stamped on every item + used as the lexicon
