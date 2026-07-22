@@ -127,9 +127,10 @@ pulls and hand math.
 **`kitchen.expenditures`** — one row per activity/burn: `ulid` (client-
 suppliable idempotency key, same convention as entries), `occurred_at`
 (ISO date-time — the activity's own moment, backdatable), `source`
-(`'garmin' | 'manual'`), `label` (e.g. `"Evening ride"`), `kcal` (numeric,
-required — active calories, not gross), `duration_min` (numeric, nullable),
-`avg_hr` (numeric, nullable), `created_at`/`updated_at`. Deletable
+(`'strava' | 'health_connect' | 'garmin' | 'manual'`), `label` (e.g.
+`"Evening ride"`), `kcal` (numeric, required — active calories, not gross),
+`duration_min` (numeric, nullable), `avg_hr` (numeric, nullable),
+`created_at`/`updated_at`. Deletable
 (`DELETE /expenditures/:ulid`, same remove-from-rollups semantics as
 entries). No model estimation path — expenditure numbers always arrive
 stated (a device said it, or the owner did); the module never guesses a
@@ -155,11 +156,33 @@ protocol's intake range), and no surface may render remaining-intake
 headroom *derived from* the day's burn. The value is seeing the honest
 balance, not licensing more intake.
 
-**Garmin feed (phase 2).** The Hari-side `garmin-pull` skill already
-extracts per-activity active calories/HR; those post as `source: 'garmin'`
-expenditure rows (ulid seeded from the Garmin activity id, so re-pulls are
-idempotent replays). Until that lands, `manual` entries via the CLI cover
-the need.
+**Source architecture — one feed per data type, by reliability tier:**
+
+- **Exercise burns → Strava API (phase 2, the primary auto-feed).** Every
+  real workout lands in Strava (Garmin writes through, carrying Garmin's
+  own calorie computation), and it is the only listed source with a stable
+  official OAuth API suitable for unattended scheduled pulls. A scheduled
+  server-side sync posts recent activities as `source: 'strava'` rows,
+  ulids seeded from Strava activity ids so re-pulls are idempotent
+  replays.
+- **Weight → Health Connect via the capture app (phase 3).** The Android
+  Health Connect hub is the only path to the smart scale (and also
+  aggregates Garmin/Strava writers). The capture app reads it on-device
+  (`health` Flutter plugin) and posts **`kitchen.weigh_ins`** rows
+  (`ulid, occurred_at, weight_kg, source`) — specced in detail when that
+  phase drains. Weight is the goal metric and the empirical tuner for
+  `KITCHEN_TDEE_BASE`; until then the config stays a directional estimate.
+  App-bridge caveats (Android background-sync constraints, writer-varying
+  granularity) belong to that phase.
+- **Recovery signals → `garmin-pull` (not an expenditure feed).** Body
+  battery, stress, detailed sleep, resting HR exist nowhere else, but the
+  skill is authenticated-session replay — tolerable for a weekly,
+  human-adjacent batch (the training-loop plan's cadence), wrong as a
+  daily automated dependency. `source: 'garmin'` remains valid for
+  occasional manual-assisted imports; the deficit pipeline never depends
+  on it.
+
+Until any feed lands, `manual` entries via the CLI cover the need (v1).
 
 ## Logged-at backdating
 
