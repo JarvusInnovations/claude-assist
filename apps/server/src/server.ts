@@ -300,6 +300,7 @@ await fastify.register(
           maxPhotos: fastify.config.KITCHEN_MAX_PHOTOS,
           mealBankRepoPath: fastify.config.KITCHEN_MEALBANK_REPO_PATH,
           mealBankSheet: fastify.config.KITCHEN_MEALBANK_SHEET,
+          tdeeBase: fastify.config.KITCHEN_TDEE_BASE,
         },
       });
     } else {

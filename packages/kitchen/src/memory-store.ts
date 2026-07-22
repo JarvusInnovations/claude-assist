@@ -7,7 +7,10 @@
 import type { EntryRecord, EntryStatus, EstimationSource, NutritionFields, RecipeRecord } from './types.js';
 import type {
   EntryStore,
+  ExpenditureRecord,
+  ExpenditureStore,
   NewEntry,
+  NewExpenditure,
   NewRecipe,
   RecentEntrySummary,
   RecipeStore,
@@ -202,5 +205,42 @@ export class MemoryRecipeStore implements RecipeStore {
       .sort((a, b) => a.name.localeCompare(b.name))
       .slice(0, limit)
       .map((r) => structuredClone(r));
+  }
+}
+
+export class MemoryExpenditureStore implements ExpenditureStore {
+  readonly records = new Map<string, ExpenditureRecord>();
+
+  async insertIfAbsent(row: NewExpenditure): Promise<{ record: ExpenditureRecord; created: boolean }> {
+    const existing = this.records.get(row.ulid);
+    if (existing) return { record: structuredClone(existing), created: false };
+    const now = new Date();
+    const record: ExpenditureRecord = {
+      ulid: row.ulid,
+      occurred_at: row.occurred_at,
+      source: row.source,
+      label: row.label,
+      kcal: row.kcal,
+      duration_min: row.duration_min ?? null,
+      avg_hr: row.avg_hr ?? null,
+      created_at: now,
+      updated_at: now,
+    };
+    this.records.set(row.ulid, record);
+    return { record: structuredClone(record), created: true };
+  }
+
+  async list(filter: { since?: Date; until?: Date; limit?: number }): Promise<ExpenditureRecord[]> {
+    const since = filter.since?.getTime() ?? 0;
+    const until = filter.until?.getTime() ?? Infinity;
+    return [...this.records.values()]
+      .filter((r) => r.occurred_at.getTime() >= since && r.occurred_at.getTime() < until)
+      .sort((a, b) => b.occurred_at.getTime() - a.occurred_at.getTime())
+      .slice(0, Math.min(filter.limit ?? 100, 500))
+      .map((r) => structuredClone(r));
+  }
+
+  async delete(ulid: string): Promise<boolean> {
+    return this.records.delete(ulid);
   }
 }

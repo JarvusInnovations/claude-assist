@@ -113,6 +113,12 @@ in doubt, read the spec.
 - `scripts/kitchen-axi entries patch <ulid> [--note T] [--label T] [--calories N] [--protein N] [--fat N] [--sat-fat N] [--carbs N] [--sodium N] [--portion-basis T] [--multiplier M] [--at TIME]` — edit an entry: note/label re-queue estimation; any macro sets a terminal manual override; --multiplier rescales the base post-hoc and --at backdates logged_at (neither re-queues, neither changes source)
 - `scripts/kitchen-axi entries delete <ulid>` — remove an entry from all rollups
 
+### Expenditure
+
+- `scripts/kitchen-axi expenditure log "<label>" --kcal N [--duration M] [--avg-hr H] [--at TIME] [--source S] [--ulid U]` — record a stated burn (active calories — a device said it or you did; never model-estimated); feeds the daily net line, which is context, not a spend-it budget
+- `scripts/kitchen-axi expenditure list [--since DATE] [--limit N]` — recent expenditures, newest first
+- `scripts/kitchen-axi expenditure delete <ulid>` — remove an expenditure from all rollups
+
 ### Inventory
 
 - `scripts/kitchen-axi inventory list [--state S] [--closed] [--limit N]` — on-hand items in eat-first (eat_by ascending) order; --state filters, --closed includes finished/tossed

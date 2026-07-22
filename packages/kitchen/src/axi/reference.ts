@@ -39,6 +39,17 @@ export const COMMAND_GROUPS: CommandGroup[] = [
     ],
   },
   {
+    group: "Expenditure",
+    commands: [
+      {
+        usage: 'expenditure log "<label>" --kcal N [--duration M] [--avg-hr H] [--at TIME] [--source S] [--ulid U]',
+        summary: "record a stated burn (active calories — a device said it or you did; never model-estimated); feeds the daily net line, which is context, not a spend-it budget",
+      },
+      { usage: "expenditure list [--since DATE] [--limit N]", summary: "recent expenditures, newest first" },
+      { usage: "expenditure delete <ulid>", summary: "remove an expenditure from all rollups" },
+    ],
+  },
+  {
     group: "Inventory",
     commands: [
       { usage: "inventory list [--state S] [--closed] [--limit N]", summary: "on-hand items in eat-first (eat_by ascending) order; --state filters, --closed includes finished/tossed" },

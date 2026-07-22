@@ -146,7 +146,7 @@ describe("entries --at wiring (claude-assist#111)", () => {
 describe("command reference (single source of truth)", () => {
   it("covers every spec-listed command group", () => {
     const groups = COMMAND_GROUPS.map((g) => g.group);
-    expect(groups).toEqual(["Entries", "Inventory", "Receipts", "Recipes", "Products & lexicon"]);
+    expect(groups).toEqual(["Entries", "Expenditure", "Inventory", "Receipts", "Recipes", "Products & lexicon"]);
   });
 
   it("renders the reference as text and markdown from the same source", () => {
