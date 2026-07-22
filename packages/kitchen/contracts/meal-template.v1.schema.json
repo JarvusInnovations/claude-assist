@@ -30,6 +30,26 @@
       "minimum": 0,
       "description": "Flat single-item saturated fat (grams), paired with calories."
     },
+    "fat_g": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Flat single-item total fat (grams), paired with calories."
+    },
+    "carbs_g": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Flat single-item carbohydrates (grams), paired with calories."
+    },
+    "sugar_g": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Flat single-item total sugar (grams, natural + added), paired with calories."
+    },
+    "fiber_g": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Flat single-item dietary fiber (grams), paired with calories."
+    },
     "sodium_mg": {
       "type": "number",
       "minimum": 0,
@@ -70,6 +90,31 @@
                 "type": "number",
                 "minimum": 0,
                 "description": "Saturated fat (grams) per 100g of this ingredient."
+              },
+              "fat_g": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Total fat (grams) per 100g of this ingredient. Optional full-panel extension: an absent field contributes 'unknown' to that field's recipe total, never zero."
+              },
+              "carbs_g": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Carbohydrates (grams) per 100g of this ingredient. Optional full-panel extension."
+              },
+              "sugar_g": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Total sugar (grams) per 100g of this ingredient. Optional full-panel extension."
+              },
+              "fiber_g": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Dietary fiber (grams) per 100g of this ingredient. Optional full-panel extension."
+              },
+              "sodium_mg": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Sodium (milligrams) per 100g of this ingredient. Optional full-panel extension."
               }
             }
           }

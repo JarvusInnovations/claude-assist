@@ -21,7 +21,22 @@ class FakeReceiptParser implements ReceiptParser {
 /** Records the photos handed to it so a route test can pin the multi-photo shape. */
 class CapturingLabelParser implements LabelParser {
   seen: InventoryPhotoPart[] = [];
-  constructor(private result: ParsedLabel) {}
+  private result: ParsedLabel;
+  constructor(result: Partial<ParsedLabel>) {
+    this.result = {
+      name: null,
+      shelf_life_class: null,
+      package_size: null,
+      serving_size_g: null,
+      servings_per_container: null,
+      nutrition_per_serving: null,
+      nutrition_per_100g: null,
+      ingredients: null,
+      unit_model_hint: null,
+      aliases: [],
+      ...result,
+    };
+  }
   async parse(input: LabelParseInput): Promise<ParsedLabel> {
     this.seen = input.photos;
     return this.result;

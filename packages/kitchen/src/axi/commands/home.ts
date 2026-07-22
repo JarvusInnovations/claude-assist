@@ -87,6 +87,8 @@ export async function homeCommand(args: string[]): Promise<string> {
     fat_g: totals.fat_g,
     sat_fat_g: totals.sat_fat_g,
     carbs_g: totals.carbs_g,
+    sugar_g: totals.sugar_g,
+    fiber_g: totals.fiber_g,
     sodium_mg: totals.sodium_mg,
     open_questions: questionCount,
   });

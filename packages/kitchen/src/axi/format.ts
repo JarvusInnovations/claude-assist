@@ -7,7 +7,16 @@ import { custom, type FieldDef } from "./toon.js";
  * that one rule in one place for the CLI's rollups and tiles.
  */
 
-const MACRO_KEYS = ["calories", "protein_g", "fat_g", "sat_fat_g", "carbs_g", "sodium_mg"] as const;
+const MACRO_KEYS = [
+  "calories",
+  "protein_g",
+  "fat_g",
+  "sat_fat_g",
+  "carbs_g",
+  "sugar_g",
+  "fiber_g",
+  "sodium_mg",
+] as const;
 export type MacroKey = (typeof MACRO_KEYS)[number];
 
 export interface MacroTotals {
@@ -16,6 +25,8 @@ export interface MacroTotals {
   fat_g: number;
   sat_fat_g: number;
   carbs_g: number;
+  sugar_g: number;
+  fiber_g: number;
   sodium_mg: number;
 }
 
@@ -29,7 +40,16 @@ export function effectiveMacro(entry: Record<string, any>, key: MacroKey): numbe
 
 /** Sum effective macros across a set of entries (nulls skipped, not zeroed). */
 export function sumEffective(entries: Record<string, any>[]): MacroTotals {
-  const totals: MacroTotals = { calories: 0, protein_g: 0, fat_g: 0, sat_fat_g: 0, carbs_g: 0, sodium_mg: 0 };
+  const totals: MacroTotals = {
+    calories: 0,
+    protein_g: 0,
+    fat_g: 0,
+    sat_fat_g: 0,
+    carbs_g: 0,
+    sugar_g: 0,
+    fiber_g: 0,
+    sodium_mg: 0,
+  };
   for (const e of entries) {
     const mult = typeof e.portion_multiplier === "number" ? e.portion_multiplier : 1;
     for (const key of MACRO_KEYS) {

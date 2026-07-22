@@ -8,7 +8,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import type { FastifyBaseLogger } from 'fastify';
-import type { InventoryPhotoPart, ParsedLabel, ShelfLifeClass } from '../inventory-types.js';
+import type { InventoryPhotoPart, NutritionPer100g, ParsedLabel, ShelfLifeClass } from '../inventory-types.js';
 import { SHELF_LIFE_CLASSES } from '../inventory-types.js';
 
 class LabelParseError extends Error {
@@ -55,9 +55,14 @@ When several photos are supplied they are complementary views of ONE product, no
    - very_perishable: fish, fresh berries, fresh herbs, prepared salads.
    - unknown: cannot tell.
 3. Read the package size as printed (e.g. "16 oz", "1 L", "12 ct"). Null if absent.
-4. If a nutrition facts panel is visible, give per-100g values (calories, protein_g, fat_g, sat_fat_g, carbs_g, sodium_mg, fiber_g, sugar_g). Convert from the panel's serving size to 100g. Any single value you cannot read is null; a partial panel fills what it shows and leaves the rest null.
-5. If an ingredients list is visible, transcribe it verbatim as printed (a single comma-separated string). Null if no ingredients panel is shown.
+4. If a nutrition facts panel is visible, TRANSCRIBE IT AS PRINTED — do NOT do any arithmetic:
+   - serving_size_g: the serving size in grams as printed on the panel (e.g. "per 55g serving" -> 55). If the serving is printed only in a volume/count unit with a gram equivalent in parentheses, use the gram number. Null if no gram serving size is readable.
+   - servings_per_container: the printed "servings per container" number, if shown. Null otherwise.
+   - nutrition_per_serving: the PER-SERVING values exactly as printed (calories, protein_g, fat_g, sat_fat_g, carbs_g, sugar_g, fiber_g, sodium_mg). Any single value you cannot read is null; a partial panel fills what it shows and leaves the rest null.
+   - nutrition_per_100g: ONLY if the panel itself prints a per-100g (or per-100ml) column, transcribe it; otherwise null. Never compute it yourself.
+5. Ingredients: transcribe whatever ingredient information is legible, even if rough — a full ingredients panel verbatim (a single comma-separated string), a partial/cut-off list, or front-of-pack ingredient callouts. Null ONLY when there is genuinely no ingredient information anywhere in the photos.
 6. Suggest up to 3 short alias strings someone might use when logging (e.g. "feta", "feta cheese").
+7. unit_model_hint — judge the PACKAGING (not servings): does opening this product mean breaking into one of several individually-sealed atomic units, each starting its own freshness clock (a can 3-pack, a yogurt 4-pack, individually-wrapped bars) -> "counted"; or opening a single container that is then drawn down (a tub, bag, bottle, box of dry goods) -> "fraction". Null when the photos don't show enough of the packaging to judge. Servings-per-container says NOTHING about this — judge only from physical packaging.
 </instructions>
 
 <response_format>
@@ -68,13 +73,17 @@ Return ONLY a JSON object inside <label> tags. No markdown, no text outside the 
   "name": "product display name or null",
   "shelf_life_class": "pantry|frozen|fridge_long|fridge_short|produce|very_perishable|unknown",
   "package_size": "as printed or null",
-  "nutrition_per_100g": {"calories": 0, "protein_g": 0, "fat_g": 0, "sat_fat_g": 0, "carbs_g": 0, "sodium_mg": 0, "fiber_g": 0, "sugar_g": 0},
-  "ingredients": "ingredients list as printed, or null",
+  "serving_size_g": 0,
+  "servings_per_container": 0,
+  "nutrition_per_serving": {"calories": 0, "protein_g": 0, "fat_g": 0, "sat_fat_g": 0, "carbs_g": 0, "sugar_g": 0, "fiber_g": 0, "sodium_mg": 0},
+  "nutrition_per_100g": {"calories": 0, "protein_g": 0, "fat_g": 0, "sat_fat_g": 0, "carbs_g": 0, "sugar_g": 0, "fiber_g": 0, "sodium_mg": 0},
+  "ingredients": "ingredients as printed (full, partial, or callouts), or null",
+  "unit_model_hint": "counted|fraction|null",
   "aliases": ["short", "names"]
 }
 </label>
 
-Any value you cannot read should be null (nutrition_per_100g itself may be null if no panel is visible; ingredients null if no ingredients panel is visible).
+Any value you cannot read should be null (nutrition_per_serving / nutrition_per_100g themselves may be null when no panel is visible). Remember: nutrition_per_100g is ONLY for a printed per-100g column — never your own conversion.
 </response_format>`;
 
 export class KitchenLabelParser implements LabelParser {
@@ -156,20 +165,12 @@ export class KitchenLabelParser implements LabelParser {
     const packageSize =
       typeof parsed.package_size === 'string' && parsed.package_size.trim() ? parsed.package_size.trim() : null;
 
-    const rawNut = parsed.nutrition_per_100g;
-    const nutrition =
-      rawNut && typeof rawNut === 'object'
-        ? {
-            calories: numOrNull((rawNut as Record<string, unknown>).calories),
-            protein_g: numOrNull((rawNut as Record<string, unknown>).protein_g),
-            fat_g: numOrNull((rawNut as Record<string, unknown>).fat_g),
-            sat_fat_g: numOrNull((rawNut as Record<string, unknown>).sat_fat_g),
-            carbs_g: numOrNull((rawNut as Record<string, unknown>).carbs_g),
-            sodium_mg: numOrNull((rawNut as Record<string, unknown>).sodium_mg),
-            fiber_g: numOrNull((rawNut as Record<string, unknown>).fiber_g),
-            sugar_g: numOrNull((rawNut as Record<string, unknown>).sugar_g),
-          }
-        : null;
+    const nutrition = parsePanel(parsed.nutrition_per_100g);
+    const perServing = parsePanel(parsed.nutrition_per_serving);
+    const servingSizeG = numOrNull(parsed.serving_size_g);
+    const servingsPerContainer = numOrNull(parsed.servings_per_container);
+    const unitModelHint =
+      parsed.unit_model_hint === 'counted' || parsed.unit_model_hint === 'fraction' ? parsed.unit_model_hint : null;
 
     const ingredients =
       typeof parsed.ingredients === 'string' && parsed.ingredients.trim() ? parsed.ingredients.trim() : null;
@@ -178,8 +179,61 @@ export class KitchenLabelParser implements LabelParser {
       ? parsed.aliases.filter((a): a is string => typeof a === 'string' && a.trim().length > 0).map((a) => a.trim()).slice(0, 3)
       : [];
 
-    return { name, shelf_life_class: cls, package_size: packageSize, nutrition_per_100g: nutrition, ingredients, aliases };
+    return {
+      name,
+      shelf_life_class: cls,
+      package_size: packageSize,
+      serving_size_g: servingSizeG,
+      servings_per_container: servingsPerContainer,
+      nutrition_per_serving: perServing,
+      nutrition_per_100g: nutrition,
+      ingredients,
+      unit_model_hint: unitModelHint,
+      aliases,
+    };
   }
+}
+
+function parsePanel(raw: unknown): Partial<NutritionPer100g> | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  return {
+    calories: numOrNull(r.calories),
+    protein_g: numOrNull(r.protein_g),
+    fat_g: numOrNull(r.fat_g),
+    sat_fat_g: numOrNull(r.sat_fat_g),
+    carbs_g: numOrNull(r.carbs_g),
+    sugar_g: numOrNull(r.sugar_g),
+    fiber_g: numOrNull(r.fiber_g),
+    sodium_mg: numOrNull(r.sodium_mg),
+  };
+}
+
+/**
+ * Deterministic per-100g derivation (§ Nutrition panel — capture raw, scale
+ * late): per_serving ÷ serving_size_g × 100, per field, in code — never model
+ * arithmetic. Returns null when the raw serving data isn't usable (no
+ * serving_size_g or no per-serving panel) — the caller then falls back to the
+ * model's transcribed per-100g column, when one was printed.
+ */
+export function derivePer100gFromServing(
+  servingSizeG: number | null,
+  perServing: Partial<NutritionPer100g> | null
+): Partial<NutritionPer100g> | null {
+  if (!servingSizeG || servingSizeG <= 0 || !perServing) return null;
+  const factor = 100 / servingSizeG;
+  const scale = (v: number | null | undefined): number | null =>
+    typeof v === 'number' && Number.isFinite(v) ? Math.round(v * factor * 10) / 10 : null;
+  return {
+    calories: scale(perServing.calories),
+    protein_g: scale(perServing.protein_g),
+    fat_g: scale(perServing.fat_g),
+    sat_fat_g: scale(perServing.sat_fat_g),
+    carbs_g: scale(perServing.carbs_g),
+    sugar_g: scale(perServing.sugar_g),
+    fiber_g: scale(perServing.fiber_g),
+    sodium_mg: scale(perServing.sodium_mg),
+  };
 }
 
 function numOrNull(value: unknown): number | null {

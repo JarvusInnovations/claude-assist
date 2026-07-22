@@ -10,6 +10,8 @@ function mkEstimate(over: Partial<ModelEstimate> = {}): ModelEstimate {
     fat_g: 20,
     sat_fat_g: 5,
     carbs_g: 10,
+    sugar_g: 5,
+    fiber_g: 3,
     sodium_mg: 600,
     confidence: 0.6,
     portion_basis: 'one bowl',

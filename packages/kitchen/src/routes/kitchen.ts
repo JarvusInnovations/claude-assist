@@ -99,6 +99,8 @@ const PATCH_BODY_SCHEMA = {
     fat_g: { type: 'number', minimum: 0 },
     sat_fat_g: { type: 'number', minimum: 0 },
     carbs_g: { type: 'number', minimum: 0 },
+    sugar_g: { type: 'number', minimum: 0 },
+    fiber_g: { type: 'number', minimum: 0 },
     sodium_mg: { type: 'number', minimum: 0 },
     portion_basis: { type: 'string', maxLength: 200 },
     // Post-hoc rescale of the base macros (specs/modules/kitchen.md § Portion
@@ -126,6 +128,13 @@ const RECIPE_COMPONENT_SCHEMA = {
         calories: { type: 'number', minimum: 0 },
         protein_g: { type: 'number', minimum: 0 },
         sat_fat_g: { type: 'number', minimum: 0 },
+        // Optional full-panel extension (§ Nutrition panel) — a component that
+        // omits a field contributes "unknown" to that field's total, not zero.
+        fat_g: { type: ['number', 'null'], minimum: 0 },
+        carbs_g: { type: ['number', 'null'], minimum: 0 },
+        sugar_g: { type: ['number', 'null'], minimum: 0 },
+        fiber_g: { type: ['number', 'null'], minimum: 0 },
+        sodium_mg: { type: ['number', 'null'], minimum: 0 },
       },
     },
   },

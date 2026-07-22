@@ -37,7 +37,22 @@ class FakeReceiptParser implements ReceiptParser {
 }
 
 class FakeLabelParser implements LabelParser {
-  constructor(private result: ParsedLabel) {}
+  private result: ParsedLabel;
+  constructor(result: Partial<ParsedLabel>) {
+    this.result = {
+      name: null,
+      shelf_life_class: null,
+      package_size: null,
+      serving_size_g: null,
+      servings_per_container: null,
+      nutrition_per_serving: null,
+      nutrition_per_100g: null,
+      ingredients: null,
+      unit_model_hint: null,
+      aliases: [],
+      ...result,
+    };
+  }
   async parse(_input: LabelParseInput): Promise<ParsedLabel> {
     return this.result;
   }
@@ -591,8 +606,12 @@ describe('label enrichment (ingredients + full panel + precedence)', () => {
     name: 'Store Feta',
     shelf_life_class: 'fridge_long',
     package_size: null,
+    serving_size_g: null,
+    servings_per_container: null,
+    nutrition_per_serving: null,
     nutrition_per_100g: null,
     ingredients: null,
+    unit_model_hint: null,
     aliases: [],
     ...over,
   });

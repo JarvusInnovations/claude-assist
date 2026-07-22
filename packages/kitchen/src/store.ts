@@ -51,6 +51,8 @@ export interface RecentEntrySummary {
   fat_g: number | null;
   sat_fat_g: number | null;
   carbs_g: number | null;
+  sugar_g: number | null;
+  fiber_g: number | null;
   sodium_mg: number | null;
   last_logged_at: Date;
   log_count: number;
@@ -153,6 +155,8 @@ export const EMPTY_NUTRITION: NutritionFields = {
   fat_g: null,
   sat_fat_g: null,
   carbs_g: null,
+  sugar_g: null,
+  fiber_g: null,
   sodium_mg: null,
   confidence: null,
   portion_basis: null,
@@ -198,6 +202,8 @@ export function rowToEntry(row: Record<string, unknown>): EntryRecord {
     fat_g: parseNumeric(row.fat_g),
     sat_fat_g: parseNumeric(row.sat_fat_g),
     carbs_g: parseNumeric(row.carbs_g),
+    sugar_g: parseNumeric(row.sugar_g),
+    fiber_g: parseNumeric(row.fiber_g),
     sodium_mg: parseNumeric(row.sodium_mg),
     confidence: parseNumeric(row.confidence),
     portion_basis: (row.portion_basis as string | null) ?? null,
@@ -237,7 +243,7 @@ export class PgEntryStore implements EntryStore {
         (ulid, logged_at, note, recipe_ulid, component_quantities, status)
       VALUES (
         ${entry.ulid}, ${entry.logged_at}, ${entry.note}, ${entry.recipe_ulid},
-        ${entry.component_quantities ? JSON.stringify(entry.component_quantities) : null},
+        ${entry.component_quantities ? JSON.stringify(entry.component_quantities) : null}::jsonb,
         'estimating'
       )
       ON CONFLICT (ulid) DO NOTHING
@@ -294,7 +300,8 @@ export class PgEntryStore implements EntryStore {
       UPDATE kitchen.entries SET
         calories = ${nutrition.calories}, protein_g = ${nutrition.protein_g},
         fat_g = ${nutrition.fat_g}, sat_fat_g = ${nutrition.sat_fat_g},
-        carbs_g = ${nutrition.carbs_g}, sodium_mg = ${nutrition.sodium_mg},
+        carbs_g = ${nutrition.carbs_g}, sugar_g = ${nutrition.sugar_g},
+        fiber_g = ${nutrition.fiber_g}, sodium_mg = ${nutrition.sodium_mg},
         confidence = ${nutrition.confidence}, portion_basis = ${nutrition.portion_basis},
         label = COALESCE(${label}, label),
         source = ${source}, status = ${nextStatus},
@@ -330,7 +337,8 @@ export class PgEntryStore implements EntryStore {
       UPDATE kitchen.entries SET
         calories = ${merged.calories}, protein_g = ${merged.protein_g},
         fat_g = ${merged.fat_g}, sat_fat_g = ${merged.sat_fat_g},
-        carbs_g = ${merged.carbs_g}, sodium_mg = ${merged.sodium_mg},
+        carbs_g = ${merged.carbs_g}, sugar_g = ${merged.sugar_g},
+        fiber_g = ${merged.fiber_g}, sodium_mg = ${merged.sodium_mg},
         confidence = NULL, portion_basis = ${merged.portion_basis},
         label = ${extra.label ?? current.label}, note = ${extra.note ?? current.note},
         source = 'manual', status = 'estimated',
@@ -384,6 +392,8 @@ export class PgEntryStore implements EntryStore {
         (array_agg(fat_g ORDER BY logged_at DESC))[1] AS fat_g,
         (array_agg(sat_fat_g ORDER BY logged_at DESC))[1] AS sat_fat_g,
         (array_agg(carbs_g ORDER BY logged_at DESC))[1] AS carbs_g,
+        (array_agg(sugar_g ORDER BY logged_at DESC))[1] AS sugar_g,
+        (array_agg(fiber_g ORDER BY logged_at DESC))[1] AS fiber_g,
         (array_agg(sodium_mg ORDER BY logged_at DESC))[1] AS sodium_mg,
         MAX(logged_at) AS last_logged_at,
         COUNT(*)::int AS log_count
@@ -401,6 +411,8 @@ export class PgEntryStore implements EntryStore {
       fat_g: parseNumeric(row.fat_g),
       sat_fat_g: parseNumeric(row.sat_fat_g),
       carbs_g: parseNumeric(row.carbs_g),
+      sugar_g: parseNumeric(row.sugar_g),
+      fiber_g: parseNumeric(row.fiber_g),
       sodium_mg: parseNumeric(row.sodium_mg),
       last_logged_at: row.last_logged_at as Date,
       log_count: Number(row.log_count),
@@ -414,7 +426,7 @@ export class PgRecipeStore implements RecipeStore {
   async insert(recipe: NewRecipe): Promise<RecipeRecord> {
     const [row] = await this.sql`
       INSERT INTO kitchen.recipes (ulid, name, components, source)
-      VALUES (${recipe.ulid}, ${recipe.name}, ${JSON.stringify(recipe.components)}, ${recipe.source})
+      VALUES (${recipe.ulid}, ${recipe.name}, ${JSON.stringify(recipe.components)}::jsonb, ${recipe.source})
       RETURNING *
     `;
     return rowToRecipe(row!);

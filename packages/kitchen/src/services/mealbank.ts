@@ -20,7 +20,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { FastifyBaseLogger } from 'fastify';
-import type { RecipeComponent, RecipeRecord } from '../types.js';
+import type { RecipeComponent, RecipeComponentMacros, RecipeRecord } from '../types.js';
 import { ulidFromSeed } from '../ulid.js';
 
 export interface MealBankConfig {
@@ -50,6 +50,23 @@ interface MealBankRawRecord {
   calories?: unknown;
   protein_g?: unknown;
   sat_fat_g?: unknown;
+  fat_g?: unknown;
+  carbs_g?: unknown;
+  sugar_g?: unknown;
+  fiber_g?: unknown;
+  sodium_mg?: unknown;
+}
+
+/** Optional full-panel extension fields (§ Nutrition panel) — absent means unknown, never 0. */
+const OPTIONAL_PANEL_KEYS = ['fat_g', 'carbs_g', 'sugar_g', 'fiber_g', 'sodium_mg'] as const;
+
+function optionalPanel(source: Record<string, unknown>): Partial<RecipeComponentMacros> {
+  const out: Partial<RecipeComponentMacros> = {};
+  for (const key of OPTIONAL_PANEL_KEYS) {
+    const v = source[key];
+    if (typeof v === 'number') out[key] = v;
+  }
+  return out;
 }
 
 function toComponents(raw: unknown): RecipeComponent[] {
@@ -69,7 +86,7 @@ function toComponents(raw: unknown): RecipeComponent[] {
     out.push({
       label,
       default_qty_g: defaultQty,
-      per_100g: { calories, protein_g: proteinG, sat_fat_g: satFatG },
+      per_100g: { calories, protein_g: proteinG, sat_fat_g: satFatG, ...optionalPanel(per100g) },
     });
   }
   return out;
@@ -90,7 +107,12 @@ function toSingleItemComponent(raw: MealBankRawRecord): RecipeComponent[] {
     {
       label: name,
       default_qty_g: 100,
-      per_100g: { calories, protein_g: proteinG ?? 0, sat_fat_g: satFatG },
+      per_100g: {
+        calories,
+        protein_g: proteinG ?? 0,
+        sat_fat_g: satFatG,
+        ...optionalPanel(raw as Record<string, unknown>),
+      },
     },
   ];
 }

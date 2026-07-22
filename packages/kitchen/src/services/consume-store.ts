@@ -87,12 +87,13 @@ export class PgConsumeStore implements ConsumeStore {
 
       const inserted = await tx`
         INSERT INTO kitchen.entries
-          (ulid, logged_at, label, calories, protein_g, fat_g, sat_fat_g, carbs_g, sodium_mg,
-           confidence, portion_basis, source, status, inventory_item_ulid)
+          (ulid, logged_at, label, calories, protein_g, fat_g, sat_fat_g, carbs_g, sugar_g,
+           fiber_g, sodium_mg, confidence, portion_basis, source, status, inventory_item_ulid)
         VALUES (
           ${entry.ulid}, ${entry.logged_at}, ${entry.label},
           ${entry.nutrition.calories}, ${entry.nutrition.protein_g}, ${entry.nutrition.fat_g},
-          ${entry.nutrition.sat_fat_g}, ${entry.nutrition.carbs_g}, ${entry.nutrition.sodium_mg},
+          ${entry.nutrition.sat_fat_g}, ${entry.nutrition.carbs_g}, ${entry.nutrition.sugar_g},
+          ${entry.nutrition.fiber_g}, ${entry.nutrition.sodium_mg},
           ${entry.nutrition.confidence}, ${entry.nutrition.portion_basis},
           ${entry.source}, ${entry.status}, ${entry.inventory_item_ulid}
         )

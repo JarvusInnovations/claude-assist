@@ -31,6 +31,10 @@ export interface NewProduct {
   shelf_life_class: ShelfLifeClass;
   aliases: string[];
   nutrition_per_100g: NutritionPer100g | null;
+  serving_size_g?: number | null;
+  nutrition_per_serving?: NutritionPer100g | null;
+  servings_per_container?: number | null;
+  unit_model_hint?: 'counted' | 'fraction' | null;
   ingredients: string | null;
   package_size: string | null;
   shelf_life_days_unopened: number | null;
@@ -42,6 +46,10 @@ export interface ProductPatch {
   shelf_life_class?: ShelfLifeClass;
   aliases?: string[];
   nutrition_per_100g?: NutritionPer100g | null;
+  serving_size_g?: number | null;
+  nutrition_per_serving?: NutritionPer100g | null;
+  servings_per_container?: number | null;
+  unit_model_hint?: 'counted' | 'fraction' | null;
   ingredients?: string | null;
   package_size?: string | null;
   shelf_life_days_unopened?: number | null;
@@ -223,6 +231,12 @@ export function rowToProduct(row: Record<string, unknown>): ProductRecord {
     nutrition_per_100g: parseJsonField<NutritionPer100g>(
       row.nutrition_per_100g as NutritionPer100g | string | null
     ),
+    serving_size_g: row.serving_size_g == null ? null : Number(row.serving_size_g),
+    nutrition_per_serving: parseJsonField<NutritionPer100g>(
+      row.nutrition_per_serving as NutritionPer100g | string | null
+    ),
+    servings_per_container: row.servings_per_container == null ? null : Number(row.servings_per_container),
+    unit_model_hint: (row.unit_model_hint as 'counted' | 'fraction' | null) ?? null,
     ingredients: (row.ingredients as string | null) ?? null,
     package_size: (row.package_size as string | null) ?? null,
     shelf_life_days_unopened: row.shelf_life_days_unopened == null ? null : Number(row.shelf_life_days_unopened),
@@ -314,14 +328,22 @@ export class PgInventoryStore implements InventoryStore {
   constructor(private sql: postgres.Sql) {}
 
   async insertProduct(product: NewProduct): Promise<ProductRecord> {
+    // NB the ::jsonb casts: binding a JSON string without one stores a jsonb
+    // *string scalar* (double-encoded), killing SQL-side inspection —
+    // migration 009 repaired the historical rows.
     const [row] = await this.sql`
       INSERT INTO kitchen.products
-        (ulid, name, shelf_life_class, aliases, nutrition_per_100g, ingredients,
+        (ulid, name, shelf_life_class, aliases, nutrition_per_100g,
+         serving_size_g, nutrition_per_serving, servings_per_container,
+         unit_model_hint, ingredients,
          package_size, shelf_life_days_unopened, shelf_life_days_opened)
       VALUES (
         ${product.ulid}, ${product.name}, ${product.shelf_life_class},
-        ${product.aliases}, ${product.nutrition_per_100g ? JSON.stringify(product.nutrition_per_100g) : null},
-        ${product.ingredients}, ${product.package_size},
+        ${product.aliases}, ${product.nutrition_per_100g ? JSON.stringify(product.nutrition_per_100g) : null}::jsonb,
+        ${product.serving_size_g ?? null},
+        ${product.nutrition_per_serving ? JSON.stringify(product.nutrition_per_serving) : null}::jsonb,
+        ${product.servings_per_container ?? null},
+        ${product.unit_model_hint ?? null}, ${product.ingredients}, ${product.package_size},
         ${product.shelf_life_days_unopened}, ${product.shelf_life_days_opened}
       )
       RETURNING *
@@ -343,7 +365,11 @@ export class PgInventoryStore implements InventoryStore {
         name = ${merged.name},
         shelf_life_class = ${merged.shelf_life_class},
         aliases = ${merged.aliases},
-        nutrition_per_100g = ${merged.nutrition_per_100g ? JSON.stringify(merged.nutrition_per_100g) : null},
+        nutrition_per_100g = ${merged.nutrition_per_100g ? JSON.stringify(merged.nutrition_per_100g) : null}::jsonb,
+        serving_size_g = ${merged.serving_size_g ?? null},
+        nutrition_per_serving = ${merged.nutrition_per_serving ? JSON.stringify(merged.nutrition_per_serving) : null}::jsonb,
+        servings_per_container = ${merged.servings_per_container ?? null},
+        unit_model_hint = ${merged.unit_model_hint ?? null},
         ingredients = ${merged.ingredients},
         package_size = ${merged.package_size},
         shelf_life_days_unopened = ${merged.shelf_life_days_unopened},
@@ -626,7 +652,7 @@ export class PgInventoryStore implements InventoryStore {
     const [row] = await this.sql`
       INSERT INTO kitchen.inventory_derivations (ulid, derived_item_ulid, sources, recipe_ulid)
       VALUES (
-        ${derivation.ulid}, ${derivation.derived_item_ulid}, ${JSON.stringify(derivation.sources)},
+        ${derivation.ulid}, ${derivation.derived_item_ulid}, ${JSON.stringify(derivation.sources)}::jsonb,
         ${derivation.recipe_ulid}
       )
       RETURNING *

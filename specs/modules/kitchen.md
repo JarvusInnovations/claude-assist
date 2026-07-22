@@ -424,13 +424,37 @@ All tables instance-agnostic empty schema, ULID keys, `kitchen` schema
   nullable), `shelf_life_days_unopened` / `shelf_life_days_opened` (int,
   label-derived precise overrides of the class default; nullable), `created_at`,
   `updated_at`. A label photo enriches the **product**, not the item. The
-  `nutrition_per_100g` panel is the full dietary panel — the same six fields a
-  consumption entry tracks (`calories, protein_g, fat_g, sat_fat_g, carbs_g,
-  sodium_mg`) plus `fiber_g` and `sugar_g`, which package panels state and the
-  module's dietary purpose cares about. It is a **product-nutrition** shape,
-  distinct from the recipe-component per-100g macro shape (`{calories,
-  protein_g, sat_fat_g}` in `types.ts`), which stays on its own type — the two
-  are not conflated.
+  `nutrition_per_100g` panel is the full eight-field § Nutrition panel. It is
+  a **product-nutrition** shape, distinct from the recipe-component per-100g
+  reference (`RecipeComponentMacros` in `types.ts`), which stays on its own
+  type — the two are not conflated.
+
+  **Raw serving capture — capture as printed, scale late** (migration
+  `009-kitchen-nutrition-panel.sql`): `serving_size_g` (numeric — grams per
+  label serving, transcribed verbatim), `nutrition_per_serving` (JSONB, the
+  label's per-serving panel exactly as printed; any field null = unreadable),
+  `servings_per_container` (numeric — opportunistic package accounting only,
+  **never** an input to count-vs-fraction), and `unit_model_hint`
+  (`'counted' | 'fraction' | null` — the vision model's *packaging* judgment:
+  individually-sealed atomic units each of which opens and starts its own
+  clock → counted; a single container drawn down → fraction; a HINT the
+  unit-model judgment leans on, never a hard-set quantity). The label prompt
+  **never converts units**: per-100g is derived deterministically in code
+  (`per_serving ÷ serving_size_g × 100`, `derivePer100gFromServing`), keeping
+  the model's own transcribed per-100g column only as a fallback for labels
+  printed per-100g. LLM serving arithmetic is the classic extraction error;
+  the raw capture makes the conversion auditable and re-derivable. The
+  ingredients read is deliberately greedy: whatever ingredient information is
+  legible lands — a verbatim panel, a partial list, front-of-pack callouts —
+  null only when there is genuinely nothing.
+
+  **The needs-nutrition signal**: an inventory item whose *linked product*
+  carries no `nutrition_per_100g`, or a panel with any of the eight fields
+  null, is flagged `needs_nutrition: true` on every item view (`GET
+  /inventory`, CLI list, the app) — a label rescan is the resolving action.
+  Distinct from `needs_info` (a scanned line with NO product match); an
+  unlinked item is never double-badged. This is the loop that keeps
+  recipe/consume macros from going null in the first place.
 - **`kitchen.receipt_lexicon`** — one row per `(store, line_text)`: `ulid`,
   `store`, `line_text` (exact receipt line text, normalized to upper/trim),
   `product_ulid` (**nullable** — null on a non-inventory marker, see below),
