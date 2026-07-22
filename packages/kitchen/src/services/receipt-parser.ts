@@ -43,9 +43,12 @@ You transcribe a grocery/store receipt photo into its purchased line items for a
 1. STORE: Return the merchant name printed in the receipt header — the logo or first header line — trimmed to just the brand. DROP the street address, city/state/ZIP, phone number, store number (e.g. "#1234"), slogan, and website; KEEP the printed casing. The goal is a short, stable name that will be identical across receipts from the same store. Return null if no store name is discernible.
 2. LINES: List every purchased PRODUCT line, in order. Copy the printed item text verbatim (keep the store's abbreviations/truncations — they are the lexicon key).
 3. QUANTITY: When a line represents more than one physical unit — a "N @ price" marker line above/beside the item, a "N x" prefix, or a quantity column — set that line's "quantity" to N (an integer ≥ 1) and DO NOT emit the bare "N @ price" marker as its own line. Default quantity is 1; omit it or use 1 for single units.
-4. NON-FOOD: Set "non_food": true ONLY when a line is CLEARLY non-food — a receipt non-grocery/taxable marker (e.g. a trailing tax-class code the receipt uses for non-food) or unambiguous non-grocery text (e.g. GIFT CARD, BAG FEE, housewares like a mug or foil). Be CONSERVATIVE: if you are at all unsure whether a line is food, leave non_food false/omitted — a wrongly skipped grocery is worse than an extra question.
-5. Skip non-product lines entirely: subtotals, tax, totals, payment, change, loyalty/points, store address, phone, date, cashier, standalone coupons.
-6. Do not invent items, quantities, or prices. If a product line is unreadable, skip it.
+4. PRICE: Set each line's "price_cents" to the line's PRINTED EXTENDED price — the amount actually paid for that line's units, exactly as printed, converted to integer cents (e.g. "$7.98" -> 798). For a multi-unit line this is the printed line total, NOT the per-unit price from a "N @ price" marker. Transcribe only; never compute a price from quantity × unit price yourself. Null when the price is unreadable or the line prints none.
+5. TOTAL: Set "total_cents" to the receipt's printed grand TOTAL (the final amount charged), as printed, in integer cents. Null if unreadable.
+6. NON-FOOD: Set "non_food": true ONLY when a line is CLEARLY non-food — a receipt non-grocery/taxable marker (e.g. a trailing tax-class code the receipt uses for non-food) or unambiguous non-grocery text (e.g. GIFT CARD, BAG FEE, housewares like a mug or foil). Be CONSERVATIVE: if you are at all unsure whether a line is food, leave non_food false/omitted — a wrongly skipped grocery is worse than an extra question.
+7. Skip non-product lines entirely: subtotals, tax, totals, payment, change, loyalty/points, store address, phone, date, cashier, standalone coupons. (The grand total is captured ONLY in "total_cents", never as a line.)
+8. Do not invent items, quantities, or prices. If a product line is unreadable, skip it.
+9. SELF-CHECK against the total: before answering, roughly sum your lines' price_cents and compare to total_cents. If the sum is materially off (beyond a plausible tax/deposit/discount margin), RE-EXAMINE the photos — the usual culprits are: emitting both a "N @ price" marker AND its item line, capturing a unit price where the extended price was printed, or a missed/duplicated line. Fix only what a re-read of the photos shows. NEVER adjust any number just to make the sum match — every value must be a number physically printed on the receipt; a residual mismatch is fine and expected (tax/discounts).
 </instructions>
 
 <response_format>
@@ -54,12 +57,16 @@ Return ONLY a JSON object inside <receipt> tags. No markdown, no text outside th
 <receipt>
 {
   "store": "store name or null",
+  "total_cents": 0,
   "lines": [
-    {"text": "verbatim product line text", "quantity": 1, "non_food": false}
+    {"text": "verbatim product line text", "quantity": 1, "price_cents": 0, "non_food": false}
   ]
 }
 </receipt>
 </response_format>`;
+
+/** Exported for prompt-contract tests (§ Prices — transcribe + self-check rules). */
+export const SYSTEM_PROMPT_TEXT = SYSTEM_PROMPT;
 
 export class KitchenReceiptParser implements ReceiptParser {
   private client: Anthropic;
@@ -148,13 +155,25 @@ export class KitchenReceiptParser implements ReceiptParser {
           const obj = l as Record<string, unknown>;
           const text = (obj.text as string).trim();
           if (!text) return null;
-          return { text, quantity: normalizeQuantity(obj.quantity), non_food: obj.non_food === true };
+          return {
+            text,
+            quantity: normalizeQuantity(obj.quantity),
+            price_cents: normalizeCents(obj.price_cents),
+            non_food: obj.non_food === true,
+          };
         }
         return null;
       })
       .filter((l): l is ParsedReceiptLine => l !== null);
-    return { store, lines };
+    return { store, total_cents: normalizeCents(parsed.total_cents), lines };
   }
+}
+
+/** Integer cents ≥ 0, or null on anything invalid — unreadable is null, never 0. */
+function normalizeCents(value: unknown): number | null {
+  const n = typeof value === 'number' ? value : NaN;
+  if (!Number.isFinite(n) || n < 0) return null;
+  return Math.round(n);
 }
 
 /**

@@ -33,6 +33,7 @@ class CapturingLabelParser implements LabelParser {
       nutrition_per_100g: null,
       ingredients: null,
       unit_model_hint: null,
+      net_content: null,
       aliases: [],
       ...result,
     };
@@ -442,7 +443,7 @@ describe('inventory routes', () => {
     expect(body.entry.ulid).toBe(entryUlid);
     expect(body.entry.source).toBe('reselect');
     expect(body.entry.status).toBe('estimated');
-    expect(body.entry.calories).toBe(456); // half of 240*3.8=912
+    expect(body.entry.calories).toBe(912); // per-unit recipe contract: 1 unit = the whole recipe (240*3.8)
     expect(body.item.units_remaining).toBe(1);
     expect(body.item.state).toBe('stocked');
 

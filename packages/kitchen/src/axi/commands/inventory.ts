@@ -50,13 +50,20 @@ export const INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json
   amount for a counted source, a fraction 0..1 for a divisible one); with NO
   --from it is a source-less "I made this" — it registers the prepared item
   without decrementing any tracked stock (use when the raw inputs were loose,
-  already logged, or not worth tracking). Pass --to '{…,"recipe_ulid":"…"}'
+  already logged, or not worth tracking). PREFER --from whenever the inputs
+  ARE tracked — a sourceless convert leaves provenance empty, blocking cost
+  attribution and cross-transform eat-first reasoning. Pass
+  --to '{…,"recipe_ulid":"…"}'
   to make the derived item one-tap consume-eligible (see 'consume'). --to is
   a JSON object: {"name": "...",
   "shelf_life_class": "...", "units_total": N} for a counted derived item, or
   {"name": "...", "shelf_life_class": "...", "on_hand_fraction": 1} for a
   divisible one (fields: shelf_life_class?, on_hand_fraction?, units_total?,
-  store?, notes?, acquired_at?, recipe_ulid?).
+  store?, notes?, acquired_at?, recipe_ulid?). PER-UNIT RECIPE CONTRACT: for
+  a counted derived item the linked recipe must describe ONE unit (one jar),
+  not the whole batch — consume logs recipe × quantity. For prepped food,
+  OMIT shelf_life_class and let the 'prepared' default apply (or 'produce'
+  for hard-boiled eggs) — never a grocery class like fridge_short.
 
   'recount' is THE way to fix a ledger that disagrees with the fridge ("it's
   actually 75% full", "this is really 2 of 3 cans", "this carton was never

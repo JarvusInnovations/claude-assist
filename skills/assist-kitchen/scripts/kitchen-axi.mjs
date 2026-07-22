@@ -1422,13 +1422,20 @@ var INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json]
   amount for a counted source, a fraction 0..1 for a divisible one); with NO
   --from it is a source-less "I made this" \u2014 it registers the prepared item
   without decrementing any tracked stock (use when the raw inputs were loose,
-  already logged, or not worth tracking). Pass --to '{\u2026,"recipe_ulid":"\u2026"}'
+  already logged, or not worth tracking). PREFER --from whenever the inputs
+  ARE tracked \u2014 a sourceless convert leaves provenance empty, blocking cost
+  attribution and cross-transform eat-first reasoning. Pass
+  --to '{\u2026,"recipe_ulid":"\u2026"}'
   to make the derived item one-tap consume-eligible (see 'consume'). --to is
   a JSON object: {"name": "...",
   "shelf_life_class": "...", "units_total": N} for a counted derived item, or
   {"name": "...", "shelf_life_class": "...", "on_hand_fraction": 1} for a
   divisible one (fields: shelf_life_class?, on_hand_fraction?, units_total?,
-  store?, notes?, acquired_at?, recipe_ulid?).
+  store?, notes?, acquired_at?, recipe_ulid?). PER-UNIT RECIPE CONTRACT: for
+  a counted derived item the linked recipe must describe ONE unit (one jar),
+  not the whole batch \u2014 consume logs recipe \xD7 quantity. For prepped food,
+  OMIT shelf_life_class and let the 'prepared' default apply (or 'produce'
+  for hard-boiled eggs) \u2014 never a grocery class like fridge_short.
 
   'recount' is THE way to fix a ledger that disagrees with the fridge ("it's
   actually 75% full", "this is really 2 of 3 cans", "this carton was never
@@ -1799,12 +1806,14 @@ var BATCH_ROW_SCHEMA = [
   field("store"),
   field("purchased_at", "purchased"),
   field("status"),
+  field("total_cents"),
   field("parse_attempts", "attempts"),
   field("last_error")
 ];
 var LINE_SCHEMA = [
   field("raw_text", "line"),
   field("quantity", "qty"),
+  field("price_cents", "price\xA2"),
   field("match_outcome", "outcome"),
   field("product_ulid"),
   field("inventory_item_ulid", "item_ulid")
@@ -2075,7 +2084,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "5ba90c5" : "dev";
+var VERSION = true ? "3d22e6e" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)

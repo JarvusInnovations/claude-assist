@@ -49,6 +49,7 @@ class FakeLabelParser implements LabelParser {
       nutrition_per_100g: null,
       ingredients: null,
       unit_model_hint: null,
+      net_content: null,
       aliases: [],
       ...result,
     };
@@ -612,6 +613,7 @@ describe('label enrichment (ingredients + full panel + precedence)', () => {
     nutrition_per_100g: null,
     ingredients: null,
     unit_model_hint: null,
+    net_content: null,
     aliases: [],
     ...over,
   });
@@ -1052,10 +1054,12 @@ describe('consume from inventory (claude-assist#110 — one-tap known-macro log 
     expect(result!.entry.source).toBe('reselect');
     expect(result!.entry.status).toBe('estimated');
     expect(result!.entry.label).toBe('Overnight oats jar');
-    // Exactly 1/3 of the recipe's deterministic totals — no model call.
-    expect(result!.entry.calories).toBe(364); // 1092 / 3
-    expect(result!.entry.protein_g).toBe(20.4); // 61.2 / 3
-    expect(result!.entry.sat_fat_g).toBe(1.2); // round1(3.48 / 3)
+    // The PER-UNIT recipe contract (§ Consume): the linked recipe describes
+    // ONE jar, so one consumed unit logs exactly the recipe's totals — never
+    // a share of them (the 2026-07-22 oat-jar regression: ÷3 logged ⅓ jar).
+    expect(result!.entry.calories).toBe(1092);
+    expect(result!.entry.protein_g).toBe(61.2);
+    expect(result!.entry.sat_fat_g).toBe(3.5); // round1(3.48)
     expect(result!.entry.confidence).toBe(1);
 
     // Depletion: integer decrement, item stays alive (finished-unit semantics).
@@ -1298,5 +1302,36 @@ describe('reconcile (§ Reconcile — corrections are observations, not events)'
     expect(res.item?.on_hand_fraction).toBe(0.75);
     expect(res.item?.opened_at).toBe('2026-07-19'); // untouched
     expect(res.item?.state).toBe('open');
+  });
+});
+
+describe('receipt prices (§ Prices — capture as printed)', () => {
+  it('a parsed batch lands line price_cents + batch total_cents; multibuy fan-out never divides the printed line total', async () => {
+    const store = new MemoryInventoryStore();
+    const parser = new FakeReceiptParser({
+      store: 'Example Grocer',
+      total_cents: 2493,
+      lines: [
+        { text: 'FETA CHEESE', price_cents: 599 },
+        // Multibuy: 3 sausages, printed line total 1497 — stays the LINE's
+        // price; the 3 fanned-out items don't divide or duplicate it.
+        { text: 'ITAL CHICKEN SAUSAGE', quantity: 3, price_cents: 1497 },
+        { text: 'MYSTERY', price_cents: null },
+      ],
+    });
+    const pipeline = new InventoryPipeline(store, parser, null, log);
+    await pipeline.ingestReceipt({ ulid: ULID(90), store: 'Example Grocer', purchased_at: '2026-07-22' }, [photo]);
+    await pipeline.settle();
+
+    const view = await pipeline.getBatchView(ULID(90));
+    expect(view!.batch.total_cents).toBe(2493);
+    const byText = new Map(view!.lines.map((l) => [l.raw_text, l]));
+    expect(byText.get('FETA CHEESE')!.price_cents).toBe(599);
+    expect(byText.get('ITAL CHICKEN SAUSAGE')!.price_cents).toBe(1497);
+    expect(byText.get('ITAL CHICKEN SAUSAGE')!.quantity).toBe(3);
+    expect(byText.get('MYSTERY')!.price_cents).toBeNull(); // unreadable stays null, never 0
+
+    const items = await pipeline.listInventory({});
+    expect(items.length).toBe(5); // 1 + 3 + 1 fan-out unaffected
   });
 });

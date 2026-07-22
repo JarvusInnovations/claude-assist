@@ -102,6 +102,13 @@ export interface ProductRecord {
    * unit-model judgment leans on; it never hard-sets a quantity.
    */
   unit_model_hint: 'counted' | 'fraction' | null;
+  /**
+   * Printed net content, converted DETERMINISTICALLY in code from the label's
+   * transcribed {value, unit} (§ Prices' divisor): grams for weight-stated
+   * packages, ml for volume-stated. The per-gram denominator for cost reads.
+   */
+  net_content_g: number | null;
+  net_content_ml: number | null;
   /** The printed ingredients list; null when unknown. */
   ingredients: string | null;
   package_size: string | null;
@@ -121,6 +128,8 @@ export interface ProductInput {
   nutrition_per_serving?: Partial<NutritionPer100g> | null;
   servings_per_container?: number | null;
   unit_model_hint?: 'counted' | 'fraction' | null;
+  net_content_g?: number | null;
+  net_content_ml?: number | null;
   ingredients?: string | null;
   package_size?: string | null;
   shelf_life_days_unopened?: number | null;
@@ -265,6 +274,8 @@ export interface PurchaseBatchRecord {
   parse_attempts: number;
   last_error: string | null;
   last_error_at: Date | null;
+  /** The receipt's printed grand total in integer cents (§ Prices); null = unreadable. */
+  total_cents: number | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -279,6 +290,7 @@ export interface PurchaseBatchView {
   status: BatchStatus;
   parse_attempts: number;
   last_error: string | null;
+  total_cents: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -297,6 +309,8 @@ export interface BatchLineRecord {
   raw_text: string;
   /** Physical-unit count the line represents (≥ 1; a multibuy line fans out to N items). */
   quantity: number;
+  /** The line's printed extended price in integer cents (§ Prices); null = unreadable. */
+  price_cents: number | null;
   match_outcome: LineMatchOutcome;
   product_ulid: string | null;
   inventory_item_ulid: string | null;
@@ -308,6 +322,7 @@ export interface BatchLineView {
   batch_ulid: string;
   raw_text: string;
   quantity: number;
+  price_cents: number | null;
   match_outcome: LineMatchOutcome;
   product_ulid: string | null;
   inventory_item_ulid: string | null;
@@ -370,10 +385,19 @@ export interface ParsedReceiptLine {
    * false/undefined on any ambiguity. A durable lexicon mapping overrides it.
    */
   non_food?: boolean;
+  /**
+   * The line's printed EXTENDED price in integer cents (§ Prices) — what was
+   * paid for the line's units, transcribed as printed; for a multibuy line
+   * the printed line total, never a computed quantity × unit price. Null =
+   * unreadable / not printed.
+   */
+  price_cents?: number | null;
 }
 
 export interface ParsedReceipt {
   store: string | null;
+  /** The receipt's printed grand total in integer cents (§ Prices); null = unreadable. */
+  total_cents?: number | null;
   lines: ParsedReceiptLine[];
 }
 
@@ -398,6 +422,13 @@ export interface ParsedLabel {
   ingredients: string | null;
   /** Packaging judgment (§ count-vs-fraction hint): sealed-multipack vs single divisible container. */
   unit_model_hint: 'counted' | 'fraction' | null;
+  /**
+   * The package's printed net content, transcribed as a raw {value, unit}
+   * pair (§ Prices' divisor) — e.g. {454, "g"}, {64, "fl oz"}. Deterministic
+   * CODE converts to net_content_g/_ml; the model never converts units.
+   * Null when no net content is legible.
+   */
+  net_content: { value: number; unit: string } | null;
   aliases: string[];
 }
 

@@ -23,6 +23,7 @@ const BATCH_ROW_SCHEMA: FieldDef[] = [
   field("store"),
   field("purchased_at", "purchased"),
   field("status"),
+  field("total_cents"),
   field("parse_attempts", "attempts"),
   field("last_error"),
 ];
@@ -30,6 +31,7 @@ const BATCH_ROW_SCHEMA: FieldDef[] = [
 const LINE_SCHEMA: FieldDef[] = [
   field("raw_text", "line"),
   field("quantity", "qty"),
+  field("price_cents", "price¢"),
   field("match_outcome", "outcome"),
   field("product_ulid"),
   field("inventory_item_ulid", "item_ulid"),
