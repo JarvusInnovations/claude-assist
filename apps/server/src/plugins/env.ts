@@ -122,6 +122,9 @@ const schema = {
     // Meal-bank gitsheet read (both optional — unset degrades to recents-only reselect).
     KITCHEN_MEALBANK_REPO_PATH: { type: 'string' },
     KITCHEN_MEALBANK_SHEET: { type: 'string' },
+    // Owner's non-exercise daily expenditure (kcal) for the net-energy line
+    // (§ Expenditure & net energy). Optional — unset omits the net line.
+    KITCHEN_TDEE_BASE: { type: 'number' },
 
     // Pages module (publish + collect interactive HTML pages)
     ENABLE_PAGES: { type: 'boolean', default: true },
@@ -343,6 +346,7 @@ declare module 'fastify' {
       KITCHEN_MAX_PHOTOS: number;
       KITCHEN_MEALBANK_REPO_PATH?: string;
       KITCHEN_MEALBANK_SHEET?: string;
+      KITCHEN_TDEE_BASE?: number;
 
       // Pages module
       ENABLE_PAGES: boolean;

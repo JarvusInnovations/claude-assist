@@ -101,6 +101,12 @@ export interface KitchenPluginConfig {
   mealBankRepoPath?: string;
   /** Sheet name declared under that repo's .gitsheets/ (KITCHEN_MEALBANK_SHEET). */
   mealBankSheet?: string;
+  /**
+   * Owner's estimated non-exercise daily expenditure in kcal
+   * (KITCHEN_TDEE_BASE) — opaque instance config the module never guesses or
+   * auto-tunes (§ Expenditure & net energy). Unset ⇒ the net line is omitted.
+   */
+  tdeeBase?: number;
 }
 
 /**

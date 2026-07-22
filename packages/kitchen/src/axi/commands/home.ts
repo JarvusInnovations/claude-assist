@@ -45,17 +45,25 @@ export async function homeCommand(args: string[]): Promise<string> {
   let entries: any[] | null = null;
   let items: any[] = [];
   let questionCount = 0;
+  let summary: any = null;
   let reachable = true;
 
+  // Local-day window for the net-energy summary (the server makes no
+  // timezone assumptions — the caller owns its day boundaries).
+  const dayStart = startOfTodayIso();
+  const dayEnd = new Date(new Date(dayStart).getTime() + 24 * 60 * 60 * 1000).toISOString();
+
   try {
-    const [entriesRes, invRes, qRes] = await Promise.all([
-      api.get("/api/kitchen/entries", { since: startOfTodayIso() }),
+    const [entriesRes, invRes, qRes, summaryRes] = await Promise.all([
+      api.get("/api/kitchen/entries", { since: dayStart }),
       api.get("/api/kitchen/inventory", { limit: eatFirstN }),
       api.get("/api/kitchen/inventory/questions", { limit: 1 }),
+      api.get("/api/kitchen/summary", { since: dayStart, until: dayEnd }).catch(() => null),
     ]);
     entries = Array.isArray(entriesRes?.entries) ? entriesRes.entries : [];
     items = Array.isArray(invRes?.items) ? invRes.items : [];
     questionCount = typeof qRes?.count === "number" ? qRes.count : 0;
+    summary = summaryRes;
   } catch {
     reachable = false;
   }
@@ -90,6 +98,13 @@ export async function homeCommand(args: string[]): Promise<string> {
     sugar_g: totals.sugar_g,
     fiber_g: totals.fiber_g,
     sodium_mg: totals.sodium_mg,
+    // Net-energy context (§ Expenditure & net energy): shown only when the
+    // day logged a burn and/or the instance configured a TDEE base. The net
+    // is CONTEXT, not a spend-it budget — never a "remaining to eat" figure.
+    ...(summary && summary.expenditure_count > 0 ? { burned_kcal: summary.expenditure_kcal } : {}),
+    ...(summary && typeof summary.net_kcal === "number"
+      ? { est_deficit_kcal: summary.net_kcal }
+      : {}),
     open_questions: questionCount,
   });
 

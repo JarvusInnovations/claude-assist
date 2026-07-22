@@ -17,11 +17,12 @@ import {
   type PluginOptions,
   type Scheduler,
 } from '@jarvus/claude-assist-core';
-import { PgEntryStore, PgRecipeStore } from './store.js';
+import { PgEntryStore, PgExpenditureStore, PgRecipeStore } from './store.js';
 import { KitchenEstimator } from './services/estimator.js';
 import { KitchenPipeline } from './services/pipeline.js';
 import { readMealBankRecipes } from './services/mealbank.js';
 import { registerKitchenRoutes } from './routes/kitchen.js';
+import { registerExpenditureRoutes } from './routes/expenditures.js';
 import { registerPlanSessionRoutes } from './routes/plan-session.js';
 import { PgInventoryStore } from './inventory-store.js';
 import { KitchenReceiptParser } from './services/receipt-parser.js';
@@ -143,6 +144,13 @@ export default createPlugin('kitchen', async (fastify: FastifyInstance, options:
     maxPhotos: config.maxPhotos,
   });
 
+  // Expenditure & net energy (§ Expenditure & net energy, claude-assist#121).
+  await fastify.register(registerExpenditureRoutes, {
+    store: new PgExpenditureStore(fastify.sql),
+    entries: entryStore,
+    tdeeBase: config.tdeeBase,
+  });
+
   await fastify.register(registerInventoryRoutes, {
     inventory,
     maxPhotoBytes: config.maxPhotoBytes,
@@ -188,7 +196,7 @@ export default createPlugin('kitchen', async (fastify: FastifyInstance, options:
 export * from './types.js';
 export { generateUlid, ulidFromSeed, isValidUlid, ULID_PATTERN } from './ulid.js';
 export { transition, InvalidTransitionError, type EntryEvent } from './state.js';
-export type { EntryStore, RecipeStore, NewEntry, NewRecipe, RecentEntrySummary } from './store.js';
+export type { EntryStore, ExpenditureRecord, ExpenditureStore, NewEntry, NewExpenditure, NewRecipe, RecentEntrySummary, RecipeStore } from './store.js';
 export { PgEntryStore, PgRecipeStore, normalizeNewEntry, EMPTY_NUTRITION } from './store.js';
 export { MemoryEntryStore, MemoryRecipeStore } from './memory-store.js';
 export {

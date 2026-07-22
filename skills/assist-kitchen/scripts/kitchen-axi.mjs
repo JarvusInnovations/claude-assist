@@ -586,6 +586,17 @@ var COMMAND_GROUPS = [
     ]
   },
   {
+    group: "Expenditure",
+    commands: [
+      {
+        usage: 'expenditure log "<label>" --kcal N [--duration M] [--avg-hr H] [--at TIME] [--source S] [--ulid U]',
+        summary: "record a stated burn (active calories \u2014 a device said it or you did; never model-estimated); feeds the daily net line, which is context, not a spend-it budget"
+      },
+      { usage: "expenditure list [--since DATE] [--limit N]", summary: "recent expenditures, newest first" },
+      { usage: "expenditure delete <ulid>", summary: "remove an expenditure from all rollups" }
+    ]
+  },
+  {
     group: "Inventory",
     commands: [
       { usage: "inventory list [--state S] [--closed] [--limit N]", summary: "on-hand items in eat-first (eat_by ascending) order; --state filters, --closed includes finished/tossed" },
@@ -1110,16 +1121,21 @@ async function homeCommand(args) {
   let entries = null;
   let items = [];
   let questionCount = 0;
+  let summary = null;
   let reachable = true;
+  const dayStart = startOfTodayIso();
+  const dayEnd = new Date(new Date(dayStart).getTime() + 24 * 60 * 60 * 1e3).toISOString();
   try {
-    const [entriesRes, invRes, qRes] = await Promise.all([
-      api.get("/api/kitchen/entries", { since: startOfTodayIso() }),
+    const [entriesRes, invRes, qRes, summaryRes] = await Promise.all([
+      api.get("/api/kitchen/entries", { since: dayStart }),
       api.get("/api/kitchen/inventory", { limit: eatFirstN }),
-      api.get("/api/kitchen/inventory/questions", { limit: 1 })
+      api.get("/api/kitchen/inventory/questions", { limit: 1 }),
+      api.get("/api/kitchen/summary", { since: dayStart, until: dayEnd }).catch(() => null)
     ]);
     entries = Array.isArray(entriesRes?.entries) ? entriesRes.entries : [];
     items = Array.isArray(invRes?.items) ? invRes.items : [];
     questionCount = typeof qRes?.count === "number" ? qRes.count : 0;
+    summary = summaryRes;
   } catch {
     reachable = false;
   }
@@ -1150,6 +1166,11 @@ async function homeCommand(args) {
     sugar_g: totals.sugar_g,
     fiber_g: totals.fiber_g,
     sodium_mg: totals.sodium_mg,
+    // Net-energy context (§ Expenditure & net energy): shown only when the
+    // day logged a burn and/or the instance configured a TDEE base. The net
+    // is CONTEXT, not a spend-it budget — never a "remaining to eat" figure.
+    ...summary && summary.expenditure_count > 0 ? { burned_kcal: summary.expenditure_kcal } : {},
+    ...summary && typeof summary.net_kcal === "number" ? { est_deficit_kcal: summary.net_kcal } : {},
     open_questions: questionCount
   });
   const blocks = [today];
@@ -1676,6 +1697,90 @@ function validateShelfLife(value) {
   return value;
 }
 
+// packages/kitchen/src/axi/commands/expenditures.ts
+var EXPENDITURE_HELP = `kitchen-axi expenditure <subcommand> [args] [--json]
+
+  log "<label>" --kcal N [--duration M] [--avg-hr H] [--at TIME] [--source S] [--ulid U]
+                                       record a stated burn (default source: manual;
+                                       --at defaults to now; idempotent on --ulid)
+  list [--since DATE] [--limit N]      recent expenditures, newest first
+  delete <ulid>                        remove from all rollups
+
+  Burns are always STATED \u2014 a device said it, or you did; there is no model
+  estimation path for a burn (\xA7 Expenditure & net energy). kcal is ACTIVE
+  calories, not gross. The daily net line ((TDEE base + burns) \u2212 intake) is
+  CONTEXT, not a spend-it budget: the intake range stays the target, and
+  nothing here computes "remaining to eat" from a workout.`;
+var ROW_SCHEMA = [
+  field("ulid"),
+  field("occurred_at"),
+  field("label"),
+  field("source"),
+  field("kcal"),
+  field("duration_min"),
+  field("avg_hr")
+];
+var SOURCES = ["strava", "health_connect", "garmin", "manual"];
+async function expenditureCommand(args) {
+  const sub = args[0];
+  const rest = args.slice(1);
+  switch (sub) {
+    case "log":
+      return logExpenditure(rest);
+    case "list":
+    case void 0:
+      return listExpenditures(sub === void 0 ? args : rest);
+    case "delete":
+      return deleteExpenditure(rest);
+    default:
+      throw new AxiError(`Unknown expenditure subcommand: ${sub}`, "VALIDATION_ERROR", [EXPENDITURE_HELP]);
+  }
+}
+async function logExpenditure(args) {
+  const { positionals, flags } = parseArgs(args, ["json"], ["kcal", "duration", "avg-hr", "at", "source", "ulid"]);
+  const label = positionals.join(" ").trim();
+  if (!label) throw new AxiError("expenditure log needs a label", "VALIDATION_ERROR", [EXPENDITURE_HELP]);
+  if (typeof flags.kcal !== "string") {
+    throw new AxiError("expenditure log needs --kcal (active calories)", "VALIDATION_ERROR", [EXPENDITURE_HELP]);
+  }
+  const source = typeof flags.source === "string" ? flags.source : "manual";
+  if (!SOURCES.includes(source)) {
+    throw new AxiError(`--source must be one of: ${SOURCES.join(", ")}`, "VALIDATION_ERROR", [EXPENDITURE_HELP]);
+  }
+  const body = {
+    label,
+    source,
+    kcal: parseNumberFlag(flags.kcal, "kcal", EXPENDITURE_HELP, { min: 0 }),
+    occurred_at: typeof flags.at === "string" ? validateDate(flags.at, "--at", EXPENDITURE_HELP) : (/* @__PURE__ */ new Date()).toISOString()
+  };
+  if (typeof flags.duration === "string") {
+    body.duration_min = parseNumberFlag(flags.duration, "duration", EXPENDITURE_HELP, { min: 0 });
+  }
+  if (typeof flags["avg-hr"] === "string") {
+    body.avg_hr = parseNumberFlag(flags["avg-hr"], "avg-hr", EXPENDITURE_HELP, { min: 0 });
+  }
+  if (typeof flags.ulid === "string") body.ulid = flags.ulid;
+  const row = await api.post("/api/kitchen/expenditures", body);
+  if (flags.json) return rawJson(row);
+  return renderDetail("expenditure", row, ROW_SCHEMA);
+}
+async function listExpenditures(args) {
+  const { flags } = parseArgs(args, ["json"], ["since", "limit"]);
+  const result = await api.get("/api/kitchen/expenditures", {
+    since: typeof flags.since === "string" ? validateDate(flags.since, "--since", EXPENDITURE_HELP) : void 0,
+    limit: typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", EXPENDITURE_HELP, { min: 1 })) : void 0
+  });
+  if (flags.json) return rawJson(result);
+  return renderList("expenditures", result?.expenditures ?? [], ROW_SCHEMA);
+}
+async function deleteExpenditure(args) {
+  const { positionals, flags } = parseArgs(args, ["json"], []);
+  const ulid = requirePositional(positionals, 0, "expenditure ulid", EXPENDITURE_HELP);
+  await api.del(`/api/kitchen/expenditures/${encodeURIComponent(ulid)}`);
+  if (flags.json) return rawJson({ deleted: ulid });
+  return renderObject({ deleted: ulid });
+}
+
 // packages/kitchen/src/axi/commands/receipts.ts
 import { existsSync } from "node:fs";
 var RECEIPTS_HELP = `kitchen-axi receipts <subcommand> [args] [--json]
@@ -1970,7 +2075,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "9fb3dd9" : "dev";
+var VERSION = true ? "5ba90c5" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)
@@ -1994,6 +2099,7 @@ var COMMAND_HELP = {
   home: HOME_HELP,
   entries: ENTRIES_HELP,
   inventory: INVENTORY_HELP,
+  expenditure: EXPENDITURE_HELP,
   receipts: RECEIPTS_HELP,
   recipes: RECIPES_HELP,
   products: PRODUCTS_HELP,
@@ -2003,6 +2109,7 @@ var COMMANDS = {
   home: (args) => homeCommand(args),
   entries: (args) => entriesCommand(args),
   inventory: (args) => inventoryCommand(args),
+  expenditure: (args) => expenditureCommand(args),
   receipts: (args) => receiptsCommand(args),
   recipes: (args) => recipesCommand(args),
   products: (args) => productsCommand(args),

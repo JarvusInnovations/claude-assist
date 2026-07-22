@@ -445,3 +445,86 @@ export class PgRecipeStore implements RecipeStore {
     return rows.map(rowToRecipe);
   }
 }
+
+// ── Expenditures (§ Expenditure & net energy, claude-assist#121) ─────────────
+
+/** A row in kitchen.expenditures — a stated activity/burn, never estimated. */
+export interface ExpenditureRecord {
+  ulid: string;
+  occurred_at: Date;
+  source: 'strava' | 'health_connect' | 'garmin' | 'manual';
+  label: string;
+  /** Active calories, not gross. */
+  kcal: number;
+  duration_min: number | null;
+  avg_hr: number | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface NewExpenditure {
+  ulid: string;
+  occurred_at: Date;
+  source: ExpenditureRecord['source'];
+  label: string;
+  kcal: number;
+  duration_min?: number | null;
+  avg_hr?: number | null;
+}
+
+export interface ExpenditureStore {
+  /** Idempotent on ulid (feed re-pulls replay safely). */
+  insertIfAbsent(row: NewExpenditure): Promise<{ record: ExpenditureRecord; created: boolean }>;
+  list(filter: { since?: Date; until?: Date; limit?: number }): Promise<ExpenditureRecord[]>;
+  delete(ulid: string): Promise<boolean>;
+}
+
+function rowToExpenditure(row: Record<string, unknown>): ExpenditureRecord {
+  return {
+    ulid: row.ulid as string,
+    occurred_at: row.occurred_at as Date,
+    source: row.source as ExpenditureRecord['source'],
+    label: row.label as string,
+    kcal: Number(row.kcal),
+    duration_min: row.duration_min == null ? null : Number(row.duration_min),
+    avg_hr: row.avg_hr == null ? null : Number(row.avg_hr),
+    created_at: row.created_at as Date,
+    updated_at: row.updated_at as Date,
+  };
+}
+
+export class PgExpenditureStore implements ExpenditureStore {
+  constructor(private sql: postgres.Sql) {}
+
+  async insertIfAbsent(row: NewExpenditure): Promise<{ record: ExpenditureRecord; created: boolean }> {
+    const inserted = await this.sql`
+      INSERT INTO kitchen.expenditures (ulid, occurred_at, source, label, kcal, duration_min, avg_hr)
+      VALUES (${row.ulid}, ${row.occurred_at}, ${row.source}, ${row.label},
+              ${row.kcal}, ${row.duration_min ?? null}, ${row.avg_hr ?? null})
+      ON CONFLICT (ulid) DO NOTHING
+      RETURNING *
+    `;
+    if (inserted.length > 0) return { record: rowToExpenditure(inserted[0]!), created: true };
+    const [existing] = await this.sql`SELECT * FROM kitchen.expenditures WHERE ulid = ${row.ulid}`;
+    if (!existing) throw new Error(`Expenditure ${row.ulid} conflicted on insert but is not readable`);
+    return { record: rowToExpenditure(existing), created: false };
+  }
+
+  async list(filter: { since?: Date; until?: Date; limit?: number }): Promise<ExpenditureRecord[]> {
+    const limit = Math.min(filter.limit ?? 100, 500);
+    const since = filter.since ?? new Date(0);
+    const until = filter.until ?? new Date('9999-01-01');
+    const rows = await this.sql`
+      SELECT * FROM kitchen.expenditures
+      WHERE occurred_at >= ${since} AND occurred_at < ${until}
+      ORDER BY occurred_at DESC
+      LIMIT ${limit}
+    `;
+    return rows.map(rowToExpenditure);
+  }
+
+  async delete(ulid: string): Promise<boolean> {
+    const result = await this.sql`DELETE FROM kitchen.expenditures WHERE ulid = ${ulid} RETURNING ulid`;
+    return result.length > 0;
+  }
+}

@@ -4,6 +4,7 @@ import { cliInvocation } from "./invocation.js";
 import { homeCommand, HOME_HELP } from "./commands/home.js";
 import { entriesCommand, ENTRIES_HELP } from "./commands/entries.js";
 import { inventoryCommand, INVENTORY_HELP } from "./commands/inventory.js";
+import { expenditureCommand, EXPENDITURE_HELP } from "./commands/expenditures.js";
 import { receiptsCommand, RECEIPTS_HELP } from "./commands/receipts.js";
 import { recipesCommand, RECIPES_HELP } from "./commands/recipes.js";
 import { productsCommand, PRODUCTS_HELP } from "./commands/products.js";
@@ -37,6 +38,7 @@ const COMMAND_HELP: Record<string, string> = {
   home: HOME_HELP,
   entries: ENTRIES_HELP,
   inventory: INVENTORY_HELP,
+  expenditure: EXPENDITURE_HELP,
   receipts: RECEIPTS_HELP,
   recipes: RECIPES_HELP,
   products: PRODUCTS_HELP,
@@ -47,6 +49,7 @@ const COMMANDS: Record<string, AxiCliCommand<undefined>> = {
   home: (args) => homeCommand(args),
   entries: (args) => entriesCommand(args),
   inventory: (args) => inventoryCommand(args),
+  expenditure: (args) => expenditureCommand(args),
   receipts: (args) => receiptsCommand(args),
   recipes: (args) => recipesCommand(args),
   products: (args) => productsCommand(args),
