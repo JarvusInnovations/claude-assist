@@ -530,6 +530,16 @@ All tables instance-agnostic empty schema, ULID keys, `kitchen` schema
   legible lands — a verbatim panel, a partial list, front-of-pack callouts —
   null only when there is genuinely nothing.
 
+  **Net content (§ Prices' divisor).** The label scan also transcribes the
+  package's printed net content as a raw `{value, unit}` pair (e.g. `454 g`,
+  `64 fl oz`); **deterministic code** converts to `net_content_g` /
+  `net_content_ml` (numeric, nullable — grams for weight-stated packages,
+  ml for volume-stated; oz/lb/L conversions in code, never model
+  arithmetic). This is the per-gram denominator for cost reads
+  (`price_cents ÷ net_content_g`); `package_size` stays the verbatim
+  display string it always was. `servings_per_container × serving_size_g`
+  remains a directional fallback when no net content was legible.
+
   **The needs-nutrition signal**: an inventory item whose *linked product*
   carries no `nutrition_per_100g`, or a panel with any of the eight fields
   null, is flagged `needs_nutrition: true` on every item view (`GET
@@ -627,6 +637,25 @@ All tables instance-agnostic empty schema, ULID keys, `kitchen` schema
   personal-finance domain / agent judgment) — the module keeps no derived
   price tables. Because a product link exists per line via the lexicon,
   per-product per-store price history is derivable at read time for free.
+
+  **The total as a self-check (re-read, never reconcile).** The parse prompt
+  instructs the model to use the printed grand total as a soft checksum on
+  its own line extraction: after reading the lines, if their price sum is
+  materially off from the total (beyond a tax/deposit-sized margin), that is
+  a signal to RE-EXAMINE the photos — specifically for the multibuy failure
+  modes (emitting both a `N @ price` marker and its item line, capturing a
+  unit price where the extended price was printed, a missed or duplicated
+  line). The check may only ever trigger a re-read; the model must NEVER
+  adjust any number to force agreement — transcribe-as-printed always wins,
+  and a residual mismatch is simply reported (both numbers land; the
+  disagreement stays informational).
+
+  **By-weight lines (produce, bulk).** A weighed line prints its measure and
+  unit price ("1.42 lb @ 0.79/lb") alongside the extended price; only
+  `price_cents` (the extended price) is captured structurally — `raw_text`
+  retains the printed measure verbatim, and per-gram cost for weighed goods
+  is a read-time parse of `raw_text` (blessed; structured measure capture is
+  a follow-up only if that parse proves too flaky across stores).
 - **`kitchen.entries.inventory_item_ulid`** — added column (nullable, no FK):
   the item a consumption entry depleted (phase-1 "optional inventory-item
   link").
