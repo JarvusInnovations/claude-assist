@@ -84,6 +84,24 @@ export interface ProductRecord {
   shelf_life_class: ShelfLifeClass;
   aliases: string[];
   nutrition_per_100g: NutritionPer100g | null;
+  /**
+   * Raw label capture (§ Nutrition panel — capture as printed, scale late):
+   * grams per label serving + the per-serving panel, transcribed verbatim by
+   * the label scan. Per-100g is DERIVED in code from these when present
+   * (per_serving ÷ serving_size_g × 100); the model's own per-100g is kept
+   * only as a fallback when the serving size is unreadable.
+   */
+  serving_size_g: number | null;
+  nutrition_per_serving: NutritionPer100g | null;
+  /** Opportunistic package accounting only — never feeds count-vs-fraction. */
+  servings_per_container: number | null;
+  /**
+   * Vision-model packaging judgment (§ count-vs-fraction): 'counted' —
+   * individually-sealed atomic units each opened separately; 'fraction' — a
+   * single container drawn down; null — not enough info. A HINT the
+   * unit-model judgment leans on; it never hard-sets a quantity.
+   */
+  unit_model_hint: 'counted' | 'fraction' | null;
   /** The printed ingredients list; null when unknown. */
   ingredients: string | null;
   package_size: string | null;
@@ -99,6 +117,10 @@ export interface ProductInput {
   shelf_life_class?: ShelfLifeClass;
   aliases?: string[];
   nutrition_per_100g?: Partial<NutritionPer100g> | null;
+  serving_size_g?: number | null;
+  nutrition_per_serving?: Partial<NutritionPer100g> | null;
+  servings_per_container?: number | null;
+  unit_model_hint?: 'counted' | 'fraction' | null;
   ingredients?: string | null;
   package_size?: string | null;
   shelf_life_days_unopened?: number | null;
@@ -187,6 +209,12 @@ export interface InventoryItemView {
   units_total: number | null;
   units_remaining: number | null;
   needs_info: boolean;
+  /**
+   * The linked product is missing nutrition data (§ Nutrition panel — no
+   * panel, or a partial one): a label rescan is the obvious next action.
+   * Distinct from `needs_info` (a scanned line with NO product match).
+   */
+  needs_nutrition: boolean;
   acquired_at: string;
   opened_at: string | null;
   closed_at: string | null;
@@ -358,9 +386,18 @@ export interface ParsedLabel {
   name: string | null;
   shelf_life_class: ShelfLifeClass | null;
   package_size: string | null;
+  /** Grams per printed label serving, transcribed verbatim (no model math). */
+  serving_size_g: number | null;
+  /** Printed "servings per container", opportunistic — never feeds count-vs-fraction. */
+  servings_per_container: number | null;
+  /** The label's per-serving panel exactly as printed; null field = unreadable. */
+  nutrition_per_serving: Partial<NutritionPer100g> | null;
+  /** ONLY a printed per-100g column, transcribed — never the model's own conversion. */
   nutrition_per_100g: Partial<NutritionPer100g> | null;
-  /** The printed ingredients list when a photo shows it; null otherwise. */
+  /** Whatever ingredient information is legible — full panel, partial, or callouts; null only when none. */
   ingredients: string | null;
+  /** Packaging judgment (§ count-vs-fraction hint): sealed-multipack vs single divisible container. */
+  unit_model_hint: 'counted' | 'fraction' | null;
   aliases: string[];
 }
 

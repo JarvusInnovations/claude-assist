@@ -50,7 +50,15 @@ export class MemoryInventoryStore implements InventoryStore {
 
   async insertProduct(product: NewProduct): Promise<ProductRecord> {
     const now = new Date();
-    const record: ProductRecord = { ...product, created_at: now, updated_at: now };
+    const record: ProductRecord = {
+      ...product,
+      serving_size_g: product.serving_size_g ?? null,
+      nutrition_per_serving: product.nutrition_per_serving ?? null,
+      servings_per_container: product.servings_per_container ?? null,
+      unit_model_hint: product.unit_model_hint ?? null,
+      created_at: now,
+      updated_at: now,
+    };
     this.products.set(product.ulid, record);
     return structuredClone(record);
   }

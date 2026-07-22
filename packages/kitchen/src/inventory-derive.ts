@@ -11,6 +11,7 @@ import type {
   DerivedFromView,
   InventoryItemRecord,
   InventoryItemView,
+  ProductRecord,
   ShelfLifeClass,
 } from './inventory-types.js';
 
@@ -117,13 +118,41 @@ export function toIsoDate(date: Date | null): string | null {
   return date.toISOString().slice(0, 10);
 }
 
+/** The eight § Nutrition panel keys a product's per-100g reference must carry to be complete. */
+const PANEL_KEYS = [
+  'calories',
+  'protein_g',
+  'fat_g',
+  'sat_fat_g',
+  'carbs_g',
+  'sugar_g',
+  'fiber_g',
+  'sodium_mg',
+] as const;
+
 /**
- * Project a stored item (+ optional joined product name) into the wire view,
+ * Whether an item's linked product is missing nutrition data (§ Nutrition
+ * panel — the "needs nutrition" signal): no `nutrition_per_100g` at all, or a
+ * panel with any of the eight fields null/absent. A label rescan is the
+ * resolving action. Items with NO linked product are the `needs_info` case
+ * instead — this flag stays false there to avoid double-badging.
+ */
+export function needsNutrition(
+  product: Pick<ProductRecord, 'nutrition_per_100g'> | null | undefined
+): boolean {
+  if (!product) return false;
+  const n = product.nutrition_per_100g;
+  if (!n) return true;
+  return PANEL_KEYS.some((key) => typeof n[key] !== 'number');
+}
+
+/**
+ * Project a stored item (+ optional joined product) into the wire view,
  * computing days_until_eat_by / age_days relative to `now`.
  */
 export function toItemView(
   record: InventoryItemRecord,
-  productName: string | null,
+  product: Pick<ProductRecord, 'name' | 'nutrition_per_100g'> | null,
   now = new Date(),
   derivedFrom: DerivedFromView | null = null
 ): InventoryItemView {
@@ -131,7 +160,7 @@ export function toItemView(
   return {
     ulid: record.ulid,
     product_ulid: record.product_ulid,
-    product_name: productName ?? record.raw_label ?? null,
+    product_name: product?.name ?? record.raw_label ?? null,
     raw_label: record.raw_label,
     store: record.store,
     batch_ulid: record.batch_ulid,
@@ -140,6 +169,7 @@ export function toItemView(
     units_total: record.units_total,
     units_remaining: record.units_remaining,
     needs_info: record.needs_info,
+    needs_nutrition: record.product_ulid ? needsNutrition(product) : false,
     acquired_at: toIsoDate(record.acquired_at)!,
     opened_at: toIsoDate(record.opened_at),
     closed_at: toIsoDate(record.closed_at),

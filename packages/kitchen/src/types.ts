@@ -32,11 +32,22 @@ export interface ComponentQuantity {
   quantity_g: number;
 }
 
-/** Per-100g macro reference for one recipe ingredient. */
+/**
+ * Per-100g nutrition reference for one recipe ingredient — the FULL panel
+ * (§ Nutrition panel), so a recipe-computed meal is nutritionally complete.
+ * `calories`/`protein_g`/`sat_fat_g` remain required (the original contract
+ * floor); the rest are optional for backward compatibility — a component that
+ * omits a field contributes "unknown" to that field's total, not zero.
+ */
 export interface RecipeComponentMacros {
   calories: number;
   protein_g: number;
   sat_fat_g: number;
+  fat_g?: number | null;
+  carbs_g?: number | null;
+  sugar_g?: number | null;
+  fiber_g?: number | null;
+  sodium_mg?: number | null;
 }
 
 export interface RecipeComponent {
@@ -55,13 +66,18 @@ export interface RecipeRecord {
   updated_at: Date;
 }
 
-/** Flattened nutrition estimate carried on an entry. Unknown fields are null, never 0. */
+/**
+ * Flattened nutrition estimate carried on an entry — the eight-field panel
+ * (§ Nutrition panel). Unknown fields are null, never 0.
+ */
 export interface NutritionFields {
   calories: number | null;
   protein_g: number | null;
   fat_g: number | null;
   sat_fat_g: number | null;
   carbs_g: number | null;
+  sugar_g: number | null;
+  fiber_g: number | null;
   sodium_mg: number | null;
   /** 0..1; null for manual overrides (there's nothing to be confident about — it's exact). */
   confidence: number | null;
@@ -79,6 +95,8 @@ export const NUTRITION_FIELD_KEYS = [
   'fat_g',
   'sat_fat_g',
   'carbs_g',
+  'sugar_g',
+  'fiber_g',
   'sodium_mg',
 ] as const satisfies readonly (keyof NutritionFields)[];
 
@@ -127,6 +145,8 @@ export interface EntryPatchInput {
   fat_g?: number;
   sat_fat_g?: number;
   carbs_g?: number;
+  sugar_g?: number;
+  fiber_g?: number;
   sodium_mg?: number;
   portion_basis?: string;
   /**
@@ -186,6 +206,8 @@ export interface ModelEstimate {
   fat_g: number | null;
   sat_fat_g: number | null;
   carbs_g: number | null;
+  sugar_g: number | null;
+  fiber_g: number | null;
   sodium_mg: number | null;
   confidence: number;
   portion_basis: string;

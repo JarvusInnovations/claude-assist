@@ -95,6 +95,7 @@ const ITEM_ROW_SCHEMA: FieldDef[] = [
   field("days_until_eat_by", "days_left"),
   field("store"),
   { type: "boolYesNo", key: "needs_info" },
+  { type: "boolYesNo", key: "needs_nutrition" },
 ];
 
 const ITEM_DETAIL_SCHEMA: FieldDef[] = [
@@ -108,6 +109,7 @@ const ITEM_DETAIL_SCHEMA: FieldDef[] = [
   field("units_remaining"),
   field("units_total"),
   { type: "boolYesNo", key: "needs_info" },
+  { type: "boolYesNo", key: "needs_nutrition" },
   field("acquired_at"),
   field("opened_at"),
   field("closed_at"),

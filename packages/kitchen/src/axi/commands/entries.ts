@@ -28,7 +28,9 @@ export const ENTRIES_HELP = `kitchen-axi entries <subcommand> [args] [--json]
 
   Macros on the wire are the BASE; effective = base × portion_multiplier. A
   macro flag on patch sets a terminal manual override; --multiplier and --at
-  only touch their own field — neither re-queues estimation nor changes source.`;
+  only touch their own field — neither re-queues estimation nor changes source.
+  Macro flags: --calories --protein --fat --sat-fat --carbs --sugar --fiber
+  --sodium (the eight-field nutrition panel; unknown stays null, never 0).`;
 
 const DETAIL_SCHEMA: FieldDef[] = [
   field("ulid"),
@@ -43,6 +45,8 @@ const DETAIL_SCHEMA: FieldDef[] = [
   field("fat_g", "base_fat"),
   field("sat_fat_g", "base_sat_fat"),
   field("carbs_g", "base_carbs"),
+  field("sugar_g", "base_sugar"),
+  field("fiber_g", "base_fiber"),
   field("sodium_mg", "base_sodium"),
   custom("eff_kcal", (e) => effectiveMacro(e, "calories")),
   custom("eff_protein", (e) => effectiveMacro(e, "protein_g")),
@@ -172,6 +176,8 @@ export function buildPatchBody(flags: Record<string, string | boolean>): Record<
     ["fat", "fat_g"],
     ["sat-fat", "sat_fat_g"],
     ["carbs", "carbs_g"],
+    ["sugar", "sugar_g"],
+    ["fiber", "fiber_g"],
     ["sodium", "sodium_mg"],
   ];
   for (const [flag, key] of macroFlags) {
@@ -191,7 +197,7 @@ export function buildPatchBody(flags: Record<string, string | boolean>): Record<
 }
 
 async function patchEntry(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"], ["note", "label", "portion-basis", "calories", "protein", "fat", "sat-fat", "carbs", "sodium", "multiplier", "at"]);
+  const { positionals, flags } = parseArgs(args, ["json"], ["note", "label", "portion-basis", "calories", "protein", "fat", "sat-fat", "carbs", "sugar", "fiber", "sodium", "multiplier", "at"]);
   const ulid = requirePositional(positionals, 0, "entry ulid", ENTRIES_HELP);
   const body = buildPatchBody(flags);
 

@@ -33,6 +33,7 @@ import type {
   LexiconInput,
   LexiconRecord,
   NutritionPer100g,
+  ParsedLabel,
   ParsedReceiptLine,
   ProductInput,
   ProductRecord,
@@ -49,6 +50,7 @@ import { matchScore, parseRemark } from '../inventory-remark.js';
 import { generateUlid } from '../ulid.js';
 import type { ReceiptParser } from './receipt-parser.js';
 import type { LabelParser } from './label-parser.js';
+import { derivePer100gFromServing } from './label-parser.js';
 import type { ConsumeStore } from './consume-store.js';
 import { computeRecipeMacros, round1 } from './recipes.js';
 import type { NutritionFields, RecipeRecord } from '../types.js';
@@ -443,14 +445,18 @@ export class InventoryPipeline {
     if (isTerminal(item.state)) throw new InvalidTransitionError(item.state, 'opened');
     if (!this.labelParser && photos.length > 0) throw new LabelParserUnavailableError();
 
-    const parsed = photos.length > 0 && this.labelParser
+    const parsed: ParsedLabel = photos.length > 0 && this.labelParser
       ? await this.labelParser.parse({ photos, hint: item.raw_label })
       : {
           name: null,
           shelf_life_class: null,
           package_size: null,
+          serving_size_g: null,
+          servings_per_container: null,
+          nutrition_per_serving: null,
           nutrition_per_100g: null,
           ingredients: null,
+          unit_model_hint: null,
           aliases: [] as string[],
         };
 
@@ -458,13 +464,21 @@ export class InventoryPipeline {
     const cls: ShelfLifeClass = meta.shelf_life_class ?? parsed.shelf_life_class ?? 'unknown';
     const packageSize = meta.package_size ?? parsed.package_size ?? null;
     const aliases = dedupeAliases([...(meta.aliases ?? []), ...parsed.aliases]);
-    const nutrition = normalizeNutrition(parsed.nutrition_per_100g);
+    // Per-100g is DERIVED in code from the raw serving capture when possible
+    // (§ Nutrition panel — capture raw, scale late); the model's transcribed
+    // per-100g column is only the fallback for labels printed per-100g.
+    const derived = derivePer100gFromServing(parsed.serving_size_g, parsed.nutrition_per_serving);
+    const nutrition = normalizeNutrition(derived ?? parsed.nutrition_per_100g);
     const ingredients = meta.ingredients?.trim() || parsed.ingredients || null;
     const productInput: ProductInput & { name: string } = {
       name,
       shelf_life_class: cls,
       aliases,
       nutrition_per_100g: nutrition,
+      serving_size_g: parsed.serving_size_g,
+      nutrition_per_serving: normalizeNutrition(parsed.nutrition_per_serving),
+      servings_per_container: parsed.servings_per_container,
+      unit_model_hint: parsed.unit_model_hint,
       ingredients,
       package_size: packageSize,
     };
@@ -1347,6 +1361,10 @@ export class InventoryPipeline {
       shelf_life_class: input.shelf_life_class ?? 'unknown',
       aliases: dedupeAliases(input.aliases ?? []),
       nutrition_per_100g: normalizeNutrition(input.nutrition_per_100g),
+      serving_size_g: input.serving_size_g ?? null,
+      nutrition_per_serving: normalizeNutrition(input.nutrition_per_serving),
+      servings_per_container: input.servings_per_container ?? null,
+      unit_model_hint: input.unit_model_hint ?? null,
       ingredients: input.ingredients?.trim() || null,
       package_size: input.package_size ?? null,
       shelf_life_days_unopened: input.shelf_life_days_unopened ?? null,
@@ -1400,6 +1418,13 @@ export class InventoryPipeline {
           : existing.shelf_life_class,
       aliases: dedupeAliases([...existing.aliases, ...(input.aliases ?? [])]),
       nutrition_per_100g: mergeNutrition(existing.nutrition_per_100g, normalizeNutrition(input.nutrition_per_100g)),
+      serving_size_g: input.serving_size_g ?? existing.serving_size_g,
+      nutrition_per_serving: mergeNutrition(
+        existing.nutrition_per_serving,
+        normalizeNutrition(input.nutrition_per_serving)
+      ),
+      servings_per_container: input.servings_per_container ?? existing.servings_per_container,
+      unit_model_hint: input.unit_model_hint ?? existing.unit_model_hint,
       ingredients: (input.ingredients?.trim() || null) ?? existing.ingredients,
       package_size: input.package_size ?? existing.package_size,
     });
@@ -1443,7 +1468,7 @@ export class InventoryPipeline {
   private async viewOf(item: InventoryItemRecord, derivedFrom?: DerivedFromView | null): Promise<InventoryItemView> {
     const product = item.product_ulid ? await this.store.getProduct(item.product_ulid) : null;
     const resolved = derivedFrom !== undefined ? derivedFrom : await this.derivedFromFor(item.ulid);
-    return toItemView(item, product?.name ?? null, new Date(), resolved);
+    return toItemView(item, product, new Date(), resolved);
   }
 
   private async viewsOf(items: InventoryItemRecord[]): Promise<InventoryItemView[]> {
@@ -1452,7 +1477,7 @@ export class InventoryPipeline {
     return items.map((i) =>
       toItemView(
         i,
-        i.product_ulid ? products.get(i.product_ulid)?.name ?? null : null,
+        i.product_ulid ? products.get(i.product_ulid) ?? null : null,
         new Date(),
         derivations.has(i.ulid) ? toDerivedFromView(derivations.get(i.ulid)!) : null
       )
@@ -1518,6 +1543,8 @@ export function scaleNutrition(total: NutritionFields, share: number): Nutrition
     fat_g: scale(total.fat_g),
     sat_fat_g: scale(total.sat_fat_g),
     carbs_g: scale(total.carbs_g),
+    sugar_g: scale(total.sugar_g),
+    fiber_g: scale(total.fiber_g),
     sodium_mg: scale(total.sodium_mg),
     confidence: total.confidence,
     portion_basis: total.portion_basis,

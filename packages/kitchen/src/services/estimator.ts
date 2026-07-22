@@ -47,7 +47,7 @@ You estimate the nutrition of a single home-logged meal or snack for a personal 
 <instructions>
 1. Look at any photos and read the owner's note (if present). Identify what was eaten and a reasonable portion size.
 2. Printed text in a photo — an order sticker, a packaging label, a menu board, or a nutrition panel in frame — is AUTHORITATIVE over your own visual read: trust it for identity, size, and ingredients ahead of guessing from appearance alone. Raise your confidence when the text corroborates what you see; a lazy shot with the label in frame is the most accurate case, not the least.
-3. Estimate total calories and macros (protein_g, fat_g, sat_fat_g, carbs_g, sodium_mg) for the portion you can see/read — not a "standard serving" from a database, your own best visual/textual judgement (informed by any printed text per the rule above).
+3. Estimate total calories and the nutrition panel (protein_g, fat_g, sat_fat_g, carbs_g, sugar_g, fiber_g, sodium_mg) for the portion you can see/read — not a "standard serving" from a database, your own best visual/textual judgement (informed by any printed text per the rule above). sugar_g is TOTAL sugar (natural + added); fiber_g is dietary fiber.
 4. Give a short display label (under 60 chars) — e.g. "Grilled chicken salad", "Two slices pepperoni pizza".
 5. State your portion basis in one short phrase (e.g. "one dinner plate, ~350g", "12oz based on the note").
 6. State confidence 0.0-1.0. Lower confidence for ambiguous photos, no photos (note-only), or unusual foods.
@@ -61,7 +61,7 @@ Return ONLY a JSON object inside <estimate> tags. No markdown, no text outside t
 {
   "label": "short display label",
   "calories": 000,
-  "macros": {"protein_g": 0, "fat_g": 0, "sat_fat_g": 0, "carbs_g": 0, "sodium_mg": 0},
+  "macros": {"protein_g": 0, "fat_g": 0, "sat_fat_g": 0, "carbs_g": 0, "sugar_g": 0, "fiber_g": 0, "sodium_mg": 0},
   "confidence": 0.0,
   "portion_basis": "one short phrase"
 }
@@ -164,6 +164,8 @@ export class KitchenEstimator implements Estimator {
       fat_g: numOrNull(macros.fat_g),
       sat_fat_g: numOrNull(macros.sat_fat_g),
       carbs_g: numOrNull(macros.carbs_g),
+      sugar_g: numOrNull(macros.sugar_g),
+      fiber_g: numOrNull(macros.fiber_g),
       sodium_mg: numOrNull(macros.sodium_mg),
       confidence,
       portion_basis: portionBasis,
@@ -220,6 +222,8 @@ export function applyPortionModifier(estimate: ModelEstimate, factor: number): M
     fat_g: scale(estimate.fat_g),
     sat_fat_g: scale(estimate.sat_fat_g),
     carbs_g: scale(estimate.carbs_g),
+    sugar_g: scale(estimate.sugar_g),
+    fiber_g: scale(estimate.fiber_g),
     sodium_mg: scale(estimate.sodium_mg),
   };
 }

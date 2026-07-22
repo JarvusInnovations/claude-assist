@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { InvalidTransitionError, isTerminal, transitionInventory } from './inventory-state.js';
-import { deriveEatBy, dayDiff, toIsoDate, SHELF_LIFE_WINDOWS, parsePackageCount } from './inventory-derive.js';
+import { deriveEatBy, dayDiff, needsNutrition, toIsoDate, SHELF_LIFE_WINDOWS, parsePackageCount } from './inventory-derive.js';
 import { matchScore, parseRemark } from './inventory-remark.js';
 
 describe('inventory state machine', () => {
@@ -156,5 +156,19 @@ describe('remark parsing', () => {
     expect(matchScore('feta', 'Feta Cheese')).toBe(2);
     expect(matchScore('cherry tomatoes', 'grape tomatoes')).toBe(1);
     expect(matchScore('feta', 'oat milk')).toBe(0);
+  });
+});
+
+describe('needs-nutrition signal (§ Nutrition panel)', () => {
+  const full = {
+    calories: 100, protein_g: 5, fat_g: 3, sat_fat_g: 1,
+    carbs_g: 12, sugar_g: 4, fiber_g: 2, sodium_mg: 80,
+  };
+
+  it('flags a product with no panel or a partial panel; a full panel clears it', () => {
+    expect(needsNutrition(null)).toBe(false); // no product = the needs_info case, not this one
+    expect(needsNutrition({ nutrition_per_100g: null })).toBe(true);
+    expect(needsNutrition({ nutrition_per_100g: { ...full, sodium_mg: null } })).toBe(true);
+    expect(needsNutrition({ nutrition_per_100g: { ...full } })).toBe(false);
   });
 });

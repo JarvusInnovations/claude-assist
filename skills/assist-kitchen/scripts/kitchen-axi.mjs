@@ -1031,7 +1031,16 @@ function formatRelativeTime(value) {
 }
 
 // packages/kitchen/src/axi/format.ts
-var MACRO_KEYS = ["calories", "protein_g", "fat_g", "sat_fat_g", "carbs_g", "sodium_mg"];
+var MACRO_KEYS = [
+  "calories",
+  "protein_g",
+  "fat_g",
+  "sat_fat_g",
+  "carbs_g",
+  "sugar_g",
+  "fiber_g",
+  "sodium_mg"
+];
 function effectiveMacro(entry, key) {
   const base = entry[key];
   if (base === null || base === void 0) return null;
@@ -1039,7 +1048,16 @@ function effectiveMacro(entry, key) {
   return round(base * mult);
 }
 function sumEffective(entries) {
-  const totals = { calories: 0, protein_g: 0, fat_g: 0, sat_fat_g: 0, carbs_g: 0, sodium_mg: 0 };
+  const totals = {
+    calories: 0,
+    protein_g: 0,
+    fat_g: 0,
+    sat_fat_g: 0,
+    carbs_g: 0,
+    sugar_g: 0,
+    fiber_g: 0,
+    sodium_mg: 0
+  };
   for (const e of entries) {
     const mult = typeof e.portion_multiplier === "number" ? e.portion_multiplier : 1;
     for (const key of MACRO_KEYS) {
@@ -1129,6 +1147,8 @@ async function homeCommand(args) {
     fat_g: totals.fat_g,
     sat_fat_g: totals.sat_fat_g,
     carbs_g: totals.carbs_g,
+    sugar_g: totals.sugar_g,
+    fiber_g: totals.fiber_g,
     sodium_mg: totals.sodium_mg,
     open_questions: questionCount
   });
@@ -1198,7 +1218,9 @@ var ENTRIES_HELP = `kitchen-axi entries <subcommand> [args] [--json]
 
   Macros on the wire are the BASE; effective = base \xD7 portion_multiplier. A
   macro flag on patch sets a terminal manual override; --multiplier and --at
-  only touch their own field \u2014 neither re-queues estimation nor changes source.`;
+  only touch their own field \u2014 neither re-queues estimation nor changes source.
+  Macro flags: --calories --protein --fat --sat-fat --carbs --sugar --fiber
+  --sodium (the eight-field nutrition panel; unknown stays null, never 0).`;
 var DETAIL_SCHEMA = [
   field("ulid"),
   field("logged_at", "logged"),
@@ -1212,6 +1234,8 @@ var DETAIL_SCHEMA = [
   field("fat_g", "base_fat"),
   field("sat_fat_g", "base_sat_fat"),
   field("carbs_g", "base_carbs"),
+  field("sugar_g", "base_sugar"),
+  field("fiber_g", "base_fiber"),
   field("sodium_mg", "base_sodium"),
   custom("eff_kcal", (e) => effectiveMacro(e, "calories")),
   custom("eff_protein", (e) => effectiveMacro(e, "protein_g")),
@@ -1307,6 +1331,8 @@ function buildPatchBody(flags) {
     ["fat", "fat_g"],
     ["sat-fat", "sat_fat_g"],
     ["carbs", "carbs_g"],
+    ["sugar", "sugar_g"],
+    ["fiber", "fiber_g"],
     ["sodium", "sodium_mg"]
   ];
   for (const [flag, key] of macroFlags) {
@@ -1324,7 +1350,7 @@ function buildPatchBody(flags) {
   return body;
 }
 async function patchEntry(args) {
-  const { positionals, flags } = parseArgs(args, ["json"], ["note", "label", "portion-basis", "calories", "protein", "fat", "sat-fat", "carbs", "sodium", "multiplier", "at"]);
+  const { positionals, flags } = parseArgs(args, ["json"], ["note", "label", "portion-basis", "calories", "protein", "fat", "sat-fat", "carbs", "sugar", "fiber", "sodium", "multiplier", "at"]);
   const ulid = requirePositional(positionals, 0, "entry ulid", ENTRIES_HELP);
   const body = buildPatchBody(flags);
   const updated = await api.patch(`/api/kitchen/entries/${encodeURIComponent(ulid)}`, body);
@@ -1418,7 +1444,8 @@ var ITEM_ROW_SCHEMA = [
   field("eat_by"),
   field("days_until_eat_by", "days_left"),
   field("store"),
-  { type: "boolYesNo", key: "needs_info" }
+  { type: "boolYesNo", key: "needs_info" },
+  { type: "boolYesNo", key: "needs_nutrition" }
 ];
 var ITEM_DETAIL_SCHEMA = [
   field("ulid"),
@@ -1431,6 +1458,7 @@ var ITEM_DETAIL_SCHEMA = [
   field("units_remaining"),
   field("units_total"),
   { type: "boolYesNo", key: "needs_info" },
+  { type: "boolYesNo", key: "needs_nutrition" },
   field("acquired_at"),
   field("opened_at"),
   field("closed_at"),
@@ -1942,7 +1970,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "2587d63" : "dev";
+var VERSION = true ? "9fb3dd9" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)
