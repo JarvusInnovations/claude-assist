@@ -117,6 +117,50 @@ Consequences of this choice:
 Bounds: `0 < portion_multiplier ≤ 20` (the API rejects non-positive or absurd
 values). It is set via `PATCH /entries/:ulid`.
 
+## Expenditure & net energy (claude-assist#121)
+
+The module tracks intake; the actual weight-loss target is the daily energy
+**balance** — deficit = expenditure − intake. Expenditure is a first-class
+record so that balance is computable in-system instead of by manual Garmin
+pulls and hand math.
+
+**`kitchen.expenditures`** — one row per activity/burn: `ulid` (client-
+suppliable idempotency key, same convention as entries), `occurred_at`
+(ISO date-time — the activity's own moment, backdatable), `source`
+(`'garmin' | 'manual'`), `label` (e.g. `"Evening ride"`), `kcal` (numeric,
+required — active calories, not gross), `duration_min` (numeric, nullable),
+`avg_hr` (numeric, nullable), `created_at`/`updated_at`. Deletable
+(`DELETE /expenditures/:ulid`, same remove-from-rollups semantics as
+entries). No model estimation path — expenditure numbers always arrive
+stated (a device said it, or the owner did); the module never guesses a
+burn.
+
+**API**: `POST /kitchen/expenditures` (idempotent on ulid, returns the bare
+row, `201`/`200` replay), `GET /kitchen/expenditures?since&limit` →
+`{ expenditures, count }`, `DELETE /kitchen/expenditures/:ulid`.
+
+**The net line.** The daily rollup gains: `expenditure_kcal` (sum of the
+day's expenditure rows), `tdee_base_kcal` (instance-configured
+`KITCHEN_TDEE_BASE` — the owner's estimated non-exercise daily expenditure;
+absent config ⇒ the net line is simply omitted, never guessed), and
+`net_kcal = (tdee_base + expenditure) − intake` (positive = deficit). Home
+view, daily briefing, and the app's day header surface it alongside the
+intake total.
+
+**Framing rule (normative, not cosmetic):** exercise-calorie estimates are
+unreliable (±20–30%, HR-derived) and "eating back" exercise calories is a
+weight-loss trap. Every surface presents the net line as **context, not a
+spend-it budget** — the primary target stays intake-managed (the diet
+protocol's intake range), and no surface may render remaining-intake
+headroom *derived from* the day's burn. The value is seeing the honest
+balance, not licensing more intake.
+
+**Garmin feed (phase 2).** The Hari-side `garmin-pull` skill already
+extracts per-activity active calories/HR; those post as `source: 'garmin'`
+expenditure rows (ulid seeded from the Garmin activity id, so re-pulls are
+idempotent replays). Until that lands, `manual` entries via the CLI cover
+the need.
+
 ## Logged-at backdating
 
 Every entry carries `logged_at` — the moment the meal actually happened, which
