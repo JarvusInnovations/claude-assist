@@ -184,6 +184,21 @@ balance, not licensing more intake.
 
 Until any feed lands, `manual` entries via the CLI cover the need (v1).
 
+**Module boundary (what kitchen owns vs what rides on top).** The module
+owns the *primitives and the arithmetic*: the expenditure (and later
+weigh-in) records, their CRUD, and the deterministic net line — computed
+server-side so every surface reads one consistent number — plus the
+generic scheduled Strava sync (instance-credentialed, same precedent as
+the mail sync). Everything interpretive stays outside: the owner's
+targets and how to read a deficit are doctrine (agent-side); the
+`KITCHEN_TDEE_BASE` value is opaque instance config the module never
+guesses or auto-tunes (adjusting it against the weigh-in trend is an
+agent-judgment loop); session-replay pulls and training orchestration are
+API clients, not module code. And a deliberate anti-scope line: kitchen
+stores **just enough burn to compute the balance** — no routes, laps,
+splits, or training load. It is not an activity tracker; the exercise
+system of record stays upstream.
+
 ## Logged-at backdating
 
 Every entry carries `logged_at` — the moment the meal actually happened, which
