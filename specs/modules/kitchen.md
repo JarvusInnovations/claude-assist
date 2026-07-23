@@ -359,6 +359,7 @@ aggregate.
 **Family read.** `GET /kitchen/recipes/:ulid/family` → the full connected
 component: every version (with `parent_ulid` edges) + per-version derived
 signals (`application_count`, `last_applied_at`, recent feedback excerpts)
+
 - the applications themselves (entry ulids, as-made deltas, feedback).
 CLI: `recipes family <ulid>`. This is the agent's exploration surface for
 "how have we made this, and how did each go."
@@ -619,6 +620,16 @@ All tables instance-agnostic empty schema, ULID keys, `kitchen` schema
   Distinct from `needs_info` (a scanned line with NO product match); an
   unlinked item is never double-badged. This is the loop that keeps
   recipe/consume macros from going null in the first place.
+
+  **Absent line = 0 (so the flag is clearable).** A legible panel that
+  simply does not print a nutrient line means ZERO of it, not unknown — US
+  labels omit nutrients present in insignificant amounts, and Supplement
+  Facts panels routinely omit protein/fat/sugars entirely. The label prompt
+  transcribes an omitted line as `0`; `null` is reserved for genuinely
+  unreadable/cut-off values or no visible panel. Without this rule a
+  supplement can never scan its way out of `needs_nutrition` (the
+  2026-07-23 psyllium case). Dual-column panels (two serving sizes) read
+  the first/primary column consistently.
 - **`kitchen.receipt_lexicon`** — one row per `(store, line_text)`: `ulid`,
   `store`, `line_text` (exact receipt line text, normalized to upper/trim),
   `product_ulid` (**nullable** — null on a non-inventory marker, see below),
