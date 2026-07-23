@@ -340,9 +340,12 @@ export class PgInventoryStore implements InventoryStore {
   constructor(private sql: postgres.Sql) {}
 
   async insertProduct(product: NewProduct): Promise<ProductRecord> {
-    // NB the ::jsonb casts: binding a JSON string without one stores a jsonb
-    // *string scalar* (double-encoded), killing SQL-side inspection —
-    // migration 009 repaired the historical rows.
+    // NB `sql.json()`: porsager/postgres sends a plain JS string bound to a
+    // jsonb column as a jsonb STRING SCALAR (double-encoded) — and an
+    // explicit `::jsonb` cast does NOT fix it (jsonb→jsonb is a no-op; the
+    // 2026-07-23 recurrence proved it empirically). sql.json() is the only
+    // correct way to bind an object. Migrations 009/012 repaired historical
+    // rows.
     const [row] = await this.sql`
       INSERT INTO kitchen.products
         (ulid, name, shelf_life_class, aliases, nutrition_per_100g,
@@ -351,9 +354,9 @@ export class PgInventoryStore implements InventoryStore {
          package_size, shelf_life_days_unopened, shelf_life_days_opened)
       VALUES (
         ${product.ulid}, ${product.name}, ${product.shelf_life_class},
-        ${product.aliases}, ${product.nutrition_per_100g ? JSON.stringify(product.nutrition_per_100g) : null}::jsonb,
+        ${product.aliases}, ${product.nutrition_per_100g ? this.sql.json(product.nutrition_per_100g) : null},
         ${product.serving_size_g ?? null},
-        ${product.nutrition_per_serving ? JSON.stringify(product.nutrition_per_serving) : null}::jsonb,
+        ${product.nutrition_per_serving ? this.sql.json(product.nutrition_per_serving) : null},
         ${product.servings_per_container ?? null},
         ${product.unit_model_hint ?? null}, ${product.net_content_g ?? null},
         ${product.net_content_ml ?? null}, ${product.ingredients}, ${product.package_size},
@@ -378,9 +381,9 @@ export class PgInventoryStore implements InventoryStore {
         name = ${merged.name},
         shelf_life_class = ${merged.shelf_life_class},
         aliases = ${merged.aliases},
-        nutrition_per_100g = ${merged.nutrition_per_100g ? JSON.stringify(merged.nutrition_per_100g) : null}::jsonb,
+        nutrition_per_100g = ${merged.nutrition_per_100g ? this.sql.json(merged.nutrition_per_100g) : null},
         serving_size_g = ${merged.serving_size_g ?? null},
-        nutrition_per_serving = ${merged.nutrition_per_serving ? JSON.stringify(merged.nutrition_per_serving) : null}::jsonb,
+        nutrition_per_serving = ${merged.nutrition_per_serving ? this.sql.json(merged.nutrition_per_serving) : null},
         servings_per_container = ${merged.servings_per_container ?? null},
         unit_model_hint = ${merged.unit_model_hint ?? null},
         net_content_g = ${merged.net_content_g ?? null},
@@ -674,7 +677,7 @@ export class PgInventoryStore implements InventoryStore {
     const [row] = await this.sql`
       INSERT INTO kitchen.inventory_derivations (ulid, derived_item_ulid, sources, recipe_ulid)
       VALUES (
-        ${derivation.ulid}, ${derivation.derived_item_ulid}, ${JSON.stringify(derivation.sources)}::jsonb,
+        ${derivation.ulid}, ${derivation.derived_item_ulid}, ${this.sql.json(derivation.sources)},
         ${derivation.recipe_ulid}
       )
       RETURNING *
