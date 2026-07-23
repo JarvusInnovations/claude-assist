@@ -354,9 +354,9 @@ export class PgInventoryStore implements InventoryStore {
          package_size, shelf_life_days_unopened, shelf_life_days_opened)
       VALUES (
         ${product.ulid}, ${product.name}, ${product.shelf_life_class},
-        ${product.aliases}, ${product.nutrition_per_100g ? this.sql.json(product.nutrition_per_100g) : null},
+        ${product.aliases}, ${product.nutrition_per_100g ? this.sql.json(product.nutrition_per_100g as never) : null},
         ${product.serving_size_g ?? null},
-        ${product.nutrition_per_serving ? this.sql.json(product.nutrition_per_serving) : null},
+        ${product.nutrition_per_serving ? this.sql.json(product.nutrition_per_serving as never) : null},
         ${product.servings_per_container ?? null},
         ${product.unit_model_hint ?? null}, ${product.net_content_g ?? null},
         ${product.net_content_ml ?? null}, ${product.ingredients}, ${product.package_size},
@@ -381,9 +381,9 @@ export class PgInventoryStore implements InventoryStore {
         name = ${merged.name},
         shelf_life_class = ${merged.shelf_life_class},
         aliases = ${merged.aliases},
-        nutrition_per_100g = ${merged.nutrition_per_100g ? this.sql.json(merged.nutrition_per_100g) : null},
+        nutrition_per_100g = ${merged.nutrition_per_100g ? this.sql.json(merged.nutrition_per_100g as never) : null},
         serving_size_g = ${merged.serving_size_g ?? null},
-        nutrition_per_serving = ${merged.nutrition_per_serving ? this.sql.json(merged.nutrition_per_serving) : null},
+        nutrition_per_serving = ${merged.nutrition_per_serving ? this.sql.json(merged.nutrition_per_serving as never) : null},
         servings_per_container = ${merged.servings_per_container ?? null},
         unit_model_hint = ${merged.unit_model_hint ?? null},
         net_content_g = ${merged.net_content_g ?? null},
@@ -677,7 +677,7 @@ export class PgInventoryStore implements InventoryStore {
     const [row] = await this.sql`
       INSERT INTO kitchen.inventory_derivations (ulid, derived_item_ulid, sources, recipe_ulid)
       VALUES (
-        ${derivation.ulid}, ${derivation.derived_item_ulid}, ${this.sql.json(derivation.sources)},
+        ${derivation.ulid}, ${derivation.derived_item_ulid}, ${this.sql.json(derivation.sources as never)},
         ${derivation.recipe_ulid}
       )
       RETURNING *

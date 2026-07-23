@@ -243,7 +243,7 @@ export class PgEntryStore implements EntryStore {
         (ulid, logged_at, note, recipe_ulid, component_quantities, status)
       VALUES (
         ${entry.ulid}, ${entry.logged_at}, ${entry.note}, ${entry.recipe_ulid},
-        ${entry.component_quantities ? this.sql.json(entry.component_quantities) : null},
+        ${entry.component_quantities ? this.sql.json(entry.component_quantities as never) : null},
         'estimating'
       )
       ON CONFLICT (ulid) DO NOTHING
@@ -426,7 +426,7 @@ export class PgRecipeStore implements RecipeStore {
   async insert(recipe: NewRecipe): Promise<RecipeRecord> {
     const [row] = await this.sql`
       INSERT INTO kitchen.recipes (ulid, name, components, source)
-      VALUES (${recipe.ulid}, ${recipe.name}, ${this.sql.json(recipe.components)}, ${recipe.source})
+      VALUES (${recipe.ulid}, ${recipe.name}, ${this.sql.json(recipe.components as never)}, ${recipe.source})
       RETURNING *
     `;
     return rowToRecipe(row!);
