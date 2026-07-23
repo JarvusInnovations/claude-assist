@@ -88,6 +88,11 @@ complete regardless of *how* a meal was logged:
 - **Reselect-clone** ("recent") entries copy the source entry's base panel
   verbatim, so they inherit whatever it had.
 - **Manual override** sets whichever panel fields the owner pins.
+- **Directly-stated panel** — a client that has *already computed* an entry's
+  full panel locally (a recipe-scaling or portion-builder UI, a bulk importer, a
+  fully-resolved label scan) supplies the eight fields verbatim at creation. No
+  estimator runs and no recipe is resolved — the numbers **are** the answer.
+  Source `manual`, terminal from birth (see § Directly-stated panel entries).
 
 The daily rollup sums the full panel. The eight fields are the canonical set the
 whole module (storage, estimator, recipes, rollup, patch-override keys, the
@@ -116,6 +121,53 @@ Consequences of this choice:
 
 Bounds: `0 < portion_multiplier ≤ 20` (the API rejects non-positive or absurd
 values). It is set via `PATCH /entries/:ulid`.
+
+## Directly-stated panel entries
+
+There are three ways an entry can come to exist with useful macros: **compute**
+it from a recipe/component reference, **guess** it from a photo or note via the
+model, or **state** it — hand over the finished eight-field panel because the
+caller already did the arithmetic. The first two are creation shapes today; the
+third is not, and its absence forces a two-step (`POST` → model estimate →
+`PATCH` override) for every client that already knows the exact numbers.
+
+**Rule.** `POST /entries` accepts a `macros` panel object as a creation shape
+**mutually exclusive** with `recipe_ulid`, component quantities, and
+`reselect_of` (`400` if combined with any). When present:
+
+- The eight panel fields are stored **as the base**, verbatim — no field is
+  re-derived, defaulted, or rounded. Unstated fields are `null` (unknown), never
+  `0`, exactly as everywhere else in the panel.
+- The entry is born `source: 'manual'`, `status: 'estimated'` (terminal) — the
+  same terminal state a `PATCH` override produces, reached in one atomic write.
+- **No estimation job is ever enqueued.** This is the load-bearing property, not
+  a nicety: the `manual`-is-terminal guarantee (`PATCH` may not be
+  model-overwritten, § Endpoints) has a *birth-race hole* — a `POST` that
+  enqueues estimation, followed by an immediate `PATCH`, can have the override
+  land first and the late-finishing estimate clobber it, because that estimate is
+  the entry's *original* pass, not a "later" one the 409-guard blocks. A
+  directly-stated panel enqueues nothing, so there is nothing to lose the race
+  to. The two-step is not merely more work — it is racy by construction; this
+  shape is the fix.
+- `note`/`label` may accompany the panel (provenance, e.g. what computed it);
+  editing them afterward via `PATCH` **does not** re-queue estimation for a
+  `manual` entry (as today). `portion_multiplier` applies normally.
+
+**This is orthogonal to how recipes evolve.** Whatever a recipe *is* or becomes,
+a caller that has resolved a meal to exact numbers needs a way to record the
+answer rather than resubmit its inputs for re-guessing. The directly-stated panel
+is that primitive; it neither depends on nor constrains the recipe model.
+
+## Principles
+
+**Local:**
+
+- **A caller that knows the answer states it; the system never re-guesses it.**
+  When a client has already computed an entry's full panel, the module records it
+  verbatim and runs no estimator over it. Re-deriving numbers a caller already
+  holds is worse than useless — it discards precision *and* opens a clobber race
+  against the correction that would restore it. Deterministic-in beats
+  estimate-then-correct wherever the caller can supply the panel.
 
 ## Expenditure & net energy (claude-assist#121)
 
@@ -406,12 +458,15 @@ All endpoints under `/api/kitchen`. Error envelope and auth follow the server's
 existing conventions.
 
 - `POST /entries` — multipart: entry JSON part (ULID, timestamp, note,
-  optional recipe ref + component quantities, **or** `reselect_of`) + 0..N photo
-  parts. Posts immediately (`estimating` when photos present and no deterministic
-  source; `estimated` when recipe-computed or reselect-cloned). Idempotent on
-  ULID. `recipe_ulid` and `reselect_of` are **mutually exclusive** (`400` if
-  both). `reselect_of` clones a source entry deterministically — see § Reselect
-  cloning.
+  optional recipe ref + component quantities, `reselect_of`, **or** a `macros`
+  panel) + 0..N photo parts. Posts immediately (`estimating` when photos present
+  and no deterministic source; `estimated` when recipe-computed, reselect-cloned,
+  or a `macros` panel was supplied). Idempotent on ULID. `recipe_ulid`,
+  `reselect_of`, and `macros` are **mutually exclusive** (`400` if more than one,
+  or if `macros` is combined with component quantities or photos). `reselect_of`
+  clones a source entry deterministically — see § Reselect cloning; a `macros`
+  panel is stored verbatim as a born-`manual` terminal entry that enqueues no
+  estimation — see § Directly-stated panel entries.
 - `GET /entries?since|limit` — newest-first listing for client sync.
 - `PATCH /entries/:ulid` — note/label edits re-queue estimation; a macro
   override sets source `manual` and is terminal (no later model pass may
