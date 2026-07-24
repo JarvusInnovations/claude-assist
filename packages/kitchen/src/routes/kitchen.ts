@@ -27,8 +27,48 @@ import {
   SourceEntryNotFoundError,
   type KitchenPipeline,
 } from '../services/pipeline.js';
-import { PORTION_MULTIPLIER_MAX } from '../types.js';
-import type { ComponentQuantity, EntryInput, EntryPatchInput, PhotoPart, RecipeComponent } from '../types.js';
+import { NUTRITION_FIELD_KEYS, PORTION_MULTIPLIER_MAX } from '../types.js';
+import type {
+  ComponentQuantity,
+  EntryInput,
+  EntryPatchInput,
+  PhotoPart,
+  RecipeComponent,
+  StatedMacros,
+} from '../types.js';
+
+/**
+ * The eight panel fields accepted on a directly-stated `macros` object
+ * (specs/modules/kitchen.md § Directly-stated panel entries). Mirrors the panel
+ * everywhere else; `confidence`/`portion_basis` are never client-stated (they
+ * describe an estimate, and a stated panel has none).
+ */
+const STATED_MACRO_KEYS: readonly (keyof StatedMacros)[] = NUTRITION_FIELD_KEYS;
+
+function validateStatedMacros(
+  value: unknown
+): { ok: true; value: StatedMacros } | { ok: false; error: string } {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return { ok: false, error: 'entry.macros must be a JSON object of panel fields' };
+  }
+  const obj = value as Record<string, unknown>;
+  const allowed = new Set<string>(STATED_MACRO_KEYS);
+  for (const key of Object.keys(obj)) {
+    if (!allowed.has(key)) {
+      return { ok: false, error: `entry.macros has unknown field "${key}" (allowed: ${STATED_MACRO_KEYS.join(', ')})` };
+    }
+  }
+  const out: StatedMacros = {};
+  for (const key of STATED_MACRO_KEYS) {
+    const v = obj[key];
+    if (v === undefined) continue; // absent → stored null, never 0
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) {
+      return { ok: false, error: `entry.macros.${key} must be a non-negative number when present` };
+    }
+    out[key] = v;
+  }
+  return { ok: true, value: out };
+}
 
 export interface KitchenRoutesConfig {
   pipeline: KitchenPipeline;
@@ -75,6 +115,34 @@ function validateEntryInput(input: unknown): { ok: true; value: EntryInput } | {
     return { ok: false, error: 'entry.component_quantities entries need a string label and numeric quantity_g' };
   }
 
+  // Directly-stated panel (specs/modules/kitchen.md § Directly-stated panel
+  // entries): a `macros` object is a creation shape mutually exclusive with
+  // every other. Photo mutual-exclusion is enforced in the handler (photos are
+  // separate multipart parts, not part of this JSON object).
+  let macros: StatedMacros | undefined;
+  if (obj.macros !== undefined) {
+    if (obj.recipe_ulid !== undefined || obj.reselect_of !== undefined || obj.component_quantities !== undefined) {
+      return {
+        ok: false,
+        error: 'entry.macros is mutually exclusive with recipe_ulid, reselect_of, and component_quantities',
+      };
+    }
+    const validatedMacros = validateStatedMacros(obj.macros);
+    if (!validatedMacros.ok) return { ok: false, error: validatedMacros.error };
+    macros = validatedMacros.value;
+  }
+
+  // A label is honored only alongside a directly-stated panel; elsewhere the
+  // label comes from the source, so reject it rather than silently drop it.
+  if (obj.label !== undefined) {
+    if (typeof obj.label !== 'string') {
+      return { ok: false, error: 'entry.label must be a string' };
+    }
+    if (macros === undefined) {
+      return { ok: false, error: 'entry.label is only valid alongside a macros panel' };
+    }
+  }
+
   return {
     ok: true,
     value: {
@@ -84,6 +152,8 @@ function validateEntryInput(input: unknown): { ok: true; value: EntryInput } | {
       recipe_ulid: obj.recipe_ulid as string | undefined,
       component_quantities: obj.component_quantities as ComponentQuantity[] | undefined,
       reselect_of: obj.reselect_of as string | undefined,
+      macros,
+      label: obj.label as string | undefined,
     },
   };
 }
@@ -225,6 +295,14 @@ export const registerKitchenRoutes: FastifyPluginAsync<KitchenRoutesConfig> = as
     if (!validated.ok) {
       reply.status(400);
       return { error: validated.error };
+    }
+
+    // A directly-stated panel is mutually exclusive with photos (§ Directly-
+    // stated panel entries): there is nothing to estimate, so an attached image
+    // is a contradiction, not a fallback.
+    if (validated.value.macros && photos.length > 0) {
+      reply.status(400);
+      return { error: 'entry.macros is mutually exclusive with photo parts' };
     }
 
     try {

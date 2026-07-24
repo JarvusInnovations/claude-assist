@@ -21,6 +21,8 @@ export const ENTRIES_HELP = `kitchen-axi entries <subcommand> [args] [--json]
   log [note…] [--recipe ULID]          log a deliberate no-model entry
        [--component "label=grams"]…      (repeatable; recipe → deterministic macros)
        [--at TIME]                       set logged_at (ISO or YYYY-MM-DD); default now
+       [--calories N] [--protein N]…     directly-stated panel: born-manual, terminal,
+       [--label T]                        NO estimation (mutually exclusive with --recipe/--component)
   patch <ulid> [flags]                 edit note/label (re-queue), macro override
                                          (terminal), --multiplier M (post-hoc rescale),
                                          or --at TIME (backdate logged_at)
@@ -109,12 +111,29 @@ function parseComponent(raw: string): { label: string; quantity_g: number } {
 }
 
 /**
+ * The eight panel flags (`--calories`, `--protein`, …) → server field names,
+ * matching `entries patch`'s macro flags. On `log` they build a directly-stated
+ * `macros` panel (specs/modules/kitchen.md § Directly-stated panel entries).
+ */
+const MACRO_LOG_FLAGS: [string, string][] = [
+  ["calories", "calories"],
+  ["protein", "protein_g"],
+  ["fat", "fat_g"],
+  ["sat-fat", "sat_fat_g"],
+  ["carbs", "carbs_g"],
+  ["sugar", "sugar_g"],
+  ["fiber", "fiber_g"],
+  ["sodium", "sodium_mg"],
+];
+
+/**
  * Pure: build the `entry` JSON part's fields (everything but the ulid, which
  * the caller generates) from `entries log`'s parsed positionals/flags —
  * including `--at` → `logged_at` (claude-assist#111; the field is already
- * accepted by `POST /entries`, this only wires the CLI flag to it). Exported
- * so the arg-parse → `logged_at` wiring is unit-testable without a live
- * server.
+ * accepted by `POST /entries`, this only wires the CLI flag to it) and the
+ * directly-stated panel flags (`--calories`/`--protein`/… → `macros`, with an
+ * optional `--label`). Exported so the arg-parse → server-field wiring is
+ * unit-testable without a live server.
  */
 export function buildLogEntryFields(
   positionals: string[],
@@ -123,9 +142,29 @@ export function buildLogEntryFields(
 ): Record<string, unknown> {
   const note = positionals.join(" ").trim();
   const recipe = typeof flags.recipe === "string" ? flags.recipe : undefined;
+  const label = typeof flags.label === "string" ? flags.label : undefined;
 
-  if (!note && !recipe) {
-    throw new AxiError("entries log needs a note and/or --recipe", "VALIDATION_ERROR", [ENTRIES_HELP]);
+  // Directly-stated panel: any macro flag present makes this a born-manual entry.
+  const macros: Record<string, number> = {};
+  for (const [flag, key] of MACRO_LOG_FLAGS) {
+    if (typeof flags[flag] === "string") {
+      macros[key] = parseNumberFlag(flags[flag] as string, flag, ENTRIES_HELP, { min: 0 });
+    }
+  }
+  const hasMacros = Object.keys(macros).length > 0;
+
+  if (hasMacros && (recipe || components.length)) {
+    throw new AxiError(
+      "entries log: a directly-stated panel (--calories/--protein/…) is mutually exclusive with --recipe/--component",
+      "VALIDATION_ERROR",
+      [ENTRIES_HELP]
+    );
+  }
+  if (label !== undefined && !hasMacros) {
+    throw new AxiError("entries log: --label is only valid with a directly-stated panel (--calories/…)", "VALIDATION_ERROR", [ENTRIES_HELP]);
+  }
+  if (!note && !recipe && !hasMacros) {
+    throw new AxiError("entries log needs a note, --recipe, or a directly-stated panel (--calories/…)", "VALIDATION_ERROR", [ENTRIES_HELP]);
   }
 
   const entry: Record<string, unknown> = {};
@@ -133,11 +172,17 @@ export function buildLogEntryFields(
   if (recipe) entry.recipe_ulid = recipe;
   if (components.length) entry.component_quantities = components;
   if (typeof flags.at === "string") entry.logged_at = validateDate(flags.at, "--at", ENTRIES_HELP);
+  if (hasMacros) entry.macros = macros;
+  if (label !== undefined) entry.label = label;
   return entry;
 }
 
 async function logEntry(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"], ["recipe", "component", "at"]);
+  const { positionals, flags } = parseArgs(
+    args,
+    ["json"],
+    ["recipe", "component", "at", "label", "calories", "protein", "fat", "sat-fat", "carbs", "sugar", "fiber", "sodium"]
+  );
   const components = collectFlag(args, "component").map(parseComponent);
   const entry: Record<string, unknown> = { ulid: generateUlid(), ...buildLogEntryFields(positionals, flags, components) };
 
