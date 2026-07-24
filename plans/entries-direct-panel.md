@@ -1,10 +1,10 @@
 ---
-status: planned
+status: in-progress
 depends: [kitchen-module]
 specs:
   - specs/modules/kitchen.md
 issues: []
-pr:
+pr: 140
 ---
 
 # Plan: Directly-stated panel entries (born-manual `POST /entries`)
@@ -61,22 +61,41 @@ clobber it). Implements the § Directly-stated panel entries section of
 
 ## Validation
 
-- [ ] `POST /entries` with a `macros` panel returns a `source: 'manual'`,
+- [x] `POST /entries` with a `macros` panel returns a `source: 'manual'`,
       `status: 'estimated'` entry whose base fields equal the input verbatim.
-- [ ] No estimation job is enqueued for a `macros` POST (assert the work queue /
+- [x] No estimation job is enqueued for a `macros` POST (assert the work queue /
       dispatch is untouched; the entry never passes through `estimating`).
-- [ ] Unstated panel fields persist as `null`, not `0`.
-- [ ] `macros` combined with `recipe_ulid`, `reselect_of`, component quantities,
+- [x] Unstated panel fields persist as `null`, not `0`.
+- [x] `macros` combined with `recipe_ulid`, `reselect_of`, component quantities,
       or a photo part each `400`.
-- [ ] Idempotent on ULID: replaying the same born-manual POST neither duplicates
+- [x] Idempotent on ULID: replaying the same born-manual POST neither duplicates
       nor mutates the entry.
-- [ ] A subsequent `PATCH` note/label edit on the born-manual entry does **not**
+- [x] A subsequent `PATCH` note/label edit on the born-manual entry does **not**
       re-queue estimation; `portion_multiplier` scales the stated base normally.
-- [ ] Regression: the log→estimate→patch race is gone — a client computing a
+- [x] Regression: the log→estimate→patch race is gone — a client computing a
       panel and posting it directly yields the exact stated totals with no
       window in which a model estimate can overwrite them.
-- [ ] `kitchen-axi` can create a directly-stated entry in one command and the
+- [x] `kitchen-axi` can create a directly-stated entry in one command and the
       resulting entry matches the supplied panel.
+
+## Decisions (during build)
+
+- **Wire shape**: nested `{"macros": {...}}` object (as leaned in Risks), which
+  localizes the mutual-exclusion and unknown-key checks to one validator.
+- **CLI ergonomics**: **per-field flags at `log`** (`--calories/--protein/--fat/
+  --sat-fat/--carbs/--sugar/--fiber/--sodium`), mirroring `entries patch`'s macro
+  flags exactly — any present macro flag makes the log a directly-stated panel.
+  Chosen over `--macros '<json>'` for symmetry with `patch` (the task's stated
+  ergonomic target). An optional `--label` names the born-manual entry.
+- **`label` at creation** (spec: "note/label may accompany"): added an optional
+  `label` to the `macros` shape for provenance/display. Honored **only** with
+  `macros` — a `label` (or `--label`) sent without a panel is a `400`/CLI error
+  rather than silently dropped (the other shapes derive label from their source).
+- **Field domain** (spec ambiguity: "a number or absent"): each panel field must
+  be a **non-negative finite number or absent**; explicit `null` and negatives
+  are rejected (absent is the sole "unknown" encoding, stored as `null`). This
+  matches the `patch` macro-override bound (`minimum: 0`) and keeps the
+  absent→null rule crisp.
 
 ## Risks / unknowns
 
