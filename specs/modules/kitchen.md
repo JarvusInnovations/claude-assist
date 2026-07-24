@@ -288,6 +288,17 @@ multiplier):
   moves it — and its effective macros — to the new day automatically. Rollups
   are never stored, so nothing else must be recomputed.
 
+**Bare-date coercion → local noon.** When a `logged_at` (or a CLI `--at`) is
+supplied as a **bare calendar date** with no time-of-day (`YYYY-MM-DD`), it
+coerces to **noon in the owner's local timezone**, never midnight UTC. Midnight
+UTC is the previous evening across US zones, so a bare date logged for "today"
+buckets onto the wrong day; noon local sits safely inside the intended day for
+any real-world offset. This is a **backstop for a caller that omitted the time**,
+not a substitute for it — a caller that knows the meal's actual time should send
+the full local timestamp (with offset), and only a genuinely time-less date falls
+back to noon. Callers/agents SHOULD always supply a specific local time when they
+have one; the coercion only rescues the bare-date case.
+
 **Bounds.** `logged_at` must be a valid ISO date-time that is neither in the
 future beyond clock/timezone skew nor absurdly old:
 
