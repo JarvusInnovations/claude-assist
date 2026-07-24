@@ -899,3 +899,184 @@ describe('reselect_of clone — deterministic recent re-log (no model call)', ()
     expect(recent!.calories).toBe(130); // macros come from the same most-recent row
   });
 });
+
+describe('directly-stated panel — born-manual, terminal, no estimation enqueued', () => {
+  const FULL_PANEL = {
+    calories: 620,
+    protein_g: 41,
+    fat_g: 22,
+    sat_fat_g: 7,
+    carbs_g: 58,
+    sugar_g: 12,
+    fiber_g: 9,
+    sodium_mg: 880,
+  };
+
+  it('stores the panel verbatim as the base; born manual/estimated; estimator never invoked', async () => {
+    const entries = new MemoryEntryStore();
+    // RefusingEstimator throws if the model is ever reached — proving no
+    // estimation is dispatched is exactly that this ingest never rejects and
+    // never marks the estimator called.
+    const estimator = new RefusingEstimator();
+    const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), estimator, log);
+
+    const ulid = generateUlid();
+    const { record, created, estimation } = await pipeline.ingest(
+      { ulid, macros: { ...FULL_PANEL }, label: 'test bowl' },
+      []
+    );
+    await pipeline.settle();
+
+    expect(created).toBe(true);
+    expect(estimation).toBeUndefined(); // nothing was enqueued to await
+    expect(estimator.called).toBe(false);
+    expect(record.status).toBe('estimated'); // terminal from birth
+    expect(record.source).toBe('manual');
+    expect(record.label).toBe('test bowl');
+    // Verbatim base macros.
+    expect(record.calories).toBe(620);
+    expect(record.protein_g).toBe(41);
+    expect(record.fat_g).toBe(22);
+    expect(record.sat_fat_g).toBe(7);
+    expect(record.carbs_g).toBe(58);
+    expect(record.sugar_g).toBe(12);
+    expect(record.fiber_g).toBe(9);
+    expect(record.sodium_mg).toBe(880);
+    // A stated panel is exact — nothing to be confident about, no estimate basis.
+    expect(record.confidence).toBeNull();
+    expect(record.portion_basis).toBeNull();
+    expect(record.portion_multiplier).toBe(1);
+  });
+
+  it('the born-manual row never enters the estimation work queue', async () => {
+    const entries = new MemoryEntryStore();
+    const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), new RefusingEstimator(), log);
+
+    await pipeline.ingest({ ulid: generateUlid(), macros: { ...FULL_PANEL } }, []);
+
+    // selectForEstimation is the queue the sweep drains; a born-manual entry
+    // must never appear in it (it is `estimated`, not `estimating`).
+    const queued = await entries.selectForEstimation(50, KitchenPipeline.MAX_ATTEMPTS);
+    expect(queued).toHaveLength(0);
+  });
+
+  it('unstated panel fields persist as null, never 0', async () => {
+    const entries = new MemoryEntryStore();
+    const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), new RefusingEstimator(), log);
+
+    const ulid = generateUlid();
+    // Only two of the eight fields are stated.
+    const { record } = await pipeline.ingest(
+      { ulid, macros: { calories: 200, protein_g: 15 } },
+      []
+    );
+
+    expect(record.calories).toBe(200);
+    expect(record.protein_g).toBe(15);
+    expect(record.fat_g).toBeNull();
+    expect(record.sat_fat_g).toBeNull();
+    expect(record.carbs_g).toBeNull();
+    expect(record.sugar_g).toBeNull();
+    expect(record.fiber_g).toBeNull();
+    expect(record.sodium_mg).toBeNull();
+    // Explicitly NOT zero.
+    expect(record.fat_g).not.toBe(0);
+    expect(record.sodium_mg).not.toBe(0);
+  });
+
+  it('rejects a macros panel combined with recipe_ulid, reselect_of, component quantities, or photos', async () => {
+    const pipeline = new KitchenPipeline(new MemoryEntryStore(), new MemoryRecipeStore(), null, log);
+
+    await expect(
+      pipeline.ingest({ ulid: generateUlid(), macros: { calories: 1 }, recipe_ulid: generateUlid() }, [])
+    ).rejects.toThrow(ConflictingSourceError);
+    await expect(
+      pipeline.ingest({ ulid: generateUlid(), macros: { calories: 1 }, reselect_of: generateUlid() }, [])
+    ).rejects.toThrow(ConflictingSourceError);
+    await expect(
+      pipeline.ingest(
+        { ulid: generateUlid(), macros: { calories: 1 }, component_quantities: [{ label: 'rice', quantity_g: 100 }] },
+        []
+      )
+    ).rejects.toThrow(ConflictingSourceError);
+    await expect(
+      pipeline.ingest({ ulid: generateUlid(), macros: { calories: 1 } }, [
+        { data: Buffer.from('x'), mimeType: 'image/jpeg' },
+      ])
+    ).rejects.toThrow(ConflictingSourceError);
+  });
+
+  it('is idempotent on ULID: replaying a born-manual POST neither duplicates nor re-writes', async () => {
+    const entries = new MemoryEntryStore();
+    const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), new RefusingEstimator(), log);
+
+    const ulid = generateUlid();
+    const first = await pipeline.ingest({ ulid, macros: { ...FULL_PANEL }, label: 'test bowl' }, []);
+    expect(first.created).toBe(true);
+
+    // A replay carrying DIFFERENT numbers must not overwrite — first write wins.
+    const replay = await pipeline.ingest({ ulid, macros: { calories: 1, protein_g: 1 }, label: 'other' }, []);
+    expect(replay.created).toBe(false);
+    expect(replay.record.calories).toBe(620); // unchanged
+    expect(replay.record.protein_g).toBe(41);
+    expect(replay.record.label).toBe('test bowl');
+    expect(replay.record.source).toBe('manual');
+    // Exactly one row exists.
+    expect(entries.records.size).toBe(1);
+  });
+
+  it('a later note/label PATCH does NOT re-queue estimation (manual is terminal)', async () => {
+    const entries = new MemoryEntryStore();
+    const estimator = new RefusingEstimator();
+    const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), estimator, log);
+
+    const ulid = generateUlid();
+    await pipeline.ingest({ ulid, macros: { ...FULL_PANEL }, label: 'test bowl' }, []);
+
+    // A note/label edit on a manual entry is refused (would re-open the door to
+    // a model overwrite) — the same guard PATCH enforces everywhere.
+    await expect(pipeline.patch(ulid, { note: 'weighed on the scale' })).rejects.toThrow(
+      ManualOverrideConflictError
+    );
+    const after = await pipeline.get(ulid);
+    expect(after!.status).toBe('estimated');
+    expect(after!.source).toBe('manual');
+    expect(estimator.called).toBe(false);
+  });
+
+  it('portion_multiplier scales the stated base without re-queue or source change', async () => {
+    const entries = new MemoryEntryStore();
+    const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), new RefusingEstimator(), log);
+
+    const ulid = generateUlid();
+    await pipeline.ingest({ ulid, macros: { ...FULL_PANEL } }, []);
+    const updated = await pipeline.patch(ulid, { portion_multiplier: 0.5 });
+
+    expect(updated!.portion_multiplier).toBe(0.5);
+    // The BASE is unchanged on the wire — every consumer computes effective.
+    expect(updated!.calories).toBe(620);
+    expect(updated!.status).toBe('estimated');
+    expect(updated!.source).toBe('manual');
+  });
+
+  it('regression: no window in which a model estimate can overwrite the stated panel', async () => {
+    // A client computes the panel and posts it directly. Unlike log→estimate→
+    // patch, no original estimate is ever dispatched, so there is nothing that
+    // could land late and clobber the numbers. Settling all in-flight work and
+    // sweeping leaves the stated totals exactly intact.
+    const entries = new MemoryEntryStore();
+    const estimator = new RefusingEstimator();
+    const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), estimator, log);
+
+    const ulid = generateUlid();
+    await pipeline.ingest({ ulid, macros: { ...FULL_PANEL } }, []);
+    await pipeline.settle();
+    await pipeline.sweep(); // the queue drain — must find nothing to do here
+
+    const after = await pipeline.get(ulid);
+    expect(estimator.called).toBe(false);
+    expect(after!.calories).toBe(620);
+    expect(after!.source).toBe('manual');
+    expect(after!.status).toBe('estimated');
+  });
+});

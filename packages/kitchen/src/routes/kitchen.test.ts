@@ -412,6 +412,151 @@ describe('kitchen routes', () => {
       });
       expect(response.statusCode).toBe(400);
     });
+
+    // ── macros: directly-stated panel (born-manual, terminal, no estimation) ──
+
+    const FULL_PANEL = {
+      calories: 620,
+      protein_g: 41,
+      fat_g: 22,
+      sat_fat_g: 7,
+      carbs_g: 58,
+      sugar_g: 12,
+      fiber_g: 9,
+      sodium_mg: 880,
+    };
+
+    it('stores a directly-stated panel verbatim: born manual/estimated, no model call', async () => {
+      const ulid = generateUlid();
+      const { body, contentType } = buildMultipart({
+        entry: JSON.stringify({ ulid, macros: FULL_PANEL, label: 'test bowl' }),
+      });
+
+      const response = await fastify.inject({
+        method: 'POST',
+        url: '/kitchen/entries',
+        headers: { 'content-type': contentType },
+        payload: body,
+      });
+
+      expect(response.statusCode).toBe(201);
+      const json = response.json();
+      expect(json.status).toBe('estimated');
+      expect(json.source).toBe('manual');
+      expect(json.label).toBe('test bowl');
+      expect(json.calories).toBe(620);
+      expect(json.protein_g).toBe(41);
+      expect(json.fat_g).toBe(22);
+      expect(json.sat_fat_g).toBe(7);
+      expect(json.carbs_g).toBe(58);
+      expect(json.sugar_g).toBe(12);
+      expect(json.fiber_g).toBe(9);
+      expect(json.sodium_mg).toBe(880);
+      expect(json.confidence).toBeNull();
+      expect(json.portion_basis).toBeNull();
+      expect(json.portion_multiplier).toBe(1);
+
+      await pipeline.settle();
+      expect(estimator.calls).toBe(0); // the load-bearing invariant
+    });
+
+    it('persists unstated panel fields as null, not 0', async () => {
+      const ulid = generateUlid();
+      const { body, contentType } = buildMultipart({
+        entry: JSON.stringify({ ulid, macros: { calories: 200, protein_g: 15 } }),
+      });
+
+      const response = await fastify.inject({
+        method: 'POST',
+        url: '/kitchen/entries',
+        headers: { 'content-type': contentType },
+        payload: body,
+      });
+      expect(response.statusCode).toBe(201);
+      const json = response.json();
+      expect(json.calories).toBe(200);
+      expect(json.protein_g).toBe(15);
+      expect(json.fat_g).toBeNull();
+      expect(json.sat_fat_g).toBeNull();
+      expect(json.sodium_mg).toBeNull();
+      expect(json.fat_g).not.toBe(0);
+    });
+
+    it('rejects macros combined with recipe_ulid with 400', async () => {
+      const { body, contentType } = buildMultipart({
+        entry: JSON.stringify({ ulid: generateUlid(), macros: FULL_PANEL, recipe_ulid: generateUlid() }),
+      });
+      const response = await fastify.inject({ method: 'POST', url: '/kitchen/entries', headers: { 'content-type': contentType }, payload: body });
+      expect(response.statusCode).toBe(400);
+    });
+
+    it('rejects macros combined with reselect_of with 400', async () => {
+      const { body, contentType } = buildMultipart({
+        entry: JSON.stringify({ ulid: generateUlid(), macros: FULL_PANEL, reselect_of: generateUlid() }),
+      });
+      const response = await fastify.inject({ method: 'POST', url: '/kitchen/entries', headers: { 'content-type': contentType }, payload: body });
+      expect(response.statusCode).toBe(400);
+    });
+
+    it('rejects macros combined with component quantities with 400', async () => {
+      const { body, contentType } = buildMultipart({
+        entry: JSON.stringify({ ulid: generateUlid(), macros: FULL_PANEL, component_quantities: [{ label: 'rice', quantity_g: 100 }] }),
+      });
+      const response = await fastify.inject({ method: 'POST', url: '/kitchen/entries', headers: { 'content-type': contentType }, payload: body });
+      expect(response.statusCode).toBe(400);
+    });
+
+    it('rejects macros combined with a photo part with 400', async () => {
+      const ulid = generateUlid();
+      const { body, contentType } = buildMultipart(
+        { entry: JSON.stringify({ ulid, macros: FULL_PANEL }) },
+        [{ fieldname: 'photo', filename: 'meal.jpg', contentType: 'image/jpeg', data: Buffer.from('fake-jpeg-bytes') }]
+      );
+      const response = await fastify.inject({ method: 'POST', url: '/kitchen/entries', headers: { 'content-type': contentType }, payload: body });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error).toContain('photo');
+    });
+
+    it('rejects an unknown key inside macros with 400', async () => {
+      const { body, contentType } = buildMultipart({
+        entry: JSON.stringify({ ulid: generateUlid(), macros: { calories: 100, protien_g: 20 } }),
+      });
+      const response = await fastify.inject({ method: 'POST', url: '/kitchen/entries', headers: { 'content-type': contentType }, payload: body });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error).toContain('unknown field');
+    });
+
+    it('rejects a non-numeric macros field with 400', async () => {
+      const { body, contentType } = buildMultipart({
+        entry: JSON.stringify({ ulid: generateUlid(), macros: { calories: 'lots' } }),
+      });
+      const response = await fastify.inject({ method: 'POST', url: '/kitchen/entries', headers: { 'content-type': contentType }, payload: body });
+      expect(response.statusCode).toBe(400);
+    });
+
+    it('rejects a label sent without a macros panel with 400', async () => {
+      const { body, contentType } = buildMultipart({
+        entry: JSON.stringify({ ulid: generateUlid(), note: 'chicken salad', label: 'sneaky label' }),
+      });
+      const response = await fastify.inject({ method: 'POST', url: '/kitchen/entries', headers: { 'content-type': contentType }, payload: body });
+      expect(response.statusCode).toBe(400);
+    });
+
+    it('is idempotent on ULID: replaying a born-manual POST is a no-op', async () => {
+      const ulid = generateUlid();
+      const first = buildMultipart({ entry: JSON.stringify({ ulid, macros: FULL_PANEL, label: 'test bowl' }) });
+      const created = await fastify.inject({ method: 'POST', url: '/kitchen/entries', headers: { 'content-type': first.contentType }, payload: first.body });
+      expect(created.statusCode).toBe(201);
+
+      // Replay carrying different numbers must not overwrite — first write wins.
+      const second = buildMultipart({ entry: JSON.stringify({ ulid, macros: { calories: 1 }, label: 'other' }) });
+      const replay = await fastify.inject({ method: 'POST', url: '/kitchen/entries', headers: { 'content-type': second.contentType }, payload: second.body });
+      expect(replay.statusCode).toBe(200);
+      const json = replay.json();
+      expect(json.calories).toBe(620);
+      expect(json.label).toBe('test bowl');
+      expect(json.source).toBe('manual');
+    });
   });
 
   describe('GET /kitchen/entries', () => {
