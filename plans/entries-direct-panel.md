@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 depends: [kitchen-module]
 specs:
   - specs/modules/kitchen.md
@@ -108,8 +108,31 @@ clobber it). Implements the § Directly-stated panel entries section of
 
 ## Notes
 
-(populated at closeout)
+- Shipped the `macros` creation shape in `packages/kitchen/src`: request
+  validation + mutual-exclusion in `routes/kitchen.ts`, the born-manual
+  deterministic write in `services/pipeline.ts` (mirrors the recipe/reselect
+  branches — one atomic `applyEstimate` to terminal `estimated`/`source:manual`,
+  and crucially **no `attemptEstimate` call**, so nothing enters the estimation
+  work queue), panel/`label` types in `types.ts`, and per-field `entries log`
+  flags in the `kitchen-axi` CLI.
+- **CLI shape**: per-field flags at `log` time (`--calories/--protein/…`),
+  mirroring `entries patch`'s macro flags, plus optional `--label`. Chosen over
+  a `--macros <json>` blob for consistency with the existing patch ergonomics.
+- **Spec ambiguities resolved during build**: (1) "a number or absent" ⇒ each
+  field must be a non-negative finite number or absent; explicit `null` and
+  negatives `400`, absent is the sole "unknown" encoding (stored `null`),
+  matching `patch`'s `minimum:0` bound. (2) A `label` sent without a `macros`
+  panel is a `400` rather than silently dropped (other shapes derive label from
+  their source).
+- Verified independently before merge: `bun test packages/kitchen/src` → 280
+  pass / 0 fail (24 new, including a regression test that no model estimate can
+  clobber a stated panel); `bun run build` green; CI on PR #140 green (Build &
+  Test, Docker Build); full-diff scrub scan clean.
 
 ## Follow-ups
 
-(populated at closeout)
+- **Deferred to client adoption** (not a plan yet): migrate callers that today
+  compute a panel then log-with-inputs — interactive prep/portion-builder
+  surfaces and any `kitchen-axi` prep-page flow — onto the born-manual shape so
+  the log→estimate→patch dance is fully retired. Out of scope here by design;
+  this plan shipped the endpoint + CLI that make the migration possible.
