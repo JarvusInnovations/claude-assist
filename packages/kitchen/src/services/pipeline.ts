@@ -63,10 +63,13 @@ export class SourceEntryNotFoundError extends Error {
   }
 }
 
-/** A POST carried both `recipe_ulid` and `reselect_of` — mutually exclusive (400). */
+/**
+ * A POST combined more than one creation shape — `recipe_ulid`, `reselect_of`,
+ * `macros`, component quantities, and photos are mutually exclusive (400).
+ */
 export class ConflictingSourceError extends Error {
-  constructor() {
-    super('recipe_ulid and reselect_of are mutually exclusive on one entry');
+  constructor(message = 'recipe_ulid and reselect_of are mutually exclusive on one entry') {
+    super(message);
     this.name = 'ConflictingSourceError';
   }
 }
@@ -154,6 +157,55 @@ export class KitchenPipeline {
     // of deterministic re-log or the other, never both.
     if (input.recipe_ulid && input.reselect_of) {
       throw new ConflictingSourceError();
+    }
+
+    if (input.macros) {
+      // Directly-stated panel (specs/modules/kitchen.md § Directly-stated panel
+      // entries): the caller already computed the eight-field panel, so it is
+      // stored verbatim as the base of a born-`manual`, terminal entry. This
+      // branch enqueues NO estimation — that is the load-bearing invariant. It
+      // eliminates the log→estimate→patch birth-race: there is no original
+      // estimate that could land after and clobber the stated numbers, because
+      // none is ever dispatched. Mutually exclusive with every other shape.
+      if (
+        input.recipe_ulid ||
+        input.reselect_of ||
+        (input.component_quantities && input.component_quantities.length > 0) ||
+        photos.length > 0
+      ) {
+        throw new ConflictingSourceError(
+          'macros is mutually exclusive with recipe_ulid, reselect_of, component quantities, and photos'
+        );
+      }
+
+      const { record, created } = await this.entries.insertIfAbsent(newEntry);
+      if (created) {
+        // Store the panel exactly as stated — an unstated field is `null`
+        // (unknown), never `0`. confidence is null (there is nothing to be
+        // confident about; the numbers are exact), portion_basis null.
+        const nutrition: NutritionFields = {
+          calories: input.macros.calories ?? null,
+          protein_g: input.macros.protein_g ?? null,
+          fat_g: input.macros.fat_g ?? null,
+          sat_fat_g: input.macros.sat_fat_g ?? null,
+          carbs_g: input.macros.carbs_g ?? null,
+          sugar_g: input.macros.sugar_g ?? null,
+          fiber_g: input.macros.fiber_g ?? null,
+          sodium_mg: input.macros.sodium_mg ?? null,
+          confidence: null,
+          portion_basis: null,
+        };
+        // Sibling of the recipe/reselect deterministic writes: one atomic
+        // applyEstimate lands the terminal `estimated` state, here with
+        // source `manual`. No attemptEstimate call, so nothing enters the
+        // `estimating` work queue.
+        const nextStatus = transition('estimating', { kind: 'estimated' });
+        await this.entries.applyEstimate(record.ulid, input.label ?? null, nutrition, 'manual', nextStatus);
+        this.notifyEstimated(record.ulid);
+      }
+      // Replay (created === false) is a safe no-op: the existing row is returned
+      // untouched — no duplicate, no re-write.
+      return { record: (await this.entries.get(record.ulid))!, created };
     }
 
     if (input.reselect_of) {

@@ -109,7 +109,7 @@ in doubt, read the spec.
 
 - `scripts/kitchen-axi entries list [--since DATE] [--limit N]` — newest-first consumption entries (base macros + portion_multiplier; effective = base × multiplier)
 - `scripts/kitchen-axi entries show <ulid>` — one entry with full nutrition, source, and status
-- `scripts/kitchen-axi entries log [note…] [--recipe ULID] [--component "label=grams"]… [--at TIME]` — log a deliberate, no-model entry (note and/or recipe + component quantities); recipe-referenced entries are computed deterministically; --at sets logged_at (default now)
+- `scripts/kitchen-axi entries log [note…] [--recipe ULID] [--component "label=grams"]… [--at TIME] [--calories N] [--protein N] [--fat N] [--sat-fat N] [--carbs N] [--sugar N] [--fiber N] [--sodium N] [--label T]` — log a deliberate, no-model entry (note and/or recipe + component quantities); recipe-referenced entries are computed deterministically; --at sets logged_at (default now); a directly-stated panel (--calories/--protein/…, optionally --label) records a born-manual, terminal entry verbatim with NO estimation (mutually exclusive with --recipe/--component)
 - `scripts/kitchen-axi entries patch <ulid> [--note T] [--label T] [--calories N] [--protein N] [--fat N] [--sat-fat N] [--carbs N] [--sodium N] [--portion-basis T] [--multiplier M] [--at TIME]` — edit an entry: note/label re-queue estimation; any macro sets a terminal manual override; --multiplier rescales the base post-hoc and --at backdates logged_at (neither re-queues, neither changes source)
 - `scripts/kitchen-axi entries delete <ulid>` — remove an entry from all rollups
 

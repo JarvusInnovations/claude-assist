@@ -100,6 +100,24 @@ export const NUTRITION_FIELD_KEYS = [
   'sodium_mg',
 ] as const satisfies readonly (keyof NutritionFields)[];
 
+/**
+ * A directly-stated nutrition panel supplied at creation (specs/modules/kitchen.md
+ * § Directly-stated panel entries). The eight panel fields, each a number or
+ * absent — an absent field is stored `null` (unknown), never coerced to `0`.
+ * The caller has already done the arithmetic; the numbers ARE the answer, so no
+ * estimator runs and no field is re-derived, defaulted, or rounded.
+ */
+export interface StatedMacros {
+  calories?: number;
+  protein_g?: number;
+  fat_g?: number;
+  sat_fat_g?: number;
+  carbs_g?: number;
+  sugar_g?: number;
+  fiber_g?: number;
+  sodium_mg?: number;
+}
+
 /** What the client POSTs as the entry JSON part of the multipart body. */
 export interface EntryInput {
   ulid: string;
@@ -117,6 +135,21 @@ export interface EntryInput {
    * POST is stored as a comment and does NOT trigger estimation.
    */
   reselect_of?: string;
+  /**
+   * Optional directly-stated panel (specs/modules/kitchen.md § Directly-stated
+   * panel entries). Stored verbatim as the base macros of a born-`manual`,
+   * terminal (`estimated`) entry that enqueues NO estimation. Mutually exclusive
+   * with `recipe_ulid`, `reselect_of`, `component_quantities`, and photo parts.
+   */
+  macros?: StatedMacros;
+  /**
+   * Optional label (provenance/display) — honored ONLY alongside `macros`, where
+   * it names the born-`manual` entry (e.g. what computed the panel). The other
+   * creation shapes derive the label from their source (estimator / recipe /
+   * cloned entry), so a label sent without `macros` is rejected rather than
+   * silently dropped.
+   */
+  label?: string;
 }
 
 /**

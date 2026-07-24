@@ -575,8 +575,8 @@ var COMMAND_GROUPS = [
       { usage: "entries list [--since DATE] [--limit N]", summary: "newest-first consumption entries (base macros + portion_multiplier; effective = base \xD7 multiplier)" },
       { usage: "entries show <ulid>", summary: "one entry with full nutrition, source, and status" },
       {
-        usage: 'entries log [note\u2026] [--recipe ULID] [--component "label=grams"]\u2026 [--at TIME]',
-        summary: "log a deliberate, no-model entry (note and/or recipe + component quantities); recipe-referenced entries are computed deterministically; --at sets logged_at (default now)"
+        usage: 'entries log [note\u2026] [--recipe ULID] [--component "label=grams"]\u2026 [--at TIME] [--calories N] [--protein N] [--fat N] [--sat-fat N] [--carbs N] [--sugar N] [--fiber N] [--sodium N] [--label T]',
+        summary: "log a deliberate, no-model entry (note and/or recipe + component quantities); recipe-referenced entries are computed deterministically; --at sets logged_at (default now); a directly-stated panel (--calories/--protein/\u2026, optionally --label) records a born-manual, terminal entry verbatim with NO estimation (mutually exclusive with --recipe/--component)"
       },
       {
         usage: "entries patch <ulid> [--note T] [--label T] [--calories N] [--protein N] [--fat N] [--sat-fat N] [--carbs N] [--sodium N] [--portion-basis T] [--multiplier M] [--at TIME]",
@@ -1232,6 +1232,8 @@ var ENTRIES_HELP = `kitchen-axi entries <subcommand> [args] [--json]
   log [note\u2026] [--recipe ULID]          log a deliberate no-model entry
        [--component "label=grams"]\u2026      (repeatable; recipe \u2192 deterministic macros)
        [--at TIME]                       set logged_at (ISO or YYYY-MM-DD); default now
+       [--calories N] [--protein N]\u2026     directly-stated panel: born-manual, terminal,
+       [--label T]                        NO estimation (mutually exclusive with --recipe/--component)
   patch <ulid> [flags]                 edit note/label (re-queue), macro override
                                          (terminal), --multiplier M (post-hoc rescale),
                                          or --at TIME (backdate logged_at)
@@ -1312,21 +1314,55 @@ function parseComponent(raw) {
   }
   return { label, quantity_g: qty };
 }
+var MACRO_LOG_FLAGS = [
+  ["calories", "calories"],
+  ["protein", "protein_g"],
+  ["fat", "fat_g"],
+  ["sat-fat", "sat_fat_g"],
+  ["carbs", "carbs_g"],
+  ["sugar", "sugar_g"],
+  ["fiber", "fiber_g"],
+  ["sodium", "sodium_mg"]
+];
 function buildLogEntryFields(positionals, flags, components) {
   const note = positionals.join(" ").trim();
   const recipe = typeof flags.recipe === "string" ? flags.recipe : void 0;
-  if (!note && !recipe) {
-    throw new AxiError("entries log needs a note and/or --recipe", "VALIDATION_ERROR", [ENTRIES_HELP]);
+  const label = typeof flags.label === "string" ? flags.label : void 0;
+  const macros = {};
+  for (const [flag, key] of MACRO_LOG_FLAGS) {
+    if (typeof flags[flag] === "string") {
+      macros[key] = parseNumberFlag(flags[flag], flag, ENTRIES_HELP, { min: 0 });
+    }
+  }
+  const hasMacros = Object.keys(macros).length > 0;
+  if (hasMacros && (recipe || components.length)) {
+    throw new AxiError(
+      "entries log: a directly-stated panel (--calories/--protein/\u2026) is mutually exclusive with --recipe/--component",
+      "VALIDATION_ERROR",
+      [ENTRIES_HELP]
+    );
+  }
+  if (label !== void 0 && !hasMacros) {
+    throw new AxiError("entries log: --label is only valid with a directly-stated panel (--calories/\u2026)", "VALIDATION_ERROR", [ENTRIES_HELP]);
+  }
+  if (!note && !recipe && !hasMacros) {
+    throw new AxiError("entries log needs a note, --recipe, or a directly-stated panel (--calories/\u2026)", "VALIDATION_ERROR", [ENTRIES_HELP]);
   }
   const entry = {};
   if (note) entry.note = note;
   if (recipe) entry.recipe_ulid = recipe;
   if (components.length) entry.component_quantities = components;
   if (typeof flags.at === "string") entry.logged_at = validateDate(flags.at, "--at", ENTRIES_HELP);
+  if (hasMacros) entry.macros = macros;
+  if (label !== void 0) entry.label = label;
   return entry;
 }
 async function logEntry(args) {
-  const { positionals, flags } = parseArgs(args, ["json"], ["recipe", "component", "at"]);
+  const { positionals, flags } = parseArgs(
+    args,
+    ["json"],
+    ["recipe", "component", "at", "label", "calories", "protein", "fat", "sat-fat", "carbs", "sugar", "fiber", "sodium"]
+  );
   const components = collectFlag(args, "component").map(parseComponent);
   const entry = { ulid: generateUlid(), ...buildLogEntryFields(positionals, flags, components) };
   const form = new FormData();
@@ -2084,7 +2120,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "3d22e6e" : "dev";
+var VERSION = true ? "e0518d1" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)

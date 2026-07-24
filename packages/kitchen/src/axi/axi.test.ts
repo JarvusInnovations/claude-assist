@@ -143,6 +143,62 @@ describe("entries --at wiring (claude-assist#111)", () => {
   });
 });
 
+describe("entries log — directly-stated panel wiring", () => {
+  const LOG_FLAGS = ["recipe", "component", "at", "label", "calories", "protein", "fat", "sat-fat", "carbs", "sugar", "fiber", "sodium"];
+
+  it("builds a macros panel from per-field flags (mirrors patch macro flags)", () => {
+    const { positionals, flags } = parseArgs(
+      ["--calories", "620", "--protein", "41", "--fat", "22", "--sat-fat", "7", "--carbs", "58", "--sugar", "12", "--fiber", "9", "--sodium", "880", "--label", "test bowl"],
+      ["json"],
+      LOG_FLAGS,
+    );
+    const entry = buildLogEntryFields(positionals, flags, []);
+    expect(entry.macros).toEqual({
+      calories: 620,
+      protein_g: 41,
+      fat_g: 22,
+      sat_fat_g: 7,
+      carbs_g: 58,
+      sugar_g: 12,
+      fiber_g: 9,
+      sodium_mg: 880,
+    });
+    expect(entry.label).toBe("test bowl");
+    // A directly-stated panel is not a note/recipe entry.
+    expect(entry.note).toBeUndefined();
+    expect(entry.recipe_ulid).toBeUndefined();
+  });
+
+  it("omits unstated panel fields (server stores them null, never 0)", () => {
+    const { positionals, flags } = parseArgs(["--calories", "200", "--protein", "15"], ["json"], LOG_FLAGS);
+    const entry = buildLogEntryFields(positionals, flags, []);
+    expect(entry.macros).toEqual({ calories: 200, protein_g: 15 });
+  });
+
+  it("rejects a directly-stated panel combined with --recipe or --component", () => {
+    const withRecipe = parseArgs(["--calories", "200", "--recipe", "01ABC"], ["json"], LOG_FLAGS);
+    expect(() => buildLogEntryFields(withRecipe.positionals, withRecipe.flags, [])).toThrow(AxiError);
+
+    const withComponent = parseArgs(["--calories", "200"], ["json"], LOG_FLAGS);
+    expect(() => buildLogEntryFields(withComponent.positionals, withComponent.flags, [{ label: "rice", quantity_g: 100 }])).toThrow(AxiError);
+  });
+
+  it("rejects --label sent without a panel", () => {
+    const { positionals, flags } = parseArgs(["chicken", "salad", "--label", "nope"], ["json"], LOG_FLAGS);
+    expect(() => buildLogEntryFields(positionals, flags, [])).toThrow(AxiError);
+  });
+
+  it("rejects a non-numeric macro flag before any network call", () => {
+    const { positionals, flags } = parseArgs(["--calories", "lots"], ["json"], LOG_FLAGS);
+    expect(() => buildLogEntryFields(positionals, flags, [])).toThrow(AxiError);
+  });
+
+  it("still requires a note, recipe, or panel", () => {
+    const { positionals, flags } = parseArgs([], ["json"], LOG_FLAGS);
+    expect(() => buildLogEntryFields(positionals, flags, [])).toThrow(AxiError);
+  });
+});
+
 describe("command reference (single source of truth)", () => {
   it("covers every spec-listed command group", () => {
     const groups = COMMAND_GROUPS.map((g) => g.group);
