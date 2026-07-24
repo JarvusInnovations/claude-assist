@@ -47,6 +47,14 @@ in doubt, read the spec.
   you mean to pin the number; use `--note`/`--label` (which re-queue estimation) or
   `--multiplier` (which rescales) otherwise. An override sets the base; a multiplier still
   scales it.
+- **Already have the exact macros? State them at log time — never log-then-patch.** When
+  a caller has *already computed* the full panel (a page/UI totalled it, a resolved label
+  scan, an import), pass the fields on `entries log` (`--calories`/`--protein`/… `--label`).
+  That records a born-`manual`, terminal entry **verbatim, with no estimation ever
+  enqueued** — mutually exclusive with `--recipe`/`--component`. Do **not** log the raw
+  inputs (`--component`) and then `patch` the totals: that path re-derives numbers you
+  already hold (lossy) *and* is racy — the estimation job it kicks off can land after your
+  patch and clobber it. If you know the answer, state it; the module won't re-guess it.
 - **Partial toss vs full toss.** On `inventory event <ulid> tossed`, `--fraction` is the
   **amount tossed**, not the amount remaining. A partial toss (`--fraction 0.25`)
   decrements `on_hand_fraction` and keeps the item **alive** (inventory is directional and
@@ -83,6 +91,9 @@ in doubt, read the spec.
 - **"I only ate half of that"** → `scripts/kitchen-axi entries patch <ulid> --multiplier 0.5`.
 - **"Fix the calories on that entry"** → `scripts/kitchen-axi entries patch <ulid> --calories N`
   (terminal manual override — use only when you mean to pin it).
+- **"Log a meal whose macros I already computed"** (a page/UI totalled it) →
+  `scripts/kitchen-axi entries log --calories N --protein N --sat-fat N --sugar N --fiber N --sodium N --label "<meal>"`
+  (directly-stated panel: born-`manual`, terminal, no estimation, no race — not `--component` + `patch`).
 - **"What's today looking like?"** → bare `scripts/kitchen-axi` (home view: effective totals,
   pending estimates, eat-first items, open questions).
 - **"What should I use up?"** → `scripts/kitchen-axi inventory list` (eat-first order).
