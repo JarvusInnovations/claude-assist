@@ -576,11 +576,11 @@ var COMMAND_GROUPS = [
       { usage: "entries show <ulid>", summary: "one entry with full nutrition, source, and status" },
       {
         usage: 'entries log [note\u2026] [--recipe ULID] [--component "label=grams"]\u2026 [--at TIME] [--calories N] [--protein N] [--fat N] [--sat-fat N] [--carbs N] [--sugar N] [--fiber N] [--sodium N] [--label T]',
-        summary: "log a deliberate, no-model entry (note and/or recipe + component quantities); recipe-referenced entries are computed deterministically; --at sets logged_at (default now); a directly-stated panel (--calories/--protein/\u2026, optionally --label) records a born-manual, terminal entry verbatim with NO estimation (mutually exclusive with --recipe/--component)"
+        summary: "log a deliberate, no-model entry (note and/or recipe + component quantities); recipe-referenced entries are computed deterministically; --at sets logged_at (default now \u2014 prefer a full local timestamp with offset; a bare YYYY-MM-DD backstops to local noon that day, never midnight UTC); a directly-stated panel (--calories/--protein/\u2026, optionally --label) records a born-manual, terminal entry verbatim with NO estimation (mutually exclusive with --recipe/--component)"
       },
       {
         usage: "entries patch <ulid> [--note T] [--label T] [--calories N] [--protein N] [--fat N] [--sat-fat N] [--carbs N] [--sodium N] [--portion-basis T] [--multiplier M] [--at TIME]",
-        summary: "edit an entry: note/label re-queue estimation; any macro sets a terminal manual override; --multiplier rescales the base post-hoc and --at backdates logged_at (neither re-queues, neither changes source)"
+        summary: "edit an entry: note/label re-queue estimation; any macro sets a terminal manual override; --multiplier rescales the base post-hoc and --at backdates logged_at (prefer a full local timestamp with offset; a bare YYYY-MM-DD backstops to local noon that day; neither re-queues, neither changes source)"
       },
       { usage: "entries delete <ulid>", summary: "remove an entry from all rollups" }
     ]
@@ -590,7 +590,7 @@ var COMMAND_GROUPS = [
     commands: [
       {
         usage: 'expenditure log "<label>" --kcal N [--duration M] [--avg-hr H] [--at TIME] [--source S] [--ulid U]',
-        summary: "record a stated burn (active calories \u2014 a device said it or you did; never model-estimated); feeds the daily net line, which is context, not a spend-it budget"
+        summary: "record a stated burn (active calories \u2014 a device said it or you did; never model-estimated); feeds the daily net line, which is context, not a spend-it budget; --at defaults to now \u2014 prefer a full local timestamp with offset, a bare YYYY-MM-DD backstops to local noon that day"
       },
       { usage: "expenditure list [--since DATE] [--limit N]", summary: "recent expenditures, newest first" },
       { usage: "expenditure delete <ulid>", summary: "remove an expenditure from all rollups" }
@@ -833,6 +833,23 @@ var api = {
   }
 };
 
+// packages/kitchen/src/date-coerce.ts
+var DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+function coerceBareDateToLocalNoon(value) {
+  const match = DATE_ONLY.exec(value);
+  if (!match) return value;
+  const year = Number(value.slice(0, 4));
+  const month = Number(value.slice(5, 7));
+  const day = Number(value.slice(8, 10));
+  const localNoon = new Date(year, month - 1, day, 12, 0, 0, 0);
+  const offsetMinutes = -localNoon.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const absMinutes = Math.abs(offsetMinutes);
+  const offH = String(Math.floor(absMinutes / 60)).padStart(2, "0");
+  const offM = String(absMinutes % 60).padStart(2, "0");
+  return `${value}T12:00:00${sign}${offH}:${offM}`;
+}
+
 // packages/kitchen/src/axi/args.ts
 function parseArgs(args, booleanFlags = [], valueFlags) {
   const positionals = [];
@@ -885,17 +902,17 @@ function requirePositional(positionals, index, label, usage) {
   if (!v) throw new AxiError(`${label} is required`, "VALIDATION_ERROR", [usage]);
   return v;
 }
-var DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+var DATE_ONLY2 = /^\d{4}-\d{2}-\d{2}$/;
 var ISO_DATETIME = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?$/;
 function validateDate(value, flag, usage) {
-  const wellFormed = DATE_ONLY.test(value) || ISO_DATETIME.test(value);
+  const wellFormed = DATE_ONLY2.test(value) || ISO_DATETIME.test(value);
   if (!wellFormed || Number.isNaN(Date.parse(value))) {
     throw new AxiError(`Invalid date for ${flag}: ${value}`, "VALIDATION_ERROR", [
       "Use YYYY-MM-DD (e.g. 2026-04-29) or a full ISO 8601 timestamp (e.g. 2026-04-29T14:30:00Z)",
       usage
     ]);
   }
-  return value;
+  return coerceBareDateToLocalNoon(value);
 }
 function parseNumberFlag(value, flag, usage, opts = {}) {
   const n = Number(value);
@@ -1231,7 +1248,9 @@ var ENTRIES_HELP = `kitchen-axi entries <subcommand> [args] [--json]
   show <ulid>                          one entry, full nutrition/source/status
   log [note\u2026] [--recipe ULID]          log a deliberate no-model entry
        [--component "label=grams"]\u2026      (repeatable; recipe \u2192 deterministic macros)
-       [--at TIME]                       set logged_at (ISO or YYYY-MM-DD); default now
+       [--at TIME]                       set logged_at; default now. Prefer a full local
+                                          timestamp (2026-04-29T14:30:00-04:00); a bare
+                                          YYYY-MM-DD backstops to local noon that day
        [--calories N] [--protein N]\u2026     directly-stated panel: born-manual, terminal,
        [--label T]                        NO estimation (mutually exclusive with --recipe/--component)
   patch <ulid> [flags]                 edit note/label (re-queue), macro override
@@ -1745,7 +1764,9 @@ var EXPENDITURE_HELP = `kitchen-axi expenditure <subcommand> [args] [--json]
 
   log "<label>" --kcal N [--duration M] [--avg-hr H] [--at TIME] [--source S] [--ulid U]
                                        record a stated burn (default source: manual;
-                                       --at defaults to now; idempotent on --ulid)
+                                       --at defaults to now \u2014 prefer a full local
+                                       timestamp, a bare YYYY-MM-DD backstops to local
+                                       noon that day; idempotent on --ulid)
   list [--since DATE] [--limit N]      recent expenditures, newest first
   delete <ulid>                        remove from all rollups
 
@@ -2120,7 +2141,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "e0518d1" : "dev";
+var VERSION = true ? "3ba8dfc" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)
