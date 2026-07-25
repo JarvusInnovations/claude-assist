@@ -444,6 +444,30 @@ describe('logged_at backdating — post-hoc, deterministic, orthogonal', () => {
     expect((await pipeline.list({ since: threeDaysAgo })).some((e) => e.ulid === record.ulid)).toBe(true);
   });
 
+  it('coerces a bare-date logged_at PATCH to local noon on the intended day (not midnight UTC)', async () => {
+    // Server-side backstop for the same rule the CLI enforces (specs/modules/
+    // kitchen.md § Logged-at backdating — "Bare-date coercion → local noon"):
+    // a bare YYYY-MM-DD arriving on PATCH must land at local noon, so it buckets
+    // on the intended day rather than the previous evening (midnight UTC). This
+    // assertion is zone-independent — "local noon, that calendar day" holds in
+    // any runner timezone.
+    const entries = new MemoryEntryStore();
+    const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), null, log);
+    const { record } = await pipeline.ingest({ ulid: generateUlid(), logged_at: iso(0), note: 'x' }, []);
+
+    const twoDaysAgo = new Date(Date.now() - 2 * DAY);
+    const y = twoDaysAgo.getFullYear();
+    const m = String(twoDaysAgo.getMonth() + 1).padStart(2, '0');
+    const d = String(twoDaysAgo.getDate()).padStart(2, '0');
+    const bare = `${y}-${m}-${d}`;
+
+    const updated = await pipeline.patch(record.ulid, { logged_at: bare });
+    expect(updated!.logged_at.getHours()).toBe(12); // local noon, never 00:00 UTC
+    expect(updated!.logged_at.getFullYear()).toBe(twoDaysAgo.getFullYear());
+    expect(updated!.logged_at.getMonth()).toBe(twoDaysAgo.getMonth());
+    expect(updated!.logged_at.getDate()).toBe(twoDaysAgo.getDate()); // intended day
+  });
+
   it('composes with a portion_multiplier in one PATCH (both orthogonal axes land)', async () => {
     const entries = new MemoryEntryStore();
     const estimator = new ScriptedEstimator([mkModelEstimate({ calories: 800 })]);
