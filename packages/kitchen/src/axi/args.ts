@@ -1,4 +1,5 @@
 import { AxiError } from "axi-sdk-js";
+import { coerceBareDateToLocalNoon } from "../date-coerce.js";
 
 export interface ParsedArgs {
   positionals: string[];
@@ -84,7 +85,14 @@ const ISO_DATETIME = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\
 /**
  * Validate a date/timestamp flag value before any network call. Accepts a
  * date-only `YYYY-MM-DD` or a full ISO 8601 timestamp, and confirms it's a real
- * calendar date. Returns the value unchanged so callers can pass it through.
+ * calendar date.
+ *
+ * A bare `YYYY-MM-DD` is coerced to **noon in the machine's local timezone**
+ * (specs/modules/kitchen.md § Logged-at backdating — "Bare-date coercion →
+ * local noon"), so a date logged for "today" buckets on the intended day rather
+ * than the previous evening (midnight UTC). A full timestamp passes through
+ * unchanged. Callers SHOULD supply a specific local time when they have one;
+ * the noon coercion only rescues the bare-date backstop case.
  */
 export function validateDate(value: string, flag: string, usage: string): string {
   const wellFormed = DATE_ONLY.test(value) || ISO_DATETIME.test(value);
@@ -94,7 +102,7 @@ export function validateDate(value: string, flag: string, usage: string): string
       usage,
     ]);
   }
-  return value;
+  return coerceBareDateToLocalNoon(value);
 }
 
 /**
