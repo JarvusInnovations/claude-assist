@@ -1,5 +1,5 @@
 ---
-status: planned
+status: in-progress
 depends: [kitchen-module]
 specs:
   - specs/modules/kitchen.md
@@ -46,18 +46,27 @@ changing how full timestamps are handled (only the *bare-date* case changes).
 
 ## Validation
 
-- [ ] `entries log --at 2026-07-24` (bare date) stores `logged_at` at local noon
+- [x] `entries log --at 2026-07-24` (bare date) stores `logged_at` at local noon
       that day; the entry buckets on 2026-07-24 in a US-Eastern rollup, not the
-      23rd.
-- [ ] `entries log --at 2026-07-24T15:00:00-04:00` (full timestamp) is stored
-      verbatim — no coercion applied.
-- [ ] Same coercion verified for `entries patch --at` and `expenditure log --at`.
-- [ ] A bare date near a month/DST boundary still lands on the intended local
-      day (noon has margin for both).
-- [ ] `check:skills` passes after the SKILL/help update; `--at` help text names
-      the local-time preference + noon backstop.
-- [ ] Existing full-timestamp and default-to-now behaviors unchanged
-      (regression).
+      23rd. (date-coerce.test.ts, TZ pinned to America/New_York: coerced instant
+      is 2026-07-24T16:00:00Z = noon EDT, getDate()===24 vs the naive UTC-midnight
+      parse which reads the 23rd.)
+- [x] `entries log --at 2026-07-24T15:00:00-04:00` (full timestamp) is stored
+      verbatim — no coercion applied. (helper + both entries builders + ingest.)
+- [x] Same coercion verified for `entries patch --at` (buildPatchBody +
+      pipeline.patch server path) and `expenditure log --at` (validateDate — the
+      exact choke point that command calls; also the shared server parseIso).
+- [x] A bare date near a month/DST boundary still lands on the intended local
+      day. (date-coerce.test.ts: winter EST -05:00 vs summer EDT -04:00, DST
+      spring-forward 2026-03-08 and fall-back 2026-11-01, month boundary
+      2026-07-01 — all at noon, correct day.)
+- [x] `check:skills` passes after the SKILL/help update; `--at` help text names
+      the local-time preference + noon backstop (entries + expenditure help,
+      reference.ts summaries, SKILL.md narrative bullet).
+- [x] Existing full-timestamp and default-to-now behaviors unchanged
+      (regression: full suite 294 pass; two existing --at passthrough assertions
+      updated to the new local-noon semantics; normalizeNewEntry default-to-now
+      test).
 
 ## Risks / unknowns
 
@@ -67,6 +76,32 @@ changing how full timestamps are handled (only the *bare-date* case changes).
 - **Timezone source**: the machine's local offset at the target date (respect DST
   for the *dated* day, not just today). Use the runtime's zoned construction, not
   a fixed offset.
+
+## Implementation decision — choke points (in-progress)
+
+Coerced at **both the CLI and the API**, via one shared helper
+`coerceBareDateToLocalNoon` in `packages/kitchen/src/date-coerce.ts` (imported by
+every site so there is no drift). A bare date **can** reach the API directly:
+`POST /entries`'s `validateEntryInput` only checks `typeof logged_at === 'string'`
+and the `PATCH` / expenditure JSON schemas pin the type to `{type: 'string'}`
+with no date-format constraint — so a non-CLI caller (or a future client) can send
+`logged_at: "2026-07-24"` and hit `new Date("YYYY-MM-DD")` = UTC midnight. The
+guarantee therefore has to hold server-side too, not only on the agent path.
+
+Sites wired:
+
+- **CLI** — `validateDate` in `axi/args.ts` (the one helper all three `--at`
+  flags call: `entries log`, `entries patch`, `expenditure log`).
+- **API ingest** — `normalizeNewEntry` in `store.ts` (`POST /entries`).
+- **API patch** — `KitchenPipeline.validateLoggedAt` in `services/pipeline.ts`
+  (`PATCH /entries/:ulid`), before the parse + clock-relative bounds check.
+- **API expenditure** — `parseIso` in `routes/expenditures.ts`
+  (`POST /kitchen/expenditures` `occurred_at`).
+
+The helper constructs `new Date(year, month-1, day, 12, 0, 0)` (local-zoned) and
+serializes `<date>T12:00:00±HH:MM` using that Date's own `getTimezoneOffset()`, so
+the offset reflects DST **for the dated day**, not today. A value carrying any
+time-of-day is returned untouched.
 
 ## Notes
 
