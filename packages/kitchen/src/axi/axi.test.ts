@@ -108,9 +108,16 @@ describe("entries --at wiring (claude-assist#111)", () => {
     expect(entry.logged_at).toBe("2026-07-18T08:00:00Z");
   });
 
-  it("buildLogEntryFields accepts a date-only --at and omits logged_at when absent", () => {
+  it("buildLogEntryFields coerces a date-only --at to local noon and omits logged_at when absent", () => {
+    // A bare YYYY-MM-DD now backstops to local noon (specs/modules/kitchen.md
+    // § Logged-at backdating). Zone-independent assertion: local noon, that day.
     const withAt = parseArgs(["snack", "--at", "2026-07-18"], ["json"], ["recipe", "component", "at"]);
-    expect(buildLogEntryFields(withAt.positionals, withAt.flags, []).logged_at).toBe("2026-07-18");
+    const loggedAt = buildLogEntryFields(withAt.positionals, withAt.flags, []).logged_at as string;
+    const d = new Date(loggedAt);
+    expect(d.getHours()).toBe(12); // local noon, never midnight UTC
+    expect(d.getFullYear()).toBe(2026);
+    expect(d.getMonth()).toBe(6); // July
+    expect(d.getDate()).toBe(18);
 
     const withoutAt = parseArgs(["snack"], ["json"], ["recipe", "component", "at"]);
     expect(buildLogEntryFields(withoutAt.positionals, withoutAt.flags, []).logged_at).toBeUndefined();
@@ -139,7 +146,14 @@ describe("entries --at wiring (claude-assist#111)", () => {
       ["note", "label", "portion-basis", "calories", "protein", "fat", "sat-fat", "carbs", "sodium", "multiplier", "at"],
     );
     const body = buildPatchBody(flags);
-    expect(body).toEqual({ logged_at: "2026-06-15" });
+    // Only logged_at is present, and the bare date coerces to local noon that
+    // day (specs/modules/kitchen.md § Logged-at backdating). Zone-independent.
+    expect(Object.keys(body)).toEqual(["logged_at"]);
+    const d = new Date(body.logged_at as string);
+    expect(d.getHours()).toBe(12);
+    expect(d.getFullYear()).toBe(2026);
+    expect(d.getMonth()).toBe(5); // June
+    expect(d.getDate()).toBe(15);
   });
 });
 

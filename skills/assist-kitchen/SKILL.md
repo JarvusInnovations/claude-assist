@@ -47,6 +47,14 @@ in doubt, read the spec.
   you mean to pin the number; use `--note`/`--label` (which re-queue estimation) or
   `--multiplier` (which rescales) otherwise. An override sets the base; a multiplier still
   scales it.
+- **Backdating a meal? Supply a specific local time — a bare date is only a backstop.**
+  `--at` sets `logged_at`, the moment the meal actually happened (a gallery photo logged
+  hours later belongs on the meal's day, not the logging day). When you know the time,
+  send a **full local timestamp with offset** (`--at 2026-04-29T14:30:00-04:00`) so it
+  buckets exactly. A **bare `YYYY-MM-DD`** is accepted as a fallback and coerces to **noon
+  in the machine's local timezone** — never midnight UTC, which is the previous evening
+  across US zones and would land the entry a day early. Same rule applies to `entries
+  patch --at` and `expenditure log --at`. Omit `--at` entirely to default to now.
 - **Already have the exact macros? State them at log time — never log-then-patch.** When
   a caller has *already computed* the full panel (a page/UI totalled it, a resolved label
   scan, an import), pass the fields on `entries log` (`--calories`/`--protein`/… `--label`).
@@ -120,13 +128,13 @@ in doubt, read the spec.
 
 - `scripts/kitchen-axi entries list [--since DATE] [--limit N]` — newest-first consumption entries (base macros + portion_multiplier; effective = base × multiplier)
 - `scripts/kitchen-axi entries show <ulid>` — one entry with full nutrition, source, and status
-- `scripts/kitchen-axi entries log [note…] [--recipe ULID] [--component "label=grams"]… [--at TIME] [--calories N] [--protein N] [--fat N] [--sat-fat N] [--carbs N] [--sugar N] [--fiber N] [--sodium N] [--label T]` — log a deliberate, no-model entry (note and/or recipe + component quantities); recipe-referenced entries are computed deterministically; --at sets logged_at (default now); a directly-stated panel (--calories/--protein/…, optionally --label) records a born-manual, terminal entry verbatim with NO estimation (mutually exclusive with --recipe/--component)
-- `scripts/kitchen-axi entries patch <ulid> [--note T] [--label T] [--calories N] [--protein N] [--fat N] [--sat-fat N] [--carbs N] [--sodium N] [--portion-basis T] [--multiplier M] [--at TIME]` — edit an entry: note/label re-queue estimation; any macro sets a terminal manual override; --multiplier rescales the base post-hoc and --at backdates logged_at (neither re-queues, neither changes source)
+- `scripts/kitchen-axi entries log [note…] [--recipe ULID] [--component "label=grams"]… [--at TIME] [--calories N] [--protein N] [--fat N] [--sat-fat N] [--carbs N] [--sugar N] [--fiber N] [--sodium N] [--label T]` — log a deliberate, no-model entry (note and/or recipe + component quantities); recipe-referenced entries are computed deterministically; --at sets logged_at (default now — prefer a full local timestamp with offset; a bare YYYY-MM-DD backstops to local noon that day, never midnight UTC); a directly-stated panel (--calories/--protein/…, optionally --label) records a born-manual, terminal entry verbatim with NO estimation (mutually exclusive with --recipe/--component)
+- `scripts/kitchen-axi entries patch <ulid> [--note T] [--label T] [--calories N] [--protein N] [--fat N] [--sat-fat N] [--carbs N] [--sodium N] [--portion-basis T] [--multiplier M] [--at TIME]` — edit an entry: note/label re-queue estimation; any macro sets a terminal manual override; --multiplier rescales the base post-hoc and --at backdates logged_at (prefer a full local timestamp with offset; a bare YYYY-MM-DD backstops to local noon that day; neither re-queues, neither changes source)
 - `scripts/kitchen-axi entries delete <ulid>` — remove an entry from all rollups
 
 ### Expenditure
 
-- `scripts/kitchen-axi expenditure log "<label>" --kcal N [--duration M] [--avg-hr H] [--at TIME] [--source S] [--ulid U]` — record a stated burn (active calories — a device said it or you did; never model-estimated); feeds the daily net line, which is context, not a spend-it budget
+- `scripts/kitchen-axi expenditure log "<label>" --kcal N [--duration M] [--avg-hr H] [--at TIME] [--source S] [--ulid U]` — record a stated burn (active calories — a device said it or you did; never model-estimated); feeds the daily net line, which is context, not a spend-it budget; --at defaults to now — prefer a full local timestamp with offset, a bare YYYY-MM-DD backstops to local noon that day
 - `scripts/kitchen-axi expenditure list [--since DATE] [--limit N]` — recent expenditures, newest first
 - `scripts/kitchen-axi expenditure delete <ulid>` — remove an expenditure from all rollups
 

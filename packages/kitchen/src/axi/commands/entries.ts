@@ -20,7 +20,9 @@ export const ENTRIES_HELP = `kitchen-axi entries <subcommand> [args] [--json]
   show <ulid>                          one entry, full nutrition/source/status
   log [note…] [--recipe ULID]          log a deliberate no-model entry
        [--component "label=grams"]…      (repeatable; recipe → deterministic macros)
-       [--at TIME]                       set logged_at (ISO or YYYY-MM-DD); default now
+       [--at TIME]                       set logged_at; default now. Prefer a full local
+                                          timestamp (2026-04-29T14:30:00-04:00); a bare
+                                          YYYY-MM-DD backstops to local noon that day
        [--calories N] [--protein N]…     directly-stated panel: born-manual, terminal,
        [--label T]                        NO estimation (mutually exclusive with --recipe/--component)
   patch <ulid> [flags]                 edit note/label (re-queue), macro override

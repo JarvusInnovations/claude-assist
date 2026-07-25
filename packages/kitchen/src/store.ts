@@ -8,6 +8,7 @@
  */
 
 import type postgres from 'postgres';
+import { coerceBareDateToLocalNoon } from './date-coerce.js';
 import type {
   ComponentQuantity,
   EntryRecord,
@@ -142,7 +143,11 @@ export function normalizeNewEntry(
 ): NewEntry {
   return {
     ulid: input.ulid,
-    logged_at: input.logged_at ? new Date(input.logged_at) : now,
+    // A bare `YYYY-MM-DD` logged_at coerces to local noon (specs/modules/
+    // kitchen.md § Logged-at backdating) before parsing, so it buckets on the
+    // intended day rather than midnight-UTC's previous evening. A full
+    // timestamp passes through coerceBareDateToLocalNoon unchanged.
+    logged_at: input.logged_at ? new Date(coerceBareDateToLocalNoon(input.logged_at)) : now,
     note: input.note?.trim() ? input.note.trim() : null,
     recipe_ulid: input.recipe_ulid ?? null,
     component_quantities: input.component_quantities ?? null,

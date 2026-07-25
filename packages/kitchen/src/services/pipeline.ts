@@ -37,6 +37,7 @@ import {
 } from '../types.js';
 import type { EntryStore, RecipeStore, RecentEntrySummary } from '../store.js';
 import { normalizeNewEntry } from '../store.js';
+import { coerceBareDateToLocalNoon } from '../date-coerce.js';
 import { InvalidTransitionError, transition } from '../state.js';
 import { generateUlid } from '../ulid.js';
 import { computeRecipeMacros } from './recipes.js';
@@ -319,7 +320,9 @@ export class KitchenPipeline {
     if (typeof raw !== 'string') {
       throw new PatchValidationError('logged_at must be an ISO date-time string');
     }
-    const parsed = new Date(raw);
+    // A bare `YYYY-MM-DD` coerces to local noon before parse+bounds (specs/
+    // modules/kitchen.md § Logged-at backdating); a full timestamp is untouched.
+    const parsed = new Date(coerceBareDateToLocalNoon(raw));
     const t = parsed.getTime();
     if (Number.isNaN(t)) {
       throw new PatchValidationError('logged_at must be a valid ISO date-time');

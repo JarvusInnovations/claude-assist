@@ -17,6 +17,7 @@
 
 import type { FastifyPluginAsync } from 'fastify';
 import { ULID_PATTERN, generateUlid } from '../ulid.js';
+import { coerceBareDateToLocalNoon } from '../date-coerce.js';
 import type { EntryStore, ExpenditureStore } from '../store.js';
 
 export interface ExpenditureRoutesConfig {
@@ -79,7 +80,9 @@ function toView(r: {
 
 function parseIso(value: string | undefined, name: string): Date | null | 'invalid' {
   if (value === undefined) return null;
-  const d = new Date(value);
+  // A bare `YYYY-MM-DD` occurred_at coerces to local noon (specs/modules/
+  // kitchen.md § Logged-at backdating); a full timestamp passes through.
+  const d = new Date(coerceBareDateToLocalNoon(value));
   return Number.isNaN(d.getTime()) ? 'invalid' : d;
 }
 

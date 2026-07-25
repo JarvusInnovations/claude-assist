@@ -7,7 +7,9 @@ export const EXPENDITURE_HELP = `kitchen-axi expenditure <subcommand> [args] [--
 
   log "<label>" --kcal N [--duration M] [--avg-hr H] [--at TIME] [--source S] [--ulid U]
                                        record a stated burn (default source: manual;
-                                       --at defaults to now; idempotent on --ulid)
+                                       --at defaults to now — prefer a full local
+                                       timestamp, a bare YYYY-MM-DD backstops to local
+                                       noon that day; idempotent on --ulid)
   list [--since DATE] [--limit N]      recent expenditures, newest first
   delete <ulid>                        remove from all rollups
 
