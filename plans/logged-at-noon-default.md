@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 depends: [kitchen-module]
 specs:
   - specs/modules/kitchen.md
@@ -105,8 +105,24 @@ time-of-day is returned untouched.
 
 ## Notes
 
-(populated at closeout)
+- Shipped `coerceBareDateToLocalNoon` (`packages/kitchen/src/date-coerce.ts`):
+  a bare `YYYY-MM-DD` rebuilds as noon on that day in the machine's local zone,
+  serialized with the offset in effect **on the dated day** (DST-aware per date),
+  and any value with a time-of-day passes through unchanged.
+- **Coerced at four choke points** because bare dates can reach the API directly
+  (the `POST`/`PATCH`/expenditure validators accept any string, so a non-CLI
+  caller could send a bare date): CLI `validateDate` (`axi/args.ts`), entry
+  ingest (`store.ts`), `logged_at` PATCH (`services/pipeline.ts`), and
+  expenditure `occurred_at` (`routes/expenditures.ts`). One shared helper.
+- Docs: `--at` help + `reference.ts` summaries + a SKILL.md narrative bullet all
+  now say "prefer a full local timestamp; a bare date backstops to local noon."
+  Bundle + SKILL regenerated; `check:skills` passes.
+- Verified independently before merge: `bun test packages/kitchen/src` →
+  294 pass / 0 fail (new `date-coerce.test.ts` TZ-pinned to America/New_York,
+  covering EST/EDT, both DST transitions, month boundary, all CLI sites +
+  server); CI on #142 green (Build & Test, Docker Build); full-diff scrub clean.
 
 ## Follow-ups
 
-(populated at closeout)
+- **None.** Companion agent-practice (always supply an explicit local time on a
+  backdated log) is captured on the Hari side, not a code follow-up here.
