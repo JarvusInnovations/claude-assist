@@ -140,6 +140,12 @@ in doubt, read the spec.
 - `scripts/kitchen-axi expenditure list [--since DATE] [--limit N]` — recent expenditures, newest first
 - `scripts/kitchen-axi expenditure delete <ulid>` — remove an expenditure from all rollups
 
+### Weigh-ins
+
+- `scripts/kitchen-axi weigh-ins log --weight KG [--body-fat PCT] [--at TIME]` — record a manual weigh-in (source: manual; --at defaults to now — prefer a full local timestamp, a bare YYYY-MM-DD backstops to local noon that day; a naive time gets this machine's local offset attached because the server refuses to guess a zone)
+- `scripts/kitchen-axi weigh-ins list [--since DATE] [--limit N]` — raw readings, newest first — every reading is a row (repeats included); noise collapses at read time, never by rewriting
+- `scripts/kitchen-axi weight trend [--days N]` — derived view (default 30 days): one line per local day with readings (median weight + median body-fat + count, bucketed by each reading's OWN recorded offset) plus a 7-day rolling mean over existing days — no interpolation; context for the owner's judgment, never an auto-tuner
+
 ### Inventory
 
 - `scripts/kitchen-axi inventory list [--state S] [--closed] [--limit N]` — on-hand items in eat-first (eat_by ascending) order; --state filters, --closed includes finished/tossed
