@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 depends: []
 specs:
   - specs/modules/kitchen.md
@@ -95,8 +95,16 @@ specced in hari-capture `specs/screens/journal.md` and planned in Hari
 
 ## Notes
 
-_(at closeout)_
+- Merged as PR #145; deployed 2026-07-26 with `KITCHEN_DAILY_TARGETS` set in
+  the instance env (values from the owner's diet doctrine; the repo carries
+  only a synthetic `.env.example`). Live summary verified carrying the
+  `targets` block verbatim alongside `net_kcal`.
+- Parse lives at kitchen plugin init (`parseDailyTargets` in
+  `daily-targets.ts`); an explicit `{}` parses to feature-off, same as absent.
+- CLI wording gained `(N over)` for a breached cap beyond the specced
+  `left`/`to go`/`met` set — a negative "left" would misread.
 
 ## Follow-ups
 
-_(at closeout)_
+- None. The consuming budget-sheet UI shipped in hari-capture#38 (tracked by
+  Hari `plans/daily-macro-budgets.md`).
