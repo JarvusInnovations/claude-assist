@@ -65,6 +65,27 @@ function round(n: number): number {
   return Math.round(n * 10) / 10;
 }
 
+/** One owner-set daily reference line, as served verbatim on the summary. */
+export type TargetBound = { max: number } | { min: number };
+
+/**
+ * Render one configured daily-target line as `logged / target` with a
+ * direction-aware remaining (specs/modules/kitchen.md § Daily targets).
+ * remaining = target − logged is display arithmetic computed HERE, client-
+ * side — the server serves the two numbers, never the judgment, and nothing
+ * about the figure is ever derived from the day's burn (framing rule).
+ */
+export function targetLine(logged: number, bound: TargetBound): string {
+  if ("max" in bound) {
+    const left = round(bound.max - logged);
+    return left >= 0
+      ? `${logged} / ${bound.max} max (${left} left)`
+      : `${logged} / ${bound.max} max (${round(-left)} over)`;
+  }
+  const toGo = round(bound.min - logged);
+  return toGo > 0 ? `${logged} / ${bound.min} min (${toGo} to go)` : `${logged} / ${bound.min} min (met)`;
+}
+
 /** TOON columns for an entry row: identity + status + effective headline macros. */
 export const ENTRY_ROW_SCHEMA: FieldDef[] = [
   { type: "field", key: "ulid" },

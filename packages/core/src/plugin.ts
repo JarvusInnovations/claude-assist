@@ -107,6 +107,13 @@ export interface KitchenPluginConfig {
    * auto-tunes (§ Expenditure & net energy). Unset ⇒ the net line is omitted.
    */
   tdeeBase?: number;
+  /**
+   * Owner-set per-nutrient daily reference lines (KITCHEN_DAILY_TARGETS) —
+   * raw JSON mapping panel fields to exactly one of {"max": N} / {"min": N},
+   * parsed and validated at plugin init (§ Daily targets). Malformed ⇒ boot
+   * failure; unset ⇒ the summary's targets block is omitted.
+   */
+  dailyTargets?: string;
 }
 
 /**

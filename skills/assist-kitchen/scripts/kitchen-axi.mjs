@@ -1099,6 +1099,14 @@ function sumEffective(entries) {
 function round(n) {
   return Math.round(n * 10) / 10;
 }
+function targetLine(logged, bound) {
+  if ("max" in bound) {
+    const left = round(bound.max - logged);
+    return left >= 0 ? `${logged} / ${bound.max} max (${left} left)` : `${logged} / ${bound.max} max (${round(-left)} over)`;
+  }
+  const toGo = round(bound.min - logged);
+  return toGo > 0 ? `${logged} / ${bound.min} min (${toGo} to go)` : `${logged} / ${bound.min} min (met)`;
+}
 var ENTRY_ROW_SCHEMA = [
   { type: "field", key: "ulid" },
   { type: "dateOnly", key: "logged_at", as: "logged" },
@@ -1115,7 +1123,8 @@ var HOME_HELP = `kitchen-axi [--eat-first N] [--json]
 
   The no-arg view: today's entries + effective macro totals, pending-estimate
   count, the top eat-first inventory items, and the open needs-info question
-  count.
+  count. Fields with an owner-set daily target render as logged / target with
+  remaining (caps count down what's left; floors count up to met).
 
   --eat-first N   how many eat-first items to show (default 3)
   --json          raw JSON`;
@@ -1169,20 +1178,25 @@ async function homeCommand(args) {
   const pending = entries.filter((e) => e.status === "estimating").length;
   const failed = entries.filter((e) => e.status === "failed").length;
   const totals = sumEffective(entries);
+  const targets = summary && summary.targets && typeof summary.targets === "object" ? summary.targets : {};
+  const vsTarget = (key) => {
+    const bound = targets[key];
+    return bound ? targetLine(totals[key], bound) : totals[key];
+  };
   const today = renderObject({
     server,
     date: startOfTodayIso().slice(0, 10),
     entries: entries.length,
     pending_estimates: pending,
     ...failed ? { failed } : {},
-    kcal: totals.calories,
-    protein_g: totals.protein_g,
-    fat_g: totals.fat_g,
-    sat_fat_g: totals.sat_fat_g,
-    carbs_g: totals.carbs_g,
-    sugar_g: totals.sugar_g,
-    fiber_g: totals.fiber_g,
-    sodium_mg: totals.sodium_mg,
+    kcal: vsTarget("calories"),
+    protein_g: vsTarget("protein_g"),
+    fat_g: vsTarget("fat_g"),
+    sat_fat_g: vsTarget("sat_fat_g"),
+    carbs_g: vsTarget("carbs_g"),
+    sugar_g: vsTarget("sugar_g"),
+    fiber_g: vsTarget("fiber_g"),
+    sodium_mg: vsTarget("sodium_mg"),
     // Net-energy context (§ Expenditure & net energy): shown only when the
     // day logged a burn and/or the instance configured a TDEE base. The net
     // is CONTEXT, not a spend-it budget — never a "remaining to eat" figure.
@@ -2141,7 +2155,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "3ba8dfc" : "dev";
+var VERSION = true ? "101749c" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)

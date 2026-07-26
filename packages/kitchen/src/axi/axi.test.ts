@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { AxiError } from "axi-sdk-js";
 import { DEFAULT_SERVER, resolveServer, buildMultipartForm } from "./client.js";
 import { parseArgs, collectFlag, parseNumberFlag, splitCsv } from "./args.js";
-import { sumEffective, effectiveMacro } from "./format.js";
+import { sumEffective, effectiveMacro, targetLine } from "./format.js";
 import { commandReferenceText, COMMAND_GROUPS } from "./reference.js";
 import { spliceGeneratedRegions, commandReferenceMarkdown } from "./skill.js";
 import { buildLogEntryFields, buildPatchBody } from "./commands/entries.js";
@@ -82,6 +82,21 @@ describe("effective macros (base × multiplier)", () => {
     ]);
     expect(totals.calories).toBe(400); // 200 + 200
     expect(totals.protein_g).toBe(15); // 15 + (null skipped)
+  });
+});
+
+describe("daily-target lines (§ Daily targets — direction-aware remaining)", () => {
+  it("renders a max as logged / target with what's left, or the overrun", () => {
+    expect(targetLine(60, { max: 100 })).toBe("60 / 100 max (40 left)");
+    expect(targetLine(100, { max: 100 })).toBe("100 / 100 max (0 left)");
+    // A max exceeded is a breach — say so, never a negative "left".
+    expect(targetLine(142, { max: 100 })).toBe("142 / 100 max (42 over)");
+  });
+
+  it("renders a min as to-go until reached, then met — a met floor is success, not an overrun", () => {
+    expect(targetLine(10, { min: 42 })).toBe("10 / 42 min (32 to go)");
+    expect(targetLine(42, { min: 42 })).toBe("42 / 42 min (met)");
+    expect(targetLine(50, { min: 42 })).toBe("50 / 42 min (met)");
   });
 });
 

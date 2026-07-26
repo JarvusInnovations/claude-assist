@@ -19,12 +19,15 @@ import type { FastifyPluginAsync } from 'fastify';
 import { ULID_PATTERN, generateUlid } from '../ulid.js';
 import { coerceBareDateToLocalNoon } from '../date-coerce.js';
 import type { EntryStore, ExpenditureStore } from '../store.js';
+import type { DailyTargets } from '../daily-targets.js';
 
 export interface ExpenditureRoutesConfig {
   store: ExpenditureStore;
   entries: EntryStore;
   /** KITCHEN_TDEE_BASE — opaque instance config; unset ⇒ net omitted. */
   tdeeBase?: number;
+  /** KITCHEN_DAILY_TARGETS, parsed — opaque instance config; unset ⇒ targets omitted. */
+  dailyTargets?: DailyTargets;
 }
 
 const EXPENDITURE_SOURCES = ['strava', 'health_connect', 'garmin', 'manual'] as const;
@@ -90,7 +93,7 @@ export const registerExpenditureRoutes: FastifyPluginAsync<ExpenditureRoutesConf
   fastify,
   config
 ) => {
-  const { store, entries, tdeeBase } = config;
+  const { store, entries, tdeeBase, dailyTargets } = config;
 
   fastify.post<{ Body: ExpenditureBody }>(
     '/kitchen/expenditures',
@@ -187,6 +190,10 @@ export const registerExpenditureRoutes: FastifyPluginAsync<ExpenditureRoutesConf
               net_kcal: Math.round((tdeeBase + expenditureKcal - intake) * 10) / 10,
             }
           : {}),
+        // Owner-set reference lines, verbatim (§ Daily targets). remaining is
+        // client-side display arithmetic; the calories target is static and
+        // intake-managed — never adjusted by the day's burn (framing rule).
+        ...(dailyTargets !== undefined ? { targets: dailyTargets } : {}),
       };
     }
   );
