@@ -17,7 +17,7 @@ import {
   type PluginOptions,
   type Scheduler,
 } from '@jarvus/claude-assist-core';
-import { PgEntryStore, PgExpenditureStore, PgRecipeStore, PgWeighInStore } from './store.js';
+import { PgEntryStore, PgExpenditureStore, PgRecipeStore, PgStravaOAuthStore, PgWeighInStore } from './store.js';
 import { KitchenEstimator } from './services/estimator.js';
 import { KitchenPipeline } from './services/pipeline.js';
 import { readMealBankRecipes } from './services/mealbank.js';
@@ -31,6 +31,13 @@ import { KitchenReceiptParser } from './services/receipt-parser.js';
 import { KitchenLabelParser } from './services/label-parser.js';
 import { InventoryPipeline } from './services/inventory.js';
 import { PgConsumeStore } from './services/consume-store.js';
+import { StravaClient } from './services/strava-client.js';
+import {
+  StravaSync,
+  isStravaSyncConfigured,
+  parseStravaSyncMinutes,
+  stravaSyncCron,
+} from './services/strava-sync.js';
 import { registerInventoryRoutes } from './routes/inventory.js';
 import type { EventResolution } from './inventory-types.js';
 import type { RecipeRecord } from './types.js';
@@ -149,8 +156,9 @@ export default createPlugin('kitchen', async (fastify: FastifyInstance, options:
   // Expenditure & net energy (§ Expenditure & net energy, claude-assist#121).
   // Daily targets (§ Daily targets) parse once here at init — malformed config
   // throws and fails boot, never a silent drop.
+  const expenditureStore = new PgExpenditureStore(fastify.sql);
   await fastify.register(registerExpenditureRoutes, {
-    store: new PgExpenditureStore(fastify.sql),
+    store: expenditureStore,
     entries: entryStore,
     tdeeBase: config.tdeeBase,
     dailyTargets: parseDailyTargets(config.dailyTargets),
@@ -202,6 +210,41 @@ export default createPlugin('kitchen', async (fastify: FastifyInstance, options:
   } else {
     fastify.log.info('Kitchen estimation sweep disabled via config');
   }
+
+  // Strava activity sync (§ Strava activity sync — the exercise auto-feed).
+  // Cadence parses boot-loud even when the feature is off (same doctrine as
+  // KITCHEN_DAILY_TARGETS: a malformed value fails startup, never a silent
+  // drop). The feature itself gates on all three credentials being present —
+  // any absent ⇒ entirely off, the task is never registered.
+  const stravaSyncMinutes = parseStravaSyncMinutes(config.stravaSyncMinutes);
+  if (!isStravaSyncConfigured(config)) {
+    fastify.log.info('Strava sync off — KITCHEN_STRAVA_* credentials not fully configured');
+  } else if (config.disableStravaSync) {
+    fastify.log.info('Strava sync disabled via config');
+  } else {
+    const stravaClient = new StravaClient(
+      {
+        clientId: config.stravaClientId!,
+        clientSecret: config.stravaClientSecret!,
+        refreshTokenSeed: config.stravaRefreshToken!,
+      },
+      new PgStravaOAuthStore(fastify.sql),
+      fastify.log
+    );
+    const stravaSync = new StravaSync(stravaClient, expenditureStore, fastify.log);
+    fastify.scheduler.register({
+      name: 'kitchen:strava-sync',
+      schedule: stravaSyncCron(stravaSyncMinutes),
+      runOnStartup: true, // first run backfills/replays the trailing week
+      handler: async () => {
+        const result = await stravaSync.tick();
+        if (result.inserted > 0 || result.skipped_no_calories > 0) {
+          fastify.log.info({ result }, 'Strava sync tick complete');
+        }
+      },
+    });
+    fastify.log.info({ minutes: stravaSyncMinutes }, 'Strava sync enabled');
+  }
 });
 
 // Re-exports for clients (tests, future modules, briefing source)
@@ -216,9 +259,26 @@ export {
   type DailyTargetBound,
   type DailyTargetField,
 } from './daily-targets.js';
-export type { EntryStore, ExpenditureRecord, ExpenditureStore, NewEntry, NewExpenditure, NewRecipe, NewWeighIn, RecentEntrySummary, RecipeStore, WeighInRecord, WeighInStore } from './store.js';
-export { PgEntryStore, PgRecipeStore, PgWeighInStore, normalizeNewEntry, EMPTY_NUTRITION } from './store.js';
-export { MemoryEntryStore, MemoryRecipeStore, MemoryWeighInStore } from './memory-store.js';
+export type { EntryStore, ExpenditureRecord, ExpenditureStore, NewEntry, NewExpenditure, NewRecipe, NewWeighIn, RecentEntrySummary, RecipeStore, StravaOAuthState, StravaOAuthStore, WeighInRecord, WeighInStore } from './store.js';
+export { PgEntryStore, PgRecipeStore, PgStravaOAuthStore, PgWeighInStore, normalizeNewEntry, EMPTY_NUTRITION } from './store.js';
+export { MemoryEntryStore, MemoryRecipeStore, MemoryStravaOAuthStore, MemoryWeighInStore } from './memory-store.js';
+export {
+  StravaClient,
+  StravaRefreshError,
+  StravaApiError,
+  type StravaClientConfig,
+  type StravaActivitySummary,
+  type StravaActivityDetail,
+  type FetchLike,
+} from './services/strava-client.js';
+export {
+  StravaSync,
+  StravaSyncConfigError,
+  isStravaSyncConfigured,
+  parseStravaSyncMinutes,
+  stravaSyncCron,
+  type StravaSyncTickResult,
+} from './services/strava-sync.js';
 export {
   registerWeighInRoutes,
   parseOffsetMinutes,
