@@ -251,6 +251,45 @@ stores **just enough burn to compute the balance** — no routes, laps,
 splits, or training load. It is not an activity tracker; the exercise
 system of record stays upstream.
 
+## Health Connect probe — discovery scaffolding (phase 3a)
+
+A deliberately temporary reconnaissance surface that de-risks the phase-3
+Health Connect integration (§ Expenditure & net energy, source architecture).
+The durable weigh-in/dedup design was deferred because record shape varies by
+writer; this probe collects the evidence that design needs. **Scaffolding, not
+product**: probe data feeds NO rollup, NO net line, NO dedup — it exists to be
+read by the owner/agent and superseded. When phase 3 proper is specced, this
+section is expected to shrink or disappear with it.
+
+**Capture contract.** The capture app (foreground, owner-triggered — no
+background sync in this phase) reads a fixed candidate set of Health Connect
+record types — weight & body composition, active/total/basal energy, exercise
+sessions, steps, heart rate & resting heart rate, sleep — over a bounded
+recent window (default 30 days), and posts everything it was granted,
+**verbatim as the platform returned it**, in one document:
+
+- `POST /kitchen/health-probe` — `{ ulid, captured_at, window: { since,
+  until }, permissions: { <type>: granted|denied }, records: [ ... ] }`.
+  Records are stored raw (jsonb), untyped and unnormalized — transcribe, don't
+  interpret (same doctrine as label capture). Each record keeps whatever
+  source-attribution the platform provides (writer package, device, recorded
+  timestamps). Idempotent on ulid. The per-type permission map rides along so
+  a sparse dump is distinguishable from a denied one. Payload bounded (a few
+  MB); the app trims the window rather than splitting documents.
+- `GET /kitchen/health-probes` — newest-first metadata: ulid, captured_at,
+  window, per-type record counts, granted/denied summary.
+- `GET /kitchen/health-probes/:ulid` — the full raw document.
+
+CLI: `health-probes list` / `health-probes show <ulid>` — the examination
+surface this exists for.
+
+**What the probe must answer** (the phase-3 spec's open questions): which
+writers actually appear and under what package ids; whether the scale
+contributes body-fat/BMI beyond weight; whether Garmin/Strava energy records
+would double-count the existing Strava expenditure feed; per-writer cadence,
+granularity, and timestamp/zone quality; which permission grants the owner's
+device actually honors.
+
 ## Daily targets — owner-set reference lines
 
 The owner's diet doctrine defines per-nutrient daily reference lines (a
