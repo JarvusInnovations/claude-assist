@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 depends: []
 specs:
   - specs/modules/kitchen.md
@@ -106,8 +106,17 @@ changes.
 
 ## Notes
 
-*(at closeout)*
+- Merged as PR #147; deployed 2026-07-26 (migration 013 applied on boot).
+  Live checks: `GET /kitchen/weight` returns the empty derivation shape;
+  a zone-naive POST is rejected with the spec's clear 400 message.
+- `tz_offset_minutes` column preserves each reading's own offset across
+  timestamptz UTC normalization — the day bucketing input.
+- `source` is free text (writer package ids are an open set), unlike the
+  expenditure source enum.
 
 ## Follow-ups
 
-*(at closeout)*
+- Owner-facing surfaces for the trend (daily briefing line, app display,
+  plan-session context) deliberately deferred until real data accumulates
+  and the TDEE-tuning conversation happens — tracked by the coordination
+  plan in Hari (plans/weigh-ins-sync.md).
