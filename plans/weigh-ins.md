@@ -1,10 +1,10 @@
 ---
-status: planned
+status: in-progress
 depends: []
 specs:
   - specs/modules/kitchen.md
 issues: [121]
-pr:
+pr: 147
 ---
 
 # Plan: Weigh-ins — server side (phase 3)
@@ -45,17 +45,58 @@ changes.
   400, median collapse with a multi-reading morning (synthetic), trend
   window math, offset-aware day bucketing across a zone boundary.
 
+## Implementation decisions
+
+- **`tz_offset_minutes` column.** Postgres `timestamptz` normalizes to UTC
+  and discards the poster's offset, so "bucket by the reading's own offset"
+  needs the offset persisted: an `INTEGER NOT NULL` (minutes east of UTC)
+  captured verbatim from the POSTed `occurred_at`'s explicit offset at
+  ingest. Local day = stored UTC instant + offset, computed read-time in
+  `localDateOf()` — no server-zone input anywhere in the bucketing.
+- **Naive `--at` in the CLI gets the machine's local offset attached**
+  (`ensureExplicitOffset`, DST-correct for the dated day). The server-side
+  400 is about never *guessing* a zone; the CLI isn't guessing — it knows
+  its machine's clock, same trust basis as the bare-date → local-noon
+  coercion it already applies.
+- **`source` is free text** (writer package id or `manual`), not an enum —
+  the spec names it "writer package id, e.g. the scale app's", which is an
+  open set, unlike the expenditure sources.
+- **Weigh-in store list cap is 2000** (vs the expenditure store's 500):
+  `GET /kitchen/weight` reads a whole window of raw rows, and a 366-day
+  window of several-readings-a-day mornings has to fit in one read.
+- **Trend window is calendar-based**: each point averages daily values whose
+  date falls in the 7 calendar days ending on that day — so a gap wider
+  than the window genuinely drops out (tested), rather than "last 7 array
+  elements" silently spanning months.
+- Derived values round to 2 decimals to keep float noise out of medians of
+  even counts and rolling means.
+
 ## Validation
 
-- [ ] Same `hc_uuid` posted twice → one row, 200 replay with the stored row.
-- [ ] `occurred_at` without an offset → 400; with offset → bucketed to the
+- [x] Same `hc_uuid` posted twice → one row, 200 replay with the stored row.
+      *`weigh-ins.test.ts` "seeds the ulid from hc_uuid server-side"; also
+      covers the ulid path and both-or-neither → 400.*
+- [x] `occurred_at` without an offset → 400; with offset → bucketed to the
       offset's local day in `GET /kitchen/weight`.
-- [ ] Multi-reading day collapses to the median in `daily[]`; raw rows all
+      *Naive timestamp AND bare date 400 with "explicit UTC offset" message;
+      a 23:30 −04:00 reading whose UTC instant crosses midnight buckets to
+      its own local day ("buckets each reading by ITS OWN stored offset").*
+- [x] Multi-reading day collapses to the median in `daily[]`; raw rows all
       remain in `GET /kitchen/weigh-ins`.
-- [ ] `trend[]` is a 7-day rolling mean over existing daily values (no
+      *Three-reading morning → median 81.5, count 3, raw count still 3;
+      even-count median = mean of middle two (80.8).*
+- [x] `trend[]` is a 7-day rolling mean over existing daily values (no
       interpolation).
-- [ ] CLI verbs render; bundle + SKILL.md regenerated; check:skills passes.
-- [ ] No code path adjusts KITCHEN_TDEE_BASE or targets from weigh-in data.
+      *A reading 8 days outside the window never bleeds into later points;
+      gap days contribute nothing (80/81/82 progression test).*
+- [x] CLI verbs render; bundle + SKILL.md regenerated; check:skills passes.
+      *`weigh-ins --help` / `weight --help` render from the rebuilt bundle;
+      `bun run check:skills` clean; full suite 321 pass / 0 fail; package
+      tsc + `type-check:axi` clean.*
+- [x] No code path adjusts KITCHEN_TDEE_BASE or targets from weigh-in data.
+      *Weigh-in routes take only `{ store }` — no config, no writes outside
+      `kitchen.weigh_ins`; `tdeeBase`/`dailyTargets` remain read-only pass-
+      throughs in the expenditure summary.*
 
 ## Risks / unknowns
 
@@ -65,8 +106,8 @@ changes.
 
 ## Notes
 
-_(at closeout)_
+*(at closeout)*
 
 ## Follow-ups
 
-_(at closeout)_
+*(at closeout)*
