@@ -217,15 +217,13 @@ balance, not licensing more intake.
   server-side sync posts recent activities as `source: 'strava'` rows,
   ulids seeded from Strava activity ids so re-pulls are idempotent
   replays.
-- **Weight → Health Connect via the capture app (phase 3).** The Android
-  Health Connect hub is the only path to the smart scale (and also
-  aggregates Garmin/Strava writers). The capture app reads it on-device
-  (`health` Flutter plugin) and posts **`kitchen.weigh_ins`** rows
-  (`ulid, occurred_at, weight_kg, source`) — specced in detail when that
-  phase drains. Weight is the goal metric and the empirical tuner for
-  `KITCHEN_TDEE_BASE`; until then the config stays a directional estimate.
-  App-bridge caveats (Android background-sync constraints, writer-varying
-  granularity) belong to that phase.
+- **Weight → Health Connect via the capture app (phase 3 — § Weigh-ins).**
+  The Android Health Connect hub is the only path to the smart scale. The
+  capture app reads it on-device and posts `kitchen.weigh_ins` rows; the
+  full contract is § Weigh-ins below, written against two probe dumps
+  (2026-07-26): the scale app shares weight + body-fat pairs only (water/
+  lean mass are not written), Garmin occasionally writes its own weight
+  row, and the platform's timestamps arrive zone-naive.
 - **Recovery signals → `garmin-pull` (not an expenditure feed).** Body
   battery, stress, detailed sleep, resting HR exist nowhere else, but the
   skill is authenticated-session replay — tolerable for a weekly,
@@ -250,6 +248,58 @@ API clients, not module code. And a deliberate anti-scope line: kitchen
 stores **just enough burn to compute the balance** — no routes, laps,
 splits, or training load. It is not an activity tracker; the exercise
 system of record stays upstream.
+
+## Weigh-ins — scale data via the capture app (phase 3)
+
+Weight is the goal metric and the empirical tuner for `KITCHEN_TDEE_BASE`
+(and, downstream, the § Daily targets calories line). Readings originate on
+the owner's scale, reach Android Health Connect via the scale app, and arrive
+here from the capture app, which reads the platform store on-device. The
+module transcribes observations and derives; it never decides.
+
+**Data.** `kitchen.weigh_ins`: `ulid`, `occurred_at` (timestamptz — the
+poster supplies an explicit zone offset; the platform emits zone-naive local
+timestamps and only the device knows its zone, so the app attaches it and
+the server never infers a clock), `weight_kg`, `body_fat_pct` (nullable —
+the scale writes weight+body-fat pairs; other writers send weight alone),
+`source` (writer package id, e.g. the scale app's, or `manual`),
+`created_at`. **Every reading is a row**, including same-morning repeats and
+non-scale writers — noise is handled at read time, never by refusing or
+rewriting observations (capture-verbatim, derive-in-code).
+
+**Idempotency.** A Health-Connect-sourced row's ulid is seeded
+`ulidFromSeed(0, "healthconnect:<record-uuid>")` — same convention as
+`strava:<id>` — so re-reads are replays. The POST accepts either a
+caller-supplied `ulid` or an `hc_uuid` the server seeds from (exactly one;
+keeping the seed function server-side means no client reimplements it).
+Manual rows use fresh ulids.
+
+**API.**
+
+- `POST /kitchen/weigh-ins` — one reading; idempotent (`201`, `200` replay
+  returning the stored row); body: `{ ulid | hc_uuid, occurred_at,
+  weight_kg, body_fat_pct?, source }`. `occurred_at` MUST carry an explicit
+  UTC offset — a zone-naive timestamp is a `400`, not a guess.
+- `GET /kitchen/weigh-ins?since&limit` — raw rows, newest first.
+- `GET /kitchen/weight?days=N` (default 30) — the derived read:
+  - `daily[]` — one entry per local day that has readings (bucketed by each
+    reading's own stored offset): `date`, `weight_kg` (the day's **median**
+    reading — same-morning repeats spread up to ~0.7 kg, and a median
+    shrugs at both repeats and the odd manual entry), `body_fat_pct`
+    (median of the day's non-null values), `readings` (count).
+  - `trend[]` — 7-day rolling mean over `daily` values (computed over the
+    days that exist in the window; no interpolation, no invention).
+- `DELETE /kitchen/weigh-ins/:ulid` — removes a bad reading.
+
+CLI: `weigh-ins list [--since] [--limit]`, `weigh-ins log --weight KG
+[--body-fat PCT] [--at TIME]` (manual entry), `weight trend [--days N]`.
+
+**Derivation is read-time and non-destructive.** Collapse (daily median)
+and trend live in the read path only — the raw rows are never merged,
+deleted, or "corrected" by the module. And the standing rule extends here:
+the module serves the trend; **retuning `KITCHEN_TDEE_BASE` or any § Daily
+targets line against it stays an owner/agent judgment loop** — no
+auto-adjustment, ever.
 
 ## Daily targets — owner-set reference lines
 
