@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { MemoryEntryStore, MemoryExpenditureStore } from '../memory-store.js';
 import { registerExpenditureRoutes } from './expenditures.js';
+import type { DailyTargets } from '../daily-targets.js';
 import { generateUlid } from '../ulid.js';
 
 describe('expenditure routes (§ Expenditure & net energy)', () => {
@@ -9,11 +10,11 @@ describe('expenditure routes (§ Expenditure & net energy)', () => {
   let store: MemoryExpenditureStore;
   let entries: MemoryEntryStore;
 
-  const build = async (tdeeBase?: number) => {
+  const build = async (tdeeBase?: number, dailyTargets?: DailyTargets) => {
     fastify = Fastify({ logger: false });
     store = new MemoryExpenditureStore();
     entries = new MemoryEntryStore();
-    await fastify.register(registerExpenditureRoutes, { store, entries, tdeeBase });
+    await fastify.register(registerExpenditureRoutes, { store, entries, tdeeBase, dailyTargets });
     await fastify.ready();
   };
 
@@ -103,6 +104,38 @@ describe('expenditure routes (§ Expenditure & net energy)', () => {
     expect(s.expenditure_kcal).toBe(0);
     expect('tdee_base_kcal' in s).toBe(false);
     expect('net_kcal' in s).toBe(false);
+  });
+
+  it('summary serves configured daily targets VERBATIM — raw config, even with burns logged (§ Daily targets framing rule)', async () => {
+    const targets: DailyTargets = { calories: { max: 1000 }, fiber_g: { min: 42 } };
+    await build(2300, targets);
+    // A burn on the day must not touch the targets block — the calories
+    // target is static and intake-managed, never adjusted by expenditure.
+    await fastify.inject({
+      method: 'POST', url: '/kitchen/expenditures',
+      payload: { occurred_at: '2026-07-22T22:00:00Z', source: 'manual', label: 'Ride', kcal: 400 },
+    });
+
+    const res = await fastify.inject({
+      method: 'GET',
+      url: '/kitchen/summary?since=2026-07-22T00:00:00Z&until=2026-07-23T00:00:00Z',
+    });
+    expect(res.statusCode).toBe(200);
+    const s = res.json();
+    expect(s.expenditure_kcal).toBe(400);
+    expect(s.targets).toEqual({ calories: { max: 1000 }, fiber_g: { min: 42 } });
+    // Verbatim means verbatim: no server-side remaining, no burn-adjusted line.
+    expect('remaining' in s.targets.calories).toBe(false);
+    expect(s.targets.calories.max).toBe(1000);
+  });
+
+  it('summary OMITS the targets key entirely when unconfigured — absent, not null or {}', async () => {
+    await build(2300);
+    const res = await fastify.inject({
+      method: 'GET',
+      url: '/kitchen/summary?since=2026-07-22T00:00:00Z&until=2026-07-23T00:00:00Z',
+    });
+    expect('targets' in res.json()).toBe(false);
   });
 
   it('summary requires the window', async () => {
