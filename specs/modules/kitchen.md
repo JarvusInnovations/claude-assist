@@ -224,11 +224,14 @@ balance, not licensing more intake.
   (2026-07-26): the scale app shares weight + body-fat pairs only (water/
   lean mass are not written), Garmin occasionally writes its own weight
   row, and the platform's timestamps arrive zone-naive.
-- **Recovery signals → `garmin-pull` (not an expenditure feed).** Body
-  battery, stress, detailed sleep, resting HR exist nowhere else, but the
-  skill is authenticated-session replay — tolerable for a weekly,
-  human-adjacent batch (the training-loop plan's cadence), wrong as a
-  daily automated dependency. `source: 'garmin'` remains valid for
+- **Recovery signals — mostly Health Connect now; `garmin-pull` only for
+  the proprietary leftovers.** The 2026-07-26 probe dumps falsified this
+  bullet's original premise ("exist nowhere else"): detailed sleep
+  (sessions + stages) and daily resting HR flow through Health Connect
+  from Garmin. Only body battery, stress, and HRV/training-readiness stay
+  locked in Garmin's app, where the janky authenticated-session replay
+  would be the sole path — acceptable never as an automated dependency,
+  and currently wanted by nothing. `source: 'garmin'` remains valid for
   occasional manual-assisted imports; the deficit pipeline never depends
   on it.
 
