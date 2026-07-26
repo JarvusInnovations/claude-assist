@@ -6,6 +6,7 @@ import { sumEffective, effectiveMacro, targetLine } from "./format.js";
 import { commandReferenceText, COMMAND_GROUPS } from "./reference.js";
 import { spliceGeneratedRegions, commandReferenceMarkdown } from "./skill.js";
 import { buildLogEntryFields, buildPatchBody } from "./commands/entries.js";
+import { ensureExplicitOffset } from "./commands/weigh-ins.js";
 
 describe("resolveServer", () => {
   it("defaults to localhost and strips trailing slashes from the env override", () => {
@@ -231,7 +232,7 @@ describe("entries log — directly-stated panel wiring", () => {
 describe("command reference (single source of truth)", () => {
   it("covers every spec-listed command group", () => {
     const groups = COMMAND_GROUPS.map((g) => g.group);
-    expect(groups).toEqual(["Entries", "Expenditure", "Inventory", "Receipts", "Recipes", "Products & lexicon"]);
+    expect(groups).toEqual(["Entries", "Expenditure", "Weigh-ins", "Inventory", "Receipts", "Recipes", "Products & lexicon"]);
   });
 
   it("renders the reference as text and markdown from the same source", () => {
@@ -246,5 +247,28 @@ describe("command reference (single source of truth)", () => {
     expect(out.startsWith("before")).toBe(true);
     expect(out.trimEnd().endsWith("after")).toBe(true);
     expect(() => spliceGeneratedRegions("no markers here")).toThrow();
+  });
+});
+
+describe("weigh-ins --at offset handling", () => {
+  it("ensureExplicitOffset passes explicit offsets through untouched", () => {
+    expect(ensureExplicitOffset("2026-01-15T08:30:00Z")).toBe("2026-01-15T08:30:00Z");
+    expect(ensureExplicitOffset("2026-01-15T08:30:00-05:00")).toBe("2026-01-15T08:30:00-05:00");
+    expect(ensureExplicitOffset("2026-01-15T08:30:00+0530")).toBe("2026-01-15T08:30:00+0530");
+  });
+
+  it("attaches the machine's local offset (for THAT date) to a naive timestamp", () => {
+    // The server 400s zone-naive occurred_at; the CLI knows its own zone and
+    // attaches it. Zone-independent assertion: whatever machine runs this,
+    // the attached offset must equal the local offset in effect on the date.
+    const out = ensureExplicitOffset("2026-01-15T08:30:00");
+    expect(out.startsWith("2026-01-15T08:30:00")).toBe(true);
+    const match = /([+-])(\d{2}):(\d{2})$/.exec(out);
+    expect(match).not.toBeNull();
+    const attached = (match![1] === "-" ? -1 : 1) * (Number(match![2]) * 60 + Number(match![3]));
+    const expected = -new Date(2026, 0, 15, 8, 30, 0).getTimezoneOffset();
+    expect(attached).toBe(expected);
+    // Round-trip: the string parses to the same instant the naive local time meant.
+    expect(new Date(out).getTime()).toBe(new Date(2026, 0, 15, 8, 30, 0).getTime());
   });
 });

@@ -597,6 +597,20 @@ var COMMAND_GROUPS = [
     ]
   },
   {
+    group: "Weigh-ins",
+    commands: [
+      {
+        usage: "weigh-ins log --weight KG [--body-fat PCT] [--at TIME]",
+        summary: "record a manual weigh-in (source: manual; --at defaults to now \u2014 prefer a full local timestamp, a bare YYYY-MM-DD backstops to local noon that day; a naive time gets this machine's local offset attached because the server refuses to guess a zone)"
+      },
+      { usage: "weigh-ins list [--since DATE] [--limit N]", summary: "raw readings, newest first \u2014 every reading is a row (repeats included); noise collapses at read time, never by rewriting" },
+      {
+        usage: "weight trend [--days N]",
+        summary: "derived view (default 30 days): one line per local day with readings (median weight + median body-fat + count, bucketed by each reading's OWN recorded offset) plus a 7-day rolling mean over existing days \u2014 no interpolation; context for the owner's judgment, never an auto-tuner"
+      }
+    ]
+  },
+  {
     group: "Inventory",
     commands: [
       { usage: "inventory list [--state S] [--closed] [--limit N]", summary: "on-hand items in eat-first (eat_by ascending) order; --state filters, --closed includes finished/tossed" },
@@ -1859,6 +1873,122 @@ async function deleteExpenditure(args) {
   return renderObject({ deleted: ulid });
 }
 
+// packages/kitchen/src/axi/commands/weigh-ins.ts
+var WEIGH_INS_HELP = `kitchen-axi weigh-ins <subcommand> [args] [--json]
+
+  log --weight KG [--body-fat PCT] [--at TIME]
+                                       record a manual weigh-in (source: manual;
+                                       --at defaults to now \u2014 prefer a full local
+                                       timestamp; a bare YYYY-MM-DD backstops to
+                                       local noon that day; a naive time gets this
+                                       machine's local offset attached, because the
+                                       server refuses to guess a zone)
+  list [--since DATE] [--limit N]      raw readings, newest first
+
+  Every reading is a row \u2014 repeats and all; noise collapses at read time
+  (daily median), never by rewriting observations. For the derived daily/
+  trend view, use \`weight trend\`. The trend is context for the OWNER'S
+  judgment: nothing auto-tunes the TDEE base or targets from it.`;
+var WEIGHT_HELP = `kitchen-axi weight <subcommand> [args] [--json]
+
+  trend [--days N]                     derived view over the last N days
+                                       (default 30): one line per local day
+                                       with readings (median weight, median
+                                       body-fat of non-null values, reading
+                                       count) plus a 7-day rolling mean over
+                                       the days that exist \u2014 no interpolation
+
+  Days bucket by each reading's OWN recorded UTC offset, not this machine's
+  zone. Raw rows stay intact \u2014 inspect them with \`weigh-ins list\`.`;
+var ROW_SCHEMA2 = [
+  field("ulid"),
+  field("local_date"),
+  field("occurred_at"),
+  field("weight_kg"),
+  field("body_fat_pct"),
+  field("source")
+];
+var DAILY_SCHEMA = [
+  field("date"),
+  field("weight_kg"),
+  field("body_fat_pct"),
+  field("readings")
+];
+var TREND_SCHEMA = [field("date"), field("weight_kg")];
+var OFFSET_PATTERN = /(Z|[+-]\d{2}:?\d{2})$/;
+function ensureExplicitOffset(value) {
+  if (OFFSET_PATTERN.test(value)) return value;
+  const local = new Date(value);
+  const offsetMinutes = -local.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const abs = Math.abs(offsetMinutes);
+  const hh = String(Math.floor(abs / 60)).padStart(2, "0");
+  const mm = String(abs % 60).padStart(2, "0");
+  return `${value}${sign}${hh}:${mm}`;
+}
+async function weighInsCommand(args) {
+  const sub = args[0];
+  const rest = args.slice(1);
+  switch (sub) {
+    case "log":
+      return logWeighIn(rest);
+    case "list":
+    case void 0:
+      return listWeighIns(sub === void 0 ? args : rest);
+    default:
+      throw new AxiError(`Unknown weigh-ins subcommand: ${sub}`, "VALIDATION_ERROR", [WEIGH_INS_HELP]);
+  }
+}
+async function weightCommand(args) {
+  const sub = args[0];
+  switch (sub) {
+    case "trend":
+      return weightTrend(args.slice(1));
+    default:
+      throw new AxiError(`Unknown weight subcommand: ${sub ?? "(none)"}`, "VALIDATION_ERROR", [WEIGHT_HELP]);
+  }
+}
+async function logWeighIn(args) {
+  const { flags } = parseArgs(args, ["json"], ["weight", "body-fat", "at"]);
+  if (typeof flags.weight !== "string") {
+    throw new AxiError("weigh-ins log needs --weight (kg)", "VALIDATION_ERROR", [WEIGH_INS_HELP]);
+  }
+  const body = {
+    // Manual rows use fresh ulids (idempotency seeding is for Health Connect
+    // re-reads, which the capture app posts via hc_uuid).
+    ulid: generateUlid(),
+    source: "manual",
+    weight_kg: parseNumberFlag(flags.weight, "weight", WEIGH_INS_HELP, { min: 1e-3 }),
+    occurred_at: typeof flags.at === "string" ? ensureExplicitOffset(validateDate(flags.at, "--at", WEIGH_INS_HELP)) : (/* @__PURE__ */ new Date()).toISOString()
+  };
+  if (typeof flags["body-fat"] === "string") {
+    body.body_fat_pct = parseNumberFlag(flags["body-fat"], "body-fat", WEIGH_INS_HELP, { min: 0, max: 100 });
+  }
+  const row = await api.post("/api/kitchen/weigh-ins", body);
+  if (flags.json) return rawJson(row);
+  return renderDetail("weigh_in", row, ROW_SCHEMA2);
+}
+async function listWeighIns(args) {
+  const { flags } = parseArgs(args, ["json"], ["since", "limit"]);
+  const result = await api.get("/api/kitchen/weigh-ins", {
+    since: typeof flags.since === "string" ? validateDate(flags.since, "--since", WEIGH_INS_HELP) : void 0,
+    limit: typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", WEIGH_INS_HELP, { min: 1 })) : void 0
+  });
+  if (flags.json) return rawJson(result);
+  return renderList("weigh_ins", result?.weigh_ins ?? [], ROW_SCHEMA2);
+}
+async function weightTrend(args) {
+  const { flags } = parseArgs(args, ["json"], ["days"]);
+  const result = await api.get("/api/kitchen/weight", {
+    days: typeof flags.days === "string" ? String(parseNumberFlag(flags.days, "days", WEIGHT_HELP, { min: 1, max: 366 })) : void 0
+  });
+  if (flags.json) return rawJson(result);
+  return renderOutput2([
+    renderList("daily", result?.daily ?? [], DAILY_SCHEMA),
+    renderList("trend_7d", result?.trend ?? [], TREND_SCHEMA)
+  ]);
+}
+
 // packages/kitchen/src/axi/commands/receipts.ts
 import { existsSync } from "node:fs";
 var RECEIPTS_HELP = `kitchen-axi receipts <subcommand> [args] [--json]
@@ -2155,7 +2285,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "101749c" : "dev";
+var VERSION = true ? "588543c" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)
@@ -2180,6 +2310,8 @@ var COMMAND_HELP = {
   entries: ENTRIES_HELP,
   inventory: INVENTORY_HELP,
   expenditure: EXPENDITURE_HELP,
+  "weigh-ins": WEIGH_INS_HELP,
+  weight: WEIGHT_HELP,
   receipts: RECEIPTS_HELP,
   recipes: RECIPES_HELP,
   products: PRODUCTS_HELP,
@@ -2190,6 +2322,8 @@ var COMMANDS = {
   entries: (args) => entriesCommand(args),
   inventory: (args) => inventoryCommand(args),
   expenditure: (args) => expenditureCommand(args),
+  "weigh-ins": (args) => weighInsCommand(args),
+  weight: (args) => weightCommand(args),
   receipts: (args) => receiptsCommand(args),
   recipes: (args) => recipesCommand(args),
   products: (args) => productsCommand(args),
