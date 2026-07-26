@@ -251,6 +251,42 @@ stores **just enough burn to compute the balance** — no routes, laps,
 splits, or training load. It is not an activity tracker; the exercise
 system of record stays upstream.
 
+## Daily targets — owner-set reference lines
+
+The owner's diet doctrine defines per-nutrient daily reference lines (a
+sat-fat cap, a fiber floor, an intake band). The module stores them as opaque
+instance config and serves them with the daily rollup so every client renders
+logged-vs-remaining against the **same** lines — the config is the single home
+for the numbers; clients stop hardcoding their own copies. The module never
+derives, tunes, or interprets a target (retuning the lines against labs/trend
+is an owner/agent-judgment loop, like `KITCHEN_TDEE_BASE`).
+
+**Config.** `KITCHEN_DAILY_TARGETS` — a JSON object mapping panel field names
+(§ Nutrition panel: `calories`, `protein_g`, `fat_g`, `sat_fat_g`, `carbs_g`,
+`sugar_g`, `fiber_g`, `sodium_mg`) each to exactly **one** of `{"max": N}` (a
+cap — stay under) or `{"min": N}` (a floor — reach it). Any subset of fields
+may be configured; an unconfigured field simply has no line. A malformed
+value — unknown field, both bounds, non-positive N — fails loudly at boot,
+never silently drops (a half-parsed budget is worse than none).
+
+**Exposure.** The daily rollup (`GET /kitchen/summary`) gains `targets`: the
+parsed config, verbatim. Absent config ⇒ the block is **omitted entirely,
+never defaulted** (same rule as the net line). `remaining = target − logged`
+is display arithmetic computed client-side — the module serves the two
+numbers, not the judgment. The CLI day summary lists each configured line as
+`logged / target` with remaining.
+
+**Direction is semantic, not styling.** A `max` exceeded is a breach; a `min`
+met is success. Clients MUST NOT style a met floor as an overrun (30 g of
+fiber is the goal, not an alarm) — the cap/floor distinction travels with the
+target precisely so no client has to guess which way a line points.
+
+**Framing rule (inherits § Expenditure & net energy).** Targets are static,
+intake-managed lines. The `calories` target is never adjusted by expenditure
+or net — the existing rule that no surface renders intake headroom derived
+from the day's burn applies unchanged; a budget sheet shows the net line as
+separate muted context, never folded into a remaining figure.
+
 ## Logged-at backdating
 
 Every entry carries `logged_at` — the moment the meal actually happened, which
