@@ -103,7 +103,9 @@ in doubt, read the spec.
   `scripts/kitchen-axi entries log --calories N --protein N --sat-fat N --sugar N --fiber N --sodium N --label "<meal>"`
   (directly-stated panel: born-`manual`, terminal, no estimation, no race — not `--component` + `patch`).
 - **"What's today looking like?"** → bare `scripts/kitchen-axi` (home view: effective totals,
-  pending estimates, eat-first items, open questions).
+  pending estimates, eat-first items, open questions). Fields with an owner-set daily target
+  render as `logged / target` with remaining — a `max` counts down what's left, a `min` counts
+  up to met; never derived from the day's burn.
 - **"What should I use up?"** → `scripts/kitchen-axi inventory list` (eat-first order).
 - **"I made a batch of X" (meal prep)** → record it as a **conversion** so it lands
   consume-eligible, not a plain add. First ensure a recipe exists (`recipes list`; if not,

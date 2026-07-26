@@ -301,6 +301,7 @@ await fastify.register(
           mealBankRepoPath: fastify.config.KITCHEN_MEALBANK_REPO_PATH,
           mealBankSheet: fastify.config.KITCHEN_MEALBANK_SHEET,
           tdeeBase: fastify.config.KITCHEN_TDEE_BASE,
+          dailyTargets: fastify.config.KITCHEN_DAILY_TARGETS,
         },
       });
     } else {

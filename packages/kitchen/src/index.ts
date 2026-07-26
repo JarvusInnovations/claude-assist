@@ -23,6 +23,7 @@ import { KitchenPipeline } from './services/pipeline.js';
 import { readMealBankRecipes } from './services/mealbank.js';
 import { registerKitchenRoutes } from './routes/kitchen.js';
 import { registerExpenditureRoutes } from './routes/expenditures.js';
+import { parseDailyTargets } from './daily-targets.js';
 import { registerPlanSessionRoutes } from './routes/plan-session.js';
 import { PgInventoryStore } from './inventory-store.js';
 import { KitchenReceiptParser } from './services/receipt-parser.js';
@@ -145,10 +146,13 @@ export default createPlugin('kitchen', async (fastify: FastifyInstance, options:
   });
 
   // Expenditure & net energy (§ Expenditure & net energy, claude-assist#121).
+  // Daily targets (§ Daily targets) parse once here at init — malformed config
+  // throws and fails boot, never a silent drop.
   await fastify.register(registerExpenditureRoutes, {
     store: new PgExpenditureStore(fastify.sql),
     entries: entryStore,
     tdeeBase: config.tdeeBase,
+    dailyTargets: parseDailyTargets(config.dailyTargets),
   });
 
   await fastify.register(registerInventoryRoutes, {
@@ -196,6 +200,14 @@ export default createPlugin('kitchen', async (fastify: FastifyInstance, options:
 export * from './types.js';
 export { generateUlid, ulidFromSeed, isValidUlid, ULID_PATTERN } from './ulid.js';
 export { transition, InvalidTransitionError, type EntryEvent } from './state.js';
+export {
+  parseDailyTargets,
+  DailyTargetsConfigError,
+  DAILY_TARGET_FIELDS,
+  type DailyTargets,
+  type DailyTargetBound,
+  type DailyTargetField,
+} from './daily-targets.js';
 export type { EntryStore, ExpenditureRecord, ExpenditureStore, NewEntry, NewExpenditure, NewRecipe, RecentEntrySummary, RecipeStore } from './store.js';
 export { PgEntryStore, PgRecipeStore, normalizeNewEntry, EMPTY_NUTRITION } from './store.js';
 export { MemoryEntryStore, MemoryRecipeStore } from './memory-store.js';

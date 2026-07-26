@@ -125,6 +125,11 @@ const schema = {
     // Owner's non-exercise daily expenditure (kcal) for the net-energy line
     // (§ Expenditure & net energy). Optional — unset omits the net line.
     KITCHEN_TDEE_BASE: { type: 'number' },
+    // Owner-set per-nutrient daily reference lines (§ Daily targets) — JSON
+    // mapping panel fields to exactly one of {"max": N} / {"min": N}.
+    // Optional — unset omits the summary's targets block; malformed fails
+    // boot loudly at kitchen plugin init.
+    KITCHEN_DAILY_TARGETS: { type: 'string' },
 
     // Pages module (publish + collect interactive HTML pages)
     ENABLE_PAGES: { type: 'boolean', default: true },
@@ -347,6 +352,7 @@ declare module 'fastify' {
       KITCHEN_MEALBANK_REPO_PATH?: string;
       KITCHEN_MEALBANK_SHEET?: string;
       KITCHEN_TDEE_BASE?: number;
+      KITCHEN_DAILY_TARGETS?: string;
 
       // Pages module
       ENABLE_PAGES: boolean;
