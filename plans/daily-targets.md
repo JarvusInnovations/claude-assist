@@ -1,10 +1,10 @@
 ---
-status: planned
+status: in-progress
 depends: []
 specs:
   - specs/modules/kitchen.md
 issues: []
-pr:
+pr: 145
 ---
 
 # Plan: Daily targets — owner-set reference lines
@@ -49,16 +49,42 @@ specced in hari-capture `specs/screens/journal.md` and planned in Hari
 
 ## Validation
 
-- [ ] Summary response carries `targets` verbatim when configured; the key is
-      entirely absent when the env var is unset.
-- [ ] Malformed config (unknown field / `{"min","max"}` together / `-5`) fails
-      server boot with a clear message.
-- [ ] CLI day summary renders each configured line with direction-correct
-      remaining; unconfigured fields render unchanged.
-- [ ] No code path combines targets with expenditure/net (grep-level check +
+- [x] Summary response carries `targets` verbatim when configured; the key is
+      entirely absent when the env var is unset. (expenditures.test.ts: verbatim
+      block asserted with `toEqual`; `'targets' in json === false` when
+      unconfigured — absent, not null/`{}`.)
+- [x] Malformed config (unknown field / `{"min","max"}` together / `-5`) fails
+      server boot with a clear message. (daily-targets.test.ts: every malformed
+      shape throws `DailyTargetsConfigError` with a named-field message;
+      `parseDailyTargets` runs at kitchen plugin init, so the throw aborts
+      `fastify.register` → startup fails.)
+- [x] CLI day summary renders each configured line with direction-correct
+      remaining; unconfigured fields render unchanged. (axi.test.ts `targetLine`
+      cases: max under/at/over, min under/met; home.ts `vsTarget` falls back to
+      the plain total when a field has no bound.)
+- [x] No code path combines targets with expenditure/net (grep-level check +
       test asserting `targets.calories` is the raw config regardless of burns).
-- [ ] Existing summary consumers (app day header, home dashboard) unaffected
-      when config absent.
+      (Route test logs a 400-kcal burn and asserts the targets block is
+      untouched raw config; the server spread is verbatim and the CLI remaining
+      uses intake totals only.)
+- [x] Existing summary consumers (app day header, home dashboard) unaffected
+      when config absent. (Unconfigured ⇒ the key is never present, response
+      shape unchanged; all pre-existing kitchen tests pass — 306 total.)
+
+## Implementation decisions
+
+- Parsing lives in the kitchen package (`src/daily-targets.ts`, exported), not
+  the server: the env var is read next to `KITCHEN_TDEE_BASE` in `server.ts`
+  and passed through raw; `parseDailyTargets` runs once at kitchen plugin init,
+  so a malformed value throws inside `fastify.register` and fails boot.
+- An explicit `{}` (zero configured lines) parses to undefined — same as unset,
+  the summary never serves an empty `targets` block.
+- A breached `max` renders `(N over)` in the CLI rather than a negative
+  "left" — a max exceeded is a breach and says so (direction is semantic);
+  `left`/`to go`/`met` wording otherwise as specced.
+- `.env.example` documents the var with synthetic example values only; real
+  lines are deploy-time instance config (owner sets them in the untracked
+  `.env`).
 
 ## Risks / unknowns
 
