@@ -17,12 +17,13 @@ import {
   type PluginOptions,
   type Scheduler,
 } from '@jarvus/claude-assist-core';
-import { PgEntryStore, PgExpenditureStore, PgRecipeStore } from './store.js';
+import { PgEntryStore, PgExpenditureStore, PgRecipeStore, PgWeighInStore } from './store.js';
 import { KitchenEstimator } from './services/estimator.js';
 import { KitchenPipeline } from './services/pipeline.js';
 import { readMealBankRecipes } from './services/mealbank.js';
 import { registerKitchenRoutes } from './routes/kitchen.js';
 import { registerExpenditureRoutes } from './routes/expenditures.js';
+import { registerWeighInRoutes } from './routes/weigh-ins.js';
 import { parseDailyTargets } from './daily-targets.js';
 import { registerPlanSessionRoutes } from './routes/plan-session.js';
 import { PgInventoryStore } from './inventory-store.js';
@@ -155,6 +156,13 @@ export default createPlugin('kitchen', async (fastify: FastifyInstance, options:
     dailyTargets: parseDailyTargets(config.dailyTargets),
   });
 
+  // Weigh-ins (§ Weigh-ins — scale data via the capture app). Read-time
+  // derivations only; nothing here (or anywhere) auto-tunes KITCHEN_TDEE_BASE
+  // or the daily targets from the trend — that stays an owner/agent loop.
+  await fastify.register(registerWeighInRoutes, {
+    store: new PgWeighInStore(fastify.sql),
+  });
+
   await fastify.register(registerInventoryRoutes, {
     inventory,
     maxPhotoBytes: config.maxPhotoBytes,
@@ -208,9 +216,20 @@ export {
   type DailyTargetBound,
   type DailyTargetField,
 } from './daily-targets.js';
-export type { EntryStore, ExpenditureRecord, ExpenditureStore, NewEntry, NewExpenditure, NewRecipe, RecentEntrySummary, RecipeStore } from './store.js';
-export { PgEntryStore, PgRecipeStore, normalizeNewEntry, EMPTY_NUTRITION } from './store.js';
-export { MemoryEntryStore, MemoryRecipeStore } from './memory-store.js';
+export type { EntryStore, ExpenditureRecord, ExpenditureStore, NewEntry, NewExpenditure, NewRecipe, NewWeighIn, RecentEntrySummary, RecipeStore, WeighInRecord, WeighInStore } from './store.js';
+export { PgEntryStore, PgRecipeStore, PgWeighInStore, normalizeNewEntry, EMPTY_NUTRITION } from './store.js';
+export { MemoryEntryStore, MemoryRecipeStore, MemoryWeighInStore } from './memory-store.js';
+export {
+  registerWeighInRoutes,
+  parseOffsetMinutes,
+  localDateOf,
+  median,
+  collapseDaily,
+  rollingTrend,
+  type WeighInRoutesConfig,
+  type DailyWeight,
+  type TrendPoint,
+} from './routes/weigh-ins.js';
 export {
   KitchenPipeline,
   RecipeNotFoundError,

@@ -12,8 +12,11 @@ import type {
   NewEntry,
   NewExpenditure,
   NewRecipe,
+  NewWeighIn,
   RecentEntrySummary,
   RecipeStore,
+  WeighInRecord,
+  WeighInStore,
 } from './store.js';
 import { EMPTY_NUTRITION } from './store.js';
 
@@ -237,6 +240,40 @@ export class MemoryExpenditureStore implements ExpenditureStore {
       .filter((r) => r.occurred_at.getTime() >= since && r.occurred_at.getTime() < until)
       .sort((a, b) => b.occurred_at.getTime() - a.occurred_at.getTime())
       .slice(0, Math.min(filter.limit ?? 100, 500))
+      .map((r) => structuredClone(r));
+  }
+
+  async delete(ulid: string): Promise<boolean> {
+    return this.records.delete(ulid);
+  }
+}
+
+export class MemoryWeighInStore implements WeighInStore {
+  readonly records = new Map<string, WeighInRecord>();
+
+  async insertIfAbsent(row: NewWeighIn): Promise<{ record: WeighInRecord; created: boolean }> {
+    const existing = this.records.get(row.ulid);
+    if (existing) return { record: structuredClone(existing), created: false };
+    const record: WeighInRecord = {
+      ulid: row.ulid,
+      occurred_at: row.occurred_at,
+      tz_offset_minutes: row.tz_offset_minutes,
+      weight_kg: row.weight_kg,
+      body_fat_pct: row.body_fat_pct ?? null,
+      source: row.source,
+      created_at: new Date(),
+    };
+    this.records.set(row.ulid, record);
+    return { record: structuredClone(record), created: true };
+  }
+
+  async list(filter: { since?: Date; until?: Date; limit?: number }): Promise<WeighInRecord[]> {
+    const since = filter.since?.getTime() ?? 0;
+    const until = filter.until?.getTime() ?? Infinity;
+    return [...this.records.values()]
+      .filter((r) => r.occurred_at.getTime() >= since && r.occurred_at.getTime() < until)
+      .sort((a, b) => b.occurred_at.getTime() - a.occurred_at.getTime())
+      .slice(0, Math.min(filter.limit ?? 100, 2000))
       .map((r) => structuredClone(r));
   }
 

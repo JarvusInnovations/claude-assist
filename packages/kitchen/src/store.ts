@@ -533,3 +533,94 @@ export class PgExpenditureStore implements ExpenditureStore {
     return result.length > 0;
   }
 }
+
+// ── Weigh-ins (§ Weigh-ins — scale data via the capture app, claude-assist#121) ──
+
+/**
+ * A row in kitchen.weigh_ins — one reading, transcribed verbatim. Repeats
+ * and multi-writer noise are collapsed at read time only (daily median).
+ */
+export interface WeighInRecord {
+  ulid: string;
+  /** The reading's instant (UTC — timestamptz normalizes the offset away). */
+  occurred_at: Date;
+  /**
+   * Minutes east of UTC from the POSTed occurred_at's explicit offset —
+   * preserved so day bucketing honors the reading's OWN local day, never
+   * a server-zone guess.
+   */
+  tz_offset_minutes: number;
+  weight_kg: number;
+  /** Nullable — non-scale writers send weight alone. */
+  body_fat_pct: number | null;
+  /** Writer package id (Health Connect data origin) or 'manual'. */
+  source: string;
+  created_at: Date;
+}
+
+export interface NewWeighIn {
+  ulid: string;
+  occurred_at: Date;
+  tz_offset_minutes: number;
+  weight_kg: number;
+  body_fat_pct?: number | null;
+  source: string;
+}
+
+export interface WeighInStore {
+  /** Idempotent on ulid (Health Connect re-reads replay safely). */
+  insertIfAbsent(row: NewWeighIn): Promise<{ record: WeighInRecord; created: boolean }>;
+  list(filter: { since?: Date; until?: Date; limit?: number }): Promise<WeighInRecord[]>;
+  delete(ulid: string): Promise<boolean>;
+}
+
+function rowToWeighIn(row: Record<string, unknown>): WeighInRecord {
+  return {
+    ulid: row.ulid as string,
+    occurred_at: row.occurred_at as Date,
+    tz_offset_minutes: Number(row.tz_offset_minutes),
+    weight_kg: Number(row.weight_kg),
+    body_fat_pct: row.body_fat_pct == null ? null : Number(row.body_fat_pct),
+    source: row.source as string,
+    created_at: row.created_at as Date,
+  };
+}
+
+export class PgWeighInStore implements WeighInStore {
+  constructor(private sql: postgres.Sql) {}
+
+  async insertIfAbsent(row: NewWeighIn): Promise<{ record: WeighInRecord; created: boolean }> {
+    const inserted = await this.sql`
+      INSERT INTO kitchen.weigh_ins (ulid, occurred_at, tz_offset_minutes, weight_kg, body_fat_pct, source)
+      VALUES (${row.ulid}, ${row.occurred_at}, ${row.tz_offset_minutes},
+              ${row.weight_kg}, ${row.body_fat_pct ?? null}, ${row.source})
+      ON CONFLICT (ulid) DO NOTHING
+      RETURNING *
+    `;
+    if (inserted.length > 0) return { record: rowToWeighIn(inserted[0]!), created: true };
+    const [existing] = await this.sql`SELECT * FROM kitchen.weigh_ins WHERE ulid = ${row.ulid}`;
+    if (!existing) throw new Error(`Weigh-in ${row.ulid} conflicted on insert but is not readable`);
+    return { record: rowToWeighIn(existing), created: false };
+  }
+
+  async list(filter: { since?: Date; until?: Date; limit?: number }): Promise<WeighInRecord[]> {
+    // Cap is 2000 (vs the expenditure store's 500): the weight derivation
+    // reads a whole window of raw rows — a year of several-readings-a-day
+    // mornings still fits.
+    const limit = Math.min(filter.limit ?? 100, 2000);
+    const since = filter.since ?? new Date(0);
+    const until = filter.until ?? new Date('9999-01-01');
+    const rows = await this.sql`
+      SELECT * FROM kitchen.weigh_ins
+      WHERE occurred_at >= ${since} AND occurred_at < ${until}
+      ORDER BY occurred_at DESC
+      LIMIT ${limit}
+    `;
+    return rows.map(rowToWeighIn);
+  }
+
+  async delete(ulid: string): Promise<boolean> {
+    const result = await this.sql`DELETE FROM kitchen.weigh_ins WHERE ulid = ${ulid} RETURNING ulid`;
+    return result.length > 0;
+  }
+}

@@ -5,6 +5,7 @@ import { homeCommand, HOME_HELP } from "./commands/home.js";
 import { entriesCommand, ENTRIES_HELP } from "./commands/entries.js";
 import { inventoryCommand, INVENTORY_HELP } from "./commands/inventory.js";
 import { expenditureCommand, EXPENDITURE_HELP } from "./commands/expenditures.js";
+import { weighInsCommand, weightCommand, WEIGH_INS_HELP, WEIGHT_HELP } from "./commands/weigh-ins.js";
 import { receiptsCommand, RECEIPTS_HELP } from "./commands/receipts.js";
 import { recipesCommand, RECIPES_HELP } from "./commands/recipes.js";
 import { productsCommand, PRODUCTS_HELP } from "./commands/products.js";
@@ -39,6 +40,8 @@ const COMMAND_HELP: Record<string, string> = {
   entries: ENTRIES_HELP,
   inventory: INVENTORY_HELP,
   expenditure: EXPENDITURE_HELP,
+  "weigh-ins": WEIGH_INS_HELP,
+  weight: WEIGHT_HELP,
   receipts: RECEIPTS_HELP,
   recipes: RECIPES_HELP,
   products: PRODUCTS_HELP,
@@ -50,6 +53,8 @@ const COMMANDS: Record<string, AxiCliCommand<undefined>> = {
   entries: (args) => entriesCommand(args),
   inventory: (args) => inventoryCommand(args),
   expenditure: (args) => expenditureCommand(args),
+  "weigh-ins": (args) => weighInsCommand(args),
+  weight: (args) => weightCommand(args),
   receipts: (args) => receiptsCommand(args),
   recipes: (args) => recipesCommand(args),
   products: (args) => productsCommand(args),

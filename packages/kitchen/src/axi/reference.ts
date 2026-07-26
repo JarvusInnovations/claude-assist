@@ -50,6 +50,20 @@ export const COMMAND_GROUPS: CommandGroup[] = [
     ],
   },
   {
+    group: "Weigh-ins",
+    commands: [
+      {
+        usage: "weigh-ins log --weight KG [--body-fat PCT] [--at TIME]",
+        summary: "record a manual weigh-in (source: manual; --at defaults to now — prefer a full local timestamp, a bare YYYY-MM-DD backstops to local noon that day; a naive time gets this machine's local offset attached because the server refuses to guess a zone)",
+      },
+      { usage: "weigh-ins list [--since DATE] [--limit N]", summary: "raw readings, newest first — every reading is a row (repeats included); noise collapses at read time, never by rewriting" },
+      {
+        usage: "weight trend [--days N]",
+        summary: "derived view (default 30 days): one line per local day with readings (median weight + median body-fat + count, bucketed by each reading's OWN recorded offset) plus a 7-day rolling mean over existing days — no interpolation; context for the owner's judgment, never an auto-tuner",
+      },
+    ],
+  },
+  {
     group: "Inventory",
     commands: [
       { usage: "inventory list [--state S] [--closed] [--limit N]", summary: "on-hand items in eat-first (eat_by ascending) order; --state filters, --closed includes finished/tossed" },
