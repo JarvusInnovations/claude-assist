@@ -302,6 +302,11 @@ await fastify.register(
           mealBankSheet: fastify.config.KITCHEN_MEALBANK_SHEET,
           tdeeBase: fastify.config.KITCHEN_TDEE_BASE,
           dailyTargets: fastify.config.KITCHEN_DAILY_TARGETS,
+          stravaClientId: fastify.config.KITCHEN_STRAVA_CLIENT_ID,
+          stravaClientSecret: fastify.config.KITCHEN_STRAVA_CLIENT_SECRET,
+          stravaRefreshToken: fastify.config.KITCHEN_STRAVA_REFRESH_TOKEN,
+          stravaSyncMinutes: fastify.config.KITCHEN_STRAVA_SYNC_MINUTES,
+          disableStravaSync: fastify.config.DISABLE_SYNCS,
         },
       });
     } else {

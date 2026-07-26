@@ -130,6 +130,16 @@ const schema = {
     // Optional — unset omits the summary's targets block; malformed fails
     // boot loudly at kitchen plugin init.
     KITCHEN_DAILY_TARGETS: { type: 'string' },
+    // Strava activity sync (§ Strava activity sync) — all three credentials
+    // present ⇒ the scheduled sync runs; any absent ⇒ entirely off. The
+    // refresh token is a first-boot seed only (kitchen.strava_oauth is
+    // authoritative once it exists).
+    KITCHEN_STRAVA_CLIENT_ID: { type: 'string' },
+    KITCHEN_STRAVA_CLIENT_SECRET: { type: 'string' },
+    KITCHEN_STRAVA_REFRESH_TOKEN: { type: 'string' },
+    // Sync cadence in minutes (default 30). Kept a string so the kitchen
+    // plugin can validate boot-loudly (malformed ⇒ startup failure).
+    KITCHEN_STRAVA_SYNC_MINUTES: { type: 'string' },
 
     // Pages module (publish + collect interactive HTML pages)
     ENABLE_PAGES: { type: 'boolean', default: true },
@@ -353,6 +363,10 @@ declare module 'fastify' {
       KITCHEN_MEALBANK_SHEET?: string;
       KITCHEN_TDEE_BASE?: number;
       KITCHEN_DAILY_TARGETS?: string;
+      KITCHEN_STRAVA_CLIENT_ID?: string;
+      KITCHEN_STRAVA_CLIENT_SECRET?: string;
+      KITCHEN_STRAVA_REFRESH_TOKEN?: string;
+      KITCHEN_STRAVA_SYNC_MINUTES?: string;
 
       // Pages module
       ENABLE_PAGES: boolean;

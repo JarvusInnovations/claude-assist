@@ -15,6 +15,8 @@ import type {
   NewWeighIn,
   RecentEntrySummary,
   RecipeStore,
+  StravaOAuthState,
+  StravaOAuthStore,
   WeighInRecord,
   WeighInStore,
 } from './store.js';
@@ -245,6 +247,34 @@ export class MemoryExpenditureStore implements ExpenditureStore {
 
   async delete(ulid: string): Promise<boolean> {
     return this.records.delete(ulid);
+  }
+
+  async existingUlids(ulids: string[]): Promise<Set<string>> {
+    return new Set(ulids.filter((ulid) => this.records.has(ulid)));
+  }
+}
+
+export class MemoryStravaOAuthStore implements StravaOAuthStore {
+  state: StravaOAuthState | null = null;
+
+  async get(): Promise<StravaOAuthState | null> {
+    return this.state ? { ...this.state } : null;
+  }
+
+  async seed(refreshToken: string): Promise<StravaOAuthState> {
+    if (!this.state) {
+      this.state = {
+        refresh_token: refreshToken,
+        access_token: null,
+        expires_at: null,
+        updated_at: new Date(),
+      };
+    }
+    return { ...this.state };
+  }
+
+  async save(state: { refresh_token: string; access_token: string | null; expires_at: Date | null }): Promise<void> {
+    this.state = { ...state, updated_at: new Date() };
   }
 }
 

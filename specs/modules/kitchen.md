@@ -210,13 +210,11 @@ balance, not licensing more intake.
 
 **Source architecture — one feed per data type, by reliability tier:**
 
-- **Exercise burns → Strava API (phase 2, the primary auto-feed).** Every
-  real workout lands in Strava (Garmin writes through, carrying Garmin's
-  own calorie computation), and it is the only listed source with a stable
-  official OAuth API suitable for unattended scheduled pulls. A scheduled
-  server-side sync posts recent activities as `source: 'strava'` rows,
-  ulids seeded from Strava activity ids so re-pulls are idempotent
-  replays.
+- **Exercise burns → Strava API (phase 2 — § Strava activity sync).**
+  Every real workout lands in Strava (Garmin writes through, carrying
+  Garmin's own calorie computation), and it is the only listed source with
+  a stable official OAuth API suitable for unattended scheduled pulls. The
+  full contract is § Strava activity sync below.
 - **Weight → Health Connect via the capture app (phase 3 — § Weigh-ins).**
   The Android Health Connect hub is the only path to the smart scale. The
   capture app reads it on-device and posts `kitchen.weigh_ins` rows; the
@@ -254,6 +252,60 @@ API clients, not module code. And a deliberate anti-scope line: kitchen
 stores **just enough burn to compute the balance** — no routes, laps,
 splits, or training load. It is not an activity tracker; the exercise
 system of record stays upstream.
+
+## Strava activity sync (phase 2 — the exercise auto-feed)
+
+The scheduled server-side pull the source architecture names primary: real
+workouts land as expenditure rows on their own, no agent in the loop. The
+sync is a transcriber with a clock — it inserts stated burns and never
+judges them.
+
+**Config.** `KITCHEN_STRAVA_CLIENT_ID`, `KITCHEN_STRAVA_CLIENT_SECRET`,
+`KITCHEN_STRAVA_REFRESH_TOKEN` — all three present ⇒ the sync runs; any
+absent ⇒ the feature is entirely off (never partial, never guessed).
+Optional `KITCHEN_STRAVA_SYNC_MINUTES` (default 30) sets the cadence on the
+module's scheduler.
+
+**Token custody.** Strava rotates the refresh token on every refresh, so a
+static env var cannot stay authoritative. `kitchen.strava_oauth` (single
+row) holds the current refresh token, access token, and expiry; the env
+refresh token is the **first-boot seed only** — once the row exists, the
+stored token is authoritative and the env value is ignored (delete the row
+to re-seed after a revocation). A refresh failure skips that tick with a
+warning log; it never crashes boot and never wipes the stored row (the next
+tick retries — transient Strava outages must not force a re-auth).
+
+**Pull contract.** Each tick lists the athlete's activities over the
+trailing 7 days, then — only for activities whose seeded ulid is not
+already stored — fetches the activity **detail** (calories exist only
+there) and inserts an expenditure row:
+
+- `ulid` = `ulidFromSeed(0, "strava:<activity_id>")` — the locked
+  convention (the manual backfill used it, so the sync's first run replays
+  those rows instead of duplicating them).
+- `label` = activity name (fallback: activity type), `kcal` = the detail's
+  calories, `duration_min` from moving time, `avg_hr` when present,
+  `occurred_at` = the activity's start instant, `source: 'strava'`.
+- An activity with no calorie value is **skipped with a log line** — a burn
+  is a stated number, never a written 0 (absent ≠ zero, same doctrine as
+  the nutrition panel).
+
+**Idempotency IS the watermark.** The sync keeps no cursor: the 7-day
+window plus seeded-ulid replays are the resume semantics. A tick that dies
+mid-batch costs nothing; the next tick re-lists and replays. Detail calls
+happen only for unseen activities, which keeps steady-state API usage at
+one list call per tick — far inside Strava's rate limits.
+
+**Cross-source rule.** The sync only ever inserts its own seeded rows — it
+never deletes, merges, or edits anything, including a manual row that
+overlaps a synced activity's time span. An overlap is surfaced as a warning
+log for owner judgment (stated-burns doctrine: the module records; the
+owner arbitrates duplicates).
+
+**Anti-scope.** Unchanged from § Expenditure & net energy: just enough burn
+to compute the balance — no routes, laps, splits, gear, or kudos. Strava
+remains the exercise system of record; this feed carries numbers, not
+activities.
 
 ## Weigh-ins — scale data via the capture app (phase 3)
 

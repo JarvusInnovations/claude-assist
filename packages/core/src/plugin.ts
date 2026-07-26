@@ -114,6 +114,29 @@ export interface KitchenPluginConfig {
    * failure; unset ⇒ the summary's targets block is omitted.
    */
   dailyTargets?: string;
+  /**
+   * Strava API application client id (KITCHEN_STRAVA_CLIENT_ID). All three
+   * Strava credentials present ⇒ the scheduled activity sync runs; any
+   * absent ⇒ the feature is entirely off (§ Strava activity sync).
+   */
+  stravaClientId?: string;
+  /** Strava API application client secret (KITCHEN_STRAVA_CLIENT_SECRET). */
+  stravaClientSecret?: string;
+  /**
+   * Strava refresh token (KITCHEN_STRAVA_REFRESH_TOKEN) — the FIRST-BOOT
+   * SEED only. Strava rotates refresh tokens, so once kitchen.strava_oauth
+   * has a row the stored token is authoritative and this value is ignored
+   * (delete the row to re-seed after a revocation).
+   */
+  stravaRefreshToken?: string;
+  /**
+   * Sync cadence in minutes (KITCHEN_STRAVA_SYNC_MINUTES, default 30) — raw
+   * string, parsed boot-loud at plugin init (malformed ⇒ startup failure,
+   * same doctrine as dailyTargets).
+   */
+  stravaSyncMinutes?: string;
+  /** Skip the scheduled Strava sync (folded from DISABLE_SYNCS). */
+  disableStravaSync?: boolean;
 }
 
 /**

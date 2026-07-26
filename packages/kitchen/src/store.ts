@@ -482,6 +482,13 @@ export interface ExpenditureStore {
   insertIfAbsent(row: NewExpenditure): Promise<{ record: ExpenditureRecord; created: boolean }>;
   list(filter: { since?: Date; until?: Date; limit?: number }): Promise<ExpenditureRecord[]>;
   delete(ulid: string): Promise<boolean>;
+  /**
+   * Which of these ulids already exist — the Strava sync's unseen filter
+   * (§ Strava activity sync: detail calls happen only for unseen activities,
+   * so this cheap bulk lookup is what keeps steady-state API usage at one
+   * list call per tick).
+   */
+  existingUlids(ulids: string[]): Promise<Set<string>>;
 }
 
 function rowToExpenditure(row: Record<string, unknown>): ExpenditureRecord {
@@ -531,6 +538,81 @@ export class PgExpenditureStore implements ExpenditureStore {
   async delete(ulid: string): Promise<boolean> {
     const result = await this.sql`DELETE FROM kitchen.expenditures WHERE ulid = ${ulid} RETURNING ulid`;
     return result.length > 0;
+  }
+
+  async existingUlids(ulids: string[]): Promise<Set<string>> {
+    if (ulids.length === 0) return new Set();
+    const rows = await this.sql`
+      SELECT ulid FROM kitchen.expenditures WHERE ulid IN ${this.sql(ulids)}
+    `;
+    return new Set(rows.map((row) => row.ulid as string));
+  }
+}
+
+// ── Strava OAuth custody (§ Strava activity sync) ────────────────────────────
+
+/**
+ * The single kitchen.strava_oauth row — the CURRENT Strava token set.
+ * Strava rotates the refresh token on every refresh, so this row (not the
+ * env seed) is authoritative once it exists.
+ */
+export interface StravaOAuthState {
+  refresh_token: string;
+  access_token: string | null;
+  expires_at: Date | null;
+  updated_at: Date;
+}
+
+export interface StravaOAuthStore {
+  get(): Promise<StravaOAuthState | null>;
+  /**
+   * First-boot seed: insert the env refresh token if (and only if) no row
+   * exists yet. Returns the stored state either way — a concurrent or prior
+   * row wins, the seed is ignored (§ Strava activity sync token custody).
+   */
+  seed(refreshToken: string): Promise<StravaOAuthState>;
+  /** Persist a rotated token set (upsert onto the single row). */
+  save(state: { refresh_token: string; access_token: string | null; expires_at: Date | null }): Promise<void>;
+}
+
+function rowToStravaOAuth(row: Record<string, unknown>): StravaOAuthState {
+  return {
+    refresh_token: row.refresh_token as string,
+    access_token: (row.access_token as string | null) ?? null,
+    expires_at: (row.expires_at as Date | null) ?? null,
+    updated_at: row.updated_at as Date,
+  };
+}
+
+export class PgStravaOAuthStore implements StravaOAuthStore {
+  constructor(private sql: postgres.Sql) {}
+
+  async get(): Promise<StravaOAuthState | null> {
+    const [row] = await this.sql`SELECT * FROM kitchen.strava_oauth WHERE id = 1`;
+    return row ? rowToStravaOAuth(row) : null;
+  }
+
+  async seed(refreshToken: string): Promise<StravaOAuthState> {
+    await this.sql`
+      INSERT INTO kitchen.strava_oauth (id, refresh_token)
+      VALUES (1, ${refreshToken})
+      ON CONFLICT (id) DO NOTHING
+    `;
+    const state = await this.get();
+    if (!state) throw new Error('kitchen.strava_oauth row missing immediately after seed');
+    return state;
+  }
+
+  async save(state: { refresh_token: string; access_token: string | null; expires_at: Date | null }): Promise<void> {
+    await this.sql`
+      INSERT INTO kitchen.strava_oauth (id, refresh_token, access_token, expires_at, updated_at)
+      VALUES (1, ${state.refresh_token}, ${state.access_token}, ${state.expires_at}, now())
+      ON CONFLICT (id) DO UPDATE SET
+        refresh_token = EXCLUDED.refresh_token,
+        access_token = EXCLUDED.access_token,
+        expires_at = EXCLUDED.expires_at,
+        updated_at = now()
+    `;
   }
 }
 
