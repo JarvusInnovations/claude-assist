@@ -230,9 +230,12 @@ balance, not licensing more intake.
   (sessions + stages) and daily resting HR flow through Health Connect
   from Garmin. Only body battery, stress, and HRV/training-readiness stay
   locked in Garmin's app, where the janky authenticated-session replay
-  would be the sole path — acceptable never as an automated dependency,
-  and currently wanted by nothing. `source: 'garmin'` remains valid for
-  occasional manual-assisted imports; the deficit pipeline never depends
+  would be the sole path — acceptable never as an automated dependency.
+  Boundary (owner decision, 2026-07-26): that deeper telemetry is
+  **owner-domain by design** — it lives instance-side as a periodic
+  health-analysis protocol, segmented out of this module entirely. The
+  module's only Garmin touchpoint is `source: 'garmin'` on occasional
+  manual-assisted expenditure imports; the deficit pipeline never depends
   on it.
 
 Until any feed lands, `manual` entries via the CLI cover the need (v1).
