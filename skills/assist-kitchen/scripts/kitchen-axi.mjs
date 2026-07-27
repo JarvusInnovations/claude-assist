@@ -699,6 +699,17 @@ var SHELF_LIFE_CLASSES = [
   "very_perishable",
   "unknown"
 ];
+var CONVERT_SHELF_LIFE_CLASSES = [
+  "prepared",
+  "produce",
+  "very_perishable",
+  "frozen"
+];
+var PACKAGE_DURABLE_SHELF_LIFE_CLASSES = [
+  "pantry",
+  "fridge_long",
+  "fridge_short"
+];
 
 // packages/kitchen/src/axi/invocation.ts
 import { accessSync, constants } from "node:fs";
@@ -1565,9 +1576,14 @@ var INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json]
   divisible one (fields: shelf_life_class?, on_hand_fraction?, units_total?,
   store?, notes?, acquired_at?, recipe_ulid?). PER-UNIT RECIPE CONTRACT: for
   a counted derived item the linked recipe must describe ONE unit (one jar),
-  not the whole batch \u2014 consume logs recipe \xD7 quantity. For prepped food,
-  OMIT shelf_life_class and let the 'prepared' default apply (or 'produce'
-  for hard-boiled eggs) \u2014 never a grocery class like fridge_short.
+  not the whole batch \u2014 consume logs recipe \xD7 quantity. A converted (made)
+  item accepts ONLY the made-food classes \u2014 prepared (default), produce,
+  very_perishable, frozen. The package-durable grocery classes (pantry,
+  fridge_long, fridge_short) are REJECTED with a 400: their clock assumes a
+  sealed store package, absurd on a homemade item. For prepped food, OMIT
+  shelf_life_class and let the 'prepared' default apply (or 'produce' for
+  hard-boiled eggs); use the product-level day overrides for a genuinely
+  longer honest clock, never a grocery class.
 
   'recount' is THE way to fix a ledger that disagrees with the fridge ("it's
   actually 75% full", "this is really 2 of 3 cans", "this carton was never
@@ -1797,6 +1813,7 @@ async function convert(args) {
   if (!derived || typeof derived !== "object" || Array.isArray(derived) || !("name" in derived)) {
     throw new AxiError('--to must be a JSON object with at least a "name" field', "VALIDATION_ERROR", [INVENTORY_HELP]);
   }
+  assertConvertShelfLifeClass(derived.shelf_life_class);
   const body = {
     sources: fromValues.map(parseSource),
     derived
@@ -1834,6 +1851,15 @@ function validateShelfLife(value) {
     throw new AxiError(`--shelf-life must be one of: ${SHELF_LIFE_CLASSES.join(", ")}`, "VALIDATION_ERROR", [INVENTORY_HELP]);
   }
   return value;
+}
+function assertConvertShelfLifeClass(cls) {
+  if (typeof cls === "string" && PACKAGE_DURABLE_SHELF_LIFE_CLASSES.includes(cls)) {
+    throw new AxiError(
+      `--to shelf_life_class "${cls}" is a package-durable class; a converted (made) item accepts only made-food classes: ${CONVERT_SHELF_LIFE_CLASSES.join(", ")} (default "prepared")`,
+      "VALIDATION_ERROR",
+      [INVENTORY_HELP]
+    );
+  }
 }
 
 // packages/kitchen/src/axi/commands/expenditures.ts
@@ -2339,7 +2365,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "0c66aaf" : "dev";
+var VERSION = true ? "6b90897" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)
