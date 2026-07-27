@@ -55,6 +55,22 @@ in doubt, read the spec.
   in the machine's local timezone** — never midnight UTC, which is the previous evening
   across US zones and would land the entry a day early. Same rule applies to `entries
   patch --at` and `expenditure log --at`. Omit `--at` entirely to default to now.
+- **The `day` field is authoritative for bucketing — never derive a day from a timestamp.**
+  Every entry, expenditure, and weigh-in row carries a `day` (`YYYY-MM-DD`) computed by the
+  server in the **instance owner's timezone**, and displayed instants render in that zone
+  (e.g. `2026-07-25T20:47:00-04:00`), never a bare `…Z`. When you group, filter, or ask
+  "what did I eat on <date>", key off `day`. Do **not** parse `logged_at`/`occurred_at` (the
+  raw UTC instant, kept only for ordering) and slice a date off it — a meal logged at
+  `00:47Z` is the *previous* evening across US zones, and hand-bucketing by the UTC date is
+  the recurring error this field exists to kill. You never supply or compute a timezone; the
+  module owns it.
+- **Multi-day or weekly totals? Call `days` once — never list entries and hand-sum them.**
+  `kitchen-axi days [--since <n|date>]` returns one pre-computed row per owner-local day (the
+  eight-field panel + calories + the net line), bucketed server-side. Reach for it for any
+  "how did the week go", weekly-review, or per-day-trend question. Summing `entries list`
+  rows yourself is both the expensive way and the exact operation that mis-buckets by UTC —
+  `days` is the correct, single-call aggregate. The home view already reports **today's**
+  owner-local totals; `days` extends that across the window.
 - **Already have the exact macros? State them at log time — never log-then-patch.** When
   a caller has *already computed* the full panel (a page/UI totalled it, a resolved label
   scan, an import), pass the fields on `entries log` (`--calories`/`--protein`/… `--label`).
@@ -133,6 +149,10 @@ in doubt, read the spec.
 - `scripts/kitchen-axi entries log [note…] [--recipe ULID] [--component "label=grams"]… [--at TIME] [--calories N] [--protein N] [--fat N] [--sat-fat N] [--carbs N] [--sugar N] [--fiber N] [--sodium N] [--label T]` — log a deliberate, no-model entry (note and/or recipe + component quantities); recipe-referenced entries are computed deterministically; --at sets logged_at (default now — prefer a full local timestamp with offset; a bare YYYY-MM-DD backstops to local noon that day, never midnight UTC); a directly-stated panel (--calories/--protein/…, optionally --label) records a born-manual, terminal entry verbatim with NO estimation (mutually exclusive with --recipe/--component)
 - `scripts/kitchen-axi entries patch <ulid> [--note T] [--label T] [--calories N] [--protein N] [--fat N] [--sat-fat N] [--carbs N] [--sodium N] [--portion-basis T] [--multiplier M] [--at TIME]` — edit an entry: note/label re-queue estimation; any macro sets a terminal manual override; --multiplier rescales the base post-hoc and --at backdates logged_at (prefer a full local timestamp with offset; a bare YYYY-MM-DD backstops to local noon that day; neither re-queues, neither changes source)
 - `scripts/kitchen-axi entries delete <ulid>` — remove an entry from all rollups
+
+### Daily rollup
+
+- `scripts/kitchen-axi days [--since <n|date>]` — per-owner-local-day rollup: one row per day (eight-field panel + calories + net line when a TDEE base is set), bucketed by the instance's OWNER timezone SERVER-SIDE. --since is a day count (7 / 7d) or a date; default last 7 days. USE THIS for any multi-day or weekly total — never list entries and hand-sum them by timestamp (UTC-vs-local mis-bucketing is the exact footgun this retires; group only by the `day` field)
 
 ### Expenditure
 

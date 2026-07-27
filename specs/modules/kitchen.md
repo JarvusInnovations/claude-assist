@@ -307,6 +307,48 @@ to compute the balance — no routes, laps, splits, gear, or kudos. Strava
 remains the exercise system of record; this feed carries numbers, not
 activities.
 
+## Timezone & local-day bucketing (module-owned, not caller-owned)
+
+AXI output is consumed **only by LLM agents**, and the tool's job is to make
+agent mistakes hard (AXI design guide). Handing back a bare UTC instant and
+leaving the agent to derive the local calendar day is a footgun that fires
+reliably — UTC-vs-local day-bucketing is a recurring agent-error class (two wrong
+week-reviews on 2026-07-26 came from exactly this: an agent hand-bucketing
+`logged_at` by its UTC date). So the module **owns** timezone and day-bucketing.
+No AXI caller ever supplies, knows, or computes a timezone/offset to get correct
+day-grouped data. This **reverses** the prior "caller owns its day boundaries"
+stance (the home view's local-window hack and any caller-computed day windows go
+away).
+
+**Owner timezone is module config.** A single configured IANA zone
+(`KITCHEN_OWNER_TZ`, e.g. `America/New_York`) is the one source of truth for
+every day boundary — instance config in the same spirit as `KITCHEN_TDEE_BASE`.
+Unset ⇒ the module falls back to UTC **and says so** in the affected output
+(a stated fallback, never a silent guess).
+
+**Every timestamped row surfaces its local day.** Entry, expenditure, and
+weigh-in rows — in list and detail AXI output — carry a `day` field: the
+owner-tz calendar date (`YYYY-MM-DD`), computed server-side. Displayed times
+render in the owner's local zone, not a bare `Z` UTC string. An agent grouping,
+filtering, or bucketing keys off `day`; it must never parse a timestamp to derive
+a day. (The precise UTC instant stays in the record for ordering and machine use,
+but no AXI surface *requires* deriving local day from it.)
+
+**Per-day totals are a pre-computed aggregate (AXI §4), never a caller
+aggregation.** A first-class rollup — `kitchen-axi days [--since <n|date>]` over a
+`GET /kitchen/summary` day-grouped mode — returns **per-owner-local-day** rows:
+the eight-field nutrition panel, calories, and the net line (when
+`KITCHEN_TDEE_BASE` is set), one row per day, computed server-side in the owner
+zone. An agent asking "how did the week go" calls it **once** and gets correct
+numbers. Hand-summing entries into daily/weekly totals is the expensive follow-up
+AXI §4 warns against **and** the exact operation that produced the 2026-07-26
+mis-buckets — the rollup exists so no agent ever does it.
+
+**Applies to the whole module surface:** the home view's "today" totals, the
+`entries`/`expenditure`/weigh-in lists, the summary/net line, the briefing daily
+totals, and the weekly trend all bucket by the owner zone via this one config —
+no surface re-derives day boundaries independently.
+
 ## Weigh-ins — scale data via the capture app (phase 3)
 
 Weight is the goal metric and the empirical tuner for `KITCHEN_TDEE_BASE`

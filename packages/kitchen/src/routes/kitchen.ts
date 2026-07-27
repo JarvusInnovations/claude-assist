@@ -32,10 +32,12 @@ import type {
   ComponentQuantity,
   EntryInput,
   EntryPatchInput,
+  EntryRecord,
   PhotoPart,
   RecipeComponent,
   StatedMacros,
 } from '../types.js';
+import { localDay, localDisplay, resolveOwnerTz, type OwnerTz } from '../zoned.js';
 
 /**
  * The eight panel fields accepted on a directly-stated `macros` object
@@ -76,6 +78,28 @@ export interface KitchenRoutesConfig {
   maxPhotoBytes?: number;
   /** Max photo parts per entry (default 6). */
   maxPhotos?: number;
+  /**
+   * Owner timezone (§ Timezone & local-day bucketing) — used to stamp each
+   * entry's owner-local `day` and local-time display server-side. Optional so
+   * tests can omit it; absent ⇒ UTC fallback.
+   */
+  ownerTz?: OwnerTz;
+}
+
+/**
+ * Serialize an entry for the wire, adding the module-owned local-day fields
+ * (§ Timezone & local-day bucketing): `day` (owner-tz calendar date, the
+ * authoritative bucketing key) and `logged_local` (the instant rendered in the
+ * owner zone with an explicit offset — never a bare `Z`). The raw `logged_at`
+ * UTC instant stays for ordering/machine use.
+ */
+function serializeEntry(entry: EntryRecord, ownerTz: OwnerTz): Record<string, unknown> {
+  const loggedAt = entry.logged_at instanceof Date ? entry.logged_at : new Date(entry.logged_at);
+  return {
+    ...entry,
+    day: localDay(loggedAt, ownerTz.zone),
+    logged_local: localDisplay(loggedAt, ownerTz.zone),
+  };
 }
 
 function validateComponentQuantities(value: unknown): value is ComponentQuantity[] {
@@ -237,7 +261,7 @@ function validatePromoteBody(value: unknown): { ok: true } | { ok: false; error:
 
 export const registerKitchenRoutes: FastifyPluginAsync<KitchenRoutesConfig> = async (
   fastify,
-  { pipeline, maxPhotoBytes = 10 * 1024 * 1024, maxPhotos = 6 }
+  { pipeline, maxPhotoBytes = 10 * 1024 * 1024, maxPhotos = 6, ownerTz = resolveOwnerTz() }
 ) => {
   await fastify.register(multipart, {
     limits: { fileSize: maxPhotoBytes, files: maxPhotos, fields: 4 },
@@ -313,7 +337,7 @@ export const registerKitchenRoutes: FastifyPluginAsync<KitchenRoutesConfig> = as
         );
       }
       reply.status(created ? 201 : 200);
-      return record;
+      return serializeEntry(record, ownerTz);
     } catch (err) {
       if (
         err instanceof RecipeNotFoundError ||
@@ -346,7 +370,11 @@ export const registerKitchenRoutes: FastifyPluginAsync<KitchenRoutesConfig> = as
       const since = request.query.since ? new Date(request.query.since) : undefined;
       const limit = request.query.limit ? parseInt(request.query.limit, 10) : undefined;
       const entries = await pipeline.list({ since, limit });
-      return { entries, count: entries.length };
+      return {
+        entries: entries.map((e) => serializeEntry(e, ownerTz)),
+        count: entries.length,
+        tz: ownerTz.note,
+      };
     }
   );
 
@@ -378,7 +406,7 @@ export const registerKitchenRoutes: FastifyPluginAsync<KitchenRoutesConfig> = as
       reply.status(404);
       return { error: 'Entry not found' };
     }
-    return entry;
+    return serializeEntry(entry, ownerTz);
   });
 
   // PATCH /kitchen/entries/:ulid
@@ -392,7 +420,7 @@ export const registerKitchenRoutes: FastifyPluginAsync<KitchenRoutesConfig> = as
           reply.status(404);
           return { error: 'Entry not found' };
         }
-        return updated;
+        return serializeEntry(updated, ownerTz);
       } catch (err) {
         if (err instanceof ManualOverrideConflictError) {
           reply.status(409);

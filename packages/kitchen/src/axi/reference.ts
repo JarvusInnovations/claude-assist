@@ -39,6 +39,15 @@ export const COMMAND_GROUPS: CommandGroup[] = [
     ],
   },
   {
+    group: "Daily rollup",
+    commands: [
+      {
+        usage: "days [--since <n|date>]",
+        summary: "per-owner-local-day rollup: one row per day (eight-field panel + calories + net line when a TDEE base is set), bucketed by the instance's OWNER timezone SERVER-SIDE. --since is a day count (7 / 7d) or a date; default last 7 days. USE THIS for any multi-day or weekly total — never list entries and hand-sum them by timestamp (UTC-vs-local mis-bucketing is the exact footgun this retires; group only by the `day` field)",
+      },
+    ],
+  },
+  {
     group: "Expenditure",
     commands: [
       {

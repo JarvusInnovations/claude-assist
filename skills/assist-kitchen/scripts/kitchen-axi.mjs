@@ -586,6 +586,15 @@ var COMMAND_GROUPS = [
     ]
   },
   {
+    group: "Daily rollup",
+    commands: [
+      {
+        usage: "days [--since <n|date>]",
+        summary: "per-owner-local-day rollup: one row per day (eight-field panel + calories + net line when a TDEE base is set), bucketed by the instance's OWNER timezone SERVER-SIDE. --since is a day count (7 / 7d) or a date; default last 7 days. USE THIS for any multi-day or weekly total \u2014 never list entries and hand-sum them by timestamp (UTC-vs-local mis-bucketing is the exact footgun this retires; group only by the `day` field)"
+      }
+    ]
+  },
+  {
     group: "Expenditure",
     commands: [
       {
@@ -1073,42 +1082,11 @@ function formatRelativeTime(value) {
 }
 
 // packages/kitchen/src/axi/format.ts
-var MACRO_KEYS = [
-  "calories",
-  "protein_g",
-  "fat_g",
-  "sat_fat_g",
-  "carbs_g",
-  "sugar_g",
-  "fiber_g",
-  "sodium_mg"
-];
 function effectiveMacro(entry, key) {
   const base = entry[key];
   if (base === null || base === void 0) return null;
   const mult = typeof entry.portion_multiplier === "number" ? entry.portion_multiplier : 1;
   return round(base * mult);
-}
-function sumEffective(entries) {
-  const totals = {
-    calories: 0,
-    protein_g: 0,
-    fat_g: 0,
-    sat_fat_g: 0,
-    carbs_g: 0,
-    sugar_g: 0,
-    fiber_g: 0,
-    sodium_mg: 0
-  };
-  for (const e of entries) {
-    const mult = typeof e.portion_multiplier === "number" ? e.portion_multiplier : 1;
-    for (const key of MACRO_KEYS) {
-      const base = e[key];
-      if (typeof base === "number") totals[key] += base * mult;
-    }
-  }
-  for (const key of MACRO_KEYS) totals[key] = round(totals[key]);
-  return totals;
 }
 function round(n) {
   return Math.round(n * 10) / 10;
@@ -1123,7 +1101,7 @@ function targetLine(logged, bound) {
 }
 var ENTRY_ROW_SCHEMA = [
   { type: "field", key: "ulid" },
-  { type: "dateOnly", key: "logged_at", as: "logged" },
+  { type: "field", key: "day" },
   { type: "field", key: "label" },
   { type: "field", key: "status" },
   { type: "field", key: "source" },
@@ -1140,6 +1118,9 @@ var HOME_HELP = `kitchen-axi [--eat-first N] [--json]
   count. Fields with an owner-set daily target render as logged / target with
   remaining (caps count down what's left; floors count up to met).
 
+  "Today" is the instance owner timezone's day, computed server-side. For a
+  multi-day trend use \`kitchen-axi days\`.
+
   --eat-first N   how many eat-first items to show (default 3)
   --json          raw JSON`;
 var EAT_FIRST_SCHEMA = [
@@ -1149,10 +1130,6 @@ var EAT_FIRST_SCHEMA = [
   field("days_until_eat_by", "days_left"),
   field("on_hand_fraction", "on_hand")
 ];
-function startOfTodayIso() {
-  const now = /* @__PURE__ */ new Date();
-  return new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
-}
 async function homeCommand(args) {
   const { flags } = parseArgs(args, ["json"], ["eat-first"]);
   const server = resolveServer();
@@ -1163,14 +1140,13 @@ async function homeCommand(args) {
   let questionCount = 0;
   let summary = null;
   let reachable = true;
-  const dayStart = startOfTodayIso();
-  const dayEnd = new Date(new Date(dayStart).getTime() + 24 * 60 * 60 * 1e3).toISOString();
+  const windowStart = new Date(Date.now() - 48 * 60 * 60 * 1e3).toISOString();
   try {
     const [entriesRes, invRes, qRes, summaryRes] = await Promise.all([
-      api.get("/api/kitchen/entries", { since: dayStart }),
+      api.get("/api/kitchen/entries", { since: windowStart }),
       api.get("/api/kitchen/inventory", { limit: eatFirstN }),
       api.get("/api/kitchen/inventory/questions", { limit: 1 }),
-      api.get("/api/kitchen/summary", { since: dayStart, until: dayEnd }).catch(() => null)
+      api.get("/api/kitchen/summary", { group: "day", since: windowStart }).catch(() => null)
     ]);
     entries = Array.isArray(entriesRes?.entries) ? entriesRes.entries : [];
     items = Array.isArray(invRes?.items) ? invRes.items : [];
@@ -1180,7 +1156,7 @@ async function homeCommand(args) {
     reachable = false;
   }
   if (flags.json) {
-    return rawJson({ server, today: entries, eat_first: items, questions: questionCount });
+    return rawJson({ server, today: summary?.today, summary, entries, eat_first: items, questions: questionCount });
   }
   if (!reachable || entries === null) {
     return renderOutput2([
@@ -1189,18 +1165,25 @@ async function homeCommand(args) {
       renderHelp([discoveryHelp(cli)])
     ]);
   }
-  const pending = entries.filter((e) => e.status === "estimating").length;
-  const failed = entries.filter((e) => e.status === "failed").length;
-  const totals = sumEffective(entries);
+  const today = (summary && typeof summary.today === "string" ? summary.today : void 0) ?? (entries[0] && typeof entries[0].day === "string" ? entries[0].day : void 0);
+  const todayEntries = today ? entries.filter((e) => e.day === today) : [];
+  const pending = todayEntries.filter((e) => e.status === "estimating").length;
+  const failed = todayEntries.filter((e) => e.status === "failed").length;
+  const todayRow = (summary && Array.isArray(summary.days) ? summary.days.find((d) => d.day === today) : null) ?? {};
+  const totalOf = (key) => typeof todayRow[key] === "number" ? todayRow[key] : 0;
   const targets = summary && summary.targets && typeof summary.targets === "object" ? summary.targets : {};
   const vsTarget = (key) => {
     const bound = targets[key];
-    return bound ? targetLine(totals[key], bound) : totals[key];
+    return bound ? targetLine(totalOf(key), bound) : totalOf(key);
   };
-  const today = renderObject({
+  const fallbackTz = typeof summary?.tz === "string" && summary.tz.includes("unset") ? summary.tz : void 0;
+  const today_view = renderObject({
     server,
-    date: startOfTodayIso().slice(0, 10),
-    entries: entries.length,
+    // State the zone only on the UTC fallback (KITCHEN_OWNER_TZ unset) — a
+    // stated fallback, never a silent guess.
+    ...fallbackTz ? { tz: fallbackTz } : {},
+    date: today ?? "unknown",
+    entries: todayEntries.length,
     pending_estimates: pending,
     ...failed ? { failed } : {},
     kcal: vsTarget("calories"),
@@ -1214,11 +1197,11 @@ async function homeCommand(args) {
     // Net-energy context (§ Expenditure & net energy): shown only when the
     // day logged a burn and/or the instance configured a TDEE base. The net
     // is CONTEXT, not a spend-it budget — never a "remaining to eat" figure.
-    ...summary && summary.expenditure_count > 0 ? { burned_kcal: summary.expenditure_kcal } : {},
-    ...summary && typeof summary.net_kcal === "number" ? { est_deficit_kcal: summary.net_kcal } : {},
+    ...typeof todayRow.expenditure_kcal === "number" && todayRow.expenditure_kcal > 0 ? { burned_kcal: todayRow.expenditure_kcal } : {},
+    ...typeof todayRow.net_kcal === "number" ? { est_deficit_kcal: todayRow.net_kcal } : {},
     open_questions: questionCount
   });
-  const blocks = [today];
+  const blocks = [today_view];
   if (items.length) {
     blocks.push(renderList("eat_first", items, EAT_FIRST_SCHEMA));
   } else {
@@ -1227,6 +1210,7 @@ async function homeCommand(args) {
   blocks.push(
     renderHelp([
       `Run \`${cli} entries list\` for today's log, \`${cli} entries log "<meal>"\` to log`,
+      `Run \`${cli} days\` for the per-day trend (weekly totals, bucketed by the owner timezone)`,
       questionCount ? `Run \`${cli} inventory questions\` to answer ${questionCount} open needs-info item(s)` : "",
       `Run \`${cli} inventory list\` for full stock, \`${cli} recipes list\` for the reselect strip`,
       discoveryHelp(cli)
@@ -1293,7 +1277,10 @@ var ENTRIES_HELP = `kitchen-axi entries <subcommand> [args] [--json]
   --sodium (the eight-field nutrition panel; unknown stays null, never 0).`;
 var DETAIL_SCHEMA = [
   field("ulid"),
-  field("logged_at", "logged"),
+  // `day` = owner-tz calendar date (authoritative bucketing key); `logged`
+  // renders the instant in the owner zone (§ Timezone & local-day bucketing).
+  field("day"),
+  field("logged_local", "logged"),
   field("note"),
   field("label"),
   field("status"),
@@ -1467,6 +1454,68 @@ async function deleteEntry(args) {
   await api.del(`/api/kitchen/entries/${encodeURIComponent(ulid)}`);
   if (flags.json) return rawJson({ deleted: ulid });
   return renderObject({ deleted: ulid });
+}
+
+// packages/kitchen/src/axi/commands/days.ts
+var DAYS_HELP = `kitchen-axi days [--since <n|date>] [--json]
+
+  Per-owner-local-day rollup: one row per day over the window, each with the
+  eight-field nutrition panel + calories (EFFECTIVE totals) and \u2014 when the
+  instance sets a TDEE base \u2014 the net line ((TDEE base + burns) \u2212 intake).
+
+  --since <n|date>   window start: a day count (e.g. 7 or 7d = last 7 days) or a
+                     date (YYYY-MM-DD). Default: last 7 days.
+  --json             raw JSON
+
+  Days bucket by the instance's OWNER timezone, server-side \u2014 you never supply or
+  compute an offset. Use this for any multi-day/weekly total; never hand-sum
+  \`entries list\` rows by their timestamp.`;
+var DAY_SCHEMA = [
+  field("day"),
+  field("calories", "kcal"),
+  field("protein_g", "protein"),
+  field("fat_g", "fat"),
+  field("sat_fat_g", "sat_fat"),
+  field("carbs_g", "carbs"),
+  field("sugar_g", "sugar"),
+  field("fiber_g", "fiber"),
+  field("sodium_mg", "sodium"),
+  field("entry_count", "entries"),
+  field("expenditure_kcal", "burned"),
+  field("net_kcal", "net")
+];
+function resolveSince(raw) {
+  const m = /^(\d+)d?$/.exec(raw.trim());
+  if (m) {
+    const days = parseInt(m[1], 10);
+    if (days < 1) throw new AxiError("--since day count must be >= 1", "VALIDATION_ERROR", [DAYS_HELP]);
+    return new Date(Date.now() - days * 864e5).toISOString();
+  }
+  return validateDate(raw, "--since", DAYS_HELP);
+}
+async function daysCommand(args) {
+  const sub = args[0];
+  if (sub === "--help") throw new AxiError(DAYS_HELP, "VALIDATION_ERROR", [DAYS_HELP]);
+  const { flags } = parseArgs(args, ["json"], ["since"]);
+  const since = typeof flags.since === "string" ? resolveSince(flags.since) : void 0;
+  const result = await api.get("/api/kitchen/summary", { group: "day", since });
+  if (flags.json) return rawJson(result);
+  const days = Array.isArray(result?.days) ? result.days : [];
+  const cli = cliInvocation();
+  const blocks = [];
+  if (typeof result?.tz === "string" && result.tz.includes("unset")) {
+    blocks.push(renderObject({ tz: result.tz }));
+  }
+  blocks.push(
+    days.length ? renderList("days", days, DAY_SCHEMA) : "days: no entries in window"
+  );
+  blocks.push(
+    renderHelp([
+      `Days bucket by the instance owner timezone, server-side \u2014 group/total by \`day\`, never by a raw timestamp`,
+      `Run \`${cli} entries list --since <date>\` to see the individual entries behind a day`
+    ])
+  );
+  return renderOutput2(blocks);
 }
 
 // packages/kitchen/src/axi/commands/inventory.ts
@@ -1805,7 +1854,10 @@ var EXPENDITURE_HELP = `kitchen-axi expenditure <subcommand> [args] [--json]
   nothing here computes "remaining to eat" from a workout.`;
 var ROW_SCHEMA = [
   field("ulid"),
-  field("occurred_at"),
+  // `day` = owner-tz calendar date (authoritative bucketing key); `occurred`
+  // renders the instant in the owner zone (§ Timezone & local-day bucketing).
+  field("day"),
+  field("occurred_local", "occurred"),
   field("label"),
   field("source"),
   field("kcal"),
@@ -1902,8 +1954,10 @@ var WEIGHT_HELP = `kitchen-axi weight <subcommand> [args] [--json]
   zone. Raw rows stay intact \u2014 inspect them with \`weigh-ins list\`.`;
 var ROW_SCHEMA2 = [
   field("ulid"),
-  field("local_date"),
-  field("occurred_at"),
+  // `day` = owner-tz calendar date (the module-wide bucketing key, § Timezone &
+  // local-day bucketing); `occurred` renders the instant in the owner zone.
+  field("day"),
+  field("occurred_local", "occurred"),
   field("weight_kg"),
   field("body_fat_pct"),
   field("source")
@@ -2285,7 +2339,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "86f20ca" : "dev";
+var VERSION = true ? "0c66aaf" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)
@@ -2308,6 +2362,7 @@ examples:
 var COMMAND_HELP = {
   home: HOME_HELP,
   entries: ENTRIES_HELP,
+  days: DAYS_HELP,
   inventory: INVENTORY_HELP,
   expenditure: EXPENDITURE_HELP,
   "weigh-ins": WEIGH_INS_HELP,
@@ -2320,6 +2375,7 @@ var COMMAND_HELP = {
 var COMMANDS = {
   home: (args) => homeCommand(args),
   entries: (args) => entriesCommand(args),
+  days: (args) => daysCommand(args),
   inventory: (args) => inventoryCommand(args),
   expenditure: (args) => expenditureCommand(args),
   "weigh-ins": (args) => weighInsCommand(args),
