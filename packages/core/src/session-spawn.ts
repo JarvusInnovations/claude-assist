@@ -33,6 +33,17 @@ export interface SpawnRequest {
    * configuration, outside this module's concern.
    */
   group?: string;
+  /**
+   * Optional model override for the spawned session — an alias (`opus`,
+   * `sonnet`) or a full model name — passed to the spawn command as
+   * `SESSION_SPAWN_MODEL`. Must match `^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$`; an
+   * invalid value falls through to the instance-wide default (see the module
+   * spec's § Model selection). Omit to take the instance default.
+   *
+   * This is the model an interactive HUMAN session runs on under subscription
+   * auth — never one of the metered per-module API models.
+   */
+  model?: string;
 }
 
 export type SpawnStatus = 'spawned' | 'failed' | 'not_configured';

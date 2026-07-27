@@ -23,6 +23,12 @@ export interface SessionSpawnPluginOptions {
   command?: string[];
   /** Wall-clock bound per spawn in ms (default 120000). */
   timeoutMs?: number;
+  /**
+   * Instance-wide default model for spawned sessions (from
+   * `SESSION_SPAWN_MODEL`, schema default `opus`). A caller may override it
+   * per request; see the module spec's § Model selection.
+   */
+  model?: string;
 }
 
 const sessionSpawnPlugin: FastifyPluginAsync<SessionSpawnPluginOptions> = async (fastify, opts) => {
@@ -38,6 +44,7 @@ const sessionSpawnPlugin: FastifyPluginAsync<SessionSpawnPluginOptions> = async 
     notify: fastify.notify,
     log: fastify.log,
     timeoutMs: opts.timeoutMs,
+    model: opts.model,
   });
   fastify.decorate('sessionSpawner', spawner);
 
@@ -79,6 +86,8 @@ export default fp(sessionSpawnPlugin, { name: 'session-spawn', fastify: '5.x' })
 export {
   createSessionSpawner,
   DEFAULT_SPAWN_TIMEOUT_MS,
+  isValidSpawnGroup,
+  isValidSpawnModel,
   type SessionSpawnerConfig,
 } from './spawner.js';
 export { generateSpawnId } from './ulid.js';

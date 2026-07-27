@@ -85,6 +85,16 @@ export interface KitchenPluginConfig {
    * extraction is mechanical, so it runs on the cheap tier.
    */
   receiptModel?: string;
+  /**
+   * Model for the spawned interactive meal-planning session
+   * (`KITCHEN_PLAN_SESSION_MODEL`) — this caller's override of the
+   * instance-wide `SESSION_SPAWN_MODEL`. Unset ⇒ the instance default applies.
+   *
+   * NOT one of the metered models above: it selects the model an interactive
+   * HUMAN session runs on under subscription auth (see
+   * `specs/modules/session-spawn.md` § Model selection).
+   */
+  planSessionModel?: string;
   /** Parallelism for the estimation sweep (default 3). */
   concurrency?: number;
   /** Disable the scheduled estimation sweep. */
