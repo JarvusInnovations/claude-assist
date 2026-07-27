@@ -13,7 +13,7 @@ import {
 import { renderList, renderDetail, renderObject, renderOutput, renderHelp, field, type FieldDef } from "../toon.js";
 import { ENTRY_ROW_SCHEMA } from "../format.js";
 import { cliInvocation } from "../invocation.js";
-import { SHELF_LIFE_CLASSES } from "../reference.js";
+import { CONVERT_SHELF_LIFE_CLASSES, PACKAGE_DURABLE_SHELF_LIFE_CLASSES, SHELF_LIFE_CLASSES } from "../reference.js";
 
 export const INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json]
 
@@ -61,9 +61,14 @@ export const INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json
   divisible one (fields: shelf_life_class?, on_hand_fraction?, units_total?,
   store?, notes?, acquired_at?, recipe_ulid?). PER-UNIT RECIPE CONTRACT: for
   a counted derived item the linked recipe must describe ONE unit (one jar),
-  not the whole batch — consume logs recipe × quantity. For prepped food,
-  OMIT shelf_life_class and let the 'prepared' default apply (or 'produce'
-  for hard-boiled eggs) — never a grocery class like fridge_short.
+  not the whole batch — consume logs recipe × quantity. A converted (made)
+  item accepts ONLY the made-food classes — prepared (default), produce,
+  very_perishable, frozen. The package-durable grocery classes (pantry,
+  fridge_long, fridge_short) are REJECTED with a 400: their clock assumes a
+  sealed store package, absurd on a homemade item. For prepped food, OMIT
+  shelf_life_class and let the 'prepared' default apply (or 'produce' for
+  hard-boiled eggs); use the product-level day overrides for a genuinely
+  longer honest clock, never a grocery class.
 
   'recount' is THE way to fix a ledger that disagrees with the fridge ("it's
   actually 75% full", "this is really 2 of 3 cans", "this carton was never
@@ -317,6 +322,11 @@ async function convert(args: string[]): Promise<string> {
     throw new AxiError("--to must be a JSON object with at least a \"name\" field", "VALIDATION_ERROR", [INVENTORY_HELP]);
   }
 
+  // A converted (made) item accepts only made-food classes — block the
+  // package-durable ones before the network call (§ Shelf-life classes). The
+  // server enforces the same guard; this just fails fast with clean guidance.
+  assertConvertShelfLifeClass((derived as { shelf_life_class?: unknown }).shelf_life_class);
+
   const body: Record<string, unknown> = {
     sources: fromValues.map(parseSource),
     derived,
@@ -362,4 +372,21 @@ function validateShelfLife(value: string): string {
     throw new AxiError(`--shelf-life must be one of: ${SHELF_LIFE_CLASSES.join(", ")}`, "VALIDATION_ERROR", [INVENTORY_HELP]);
   }
   return value;
+}
+
+/**
+ * Guard a convert `--to` shelf_life_class client-side (§ Shelf-life classes —
+ * "A `convert` derived item accepts only made-food shelf-life classes"): a
+ * converted (made) item accepts only the made-food classes, so reject the
+ * package-durable ones with a clean AXI error before the network call. A
+ * missing/undefined class is fine — the server defaults it to `prepared`.
+ */
+export function assertConvertShelfLifeClass(cls: unknown): void {
+  if (typeof cls === "string" && (PACKAGE_DURABLE_SHELF_LIFE_CLASSES as readonly string[]).includes(cls)) {
+    throw new AxiError(
+      `--to shelf_life_class "${cls}" is a package-durable class; a converted (made) item accepts only made-food classes: ${CONVERT_SHELF_LIFE_CLASSES.join(", ")} (default "prepared")`,
+      "VALIDATION_ERROR",
+      [INVENTORY_HELP]
+    );
+  }
 }

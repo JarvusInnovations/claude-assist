@@ -946,8 +946,23 @@ from the grocery classes:
   caller names none (see § Conversions) — so a prepared dish always earns an
   honest eat-by and joins eat-first ordering, instead of falling to `unknown`
   (no eat-by, invisible to the planner). ~4 days is a directional central
-  estimate; a caller that knows better overrides it (e.g. `produce` for
-  hard-boiled eggs, which keep ~a week; `very_perishable` for cut fruit).
+  estimate; a caller that knows better overrides it to another **made-food
+  class** — `produce` for hard-boiled eggs (which keep ~a week) or
+  `very_perishable` for cut fruit.
+
+**A `convert` derived item accepts only made-food shelf-life classes.** The valid
+set on `POST /inventory/convert`'s `shelf_life_class` is **`prepared` (default),
+`produce`, `very_perishable`, and `frozen`** (a batch you freeze). The
+**package-durable classes — `pantry`, `fridge_long`, `fridge_short` — are
+rejected** with a `400` that names the valid set and points at `prepared`.
+Rationale: those classes' clocks anchor to an **unopened** window (a
+still-sealed store package: `pantry` 365 d, `fridge_short` 14 d), and a derived
+item is `stocked`/unopened by construction — so saddling a homemade jar with one
+produces an absurd "lasts 14 days unopened" eat-by. A self-made item has no
+sealed-package phase; the guard makes that category error impossible rather than
+trusting every caller to know it (AXI: make the mistake hard, not documented). A
+caller that genuinely wants a longer honest clock uses the product-level day
+overrides, not a grocery class.
 
 **Inventory state machine** (`src/inventory-state.ts`):
 `stocked --opened--> open`, `{stocked,open} --finished--> finished`,

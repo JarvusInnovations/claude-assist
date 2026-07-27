@@ -6,6 +6,7 @@ import { sumEffective, effectiveMacro, targetLine } from "./format.js";
 import { commandReferenceText, COMMAND_GROUPS } from "./reference.js";
 import { spliceGeneratedRegions, commandReferenceMarkdown } from "./skill.js";
 import { buildLogEntryFields, buildPatchBody } from "./commands/entries.js";
+import { assertConvertShelfLifeClass } from "./commands/inventory.js";
 import { ensureExplicitOffset } from "./commands/weigh-ins.js";
 
 describe("resolveServer", () => {
@@ -270,5 +271,32 @@ describe("weigh-ins --at offset handling", () => {
     expect(attached).toBe(expected);
     // Round-trip: the string parses to the same instant the naive local time meant.
     expect(new Date(out).getTime()).toBe(new Date(2026, 0, 15, 8, 30, 0).getTime());
+  });
+});
+
+describe("convert made-food shelf-life guard (CLI)", () => {
+  // § Shelf-life classes — the CLI blocks a package-durable `--to`
+  // shelf_life_class before the network call, surfacing a structured AXI error
+  // that names the valid made-food set (mirrors the server's 400).
+  it("rejects each package-durable class with a structured AxiError naming the made-food set", () => {
+    for (const badClass of ["pantry", "fridge_long", "fridge_short"]) {
+      let thrown: unknown;
+      try {
+        assertConvertShelfLifeClass(badClass);
+      } catch (err) {
+        thrown = err;
+      }
+      expect(thrown).toBeInstanceOf(AxiError);
+      expect((thrown as AxiError).code).toBe("VALIDATION_ERROR");
+      expect((thrown as AxiError).message).toContain("prepared, produce, very_perishable, frozen");
+      expect((thrown as AxiError).message).toContain(badClass);
+    }
+  });
+
+  it("passes made-food classes and an omitted class (server defaults to prepared)", () => {
+    for (const okClass of ["prepared", "produce", "very_perishable", "frozen"]) {
+      expect(() => assertConvertShelfLifeClass(okClass)).not.toThrow();
+    }
+    expect(() => assertConvertShelfLifeClass(undefined)).not.toThrow();
   });
 });
