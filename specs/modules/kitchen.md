@@ -667,8 +667,18 @@ directory (instance config on the spawn command) already gives it the kitchen
 CLI and diet protocol to pull more if needed. The prompt names no instance data
 that isn't already the owner's own kitchen state.
 
-The prompt is handed to `sessionSpawner.spawn({ preloadPrompt, title })` with a
-title like `"meal-planning"`.
+The prompt is handed to `sessionSpawner.spawn({ preloadPrompt, title, group })`
+with a title like `"meal-planning"` and the group `kitchen`.
+
+### Model
+
+Meal planning is an interactive session the owner is waiting on, so it gets an
+explicit model rather than the CLI's sticky interactive default (session-spawn
+§ Model selection). `KITCHEN_PLAN_SESSION_MODEL` overrides the instance-wide
+`SESSION_SPAWN_MODEL` for this caller only; unset (the normal case) ⇒ the
+instance default applies. This is the model a *human* session runs on under
+subscription auth — unrelated to `KITCHEN_ESTIMATION_MODEL` /
+`KITCHEN_RECEIPT_MODEL`, which are the module's own metered API models.
 
 ### Response
 

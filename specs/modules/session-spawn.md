@@ -19,6 +19,10 @@ A caller may also tag its request with a short **group** — a caller identity
 per-caller workspace, tagging metadata, ignoring it entirely — is instance
 configuration, outside this module's concern.
 
+Every spawn also carries an explicit **model** (see § Model selection), so a
+warm session's capability never depends on whichever model the owner happened to
+select interactively last.
+
 ## Runtime shape
 
 The module decorates the Fastify instance with a single service,
@@ -67,9 +71,12 @@ An optional wall-clock bound (`SESSION_SPAWN_TIMEOUT_MS`, default `120000`)
 caps how long the service waits on the command before treating the spawn as
 failed — a slow warm or a hung command must fail loud, never hang the caller.
 
+`SESSION_SPAWN_MODEL` (default `opus`) is the instance-wide model every spawned
+session runs on unless the caller overrides it — see § Model selection.
+
 ## Spawn command contract
 
-Given a `SpawnRequest { preloadPrompt, title, group? }`, the service:
+Given a `SpawnRequest { preloadPrompt, title, group?, model? }`, the service:
 
 1. Writes `preloadPrompt` to a **temporary file** (owner-only mode, in the OS
    temp dir).
@@ -80,7 +87,8 @@ Given a `SpawnRequest { preloadPrompt, title, group? }`, the service:
 3. Runs the command (`argv[0]` with the remaining args), capturing stdout and
    stderr, bounded by the timeout above. The command runs with a **sanitized
    environment** (see § Sanitized environment), plus `SESSION_SPAWN_GROUP` when
-   a valid `group` was given (see § Caller group).
+   a valid `group` was given (see § Caller group) and `SESSION_SPAWN_MODEL`
+   carrying the resolved model (see § Model selection).
 4. **Success** ⇔ the command exits `0` **and** stdout contains at least one
    `https://` URL. The **takeover link is the first `https://` URL in stdout.**
 5. **Failure** ⇔ non-zero exit, timeout, **or** exit `0` with no `https://` URL
@@ -93,6 +101,14 @@ The contract the configured command must honor: *read a preload prompt from the
 file path given as its last argument, warm an RC session, and print a takeover
 URL as the first `https://` URL on stdout.* Everything else about the command is
 opaque to this module.
+
+**The command must be fully non-interactive.** It runs with no terminal and
+nobody watching, so any first-run confirmation the underlying session tool would
+otherwise prompt for — folder trust, a newly-configured integration, a tool
+permission — must be pre-empted by the wrapper (pre-approved via flags or
+settings the wrapper passes). A blocking prompt shows up here only as a timeout
+with no link, i.e. an opaque failure; keeping prompts from arising is the
+wrapper's job, not something this module can detect or answer.
 
 ## Sanitized environment
 
@@ -150,6 +166,45 @@ when it sees no `SESSION_SPAWN_GROUP`.
   a scheduler), and its group is fixed at the call site (see
   `PLAN_SESSION_GROUP` in the kitchen module's caller code as the pattern:
   export the group as a constant next to the session title).
+
+## Model selection
+
+A spawned session's model is **always chosen explicitly** — never inherited from
+whatever the owner last selected interactively. Left implicit, a warm session
+silently runs on the CLI's sticky default, so the same button can hand back a
+frontier-model session one day and a small-model session the next. The model is
+config, resolved per spawn and handed to the command as `SESSION_SPAWN_MODEL`.
+
+**Resolution order** (first match wins):
+
+1. `SpawnRequest.model` — the caller's override, when present and valid.
+2. `SESSION_SPAWN_MODEL` — the instance-wide default (schema default `opus`).
+3. Neither present/valid → the variable is **omitted** from the child env, and
+   the instance wrapper falls back to whatever it considers safe (the same
+   posture as an absent `SESSION_SPAWN_GROUP`).
+
+- **Validation.** A model identifier must match
+  `^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$` — an alias (`opus`, `sonnet`) or a full
+  model name, with no whitespace or shell metacharacters. Same defensive reason
+  as `group`: a caller- or config-supplied string is never interpolated into a
+  child environment unchecked. An invalid **caller** value is not an error — it
+  is dropped with a warning and resolution falls through to the instance
+  default. An invalid **instance** value is warned once at construction and
+  treated as unset.
+- **Aliases are the intended value.** The default is the alias `opus`, not a
+  pinned model name, so the instance tracks the latest model in that tier
+  without a config edit. An instance that needs a frozen version can pin the
+  full name.
+- **Why a caller override at all.** Different surfaces want different tiers: an
+  interactive planning session the owner is waiting on wants the strongest
+  model, while a mechanical warm-start might not. The caller names its own need;
+  the value it names is still instance config (an env var read at the call site),
+  not a constant in code — the same split as `group` (constant identity) vs. the
+  command (instance data).
+- **Not the estimator's model.** This is the model an *interactive human*
+  session runs on under subscription auth, entirely separate from the metered
+  per-module model settings (`KITCHEN_ESTIMATION_MODEL` and friends). The two
+  must never be conflated — see § Sanitized environment for the billing seam.
 
 ## Dispatch-and-redact
 
@@ -225,6 +280,13 @@ interface SpawnRequest {
    * absent (see § Caller group).
    */
   group?: string;
+  /**
+   * Optional model override (alias like "opus" or a full model name), passed to
+   * the spawn command as SESSION_SPAWN_MODEL. Must match
+   * ^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$; invalid ⇒ falls through to the
+   * instance default (see § Model selection).
+   */
+  model?: string;
 }
 
 type SpawnStatus = 'spawned' | 'failed' | 'not_configured';
@@ -256,7 +318,10 @@ dispatch, redaction, record returned — exercises end-to-end against a fake
 dispatcher without touching any real session tooling. Spawner tests reuse the
 injectable exec seam (`config.execFile`) to assert the captured child env
 carries `SESSION_SPAWN_GROUP` when a valid `group` was requested, and omits it
-when `group` is absent or invalid.
+when `group` is absent or invalid — and likewise that `SESSION_SPAWN_MODEL`
+carries the caller override when valid, the instance default when the caller
+supplies none or supplies an invalid one, and is absent when neither is
+configured.
 
 ## Principles
 
