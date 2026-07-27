@@ -317,7 +317,7 @@ describe('inventory routes', () => {
       url: '/kitchen/inventory/convert',
       payload: {
         sources: [{ item_ulid: eggs.item.ulid, amount: 6 }],
-        derived: { name: 'Hard-boiled eggs', shelf_life_class: 'fridge_short', units_total: 6 },
+        derived: { name: 'Hard-boiled eggs', shelf_life_class: 'produce', units_total: 6 },
         at: '2026-07-10',
       },
     });
@@ -350,7 +350,7 @@ describe('inventory routes', () => {
       method: 'POST',
       url: '/kitchen/inventory/convert',
       payload: {
-        derived: { name: 'Overnight-oats jar', shelf_life_class: 'fridge_short', recipe_ulid: recipeUlid },
+        derived: { name: 'Overnight-oats jar', shelf_life_class: 'prepared', recipe_ulid: recipeUlid },
         at: '2026-07-20',
       },
     });
@@ -403,6 +403,26 @@ describe('inventory routes', () => {
     expect(eggs.json().derived.eat_by).toBe('2026-07-27'); // produce unopened = 7 days
   });
 
+  it('POST /kitchen/inventory/convert rejects a package-durable derived class with a 400 naming the made-food set — no item created', async () => {
+    const before = await pipeline.listInventory({});
+
+    for (const badClass of ['fridge_short', 'pantry', 'fridge_long']) {
+      const res = await fastify.inject({
+        method: 'POST',
+        url: '/kitchen/inventory/convert',
+        payload: { derived: { name: `Bad batch ${badClass}`, shelf_life_class: badClass }, at: '2026-07-10' },
+      });
+      expect(res.statusCode).toBe(400);
+      // The structured error names the valid made-food set and points at prepared.
+      expect(res.json().error).toContain('prepared, produce, very_perishable, frozen');
+    }
+
+    // No derived item was minted for any of the rejected attempts.
+    const after = await pipeline.listInventory({});
+    expect(after.length).toBe(before.length);
+    expect(after.some((i) => i.raw_label?.startsWith('Bad batch'))).toBe(false);
+  });
+
   it('POST /kitchen/inventory/:ulid/consume — one atomic call: exact-macro entry + deplete; 404/400/409/503 per case', async () => {
     // A dedicated app wired with the consume atomicity store + a recipe
     // resolver (the shared `pipeline` in the outer beforeEach has neither).
@@ -427,7 +447,7 @@ describe('inventory routes', () => {
     const { item: rawOats } = await pl.createItem({ raw_label: 'Rolled oats', shelf_life_class: 'pantry', acquired_at: '2026-07-01' });
     const { derived } = await pl.convert({
       sources: [{ item_ulid: rawOats.ulid }],
-      derived: { name: 'Overnight oats jar', shelf_life_class: 'fridge_short', units_total: 2, recipe_ulid: recipe.ulid },
+      derived: { name: 'Overnight oats jar', shelf_life_class: 'prepared', units_total: 2, recipe_ulid: recipe.ulid },
       at: '2026-07-17',
     });
 

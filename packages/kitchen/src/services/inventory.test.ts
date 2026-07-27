@@ -912,7 +912,7 @@ describe('conversions (prep transforms — § Conversions)', () => {
 
     const result = await pipeline.convert({
       sources: [{ item_ulid: eggs.ulid, amount: 6 }],
-      derived: { name: 'Hard-boiled eggs', shelf_life_class: 'fridge_short', units_total: 6 },
+      derived: { name: 'Hard-boiled eggs', shelf_life_class: 'produce', units_total: 6 },
       at: '2026-07-10',
     });
 
@@ -923,7 +923,7 @@ describe('conversions (prep transforms — § Conversions)', () => {
     expect(result.derived.raw_label).toBe('Hard-boiled eggs');
     expect(result.derived.units_total).toBe(6);
     expect(result.derived.units_remaining).toBe(6);
-    expect(result.derived.eat_by).toBe('2026-07-24'); // fridge_short unopened 14 days from 07-10
+    expect(result.derived.eat_by).toBe('2026-07-17'); // produce unopened 7 days from 07-10 (made-food class; hard-boiled eggs keep ~a week)
     expect(result.derived.derived_from?.sources).toEqual([{ item_ulid: eggs.ulid, amount: 6, amount_kind: 'count' }]);
 
     // Provenance persists on a fresh read too.
@@ -945,7 +945,7 @@ describe('conversions (prep transforms — § Conversions)', () => {
 
     const result = await pipeline.convert({
       sources: [{ item_ulid: quinoa.ulid, amount: 0.3 }],
-      derived: { name: 'Cooked quinoa', shelf_life_class: 'fridge_short', on_hand_fraction: 1, recipe_ulid: null },
+      derived: { name: 'Cooked quinoa', shelf_life_class: 'prepared', on_hand_fraction: 1, recipe_ulid: null },
       at: '2026-07-10',
     });
     expect(result.sources[0]!.on_hand_fraction).toBeCloseTo(0.7, 5);
@@ -957,7 +957,7 @@ describe('conversions (prep transforms — § Conversions)', () => {
     // A second conversion with NO amount fully consumes the remainder.
     const second = await pipeline.convert({
       sources: [{ item_ulid: quinoa.ulid }],
-      derived: { name: 'More cooked quinoa', shelf_life_class: 'fridge_short' },
+      derived: { name: 'More cooked quinoa', shelf_life_class: 'prepared' },
       at: '2026-07-12',
     });
     expect(second.sources[0]!.on_hand_fraction).toBe(0);
@@ -994,6 +994,84 @@ describe('conversions (prep transforms — § Conversions)', () => {
     await expect(
       pipeline.convert({ sources: [{ item_ulid: item.ulid, amount: 2.5 }], derived: { name: 'Eggs' } })
     ).rejects.toThrow(ConversionValidationError);
+  });
+
+  // § Shelf-life classes — "A `convert` derived item accepts only made-food
+  // shelf-life classes". The package-durable classes anchor to a sealed-package
+  // unopened window, absurd on a homemade item; the guard makes it impossible.
+  describe('made-food shelf-life guard (§ Shelf-life classes)', () => {
+    for (const badClass of ['fridge_short', 'pantry', 'fridge_long'] as const) {
+      it(`rejects the package-durable class '${badClass}' with guidance naming the made-food set — no item created`, async () => {
+        const store = new MemoryInventoryStore();
+        const pipeline = new InventoryPipeline(store, null, null, log);
+        const before = await pipeline.listInventory({});
+
+        const attempt = pipeline.convert({
+          derived: { name: 'Batch jar', shelf_life_class: badClass },
+          at: '2026-07-10',
+        });
+        await expect(attempt).rejects.toThrow(ConversionValidationError);
+        // The message names the valid made-food set and points at `prepared`.
+        await expect(attempt).rejects.toThrow(/prepared, produce, very_perishable, frozen/);
+        await expect(attempt).rejects.toThrow(/prepared/);
+
+        // No item was minted on rejection — the guard runs before any write.
+        const after = await pipeline.listInventory({});
+        expect(after.length).toBe(before.length);
+        expect(after.some((i) => i.raw_label === 'Batch jar')).toBe(false);
+      });
+    }
+
+    it('the guard fires before decrementing any source (no side effects on rejection)', async () => {
+      const store = new MemoryInventoryStore();
+      const pipeline = new InventoryPipeline(store, null, null, log);
+      const { item: eggs } = await pipeline.createItem({
+        raw_label: 'Egg dozen', shelf_life_class: 'fridge_long', acquired_at: '2026-07-01', units_total: 12,
+      });
+
+      await expect(
+        pipeline.convert({
+          sources: [{ item_ulid: eggs.ulid, amount: 6 }],
+          derived: { name: 'Hard-boiled eggs', shelf_life_class: 'fridge_short', units_total: 6 },
+          at: '2026-07-10',
+        })
+      ).rejects.toThrow(ConversionValidationError);
+
+      // The source was NOT decremented — all 12 remain.
+      const reread = await pipeline.getItemView(eggs.ulid);
+      expect(reread!.units_remaining).toBe(12);
+    });
+
+    // Every made-food class passes and derives the expected eat-by (made 07-10).
+    const madeFoodCases: { cls: 'prepared' | 'produce' | 'very_perishable' | 'frozen'; eatBy: string }[] = [
+      { cls: 'prepared', eatBy: '2026-07-14' }, // 4 days from make
+      { cls: 'produce', eatBy: '2026-07-17' }, // 7 days
+      { cls: 'very_perishable', eatBy: '2026-07-13' }, // 3 days
+      { cls: 'frozen', eatBy: '2027-01-06' }, // 180 days
+    ];
+    for (const { cls, eatBy } of madeFoodCases) {
+      it(`accepts the made-food class '${cls}' and derives its eat-by`, async () => {
+        const store = new MemoryInventoryStore();
+        const pipeline = new InventoryPipeline(store, null, null, log);
+        const result = await pipeline.convert({
+          derived: { name: 'Batch jar', shelf_life_class: cls },
+          at: '2026-07-10',
+        });
+        expect(result.derived.shelf_life_class).toBe(cls);
+        expect(result.derived.eat_by).toBe(eatBy);
+      });
+    }
+
+    it('an omitted shelf_life_class still defaults to `prepared` (4 d from make)', async () => {
+      const store = new MemoryInventoryStore();
+      const pipeline = new InventoryPipeline(store, null, null, log);
+      const result = await pipeline.convert({
+        derived: { name: 'Batch jar' },
+        at: '2026-07-10',
+      });
+      expect(result.derived.shelf_life_class).toBe('prepared');
+      expect(result.derived.eat_by).toBe('2026-07-14'); // 4 days from make date
+    });
   });
 });
 
@@ -1042,7 +1120,7 @@ describe('consume from inventory (claude-assist#110 — one-tap known-macro log 
     const { item: oats } = await pipeline.createItem({ raw_label: 'Rolled oats', shelf_life_class: 'pantry', acquired_at: '2026-07-01' });
     const { derived } = await pipeline.convert({
       sources: [{ item_ulid: oats.ulid }],
-      derived: { name: 'Overnight oats jar', shelf_life_class: 'fridge_short', units_total: 3, recipe_ulid: RECIPE.ulid },
+      derived: { name: 'Overnight oats jar', shelf_life_class: 'prepared', units_total: 3, recipe_ulid: RECIPE.ulid },
       at: '2026-07-17',
     });
     expect(derived.units_remaining).toBe(3);
@@ -1076,7 +1154,7 @@ describe('consume from inventory (claude-assist#110 — one-tap known-macro log 
     const { item: oats } = await pipeline.createItem({ raw_label: 'Rolled oats', shelf_life_class: 'pantry', acquired_at: '2026-07-01' });
     const { derived } = await pipeline.convert({
       sources: [{ item_ulid: oats.ulid }],
-      derived: { name: 'Overnight oats jar', shelf_life_class: 'fridge_short', units_total: 1, recipe_ulid: RECIPE.ulid },
+      derived: { name: 'Overnight oats jar', shelf_life_class: 'prepared', units_total: 1, recipe_ulid: RECIPE.ulid },
       at: '2026-07-17',
     });
 
@@ -1091,7 +1169,7 @@ describe('consume from inventory (claude-assist#110 — one-tap known-macro log 
     const { item: quinoa } = await pipeline.createItem({ raw_label: 'Dry quinoa', shelf_life_class: 'pantry', acquired_at: '2026-07-01' });
     const { derived } = await pipeline.convert({
       sources: [{ item_ulid: quinoa.ulid, amount: 0.3 }],
-      derived: { name: 'Cooked quinoa', shelf_life_class: 'fridge_short', on_hand_fraction: 1, recipe_ulid: RECIPE.ulid },
+      derived: { name: 'Cooked quinoa', shelf_life_class: 'prepared', on_hand_fraction: 1, recipe_ulid: RECIPE.ulid },
       at: '2026-07-17',
     });
     expect(derived.on_hand_fraction).toBe(1);
@@ -1107,7 +1185,7 @@ describe('consume from inventory (claude-assist#110 — one-tap known-macro log 
     const { item: oats } = await pipeline.createItem({ raw_label: 'Rolled oats', shelf_life_class: 'pantry', acquired_at: '2026-07-01' });
     const { derived } = await pipeline.convert({
       sources: [{ item_ulid: oats.ulid }],
-      derived: { name: 'Overnight oats jar', shelf_life_class: 'fridge_short', units_total: 2, recipe_ulid: RECIPE.ulid },
+      derived: { name: 'Overnight oats jar', shelf_life_class: 'prepared', units_total: 2, recipe_ulid: RECIPE.ulid },
       at: '2026-07-17',
     });
     await expect(pipeline.consume(derived.ulid, { ulid: ULID(63), quantity: 3 })).rejects.toThrow(ConsumeValidationError);
@@ -1118,7 +1196,7 @@ describe('consume from inventory (claude-assist#110 — one-tap known-macro log 
     const { item: quinoa } = await pipeline.createItem({ raw_label: 'Dry quinoa', shelf_life_class: 'pantry', acquired_at: '2026-07-01' });
     const { derived } = await pipeline.convert({
       sources: [{ item_ulid: quinoa.ulid, amount: 0.3 }],
-      derived: { name: 'Cooked quinoa', shelf_life_class: 'fridge_short', on_hand_fraction: 1, recipe_ulid: RECIPE.ulid },
+      derived: { name: 'Cooked quinoa', shelf_life_class: 'prepared', on_hand_fraction: 1, recipe_ulid: RECIPE.ulid },
       at: '2026-07-17',
     });
     await expect(pipeline.consume(derived.ulid, { ulid: ULID(64), quantity: 2 })).rejects.toThrow(ConsumeValidationError);
@@ -1135,7 +1213,7 @@ describe('consume from inventory (claude-assist#110 — one-tap known-macro log 
     const { item: quinoa } = await pipeline.createItem({ raw_label: 'Dry quinoa', shelf_life_class: 'pantry', acquired_at: '2026-07-01' });
     const { derived } = await pipeline.convert({
       sources: [{ item_ulid: quinoa.ulid, amount: 0.3 }],
-      derived: { name: 'Cooked quinoa', shelf_life_class: 'fridge_short', on_hand_fraction: 1 }, // no recipe_ulid
+      derived: { name: 'Cooked quinoa', shelf_life_class: 'prepared', on_hand_fraction: 1 }, // no recipe_ulid
       at: '2026-07-17',
     });
     await expect(pipeline.consume(derived.ulid, { ulid: ULID(66) })).rejects.toThrow(ConsumeIneligibleError);
@@ -1146,7 +1224,7 @@ describe('consume from inventory (claude-assist#110 — one-tap known-macro log 
     const { item: oats } = await pipeline.createItem({ raw_label: 'Rolled oats', shelf_life_class: 'pantry', acquired_at: '2026-07-01' });
     const { derived } = await pipeline.convert({
       sources: [{ item_ulid: oats.ulid }],
-      derived: { name: 'Overnight oats jar', shelf_life_class: 'fridge_short', units_total: 3, recipe_ulid: RECIPE.ulid },
+      derived: { name: 'Overnight oats jar', shelf_life_class: 'prepared', units_total: 3, recipe_ulid: RECIPE.ulid },
       at: '2026-07-17',
     });
     await expect(pipeline.consume(derived.ulid, { ulid: ULID(67) })).rejects.toThrow(ConsumeIneligibleError);
@@ -1177,7 +1255,7 @@ describe('consume from inventory (claude-assist#110 — one-tap known-macro log 
     const { item: oats } = await pipeline.createItem({ raw_label: 'Rolled oats', shelf_life_class: 'pantry', acquired_at: '2026-07-01' });
     const { derived } = await pipeline.convert({
       sources: [{ item_ulid: oats.ulid }],
-      derived: { name: 'Overnight oats jar', shelf_life_class: 'fridge_short', units_total: 1, recipe_ulid: RECIPE.ulid },
+      derived: { name: 'Overnight oats jar', shelf_life_class: 'prepared', units_total: 1, recipe_ulid: RECIPE.ulid },
       at: '2026-07-17',
     });
 
