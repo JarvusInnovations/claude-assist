@@ -43,6 +43,7 @@ import type {
   ReconcileInput,
   ShelfLifeClass,
 } from '../inventory-types.js';
+import { CONVERT_SHELF_LIFE_CLASSES, PACKAGE_DURABLE_SHELF_LIFE_CLASSES } from '../inventory-types.js';
 import type { InventoryStore, ItemStateUpdate, NewItem } from '../inventory-store.js';
 import { deriveEatBy, normalizeLexiconLine, parsePackageCount, toItemView, toIsoDate } from '../inventory-derive.js';
 import { InvalidTransitionError, isTerminal, transitionInventory } from '../inventory-state.js';
@@ -888,6 +889,19 @@ export class InventoryPipeline {
     if (!input.derived?.name?.trim()) {
       throw new ConversionValidationError('convert requires derived.name');
     }
+
+    // A convert output is a made (homemade) item, never a sealed store package.
+    // Reject the package-durable classes up front — before any source is
+    // decremented or item created — so a homemade dish can't be saddled with a
+    // sealed-package "unopened" clock (§ Shelf-life classes — made-food-only
+    // guard). Made-food classes and an omitted class (→ `prepared`) pass.
+    const requestedClass = input.derived.shelf_life_class;
+    if (requestedClass !== undefined && PACKAGE_DURABLE_SHELF_LIFE_CLASSES.includes(requestedClass)) {
+      throw new ConversionValidationError(
+        `convert derived.shelf_life_class '${requestedClass}' is a package-durable class; a converted (made) item accepts only made-food classes: ${CONVERT_SHELF_LIFE_CLASSES.join(', ')} (default 'prepared')`
+      );
+    }
+
     const at = parseDate(input.at);
 
     // `sources` is optional: a source-less conversion registers a prepared

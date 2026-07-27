@@ -160,3 +160,26 @@ export const SHELF_LIFE_CLASSES = [
   "very_perishable",
   "unknown",
 ] as const;
+
+/**
+ * Made-food shelf-life classes a `convert` derived item may take (§ Shelf-life
+ * classes — "A `convert` derived item accepts only made-food shelf-life
+ * classes"). `prepared` is the default when a caller names none.
+ */
+export const CONVERT_SHELF_LIFE_CLASSES = [
+  "prepared",
+  "produce",
+  "very_perishable",
+  "frozen",
+] as const;
+
+/**
+ * Package-durable classes a `convert` derived item may NOT take — their clock
+ * anchors to a sealed store package's unopened window, absurd on a homemade
+ * item. `convert` rejects them with a `400`; the CLI blocks them before the call.
+ */
+export const PACKAGE_DURABLE_SHELF_LIFE_CLASSES = [
+  "pantry",
+  "fridge_long",
+  "fridge_short",
+] as const;

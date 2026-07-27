@@ -31,6 +31,35 @@ export const SHELF_LIFE_CLASSES: readonly ShelfLifeClass[] = [
   'unknown',
 ];
 
+/**
+ * The made-food shelf-life classes a `convert` derived item may take (§
+ * Shelf-life classes — "A `convert` derived item accepts only made-food
+ * shelf-life classes"). `prepared` is the default when a caller names none.
+ * A homemade item ages from its make date and has no sealed-package phase, so
+ * only these classes model it honestly.
+ */
+export const CONVERT_SHELF_LIFE_CLASSES: readonly ShelfLifeClass[] = [
+  'prepared',
+  'produce',
+  'very_perishable',
+  'frozen',
+];
+
+/**
+ * The package-durable shelf-life classes a `convert` derived item may NOT take.
+ * Their clocks anchor to a still-sealed store package's unopened window (e.g.
+ * `fridge_short` 14 d, `pantry` 365 d); a derived item is stocked/unopened by
+ * construction, so one of these would stamp an absurd eat-by on a homemade dish.
+ * `convert` rejects them with a `400` — a longer honest clock uses the
+ * product-level day overrides instead. (`unknown` is neither made-food nor
+ * package-durable and is not part of this guard.)
+ */
+export const PACKAGE_DURABLE_SHELF_LIFE_CLASSES: readonly ShelfLifeClass[] = [
+  'pantry',
+  'fridge_long',
+  'fridge_short',
+];
+
 export type InventoryState = 'stocked' | 'open' | 'finished' | 'tossed' | 'dismissed';
 
 export const INVENTORY_STATES: readonly InventoryState[] = [

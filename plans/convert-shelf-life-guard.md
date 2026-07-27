@@ -1,5 +1,5 @@
 ---
-status: planned
+status: in-progress
 depends: [kitchen-module]
 specs:
   - specs/modules/kitchen.md
@@ -58,18 +58,18 @@ eat-first.
 
 ## Validation
 
-- [ ] `convert --to '{... "shelf_life_class":"fridge_short"}'` returns a `400`
+- [x] `convert --to '{... "shelf_life_class":"fridge_short"}'` returns a `400`
       naming the valid set (`prepared`/`produce`/`very_perishable`/`frozen`) and
       `prepared`; no item is created.
-- [ ] Same rejection for `pantry` and `fridge_long`.
-- [ ] `prepared`, `produce`, `very_perishable`, `frozen` each succeed and derive
+- [x] Same rejection for `pantry` and `fridge_long`.
+- [x] `prepared`, `produce`, `very_perishable`, `frozen` each succeed and derive
       the expected eat-by (prepared/produce ages from make-date per existing
       rules).
-- [ ] Omitted `shelf_life_class` still defaults to `prepared` (4 d from make).
-- [ ] The reject fires for both the HTTP route and any internal convert caller
+- [x] Omitted `shelf_life_class` still defaults to `prepared` (4 d from make).
+- [x] The reject fires for both the HTTP route and any internal convert caller
       (shared check), and the CLI surfaces it as a structured AXI error.
-- [ ] `check:skills` passes; convert `--help`/reference lists the valid classes.
-- [ ] Existing convert/derivation tests still green.
+- [x] `check:skills` passes; convert `--help`/reference lists the valid classes.
+- [x] Existing convert/derivation tests still green.
 
 ## Risks / unknowns
 
