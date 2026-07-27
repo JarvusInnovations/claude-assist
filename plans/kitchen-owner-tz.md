@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 depends: [kitchen-module]
 specs:
   - specs/modules/kitchen.md
@@ -91,8 +91,28 @@ side; any model authority over time (spec forbids it).
 
 ## Notes
 
-(populated at closeout)
+- Shipped `packages/kitchen/src/zoned.ts`: `resolveOwnerTz` (Intl-validated,
+  UTC fallback stated, invalid zone fails boot loudly) + `localDay` /
+  `localDisplay` / `offsetMinutes`, all per-instant `Intl`-based so DST is
+  correct for the specific date. Threaded env.ts → core/plugin → server →
+  kitchen route configs.
+- Every entry / expenditure / weigh-in row now stamps `day` (owner-tz, the
+  authoritative bucketing key) + a local-offset display instant; AXI schemas
+  show `day` in place of the UTC-sliced date. Retired `home.ts`
+  `startOfTodayIso()` — home reads the server-derived `today`.
+- `GET /kitchen/summary?group=day` (existing windowed mode byte-identical) +
+  new `kitchen-axi days [--since <n|date>]` render one row per owner-local day
+  (panel + calories + net when TDEE base set). Home suggests `days`.
+- Verified independently before merge: `bun test packages/kitchen/src` →
+  363 pass / 0 fail (+24, incl. DST spring/fall, month boundary, per-day
+  rollup, unset-fallback); `bun run build` green; CI on #152 green; scrub clean.
+  `localDay`/day-stamp/wiring inspected by hand.
+- **Deploy requires setting `KITCHEN_OWNER_TZ`** in `apps/server/.env` (instance
+  config, same as `KITCHEN_TDEE_BASE`) — unset ⇒ stated UTC fallback, which
+  does not fix the bucketing. Set at deploy time.
 
 ## Follow-ups
 
-(populated at closeout)
+- **Deferred to client:** the capture app still formats its own local display
+  client-side; this plan owns the server/CLI surface only. Align the app to the
+  server `day`/`local` fields in a client change.
