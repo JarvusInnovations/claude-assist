@@ -195,7 +195,11 @@ export default createPlugin('kitchen', async (fastify: FastifyInstance, options:
   // Plan-session — app-initiated warm meal-planning session. Reads the generic
   // `fastify.sessionSpawner` decorator (from the session-spawn module) at
   // request time; 503s when it's absent/unconfigured.
-  await fastify.register(registerPlanSessionRoutes, { pipeline, inventory });
+  await fastify.register(registerPlanSessionRoutes, {
+    pipeline,
+    inventory,
+    model: config.planSessionModel,
+  });
 
   // Ambient-remark seam: expose the resolver for the capture kitchen_event
   // executor (composed by the server; the packages never import each other).

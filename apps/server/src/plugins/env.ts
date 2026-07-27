@@ -117,6 +117,10 @@ const schema = {
     KITCHEN_ESTIMATION_MODEL: { type: 'string', default: 'claude-fable-5' },
     // Cheap vision model for mechanical receipt-line extraction (phase 2).
     KITCHEN_RECEIPT_MODEL: { type: 'string', default: 'claude-haiku-4-5' },
+    // Model for the spawned interactive meal-planning session — an INTERACTIVE
+    // HUMAN session under subscription auth, unrelated to the metered models
+    // above. Unset ⇒ the instance-wide SESSION_SPAWN_MODEL applies.
+    KITCHEN_PLAN_SESSION_MODEL: { type: 'string' },
     KITCHEN_MAX_PHOTO_BYTES: { type: 'number', default: 10_485_760 },
     KITCHEN_MAX_PHOTOS: { type: 'number', default: 6 },
     // Meal-bank gitsheet read (both optional — unset degrades to recents-only reselect).
@@ -249,6 +253,11 @@ const schema = {
     SESSION_SPAWN_CMD: { type: 'string' },
     // Wall-clock bound per spawn (ms); a slow/hung command fails loud.
     SESSION_SPAWN_TIMEOUT_MS: { type: 'number', default: 120_000 },
+    // Model every spawned interactive session runs on — an alias (tracks the
+    // latest in that tier) or a pinned model name. Explicit by default so a warm
+    // session never inherits whichever model the owner last selected
+    // interactively; a caller may override it per spawn.
+    SESSION_SPAWN_MODEL: { type: 'string', default: 'opus' },
 
     // Ledger module (derived audit ledger + direct-write surface)
     ENABLE_LEDGER: { type: 'boolean', default: true },
@@ -362,6 +371,7 @@ declare module 'fastify' {
       KITCHEN_CONCURRENCY: number;
       KITCHEN_ESTIMATION_MODEL: string;
       KITCHEN_RECEIPT_MODEL: string;
+      KITCHEN_PLAN_SESSION_MODEL?: string;
       KITCHEN_MAX_PHOTO_BYTES: number;
       KITCHEN_MAX_PHOTOS: number;
       KITCHEN_MEALBANK_REPO_PATH?: string;
@@ -434,6 +444,7 @@ declare module 'fastify' {
       ENABLE_SESSION_SPAWN: boolean;
       SESSION_SPAWN_CMD?: string;
       SESSION_SPAWN_TIMEOUT_MS: number;
+      SESSION_SPAWN_MODEL: string;
 
       // Ledger module
       ENABLE_LEDGER: boolean;

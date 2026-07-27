@@ -184,6 +184,7 @@ await fastify.register(
       await api.register(sessionSpawnPlugin, {
         command: parseSpawnCommand(fastify.config.SESSION_SPAWN_CMD, fastify.log),
         timeoutMs: fastify.config.SESSION_SPAWN_TIMEOUT_MS,
+        model: fastify.config.SESSION_SPAWN_MODEL,
       });
     } else {
       api.log.info('Session-spawn module disabled');
@@ -293,6 +294,7 @@ await fastify.register(
           anthropicApiKey: fastify.config.ANTHROPIC_API_KEY,
           estimationModel: fastify.config.KITCHEN_ESTIMATION_MODEL,
           receiptModel: fastify.config.KITCHEN_RECEIPT_MODEL,
+          planSessionModel: fastify.config.KITCHEN_PLAN_SESSION_MODEL,
           concurrency: fastify.config.KITCHEN_CONCURRENCY,
           disableEstimation:
             fastify.config.DISABLE_SYNCS || fastify.config.KITCHEN_DISABLE_ESTIMATION,

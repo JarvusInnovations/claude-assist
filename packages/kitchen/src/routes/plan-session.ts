@@ -27,13 +27,19 @@ export interface PlanSessionRoutesConfig {
   inventory: InventoryPipeline;
   /** Optional caps for how much context the preload briefing carries. */
   contextConfig?: PlanningContextConfig;
+  /**
+   * This caller's model override (`KITCHEN_PLAN_SESSION_MODEL`), passed straight
+   * through to the spawner. Unset ⇒ the instance-wide `SESSION_SPAWN_MODEL`
+   * applies (see specs/modules/kitchen.md § Model).
+   */
+  model?: string;
 }
 
 const NOT_CONFIGURED = { error: 'session spawning is not configured' } as const;
 
 export const registerPlanSessionRoutes: FastifyPluginAsync<PlanSessionRoutesConfig> = async (
   fastify,
-  { pipeline, inventory, contextConfig },
+  { pipeline, inventory, contextConfig, model },
 ) => {
   fastify.post('/kitchen/plan-session', async (request, reply) => {
     const spawner = fastify.sessionSpawner;
@@ -45,7 +51,12 @@ export const registerPlanSessionRoutes: FastifyPluginAsync<PlanSessionRoutesConf
     const ctx = await gatherPlanningContext({ pipeline, inventory }, contextConfig);
     const preloadPrompt = composePreloadPrompt(ctx);
 
-    const record = await spawner.spawn({ preloadPrompt, title: PLAN_SESSION_TITLE, group: PLAN_SESSION_GROUP });
+    const record = await spawner.spawn({
+      preloadPrompt,
+      title: PLAN_SESSION_TITLE,
+      group: PLAN_SESSION_GROUP,
+      model,
+    });
 
     if (record.status === 'not_configured') {
       reply.status(503);

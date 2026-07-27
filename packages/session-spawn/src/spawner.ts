@@ -75,6 +75,19 @@ export function isValidSpawnGroup(group: string): boolean {
 }
 
 /**
+ * Validation rule for a model identifier — an alias (`opus`, `sonnet`) or a full
+ * model name: alphanumerics plus `. _ : / -`, 1-128 chars, no whitespace and no
+ * shell metacharacters. Same defensive posture as `GROUP_SLUG_RE`: neither a
+ * caller- nor a config-supplied string reaches a child environment unchecked.
+ */
+const MODEL_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
+
+/** True iff `model` is a safe model identifier per `MODEL_ID_RE`. */
+export function isValidSpawnModel(model: string): boolean {
+  return MODEL_ID_RE.test(model);
+}
+
+/**
  * A shallow copy of `process.env` with the Claude programmatic-auth variables
  * removed, so the spawned interactive session falls back to ambient/subscription
  * auth. Everything else the child needs (PATH, HOME, …) is preserved.
@@ -83,14 +96,26 @@ export function isValidSpawnGroup(group: string): boolean {
  * configured spawn command can route/organize sessions by caller — a short
  * caller tag, e.g. "kitchen". Caller-supplied and MUST already be validated
  * (see `isValidSpawnGroup`) before it reaches here.
+ *
+ * When `model` is given, sets `SESSION_SPAWN_MODEL` so the command launches the
+ * session on an EXPLICIT model rather than whatever the owner last selected
+ * interactively (see the module spec's § Model selection). Already validated
+ * (see `isValidSpawnModel`) before it reaches here.
  */
-function sanitizedSpawnEnv(group?: string): NodeJS.ProcessEnv {
+function sanitizedSpawnEnv(group?: string, model?: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const key of STRIPPED_AUTH_ENV_VARS) {
     delete env[key];
   }
   if (group) {
     env.SESSION_SPAWN_GROUP = group;
+  }
+  if (model) {
+    env.SESSION_SPAWN_MODEL = model;
+  } else {
+    // Never let the SERVICE's own SESSION_SPAWN_MODEL leak through unvalidated
+    // when resolution produced nothing — the wrapper's fallback owns that case.
+    delete env.SESSION_SPAWN_MODEL;
   }
   return env;
 }
@@ -124,6 +149,13 @@ export interface SessionSpawnerConfig {
   log: FastifyBaseLogger;
   /** Wall-clock bound per spawn (default 120s). */
   timeoutMs?: number;
+  /**
+   * Instance-wide default model for spawned sessions (from
+   * `SESSION_SPAWN_MODEL`). A caller's `SpawnRequest.model` overrides it.
+   * Unset/invalid ⇒ no `SESSION_SPAWN_MODEL` in the child env and the wrapper's
+   * own fallback applies.
+   */
+  model?: string;
   /** Exec seam (default: promisified `execFile`). Tests inject a fake. */
   execFile?: ExecFileFn;
 }
@@ -132,6 +164,21 @@ export function createSessionSpawner(config: SessionSpawnerConfig): SessionSpawn
   const { notify, log } = config;
   const command = config.command && config.command.length > 0 ? config.command : undefined;
   const timeoutMs = config.timeoutMs ?? DEFAULT_SPAWN_TIMEOUT_MS;
+
+  // Instance-wide default model, validated once at construction. A malformed
+  // value is a config error the operator should see, but it must not break
+  // spawning: warn and treat as unset (the wrapper falls back).
+  let defaultModel: string | undefined;
+  if (config.model !== undefined && config.model !== '') {
+    if (isValidSpawnModel(config.model)) {
+      defaultModel = config.model;
+    } else {
+      log.warn(
+        { model: config.model },
+        'SESSION_SPAWN_MODEL is malformed — ignored; spawned sessions fall back to the spawn command default',
+      );
+    }
+  }
   const exec: ExecFileFn = config.execFile ?? execFileAsync;
 
   /** Dispatch a failure push (no link) and return the failed record. */
@@ -174,6 +221,21 @@ export function createSessionSpawner(config: SessionSpawnerConfig): SessionSpawn
       }
     }
 
+    // Resolve the model: caller override → instance default → omitted. An
+    // invalid caller value degrades to the instance default with a warning,
+    // never a broken spawn (same posture as `group`).
+    let model = defaultModel;
+    if (request.model !== undefined && request.model !== '') {
+      if (isValidSpawnModel(request.model)) {
+        model = request.model;
+      } else {
+        log.warn(
+          { spawnId, model: request.model },
+          'Session spawn: invalid model override ignored — using the instance default',
+        );
+      }
+    }
+
     // Write the preload prompt to an owner-only temp file; the command receives
     // the PATH as its final argument (never the prompt as a shell-visible arg).
     let dir: string | undefined;
@@ -195,7 +257,7 @@ export function createSessionSpawner(config: SessionSpawnerConfig): SessionSpawn
         const result = await exec(bin!, argv, {
           timeout: timeoutMs,
           maxBuffer: MAX_BUFFER_BYTES,
-          env: sanitizedSpawnEnv(group),
+          env: sanitizedSpawnEnv(group, model),
         });
         stdout = result.stdout;
       } catch (err) {
@@ -234,7 +296,9 @@ export function createSessionSpawner(config: SessionSpawnerConfig): SessionSpawn
         return await fail(spawnId, request.title, 'takeover link could not be delivered');
       }
 
-      log.info({ spawnId, notificationId }, 'Session spawned; takeover link dispatched');
+      // `model` is safe to log (config, not a secret) and is the one detail
+      // worth having when a spawned session behaves unexpectedly.
+      log.info({ spawnId, notificationId, model }, 'Session spawned; takeover link dispatched');
       return { status: 'spawned', spawnId, notificationId };
     } finally {
       if (dir) {
