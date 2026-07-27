@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 depends: [kitchen-module]
 specs:
   - specs/modules/kitchen.md
@@ -82,8 +82,25 @@ eat-first.
 
 ## Notes
 
-(populated at closeout)
+- Guard lives in `InventoryPipeline.convert()` (`services/inventory.ts`),
+  right after the `derived.name` check — before any source decrement or item
+  write, so nothing is created on rejection. Both the HTTP route
+  (`POST /kitchen/inventory/convert` → `ConversionValidationError` → 400) and any
+  internal `convert()` caller hit it. Named sets in `inventory-types.ts`
+  (`CONVERT_SHELF_LIFE_CLASSES` = prepared/produce/very_perishable/frozen;
+  `PACKAGE_DURABLE_SHELF_LIFE_CLASSES` = pantry/fridge_long/fridge_short),
+  mirrored into `axi/reference.ts`; CLI `assertConvertShelfLifeClass()` fails
+  fast before the network call and `convert --help` lists the valid classes.
+- Left `deriveEatBy`/`SHELF_LIFE_WINDOWS`/the `prepared` special case untouched
+  (correct as-is); only *which classes convert accepts* changed.
+- Verified independently before merge: `bun test packages/kitchen/src` →
+  375 pass / 0 fail; `bun run build` green; CI on #153 green; scrub clean; guard
+  inspected by hand.
+- The three already-mis-classed batch items (oat jars/quinoa/eggs) were
+  re-clocked operationally at report time (jars/quinoa → prepared 7/31, eggs →
+  produce 8/3) — a data fix, out of this plan's code scope.
 
 ## Follow-ups
 
-(populated at closeout)
+- **None.** `unknown` is intentionally not part of this guard (spec's rejected
+  set is the three package-durable classes only).
