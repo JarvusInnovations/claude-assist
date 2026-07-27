@@ -1,5 +1,5 @@
 ---
-status: planned
+status: in-progress
 depends: [kitchen-module]
 specs:
   - specs/modules/kitchen.md
@@ -55,19 +55,28 @@ side; any model authority over time (spec forbids it).
 
 ## Validation
 
-- [ ] With `KITCHEN_OWNER_TZ=America/New_York`, an entry logged at `T00:47Z`
+- [x] With `KITCHEN_OWNER_TZ=America/New_York`, an entry logged at `T00:47Z`
       (previous-evening local) reports `day` = the local date, not the UTC date.
-- [ ] `entries list` / `expenditure list` rows carry `day` (owner-local) and show
+      (`zoned.test.ts`, `summary-days.test.ts`, `entry-day.test.ts`)
+- [x] `entries list` / `expenditure list` rows carry `day` (owner-local) and show
       local-time instants; no bare `Z` UTC string is the only time signal.
-- [ ] `kitchen-axi days --since 7d` returns one row per local day with correct
+      (`entry-day.test.ts`, `summary-days.test.ts` — rows expose `day` +
+      `logged_local`/`occurred_local` with an explicit offset; raw `logged_at`
+      kept for ordering.)
+- [x] `kitchen-axi days --since 7d` returns one row per local day with correct
       panel + calories + net, matching hand-checked entries — and a week that
       previously mis-bucketed under UTC now buckets correctly.
-- [ ] Home "today" totals derive from the owner zone server-side (no caller
-      day-window), and match `days` for the current day.
-- [ ] `KITCHEN_OWNER_TZ` unset ⇒ UTC fallback with an explicit stated note, never
-      a silent guess.
-- [ ] DST boundaries (spring-forward, fall-back) bucket correctly.
-- [ ] `check:skills` passes; SKILL/reference state `day`-is-authoritative and
+      (`summary-days.test.ts` per-day + mis-bucket cases; `days.test.ts` end-to-end
+      CLI render.)
+- [x] Home "today" totals derive from the owner zone server-side (no caller
+      day-window; `startOfTodayIso()` retired), and match `days` for the current
+      day (both read the same day-grouped rollup's `today` row). (`days.test.ts`)
+- [x] `KITCHEN_OWNER_TZ` unset ⇒ UTC fallback with an explicit stated note
+      (`tz: UTC (KITCHEN_OWNER_TZ unset)`), never a silent guess.
+      (`zoned.test.ts`, `summary-days.test.ts`)
+- [x] DST boundaries (spring-forward, fall-back) bucket correctly.
+      (`zoned.test.ts` offset assertions, `summary-days.test.ts` day rollups.)
+- [x] `check:skills` passes; SKILL/reference state `day`-is-authoritative and
       point to `days` for multi-day totals.
 
 ## Risks / unknowns

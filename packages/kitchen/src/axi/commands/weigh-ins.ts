@@ -34,8 +34,10 @@ export const WEIGHT_HELP = `kitchen-axi weight <subcommand> [args] [--json]
 
 const ROW_SCHEMA: FieldDef[] = [
   field("ulid"),
-  field("local_date"),
-  field("occurred_at"),
+  // `day` = owner-tz calendar date (the module-wide bucketing key, § Timezone &
+  // local-day bucketing); `occurred` renders the instant in the owner zone.
+  field("day"),
+  field("occurred_local", "occurred"),
   field("weight_kg"),
   field("body_fat_pct"),
   field("source"),

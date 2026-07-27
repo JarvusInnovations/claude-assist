@@ -302,6 +302,7 @@ await fastify.register(
           mealBankSheet: fastify.config.KITCHEN_MEALBANK_SHEET,
           tdeeBase: fastify.config.KITCHEN_TDEE_BASE,
           dailyTargets: fastify.config.KITCHEN_DAILY_TARGETS,
+          ownerTz: fastify.config.KITCHEN_OWNER_TZ,
           stravaClientId: fastify.config.KITCHEN_STRAVA_CLIENT_ID,
           stravaClientSecret: fastify.config.KITCHEN_STRAVA_CLIENT_SECRET,
           stravaRefreshToken: fastify.config.KITCHEN_STRAVA_REFRESH_TOKEN,

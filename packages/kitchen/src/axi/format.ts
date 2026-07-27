@@ -86,10 +86,15 @@ export function targetLine(logged: number, bound: TargetBound): string {
   return toGo > 0 ? `${logged} / ${bound.min} min (${toGo} to go)` : `${logged} / ${bound.min} min (met)`;
 }
 
-/** TOON columns for an entry row: identity + status + effective headline macros. */
+/**
+ * TOON columns for an entry row: identity + status + effective headline macros.
+ * `day` is the server-computed owner-tz calendar date (§ Timezone & local-day
+ * bucketing) — the authoritative bucketing key; an agent groups/filters by it
+ * and NEVER parses a timestamp to derive a day.
+ */
 export const ENTRY_ROW_SCHEMA: FieldDef[] = [
   { type: "field", key: "ulid" },
-  { type: "dateOnly", key: "logged_at", as: "logged" },
+  { type: "field", key: "day" },
   { type: "field", key: "label" },
   { type: "field", key: "status" },
   { type: "field", key: "source" },

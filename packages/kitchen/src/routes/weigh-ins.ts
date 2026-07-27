@@ -25,9 +25,17 @@ import type { FastifyPluginAsync } from 'fastify';
 import { ULID_PATTERN, ulidFromSeed } from '../ulid.js';
 import { coerceBareDateToLocalNoon } from '../date-coerce.js';
 import type { WeighInRecord, WeighInStore } from '../store.js';
+import { localDay, localDisplay, resolveOwnerTz, type OwnerTz } from '../zoned.js';
 
 export interface WeighInRoutesConfig {
   store: WeighInStore;
+  /**
+   * Owner timezone (§ Timezone & local-day bucketing) — stamps each row's
+   * owner-tz `day` + local-time display, consistent with entries/expenditures.
+   * The derived `/kitchen/weight` collapse still buckets by each reading's OWN
+   * stored offset (§ Weigh-ins). Optional so tests can omit it; absent ⇒ UTC.
+   */
+  ownerTz?: OwnerTz;
 }
 
 const POST_BODY_SCHEMA = {
@@ -152,12 +160,18 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
-function toView(r: WeighInRecord) {
+function toView(r: WeighInRecord, ownerTz: OwnerTz) {
   return {
     ulid: r.ulid,
     occurred_at: r.occurred_at.toISOString(),
     tz_offset_minutes: r.tz_offset_minutes,
+    // `local_date` buckets by the reading's OWN device offset (§ Weigh-ins, the
+    // basis for the daily-median collapse). `day` is the module-wide owner-tz
+    // bucketing key (§ Timezone & local-day bucketing); `occurred_local` renders
+    // the instant in the owner zone (never a bare `Z`).
     local_date: localDateOf(r.occurred_at, r.tz_offset_minutes),
+    day: localDay(r.occurred_at, ownerTz.zone),
+    occurred_local: localDisplay(r.occurred_at, ownerTz.zone),
     weight_kg: r.weight_kg,
     body_fat_pct: r.body_fat_pct,
     source: r.source,
@@ -178,6 +192,7 @@ export const registerWeighInRoutes: FastifyPluginAsync<WeighInRoutesConfig> = as
   config
 ) => {
   const { store } = config;
+  const ownerTz = config.ownerTz ?? resolveOwnerTz();
 
   fastify.post<{ Body: WeighInBody }>(
     '/kitchen/weigh-ins',
@@ -227,7 +242,7 @@ export const registerWeighInRoutes: FastifyPluginAsync<WeighInRoutesConfig> = as
         source: body.source.trim(),
       });
       reply.status(created ? 201 : 200);
-      return toView(record);
+      return toView(record, ownerTz);
     }
   );
 
@@ -241,7 +256,7 @@ export const registerWeighInRoutes: FastifyPluginAsync<WeighInRoutesConfig> = as
       }
       const limit = request.query.limit ? parseInt(request.query.limit, 10) : undefined;
       const rows = await store.list({ since: since ?? undefined, limit });
-      return { weigh_ins: rows.map(toView), count: rows.length };
+      return { weigh_ins: rows.map((r) => toView(r, ownerTz)), count: rows.length, tz: ownerTz.note };
     }
   );
 

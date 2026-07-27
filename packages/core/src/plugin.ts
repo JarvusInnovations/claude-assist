@@ -115,6 +115,13 @@ export interface KitchenPluginConfig {
    */
   dailyTargets?: string;
   /**
+   * Owner's IANA timezone (KITCHEN_OWNER_TZ) — the one source of truth for
+   * every local-day boundary the module computes (§ Timezone & local-day
+   * bucketing). Unset ⇒ UTC fallback, stated in affected output; a
+   * present-but-invalid zone fails boot loudly at plugin init.
+   */
+  ownerTz?: string;
+  /**
    * Strava API application client id (KITCHEN_STRAVA_CLIENT_ID). All three
    * Strava credentials present ⇒ the scheduled activity sync runs; any
    * absent ⇒ the feature is entirely off (§ Strava activity sync).

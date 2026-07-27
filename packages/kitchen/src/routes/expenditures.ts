@@ -20,6 +20,9 @@ import { ULID_PATTERN, generateUlid } from '../ulid.js';
 import { coerceBareDateToLocalNoon } from '../date-coerce.js';
 import type { EntryStore, ExpenditureStore } from '../store.js';
 import type { DailyTargets } from '../daily-targets.js';
+import { localDay, localDisplay, localToday, resolveOwnerTz, type OwnerTz } from '../zoned.js';
+import { NUTRITION_FIELD_KEYS } from '../types.js';
+import type { EntryRecord } from '../types.js';
 
 export interface ExpenditureRoutesConfig {
   store: ExpenditureStore;
@@ -28,6 +31,12 @@ export interface ExpenditureRoutesConfig {
   tdeeBase?: number;
   /** KITCHEN_DAILY_TARGETS, parsed — opaque instance config; unset ⇒ targets omitted. */
   dailyTargets?: DailyTargets;
+  /**
+   * Owner timezone (§ Timezone & local-day bucketing) — the one source of truth
+   * for the day-grouped rollup's local-day boundaries and each row's `day`.
+   * Optional so tests can omit it; absent ⇒ UTC fallback.
+   */
+  ownerTz?: OwnerTz;
 }
 
 const EXPENDITURE_SOURCES = ['strava', 'health_connect', 'garmin', 'manual'] as const;
@@ -57,20 +66,28 @@ interface ExpenditureBody {
   avg_hr?: number | null;
 }
 
-function toView(r: {
-  ulid: string;
-  occurred_at: Date;
-  source: string;
-  label: string;
-  kcal: number;
-  duration_min: number | null;
-  avg_hr: number | null;
-  created_at: Date;
-  updated_at: Date;
-}) {
+function toView(
+  r: {
+    ulid: string;
+    occurred_at: Date;
+    source: string;
+    label: string;
+    kcal: number;
+    duration_min: number | null;
+    avg_hr: number | null;
+    created_at: Date;
+    updated_at: Date;
+  },
+  ownerTz: OwnerTz
+) {
   return {
     ulid: r.ulid,
     occurred_at: r.occurred_at.toISOString(),
+    // Module-owned local-day fields (§ Timezone & local-day bucketing): `day`
+    // is the authoritative owner-tz bucketing key; `occurred_local` renders the
+    // instant in the owner zone (never a bare `Z`). Raw `occurred_at` stays for ordering.
+    day: localDay(r.occurred_at, ownerTz.zone),
+    occurred_local: localDisplay(r.occurred_at, ownerTz.zone),
     source: r.source,
     label: r.label,
     kcal: r.kcal,
@@ -79,6 +96,115 @@ function toView(r: {
     created_at: r.created_at.toISOString(),
     updated_at: r.updated_at.toISOString(),
   };
+}
+
+/** The eight-field nutrition panel (§ Nutrition panel), for day-grouped totals. */
+const PANEL_KEYS = NUTRITION_FIELD_KEYS;
+
+/**
+ * One owner-local day's pre-computed rollup (§ Timezone & local-day bucketing —
+ * the AXI §4 aggregate that spares an agent hand-summing entries): the
+ * effective eight-field panel + calories, and the net line when a TDEE base is
+ * configured. Panel sums are null-aware — a field is null only when NO entry
+ * that day carried it (absent ≠ zero, § Nutrition panel).
+ */
+interface DayRollup {
+  day: string;
+  calories: number | null;
+  protein_g: number | null;
+  fat_g: number | null;
+  sat_fat_g: number | null;
+  carbs_g: number | null;
+  sugar_g: number | null;
+  fiber_g: number | null;
+  sodium_mg: number | null;
+  entry_count: number;
+  expenditure_kcal: number;
+  expenditure_count: number;
+  tdee_base_kcal?: number;
+  net_kcal?: number;
+}
+
+function round1(n: number): number {
+  return Math.round(n * 10) / 10;
+}
+
+/**
+ * Group entries + expenditures into per-owner-local-day rollups. Every day
+ * boundary is the owner zone via `ownerTz` — no caller supplies or computes an
+ * offset. Effective macros are base × portion_multiplier (§ Portion multiplier),
+ * nulls skipped (not zeroed). Ascending by day.
+ */
+export function rollupByDay(
+  entries: EntryRecord[],
+  burns: { occurred_at: Date; kcal: number }[],
+  ownerTz: OwnerTz,
+  tdeeBase?: number
+): DayRollup[] {
+  interface Acc {
+    // running sums; a field stays null until at least one entry contributes it
+    sums: Record<string, number | null>;
+    entry_count: number;
+    expenditure_kcal: number;
+    expenditure_count: number;
+  }
+  const byDay = new Map<string, Acc>();
+  const ensure = (day: string): Acc => {
+    let acc = byDay.get(day);
+    if (!acc) {
+      acc = {
+        sums: Object.fromEntries(PANEL_KEYS.map((k) => [k, null])),
+        entry_count: 0,
+        expenditure_kcal: 0,
+        expenditure_count: 0,
+      };
+      byDay.set(day, acc);
+    }
+    return acc;
+  };
+
+  for (const e of entries) {
+    const day = localDay(e.logged_at, ownerTz.zone);
+    const acc = ensure(day);
+    acc.entry_count += 1;
+    const mult = typeof e.portion_multiplier === 'number' ? e.portion_multiplier : 1;
+    for (const key of PANEL_KEYS) {
+      const base = e[key];
+      if (typeof base === 'number') acc.sums[key] = (acc.sums[key] ?? 0) + base * mult;
+    }
+
+  }
+  for (const b of burns) {
+    const day = localDay(b.occurred_at, ownerTz.zone);
+    const acc = ensure(day);
+    acc.expenditure_kcal += b.kcal;
+    acc.expenditure_count += 1;
+  }
+
+  return [...byDay.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : 1))
+    .map(([day, acc]) => {
+      const panel = Object.fromEntries(
+        PANEL_KEYS.map((k) => [k, acc.sums[k] === null ? null : round1(acc.sums[k]!)])
+      ) as Pick<DayRollup, (typeof PANEL_KEYS)[number]>;
+      const expenditureKcal = round1(acc.expenditure_kcal);
+      const intake = typeof panel.calories === 'number' ? panel.calories : 0;
+      return {
+        day,
+        ...panel,
+        entry_count: acc.entry_count,
+        expenditure_kcal: expenditureKcal,
+        expenditure_count: acc.expenditure_count,
+        // Net only when the instance states its base — never guessed (same rule
+        // as the windowed net line).
+        ...(typeof tdeeBase === 'number'
+          ? {
+              tdee_base_kcal: tdeeBase,
+              net_kcal: round1(tdeeBase + expenditureKcal - intake),
+            }
+          : {}),
+      } satisfies DayRollup;
+    });
 }
 
 function parseIso(value: string | undefined, name: string): Date | null | 'invalid' {
@@ -94,6 +220,42 @@ export const registerExpenditureRoutes: FastifyPluginAsync<ExpenditureRoutesConf
   config
 ) => {
   const { store, entries, tdeeBase, dailyTargets } = config;
+  const ownerTz = config.ownerTz ?? resolveOwnerTz();
+
+  // Day-grouped summary (`group=day`). The window defaults to the trailing 7
+  // owner-local days when unspecified — a caller need not supply, know, or
+  // compute any boundary. since/until, when present, are plain instants (bare
+  // dates coerce to local noon like every other filter).
+  const summaryByDay = async (
+    request: { query: { since?: string; until?: string } },
+    reply: { status(code: number): void }
+  ) => {
+    const sinceRaw = parseIso(request.query.since, 'since');
+    const untilRaw = parseIso(request.query.until, 'until');
+    if (sinceRaw === 'invalid' || untilRaw === 'invalid') {
+      reply.status(400);
+      return { error: 'since/until must be ISO date-times' };
+    }
+    const until = untilRaw ?? new Date();
+    const since = sinceRaw ?? new Date(until.getTime() - 7 * 86_400_000);
+
+    const dayEntries = (await entries.list({ since, limit: 1000 })).filter((e) => e.logged_at < until);
+    const burns = (await store.list({ since, until, limit: 1000 }));
+    const days = rollupByDay(dayEntries, burns, ownerTz, tdeeBase);
+
+    return {
+      group: 'day',
+      tz: ownerTz.note,
+      // Owner-local "today" derived server-side — the home view keys off this
+      // instead of a caller-computed day window (the retired startOfTodayIso hack).
+      today: localToday(ownerTz.zone),
+      since: since.toISOString(),
+      until: until.toISOString(),
+      days,
+      // Same verbatim reference lines as the windowed mode (§ Daily targets).
+      ...(dailyTargets !== undefined ? { targets: dailyTargets } : {}),
+    };
+  };
 
   fastify.post<{ Body: ExpenditureBody }>(
     '/kitchen/expenditures',
@@ -119,7 +281,7 @@ export const registerExpenditureRoutes: FastifyPluginAsync<ExpenditureRoutesConf
         avg_hr: body.avg_hr ?? null,
       });
       reply.status(created ? 201 : 200);
-      return toView(record);
+      return toView(record, ownerTz);
     }
   );
 
@@ -134,7 +296,7 @@ export const registerExpenditureRoutes: FastifyPluginAsync<ExpenditureRoutesConf
       }
       const limit = request.query.limit ? parseInt(request.query.limit, 10) : undefined;
       const rows = await store.list({ since: since ?? undefined, until: until ?? undefined, limit });
-      return { expenditures: rows.map(toView), count: rows.length };
+      return { expenditures: rows.map((r) => toView(r, ownerTz)), count: rows.length, tz: ownerTz.note };
     }
   );
 
@@ -150,13 +312,23 @@ export const registerExpenditureRoutes: FastifyPluginAsync<ExpenditureRoutesConf
     }
   );
 
-  // ── Windowed net-energy summary ─────────────────────────────────────────────
-  // The caller supplies the window (its own local-day boundaries) — the server
-  // makes no timezone assumptions. Intake sums EFFECTIVE calories (base ×
-  // portion_multiplier, nulls skipped, § Portion multiplier).
-  fastify.get<{ Querystring: { since: string; until: string } }>(
+  // ── Net-energy summary ──────────────────────────────────────────────────────
+  // Two modes on one endpoint:
+  //  • windowed (default) — the legacy shape: a caller-supplied since/until
+  //    window, one aggregate. Unchanged for existing callers.
+  //  • day-grouped (`group=day`) — the module OWNS the day boundaries via the
+  //    owner timezone (§ Timezone & local-day bucketing): one row per
+  //    owner-local day over the window (panel + calories + net), so an agent
+  //    asking "how did the week go" calls it once and never hand-buckets.
+  // Intake sums EFFECTIVE calories (base × portion_multiplier, nulls skipped,
+  // § Portion multiplier).
+  fastify.get<{ Querystring: { since?: string; until?: string; group?: string } }>(
     '/kitchen/summary',
     async (request, reply) => {
+      if (request.query.group === 'day') {
+        return summaryByDay(request, reply);
+      }
+
       const since = parseIso(request.query.since, 'since');
       const until = parseIso(request.query.until, 'until');
       if (since === 'invalid' || until === 'invalid' || since === null || until === null) {

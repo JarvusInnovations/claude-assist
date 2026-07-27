@@ -21,7 +21,10 @@ export const EXPENDITURE_HELP = `kitchen-axi expenditure <subcommand> [args] [--
 
 const ROW_SCHEMA: FieldDef[] = [
   field("ulid"),
-  field("occurred_at"),
+  // `day` = owner-tz calendar date (authoritative bucketing key); `occurred`
+  // renders the instant in the owner zone (§ Timezone & local-day bucketing).
+  field("day"),
+  field("occurred_local", "occurred"),
   field("label"),
   field("source"),
   field("kcal"),

@@ -25,6 +25,7 @@ import { registerKitchenRoutes } from './routes/kitchen.js';
 import { registerExpenditureRoutes } from './routes/expenditures.js';
 import { registerWeighInRoutes } from './routes/weigh-ins.js';
 import { parseDailyTargets } from './daily-targets.js';
+import { resolveOwnerTz } from './zoned.js';
 import { registerPlanSessionRoutes } from './routes/plan-session.js';
 import { PgInventoryStore } from './inventory-store.js';
 import { KitchenReceiptParser } from './services/receipt-parser.js';
@@ -81,6 +82,17 @@ export const KITCHEN_PIPELINE_NAME = 'kitchen-estimation';
 
 export default createPlugin('kitchen', async (fastify: FastifyInstance, options: PluginOptions) => {
   const config = options.kitchenConfig ?? {};
+
+  // Owner timezone (§ Timezone & local-day bucketing) — resolved once and
+  // threaded into every route that computes a local day. A present-but-invalid
+  // zone throws here and fails boot loudly (same doctrine as KITCHEN_DAILY_TARGETS);
+  // unset ⇒ UTC fallback, stated in affected output.
+  const ownerTz = resolveOwnerTz(config.ownerTz);
+  if (ownerTz.fallback) {
+    fastify.log.warn('KITCHEN_OWNER_TZ unset — local-day bucketing falls back to UTC (stated in output)');
+  } else {
+    fastify.log.info({ zone: ownerTz.zone }, 'Kitchen owner timezone configured');
+  }
 
   const entryStore = new PgEntryStore(fastify.sql);
   const recipeStore = new PgRecipeStore(fastify.sql);
@@ -151,6 +163,7 @@ export default createPlugin('kitchen', async (fastify: FastifyInstance, options:
     pipeline,
     maxPhotoBytes: config.maxPhotoBytes,
     maxPhotos: config.maxPhotos,
+    ownerTz,
   });
 
   // Expenditure & net energy (§ Expenditure & net energy, claude-assist#121).
@@ -162,6 +175,7 @@ export default createPlugin('kitchen', async (fastify: FastifyInstance, options:
     entries: entryStore,
     tdeeBase: config.tdeeBase,
     dailyTargets: parseDailyTargets(config.dailyTargets),
+    ownerTz,
   });
 
   // Weigh-ins (§ Weigh-ins — scale data via the capture app). Read-time
@@ -169,6 +183,7 @@ export default createPlugin('kitchen', async (fastify: FastifyInstance, options:
   // or the daily targets from the trend — that stays an owner/agent loop.
   await fastify.register(registerWeighInRoutes, {
     store: new PgWeighInStore(fastify.sql),
+    ownerTz,
   });
 
   await fastify.register(registerInventoryRoutes, {
@@ -251,6 +266,16 @@ export default createPlugin('kitchen', async (fastify: FastifyInstance, options:
 export * from './types.js';
 export { generateUlid, ulidFromSeed, isValidUlid, ULID_PATTERN } from './ulid.js';
 export { transition, InvalidTransitionError, type EntryEvent } from './state.js';
+export {
+  resolveOwnerTz,
+  OwnerTzConfigError,
+  offsetMinutes,
+  localDay,
+  localDisplay,
+  formatOffset,
+  localToday,
+  type OwnerTz,
+} from './zoned.js';
 export {
   parseDailyTargets,
   DailyTargetsConfigError,

@@ -3,6 +3,7 @@ import { DESCRIPTION, commandReferenceText } from "./reference.js";
 import { cliInvocation } from "./invocation.js";
 import { homeCommand, HOME_HELP } from "./commands/home.js";
 import { entriesCommand, ENTRIES_HELP } from "./commands/entries.js";
+import { daysCommand, DAYS_HELP } from "./commands/days.js";
 import { inventoryCommand, INVENTORY_HELP } from "./commands/inventory.js";
 import { expenditureCommand, EXPENDITURE_HELP } from "./commands/expenditures.js";
 import { weighInsCommand, weightCommand, WEIGH_INS_HELP, WEIGHT_HELP } from "./commands/weigh-ins.js";
@@ -38,6 +39,7 @@ examples:
 const COMMAND_HELP: Record<string, string> = {
   home: HOME_HELP,
   entries: ENTRIES_HELP,
+  days: DAYS_HELP,
   inventory: INVENTORY_HELP,
   expenditure: EXPENDITURE_HELP,
   "weigh-ins": WEIGH_INS_HELP,
@@ -51,6 +53,7 @@ const COMMAND_HELP: Record<string, string> = {
 const COMMANDS: Record<string, AxiCliCommand<undefined>> = {
   home: (args) => homeCommand(args),
   entries: (args) => entriesCommand(args),
+  days: (args) => daysCommand(args),
   inventory: (args) => inventoryCommand(args),
   expenditure: (args) => expenditureCommand(args),
   "weigh-ins": (args) => weighInsCommand(args),

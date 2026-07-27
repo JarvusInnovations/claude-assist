@@ -38,7 +38,10 @@ export const ENTRIES_HELP = `kitchen-axi entries <subcommand> [args] [--json]
 
 const DETAIL_SCHEMA: FieldDef[] = [
   field("ulid"),
-  field("logged_at", "logged"),
+  // `day` = owner-tz calendar date (authoritative bucketing key); `logged`
+  // renders the instant in the owner zone (§ Timezone & local-day bucketing).
+  field("day"),
+  field("logged_local", "logged"),
   field("note"),
   field("label"),
   field("status"),

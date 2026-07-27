@@ -130,6 +130,11 @@ const schema = {
     // Optional — unset omits the summary's targets block; malformed fails
     // boot loudly at kitchen plugin init.
     KITCHEN_DAILY_TARGETS: { type: 'string' },
+    // Owner's IANA timezone (§ Timezone & local-day bucketing) — the one source
+    // of truth for every local-day boundary the module computes. Optional —
+    // unset falls back to UTC (stated in affected output); a present-but-invalid
+    // zone fails boot loudly at kitchen plugin init.
+    KITCHEN_OWNER_TZ: { type: 'string' },
     // Strava activity sync (§ Strava activity sync) — all three credentials
     // present ⇒ the scheduled sync runs; any absent ⇒ entirely off. The
     // refresh token is a first-boot seed only (kitchen.strava_oauth is
@@ -363,6 +368,7 @@ declare module 'fastify' {
       KITCHEN_MEALBANK_SHEET?: string;
       KITCHEN_TDEE_BASE?: number;
       KITCHEN_DAILY_TARGETS?: string;
+      KITCHEN_OWNER_TZ?: string;
       KITCHEN_STRAVA_CLIENT_ID?: string;
       KITCHEN_STRAVA_CLIENT_SECRET?: string;
       KITCHEN_STRAVA_REFRESH_TOKEN?: string;
