@@ -271,6 +271,141 @@ describe('SessionSpawner', () => {
     expect(logs).toContain('invalid group');
   });
 
+  it('MODEL: the instance default reaches the child env as SESSION_SPAWN_MODEL', async () => {
+    const notify = new FakeDispatcher();
+    const log = captureLogger();
+
+    let capturedEnv: NodeJS.ProcessEnv | undefined;
+    const spawner = createSessionSpawner({
+      command: ['some-rc-tool', 'spawn'],
+      notify,
+      log,
+      model: 'opus',
+      execFile: async (_file, _args, options) => {
+        capturedEnv = options.env;
+        return { stdout: 'https://example.test/rc/session_MDL', stderr: '' };
+      },
+    });
+
+    const record = await spawner.spawn({ preloadPrompt: 'brief', title: 'meal-planning' });
+
+    expect(record.status).toBe('spawned');
+    expect(capturedEnv!.SESSION_SPAWN_MODEL).toBe('opus');
+  });
+
+  it("MODEL: a caller's valid override wins over the instance default", async () => {
+    const notify = new FakeDispatcher();
+    const log = captureLogger();
+
+    let capturedEnv: NodeJS.ProcessEnv | undefined;
+    const spawner = createSessionSpawner({
+      command: ['some-rc-tool', 'spawn'],
+      notify,
+      log,
+      model: 'opus',
+      execFile: async (_file, _args, options) => {
+        capturedEnv = options.env;
+        return { stdout: 'https://example.test/rc/session_OVR', stderr: '' };
+      },
+    });
+
+    const record = await spawner.spawn({
+      preloadPrompt: 'brief',
+      title: 'meal-planning',
+      model: 'claude-sonnet-5',
+    });
+
+    expect(record.status).toBe('spawned');
+    expect(capturedEnv!.SESSION_SPAWN_MODEL).toBe('claude-sonnet-5');
+  });
+
+  it('MODEL: an invalid caller override falls back to the instance default (spawn still succeeds)', async () => {
+    const notify = new FakeDispatcher();
+    const log = captureLogger();
+
+    let capturedEnv: NodeJS.ProcessEnv | undefined;
+    const spawner = createSessionSpawner({
+      command: ['some-rc-tool', 'spawn'],
+      notify,
+      log,
+      model: 'opus',
+      execFile: async (_file, _args, options) => {
+        capturedEnv = options.env;
+        return { stdout: 'https://example.test/rc/session_BADMDL', stderr: '' };
+      },
+    });
+
+    // Whitespace, shell metacharacters, and over-length must all be rejected.
+    for (const badModel of ['opus; rm -rf /', 'two words', '$(whoami)', '-leading-dash', 'a'.repeat(129)]) {
+      capturedEnv = undefined;
+      const record = await spawner.spawn({
+        preloadPrompt: 'brief',
+        title: 'meal-planning',
+        model: badModel,
+      });
+
+      expect(record.status).toBe('spawned');
+      expect(capturedEnv!.SESSION_SPAWN_MODEL).toBe('opus');
+    }
+
+    expect(log.lines.join('\n')).toContain('invalid model override');
+  });
+
+  it('MODEL: with neither a default nor an override, SESSION_SPAWN_MODEL is absent from the child env', async () => {
+    const notify = new FakeDispatcher();
+    const log = captureLogger();
+
+    // A stray value in the SERVICE's own env must not leak through as the
+    // spawned session's model — resolution produced nothing, so the wrapper's
+    // own fallback owns the choice.
+    const prior = process.env.SESSION_SPAWN_MODEL;
+    process.env.SESSION_SPAWN_MODEL = 'leaked-from-service-env';
+    try {
+      let capturedEnv: NodeJS.ProcessEnv | undefined;
+      const spawner = createSessionSpawner({
+        command: ['some-rc-tool', 'spawn'],
+        notify,
+        log,
+        execFile: async (_file, _args, options) => {
+          capturedEnv = options.env;
+          return { stdout: 'https://example.test/rc/session_NOMDL', stderr: '' };
+        },
+      });
+
+      const record = await spawner.spawn({ preloadPrompt: 'brief', title: 'meal-planning' });
+
+      expect(record.status).toBe('spawned');
+      expect('SESSION_SPAWN_MODEL' in capturedEnv!).toBe(false);
+    } finally {
+      if (prior === undefined) delete process.env.SESSION_SPAWN_MODEL;
+      else process.env.SESSION_SPAWN_MODEL = prior;
+    }
+  });
+
+  it('MODEL: a malformed instance default is warned about and treated as unset', async () => {
+    const notify = new FakeDispatcher();
+    const log = captureLogger();
+
+    let capturedEnv: NodeJS.ProcessEnv | undefined;
+    const spawner = createSessionSpawner({
+      command: ['some-rc-tool', 'spawn'],
+      notify,
+      log,
+      model: 'opus; rm -rf /',
+      execFile: async (_file, _args, options) => {
+        capturedEnv = options.env;
+        return { stdout: 'https://example.test/rc/session_BADDEF', stderr: '' };
+      },
+    });
+
+    expect(log.lines.join('\n')).toContain('SESSION_SPAWN_MODEL is malformed');
+
+    const record = await spawner.spawn({ preloadPrompt: 'brief', title: 'meal-planning' });
+
+    expect(record.status).toBe('spawned');
+    expect('SESSION_SPAWN_MODEL' in capturedEnv!).toBe(false);
+  });
+
   it('unconfigured (no command): returns not_configured and dispatches nothing', async () => {
     const notify = new FakeDispatcher();
     const log = captureLogger();
