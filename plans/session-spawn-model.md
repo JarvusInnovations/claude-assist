@@ -1,11 +1,11 @@
 ---
-status: in-progress
+status: done
 depends: [session-spawn]
 specs:
   - specs/modules/session-spawn.md
   - specs/modules/kitchen.md
 issues: []
-pr:
+pr: 154
 ---
 
 # Plan: spawned sessions always name their model explicitly
@@ -85,7 +85,11 @@ instance data and lives outside this repo.
       the child env even when the service's own env carries a stray value.
 - [x] A malformed instance default warns at construction and is treated as unset.
 - [x] `bun test packages/session-spawn/src` green; `bun run build` green.
-- [ ] End-to-end: a real spawn from the app comes up on the configured model.
+- [x] End-to-end: a real spawn came up on the requested model (the launched
+      session's own status line named it), and the wrapper echoes the model back
+      in its output block.
+- [x] Server boots with the new env wired, session-spawn module enabled, no
+      malformed-model warning (the `opus` schema default validates).
 
 ## Risks / unknowns
 
@@ -103,6 +107,17 @@ instance data and lives outside this repo.
 - Passing the model via the **child env**, not argv, is deliberate: the argv
   contract reserves the final slot for the preload-prompt path, and `group`
   already established env as the channel for per-spawn metadata.
+- The observed spawn failure that started this had **two** causes, and only one
+  of them was the model. The other was a blocking approval dialog for a
+  newly-added integration in the session's working directory — invisible from
+  here, surfacing only as "no takeover link." Hence the non-interactive clause in
+  the command contract: this module cannot detect or answer a prompt, so the
+  requirement has to sit on the wrapper. The wrapper fix (pre-approving via a
+  settings flag on the launch command line, and naming the recognized blocker on
+  stderr so the failure reason stops being opaque) is instance config and lives
+  outside this repo.
+- The instance default deliberately stays an alias rather than a pinned name, so
+  the tier follows the latest model without a config edit.
 
 ## Follow-ups
 
