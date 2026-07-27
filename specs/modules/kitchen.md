@@ -553,6 +553,79 @@ the stale pill.
 label, calories, protein_g, fat_g, sat_fat_g, carbs_g, sodium_mg, last_logged_at,
 log_count }`. The macro fields are the source entry's **base** (unscaled) macros.
 
+## Recipe lineage — families, versions, applications
+
+Recipes drift in use: each cooking of one swaps or adjusts something, the
+variant sometimes stabilizes ("keep having that on hand"), and feedback
+arrives days later about a specific making, not the abstract recipe. The
+lineage model captures this as a **shape, not infrastructure** — one parent
+edge, one feedback field, and reads that treat what's already stored as a
+graph. All versions are equally valid; there is no canonical head, no merge
+semantics, no version resolution.
+
+**The three layers (two already exist):**
+
+- **Application** — an entry logged via recipe. The immutable record of one
+  making: `recipe_ulid` (its parent edge, already stored) +
+  `component_quantities` (the as-made deltas, already stored) + `feedback`
+  (new — see below). An adjusted application is a complete version
+  description (parent + deltas); it is NOT reified into the recipe
+  namespace at cook time.
+- **Version** — a `kitchen.recipes` row: a live, reusable template. Gains
+  **`parent_ulid`** (nullable, no FK semantics beyond the edge): the
+  version it diverged from. `POST /recipes` accepts it; `promote` records
+  the promoted entry's `recipe_ulid` as the new version's parent.
+- **Family** — the connected component over parent edges. Purely derived —
+  no table, no stored weights. A version's salience signals (application
+  count, last-applied recency, feedback valence) are computed from its
+  applications at read time, never maintained.
+
+**Fork-on-reuse (the automatic mint — no ceremony moment).** A version is
+minted exactly when it is structurally needed: when a new log **starts from
+a prior application that differed from its version**. Mechanically:
+`POST /entries` recipe logs accept **`from_entry_ulid`** — "make it how I
+made it that time." The server resolves that application's as-made
+quantities as the starting point; if they differ from its version's
+defaults, it first mints a new version (defaults = that as-made,
+`parent_ulid` = the application's version, name derived from the parent +
+distinguishing note) and the new entry references the minted version.
+Starting from an UNMODIFIED application mints nothing (nothing changed —
+reuse the existing version). Reselect-clone (§ Reselect cloning) is
+untouched: a verbatim entry clone, never a mint. Consequences: a
+one-time substitution stays a recallable application forever, and becomes a
+first-class branch at the exact moment it is reached for again — reuse IS
+the promotion. Per-meal node spam cannot occur (zero-delta reuse and
+unrepeated experiments mint nothing).
+
+**Feedback rides applications, not versions.** `kitchen.entries.feedback`
+(text, nullable): the owner's post-hoc verdict on that making ("this jar
+was great", "too much flax this time"). Set via `PATCH /entries/:ulid` as
+an **orthogonal axis** exactly like `portion_multiplier` — never re-queues
+estimation, never changes `source`, accepted on any entry. Versions carry
+no rating field; a branch's quality is its applications' feedback read in
+aggregate.
+
+**Family read.** `GET /kitchen/recipes/:ulid/family` → the full connected
+component: every version (with `parent_ulid` edges) + per-version derived
+signals (`application_count`, `last_applied_at`, recent feedback excerpts)
+
+- the applications themselves (entry ulids, as-made deltas, feedback).
+CLI: `recipes family <ulid>`. This is the agent's exploration surface for
+"how have we made this, and how did each go."
+
+**The retrieval rule (the default that prevents stale-draft pulls).** Every
+surface that offers a recipe — the reselect strip, plan-session context,
+agent guidance — defaults a family to its **most recently applied
+version**, and the strip collapses a family behind that head (older
+versions reachable via the family read, not cluttering the strip). Naming a
+version explicitly always overrides the default.
+
+**Curation is pinning.** The meal-bank contract gains an optional `parent`
+(version ulid) so sheet records join families: a curated record is a
+version somebody deliberately keeps on the shelf. Tiers, rankings, and
+which-variant-tonight judgment stay owner/agent-side — the module owns
+edges and reads, never preference.
+
 ## Meal-bank sheet consumption
 
 The module reads a meal-bank gitsheet owned by the instance's own repo:
