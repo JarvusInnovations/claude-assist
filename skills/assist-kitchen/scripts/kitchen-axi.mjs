@@ -568,6 +568,18 @@ function mergeHomeHeader(header, output) {
 
 // packages/kitchen/src/axi/reference.ts
 var DESCRIPTION = "Read and write the kitchen consumption journal and inventory \u2014 log meals, adjust portions, track stock, scan receipts, and seed products/lexicon.";
+var MACRO_PANEL_FLAGS = [
+  ["calories", "calories"],
+  ["protein", "protein_g"],
+  ["fat", "fat_g"],
+  ["sat-fat", "sat_fat_g"],
+  ["carbs", "carbs_g"],
+  ["sugar", "sugar_g"],
+  ["fiber", "fiber_g"],
+  ["sodium", "sodium_mg"]
+];
+var MACRO_PANEL_FLAG_NAMES = MACRO_PANEL_FLAGS.map(([flag]) => flag);
+var MACRO_PANEL_USAGE = MACRO_PANEL_FLAGS.map(([flag]) => `[--${flag} N]`).join(" ");
 var COMMAND_GROUPS = [
   {
     group: "Entries",
@@ -575,12 +587,12 @@ var COMMAND_GROUPS = [
       { usage: "entries list [--since DATE] [--limit N]", summary: "newest-first consumption entries (base macros + portion_multiplier; effective = base \xD7 multiplier)" },
       { usage: "entries show <ulid>", summary: "one entry with full nutrition, source, and status" },
       {
-        usage: 'entries log [note\u2026] [--recipe ULID] [--component "label=grams"]\u2026 [--at TIME] [--calories N] [--protein N] [--fat N] [--sat-fat N] [--carbs N] [--sugar N] [--fiber N] [--sodium N] [--label T]',
+        usage: `entries log [note\u2026] [--recipe ULID] [--component "label=grams"]\u2026 [--at TIME] ${MACRO_PANEL_USAGE} [--label T]`,
         summary: "log a deliberate, no-model entry (note and/or recipe + component quantities); recipe-referenced entries are computed deterministically; --at sets logged_at (default now \u2014 prefer a full local timestamp with offset; a bare YYYY-MM-DD backstops to local noon that day, never midnight UTC); a directly-stated panel (--calories/--protein/\u2026, optionally --label) records a born-manual, terminal entry verbatim with NO estimation (mutually exclusive with --recipe/--component)"
       },
       {
-        usage: "entries patch <ulid> [--note T] [--label T] [--calories N] [--protein N] [--fat N] [--sat-fat N] [--carbs N] [--sodium N] [--portion-basis T] [--multiplier M] [--at TIME]",
-        summary: "edit an entry: note/label re-queue estimation; any macro sets a terminal manual override; --multiplier rescales the base post-hoc and --at backdates logged_at (prefer a full local timestamp with offset; a bare YYYY-MM-DD backstops to local noon that day; neither re-queues, neither changes source)"
+        usage: `entries patch <ulid> [--note T] [--label T] ${MACRO_PANEL_USAGE} [--portion-basis T] [--multiplier M] [--at TIME]`,
+        summary: "edit an entry: note/label re-queue estimation; any of the EIGHT macro flags sets a terminal manual override (the same panel `log` accepts \u2014 every field is correctable in place, so never delete + re-log to fix a number); --multiplier rescales the base post-hoc and --at backdates logged_at (prefer a full local timestamp with offset; a bare YYYY-MM-DD backstops to local noon that day; neither re-queues, neither changes source)"
       },
       { usage: "entries delete <ulid>", summary: "remove an entry from all rollups" }
     ]
@@ -1277,15 +1289,18 @@ var ENTRIES_HELP = `kitchen-axi entries <subcommand> [args] [--json]
        [--calories N] [--protein N]\u2026     directly-stated panel: born-manual, terminal,
        [--label T]                        NO estimation (mutually exclusive with --recipe/--component)
   patch <ulid> [flags]                 edit note/label (re-queue), macro override
-                                         (terminal), --multiplier M (post-hoc rescale),
+                                         (terminal \u2014 ANY of the eight panel flags),
+                                         --multiplier M (post-hoc rescale),
                                          or --at TIME (backdate logged_at)
   delete <ulid>                        remove from all rollups
 
   Macros on the wire are the BASE; effective = base \xD7 portion_multiplier. A
   macro flag on patch sets a terminal manual override; --multiplier and --at
   only touch their own field \u2014 neither re-queues estimation nor changes source.
-  Macro flags: --calories --protein --fat --sat-fat --carbs --sugar --fiber
-  --sodium (the eight-field nutrition panel; unknown stays null, never 0).`;
+  Macro flags (identical on log and patch): ${MACRO_PANEL_FLAG_NAMES.map((f) => `--${f}`).join(" ")}
+  \u2014 the eight-field nutrition panel; unknown stays null, never 0. Every field is
+  correctable in place, so never delete + re-log to fix a number (that mints a
+  new ULID and breaks anything referencing the entry).`;
 var DETAIL_SCHEMA = [
   field("ulid"),
   // `day` = owner-tz calendar date (authoritative bucketing key); `logged`
@@ -1359,22 +1374,12 @@ function parseComponent(raw) {
   }
   return { label, quantity_g: qty };
 }
-var MACRO_LOG_FLAGS = [
-  ["calories", "calories"],
-  ["protein", "protein_g"],
-  ["fat", "fat_g"],
-  ["sat-fat", "sat_fat_g"],
-  ["carbs", "carbs_g"],
-  ["sugar", "sugar_g"],
-  ["fiber", "fiber_g"],
-  ["sodium", "sodium_mg"]
-];
 function buildLogEntryFields(positionals, flags, components) {
   const note = positionals.join(" ").trim();
   const recipe = typeof flags.recipe === "string" ? flags.recipe : void 0;
   const label = typeof flags.label === "string" ? flags.label : void 0;
   const macros = {};
-  for (const [flag, key] of MACRO_LOG_FLAGS) {
+  for (const [flag, key] of MACRO_PANEL_FLAGS) {
     if (typeof flags[flag] === "string") {
       macros[key] = parseNumberFlag(flags[flag], flag, ENTRIES_HELP, { min: 0 });
     }
@@ -1406,7 +1411,7 @@ async function logEntry(args) {
   const { positionals, flags } = parseArgs(
     args,
     ["json"],
-    ["recipe", "component", "at", "label", "calories", "protein", "fat", "sat-fat", "carbs", "sugar", "fiber", "sodium"]
+    ["recipe", "component", "at", "label", ...MACRO_PANEL_FLAG_NAMES]
   );
   const components = collectFlag(args, "component").map(parseComponent);
   const entry = { ulid: generateUlid(), ...buildLogEntryFields(positionals, flags, components) };
@@ -1427,17 +1432,7 @@ function buildPatchBody(flags) {
   if (typeof flags.note === "string") body.note = flags.note;
   if (typeof flags.label === "string") body.label = flags.label;
   if (typeof flags["portion-basis"] === "string") body.portion_basis = flags["portion-basis"];
-  const macroFlags = [
-    ["calories", "calories"],
-    ["protein", "protein_g"],
-    ["fat", "fat_g"],
-    ["sat-fat", "sat_fat_g"],
-    ["carbs", "carbs_g"],
-    ["sugar", "sugar_g"],
-    ["fiber", "fiber_g"],
-    ["sodium", "sodium_mg"]
-  ];
-  for (const [flag, key] of macroFlags) {
+  for (const [flag, key] of MACRO_PANEL_FLAGS) {
     if (typeof flags[flag] === "string") body[key] = parseNumberFlag(flags[flag], flag, ENTRIES_HELP, { min: 0 });
   }
   if (typeof flags.multiplier === "string") {
@@ -1452,7 +1447,7 @@ function buildPatchBody(flags) {
   return body;
 }
 async function patchEntry(args) {
-  const { positionals, flags } = parseArgs(args, ["json"], ["note", "label", "portion-basis", "calories", "protein", "fat", "sat-fat", "carbs", "sugar", "fiber", "sodium", "multiplier", "at"]);
+  const { positionals, flags } = parseArgs(args, ["json"], ["note", "label", "portion-basis", ...MACRO_PANEL_FLAG_NAMES, "multiplier", "at"]);
   const ulid = requirePositional(positionals, 0, "entry ulid", ENTRIES_HELP);
   const body = buildPatchBody(flags);
   const updated = await api.patch(`/api/kitchen/entries/${encodeURIComponent(ulid)}`, body);
@@ -2365,7 +2360,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "6b90897" : "dev";
+var VERSION = true ? "eecaf40" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)

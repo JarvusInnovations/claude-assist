@@ -12,7 +12,7 @@ import { AxiError } from "axi-sdk-js";
 import { renderList, renderDetail, renderObject, renderOutput, renderHelp, field, custom, type FieldDef } from "../toon.js";
 import { ENTRY_ROW_SCHEMA, effectiveMacro } from "../format.js";
 import { cliInvocation } from "../invocation.js";
-import { discoveryHelp } from "../reference.js";
+import { discoveryHelp, MACRO_PANEL_FLAGS, MACRO_PANEL_FLAG_NAMES } from "../reference.js";
 
 export const ENTRIES_HELP = `kitchen-axi entries <subcommand> [args] [--json]
 
@@ -26,15 +26,18 @@ export const ENTRIES_HELP = `kitchen-axi entries <subcommand> [args] [--json]
        [--calories N] [--protein N]…     directly-stated panel: born-manual, terminal,
        [--label T]                        NO estimation (mutually exclusive with --recipe/--component)
   patch <ulid> [flags]                 edit note/label (re-queue), macro override
-                                         (terminal), --multiplier M (post-hoc rescale),
+                                         (terminal — ANY of the eight panel flags),
+                                         --multiplier M (post-hoc rescale),
                                          or --at TIME (backdate logged_at)
   delete <ulid>                        remove from all rollups
 
   Macros on the wire are the BASE; effective = base × portion_multiplier. A
   macro flag on patch sets a terminal manual override; --multiplier and --at
   only touch their own field — neither re-queues estimation nor changes source.
-  Macro flags: --calories --protein --fat --sat-fat --carbs --sugar --fiber
-  --sodium (the eight-field nutrition panel; unknown stays null, never 0).`;
+  Macro flags (identical on log and patch): ${MACRO_PANEL_FLAG_NAMES.map((f) => `--${f}`).join(" ")}
+  — the eight-field nutrition panel; unknown stays null, never 0. Every field is
+  correctable in place, so never delete + re-log to fix a number (that mints a
+  new ULID and breaks anything referencing the entry).`;
 
 const DETAIL_SCHEMA: FieldDef[] = [
   field("ulid"),
@@ -116,22 +119,6 @@ function parseComponent(raw: string): { label: string; quantity_g: number } {
 }
 
 /**
- * The eight panel flags (`--calories`, `--protein`, …) → server field names,
- * matching `entries patch`'s macro flags. On `log` they build a directly-stated
- * `macros` panel (specs/modules/kitchen.md § Directly-stated panel entries).
- */
-const MACRO_LOG_FLAGS: [string, string][] = [
-  ["calories", "calories"],
-  ["protein", "protein_g"],
-  ["fat", "fat_g"],
-  ["sat-fat", "sat_fat_g"],
-  ["carbs", "carbs_g"],
-  ["sugar", "sugar_g"],
-  ["fiber", "fiber_g"],
-  ["sodium", "sodium_mg"],
-];
-
-/**
  * Pure: build the `entry` JSON part's fields (everything but the ulid, which
  * the caller generates) from `entries log`'s parsed positionals/flags —
  * including `--at` → `logged_at` (claude-assist#111; the field is already
@@ -151,7 +138,7 @@ export function buildLogEntryFields(
 
   // Directly-stated panel: any macro flag present makes this a born-manual entry.
   const macros: Record<string, number> = {};
-  for (const [flag, key] of MACRO_LOG_FLAGS) {
+  for (const [flag, key] of MACRO_PANEL_FLAGS) {
     if (typeof flags[flag] === "string") {
       macros[key] = parseNumberFlag(flags[flag] as string, flag, ENTRIES_HELP, { min: 0 });
     }
@@ -186,7 +173,7 @@ async function logEntry(args: string[]): Promise<string> {
   const { positionals, flags } = parseArgs(
     args,
     ["json"],
-    ["recipe", "component", "at", "label", "calories", "protein", "fat", "sat-fat", "carbs", "sugar", "fiber", "sodium"]
+    ["recipe", "component", "at", "label", ...MACRO_PANEL_FLAG_NAMES]
   );
   const components = collectFlag(args, "component").map(parseComponent);
   const entry: Record<string, unknown> = { ulid: generateUlid(), ...buildLogEntryFields(positionals, flags, components) };
@@ -220,17 +207,9 @@ export function buildPatchBody(flags: Record<string, string | boolean>): Record<
   if (typeof flags.label === "string") body.label = flags.label;
   if (typeof flags["portion-basis"] === "string") body.portion_basis = flags["portion-basis"];
 
-  const macroFlags: [string, string][] = [
-    ["calories", "calories"],
-    ["protein", "protein_g"],
-    ["fat", "fat_g"],
-    ["sat-fat", "sat_fat_g"],
-    ["carbs", "carbs_g"],
-    ["sugar", "sugar_g"],
-    ["fiber", "fiber_g"],
-    ["sodium", "sodium_mg"],
-  ];
-  for (const [flag, key] of macroFlags) {
+  // Same eight-field panel `log` accepts, from the same source (§ Agent
+  // tooling) — every logged field must be correctable in place.
+  for (const [flag, key] of MACRO_PANEL_FLAGS) {
     if (typeof flags[flag] === "string") body[key] = parseNumberFlag(flags[flag] as string, flag, ENTRIES_HELP, { min: 0 });
   }
   if (typeof flags.multiplier === "string") {
@@ -247,7 +226,7 @@ export function buildPatchBody(flags: Record<string, string | boolean>): Record<
 }
 
 async function patchEntry(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"], ["note", "label", "portion-basis", "calories", "protein", "fat", "sat-fat", "carbs", "sugar", "fiber", "sodium", "multiplier", "at"]);
+  const { positionals, flags } = parseArgs(args, ["json"], ["note", "label", "portion-basis", ...MACRO_PANEL_FLAG_NAMES, "multiplier", "at"]);
   const ulid = requirePositional(positionals, 0, "entry ulid", ENTRIES_HELP);
   const body = buildPatchBody(flags);
 

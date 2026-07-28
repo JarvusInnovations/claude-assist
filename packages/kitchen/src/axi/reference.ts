@@ -21,6 +21,38 @@ export interface CommandGroup {
   commands: CommandRef[];
 }
 
+/**
+ * The eight nutrition-panel flags (specs/modules/kitchen.md § Nutrition panel)
+ * as `[flag, server field]` pairs — the SINGLE source for both `entries log`
+ * (where they build a directly-stated panel) and `entries patch` (where any of
+ * them sets a terminal manual override).
+ *
+ * Single-sourced deliberately: the documented `patch` usage previously
+ * enumerated six of the eight, omitting `--sugar`/`--fiber` even though the
+ * parser accepted them. Fiber and sugar are tracked daily targets, so an agent
+ * reading the reference and concluding they can't be corrected falls back to
+ * delete + re-log — which mints a new ULID and destroys the entry's identity.
+ * A field that can be logged but not corrected has no correction path at all,
+ * so the flag list and both usage strings now derive from this one array
+ * (§ Agent tooling).
+ */
+export const MACRO_PANEL_FLAGS: readonly (readonly [flag: string, field: string])[] = [
+  ["calories", "calories"],
+  ["protein", "protein_g"],
+  ["fat", "fat_g"],
+  ["sat-fat", "sat_fat_g"],
+  ["carbs", "carbs_g"],
+  ["sugar", "sugar_g"],
+  ["fiber", "fiber_g"],
+  ["sodium", "sodium_mg"],
+];
+
+/** Just the flag names, for a command's `parseArgs` value-flag list. */
+export const MACRO_PANEL_FLAG_NAMES: readonly string[] = MACRO_PANEL_FLAGS.map(([flag]) => flag);
+
+/** `[--calories N] [--protein N] …` — the panel as it appears in a usage line. */
+const MACRO_PANEL_USAGE = MACRO_PANEL_FLAGS.map(([flag]) => `[--${flag} N]`).join(" ");
+
 export const COMMAND_GROUPS: CommandGroup[] = [
   {
     group: "Entries",
@@ -28,12 +60,12 @@ export const COMMAND_GROUPS: CommandGroup[] = [
       { usage: "entries list [--since DATE] [--limit N]", summary: "newest-first consumption entries (base macros + portion_multiplier; effective = base × multiplier)" },
       { usage: "entries show <ulid>", summary: "one entry with full nutrition, source, and status" },
       {
-        usage: 'entries log [note…] [--recipe ULID] [--component "label=grams"]… [--at TIME] [--calories N] [--protein N] [--fat N] [--sat-fat N] [--carbs N] [--sugar N] [--fiber N] [--sodium N] [--label T]',
+        usage: `entries log [note…] [--recipe ULID] [--component "label=grams"]… [--at TIME] ${MACRO_PANEL_USAGE} [--label T]`,
         summary: "log a deliberate, no-model entry (note and/or recipe + component quantities); recipe-referenced entries are computed deterministically; --at sets logged_at (default now — prefer a full local timestamp with offset; a bare YYYY-MM-DD backstops to local noon that day, never midnight UTC); a directly-stated panel (--calories/--protein/…, optionally --label) records a born-manual, terminal entry verbatim with NO estimation (mutually exclusive with --recipe/--component)",
       },
       {
-        usage: "entries patch <ulid> [--note T] [--label T] [--calories N] [--protein N] [--fat N] [--sat-fat N] [--carbs N] [--sodium N] [--portion-basis T] [--multiplier M] [--at TIME]",
-        summary: "edit an entry: note/label re-queue estimation; any macro sets a terminal manual override; --multiplier rescales the base post-hoc and --at backdates logged_at (prefer a full local timestamp with offset; a bare YYYY-MM-DD backstops to local noon that day; neither re-queues, neither changes source)",
+        usage: `entries patch <ulid> [--note T] [--label T] ${MACRO_PANEL_USAGE} [--portion-basis T] [--multiplier M] [--at TIME]`,
+        summary: "edit an entry: note/label re-queue estimation; any of the EIGHT macro flags sets a terminal manual override (the same panel `log` accepts — every field is correctable in place, so never delete + re-log to fix a number); --multiplier rescales the base post-hoc and --at backdates logged_at (prefer a full local timestamp with offset; a bare YYYY-MM-DD backstops to local noon that day; neither re-queues, neither changes source)",
       },
       { usage: "entries delete <ulid>", summary: "remove an entry from all rollups" },
     ],
