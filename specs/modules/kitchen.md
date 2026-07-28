@@ -63,12 +63,60 @@ lossless (no division needed to recover the base).
 
 ## Nutrition panel
 
-An entry's nutrition is an **eight-field panel**: `calories`, `protein_g`,
-`fat_g`, `sat_fat_g`, `carbs_g`, `sugar_g`, `fiber_g`, `sodium_mg`. Each field is
-a number or `null` (unknown is `null`, never `0` — a missing value must not read
-as "zero of it"). `sugar_g` and `fiber_g` join the original six: `sugar_g` and
-`sodium_mg` are ceilings the owner overshoots and feels; `fiber_g` is a floor the
-owner has to aim at — the three the daily view surfaces beyond calories/protein.
+An entry's nutrition is a **nine-field panel**: `calories`, `protein_g`,
+`fat_g`, `sat_fat_g`, `carbs_g`, `sugar_g`, `added_sugar_g`, `fiber_g`,
+`sodium_mg`. Each field is a number or `null` (unknown is `null`, never `0` — a
+missing value must not read as "zero of it"). `added_sugar_g` and `sodium_mg` are
+ceilings the owner overshoots and feels; `fiber_g` is a floor the owner has to aim
+at — the three the daily view surfaces beyond calories/protein.
+
+### `added_sugar_g` vs `sugar_g` — two quantities, one target
+
+`sugar_g` is **total** sugar. `added_sugar_g` is the portion added during
+processing or preparation. They are not interchangeable, and only one is a target.
+
+**Only `added_sugar_g` carries a ceiling.** There is no established guideline for
+total sugar: WHO's 10%/5%-of-energy thresholds and the AHA limits govern *free* or
+*added* sugars and explicitly exclude the intrinsic sugars in whole fruit and milk.
+A ceiling on `sugar_g` is therefore a borrowed number, and it misfires in a
+specific, corrosive way — a day of fruit, milk, and plain yogurt reads "over" while
+containing almost no added sugar. An alarm that fires on the owner's best-eating
+days trains him to ignore it, which costs more than the signal is worth.
+
+- `added_sugar_g` — **a real ceiling**, surfaced in the daily view alongside sat
+  fat, sodium, and fiber.
+- `sugar_g` — **still captured, still displayed, no target.** Context for the
+  owner's own judgment ("was today fruit-heavy?"), not a line to breach. The guards
+  against an all-fruit day are already tracked: the calorie ceiling, the protein
+  floor, and fiber.
+
+**Juice counts as added.** The precise concept is WHO's *free sugars* — added sugar
+plus honey, syrups, and fruit juice. Labels report "Added Sugars," so that is what
+a scan captures, but a source estimating a juice-bearing item attributes its juice
+sugar to `added_sugar_g`. Whole fruit and plain dairy never contribute.
+
+**Display: one nested bar, not two.** Total sugar is the bar's full extent; the
+added portion is a filled segment inside it, and the threshold marker sits at the
+*added* ceiling. One object then answers three questions — how much sugar, how much
+was added, and whether the added part crossed its line — without implying total
+sugar has a threshold. Two side-by-side bars would double the visual weight and
+reintroduce the false-alarm reading this change exists to remove.
+
+### Filling `added_sugar_g`
+
+- **Labeled packaged foods** — US Nutrition Facts panels have carried "Includes Xg
+  Added Sugars" since the 2016 rule, so a product seeded from a label gets it
+  directly. Highest-confidence path. (Receipts carry no nutrition; this lands in
+  product seeding and label capture, not the receipt parser.)
+- **Whole foods** — fruit, vegetables, plain dairy, eggs, meat, fish, plain grains
+  and legumes are `0` **by definition, not `null`**. A source recognizing an
+  unprocessed single ingredient asserts zero rather than unknown.
+- **Restaurant and prepared dishes** — a genuine estimate, reasoned from the
+  visible sweeteners: glazes, sauces, dressings, marinades, baked goods, sweetened
+  drinks. Confidence is lower and that is acceptable; a reasoned estimate beats
+  `null`, which reads as "no data" and silently drops the day's total.
+- **`null` remains legal** and means unknown. A day's `added_sugar_g` is null only
+  when no entry carried it.
 
 **Every source fills the whole panel it can.** The panel is only useful if it's
 complete regardless of *how* a meal was logged:
@@ -91,7 +139,7 @@ complete regardless of *how* a meal was logged:
 - **Manual override** sets whichever panel fields the owner pins.
 - **Directly-stated panel** — a client that has *already computed* an entry's
   full panel locally (a recipe-scaling or portion-builder UI, a bulk importer, a
-  fully-resolved label scan) supplies the eight fields verbatim at creation. No
+  fully-resolved label scan) supplies the nine fields verbatim at creation. No
   estimator runs and no recipe is resolved — the numbers **are** the answer.
   Source `manual`, terminal from birth (see § Directly-stated panel entries).
 
@@ -127,7 +175,7 @@ values). It is set via `PATCH /entries/:ulid`.
 
 There are three ways an entry can come to exist with useful macros: **compute**
 it from a recipe/component reference, **guess** it from a photo or note via the
-model, or **state** it — hand over the finished eight-field panel because the
+model, or **state** it — hand over the finished nine-field panel because the
 caller already did the arithmetic. The first two are creation shapes today; the
 third is not, and its absence forces a two-step (`POST` → model estimate →
 `PATCH` override) for every client that already knows the exact numbers.
@@ -338,7 +386,7 @@ but no AXI surface *requires* deriving local day from it.)
 **Per-day totals are a pre-computed aggregate (AXI §4), never a caller
 aggregation.** A first-class rollup — `kitchen-axi days [--since <n|date>]` over a
 `GET /kitchen/summary` day-grouped mode — returns **per-owner-local-day** rows:
-the eight-field nutrition panel, calories, and the net line (when
+the nine-field nutrition panel, calories, and the net line (when
 `KITCHEN_TDEE_BASE` is set), one row per day, computed server-side in the owner
 zone. An agent asking "how did the week go" calls it **once** and gets correct
 numbers. Hand-summing entries into daily/weekly totals is the expensive follow-up
@@ -866,7 +914,7 @@ All tables instance-agnostic empty schema, ULID keys, `kitchen` schema
   nullable), `shelf_life_days_unopened` / `shelf_life_days_opened` (int,
   label-derived precise overrides of the class default; nullable), `created_at`,
   `updated_at`. A label photo enriches the **product**, not the item. The
-  `nutrition_per_100g` panel is the full eight-field § Nutrition panel. It is
+  `nutrition_per_100g` panel is the full nine-field § Nutrition panel. It is
   a **product-nutrition** shape, distinct from the recipe-component per-100g
   reference (`RecipeComponentMacros` in `types.ts`), which stays on its own
   type — the two are not conflated.
@@ -901,7 +949,7 @@ All tables instance-agnostic empty schema, ULID keys, `kitchen` schema
   remains a directional fallback when no net content was legible.
 
   **The needs-nutrition signal**: an inventory item whose *linked product*
-  carries no `nutrition_per_100g`, or a panel with any of the eight fields
+  carries no `nutrition_per_100g`, or a panel with any of the nine fields
   null, is flagged `needs_nutrition: true` on every item view (`GET
   /inventory`, CLI list, the app) — a label rescan is the resolving action.
   Distinct from `needs_info` (a scanned line with NO product match); an
