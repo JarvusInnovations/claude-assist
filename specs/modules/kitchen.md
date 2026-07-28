@@ -29,9 +29,10 @@ through the module's APIs (never as committed seed content).
   reference with per-component quantities, optional inventory-item links (phase 2).
 - **Recipes** — named loggable templates: name, optional per-ingredient
   components (label, default quantity, per-100g macros), source
-  (`sheet` | `pushed` | `promoted`), created/updated stamps. Sheet-sourced
-  recipes are read-through projections of the configured meal-bank gitsheet —
-  the module never writes the sheet.
+  (`sheet` | `pushed` | `promoted`), created/updated stamps, and an
+  `archived_at` retirement stamp (null while live — § Recipe corrections).
+  Sheet-sourced recipes are read-through projections of the configured meal-bank
+  gitsheet — the module never writes the sheet.
 - **Estimation status** doubles as the work queue:
   `estimating → estimated | failed`, attempt-capped. A `failed` entry is a
   valid, rollup-visible entry awaiting a manual label.
@@ -553,6 +554,73 @@ the stale pill.
 label, calories, protein_g, fat_g, sat_fat_g, carbs_g, sodium_mg, last_logged_at,
 log_count }`. The macro fields are the source entry's **base** (unscaled) macros.
 
+## Recipe corrections — upsert on name, explicit-ulid replace, archive
+
+A recipe's numbers get corrected: a component was wrong, a per-100g reference
+was off, a name needs to change. A correction has to **replace** the recipe, not
+fork it. Recipes are tapped from the reselect strip by *name* — a pill carries a
+name, not a ULID — so two same-named recipes are indistinguishable to whoever
+taps one, and the stale fork keeps logging the wrong numbers. That is the worst
+available failure mode, because every tap looks like success.
+
+**`POST /recipes` upserts.** The request may carry an optional `ulid`:
+
+- **With `ulid`** — create-or-replace that exact record, idempotent on the key
+  (the same client-supplied-ULID convention `POST /inventory` uses). A replace
+  overwrites `name` + `components` and bumps `updated_at`; `ulid`, `created_at`,
+  and `source` are preserved (replacing a `promoted` record leaves it
+  `promoted`). A create with a caller-supplied `ulid` is `pushed`. An explicit
+  key is explicit intent, so this is the escape hatch for every ambiguous case
+  below.
+- **Without `ulid`** — the **normalized name** is the key: case-folded,
+  whitespace-collapsed, trimmed. Resolved against the non-archived
+  DB-persisted recipes:
+  - No match → create a new `pushed` recipe (`201`).
+  - Exactly one match with `source: 'pushed'` → replace it in place (`200`),
+    same ULID. Entries referencing it keep resolving and the strip keeps showing
+    one pill.
+  - A match with `source: 'promoted'`, or a name collision with a
+    `sheet`-sourced recipe → `409`. A promoted recipe is the record of something
+    the owner actually logged, and a sheet recipe belongs to the meal-bank sheet
+    this module never writes; neither may be clobbered by a name collision on a
+    push. The error names the colliding ULID and its source, and states both
+    ways forward: rename, or pass `ulid` to replace deliberately.
+  - More than one `pushed` match (duplicates that predate this rule) → `409`
+    naming every candidate. The upsert refuses to guess which fork is canonical.
+- The response is the bare recipe row either way; the status distinguishes
+  create (`201`) from replace (`200`).
+
+**`DELETE /recipes/:ulid` archives — it never destroys.** An `archived_at`
+stamp, not a row deletion:
+
+- An archived recipe **leaves the reselect strip** and every merged recipe
+  listing (`GET /reselect`, the module's full merged recipe view, the briefing's
+  stock-aware suggestions), so it can never be tapped again.
+- It stays **resolvable by ULID forever**: an entry logged from it still names a
+  live recipe, `POST /entries/:ulid/promote`'s component reconstruction still
+  works, and a derived inventory item whose provenance points at it stays
+  one-tap consume-eligible (§ Consume from inventory). Retiring a template must
+  never break history.
+- **Idempotent**: archiving an already-archived recipe succeeds and returns the
+  same row. Unknown ULID → `404`. A `sheet`-sourced ULID → `404` saying so —
+  sheet recipes are a read-through projection and this module never writes the
+  sheet, so there is nothing here to archive.
+- There is deliberately **no hard delete**. This is the same "state, not delete"
+  idiom the inventory side already uses (§ Non-inventory dismissal, and the
+  `finished`/`tossed` terminals): the row survives for provenance, and a state
+  filter — never a row removal — is what takes it off the live surfaces.
+
+### Principles (local)
+
+- **A correction replaces; it never forks.** When a caller re-states something
+  the system already holds under the same identity, the system updates that
+  record instead of minting a second one. Two records with one name and
+  different numbers are worse than one wrong record: nothing downstream can tell
+  them apart, so the wrong one keeps getting picked.
+- **Retire by state, never by deletion.** Anything an entry, batch line, or
+  derivation can point at is archived rather than deleted. Provenance outlives
+  usefulness.
+
 ## Meal-bank sheet consumption
 
 The module reads a meal-bank gitsheet owned by the instance's own repo:
@@ -579,7 +647,10 @@ The module reads a meal-bank gitsheet owned by the instance's own repo:
 ## API
 
 All endpoints under `/api/kitchen`. Error envelope and auth follow the server's
-existing conventions.
+existing conventions. Every path here is under the `/api` prefix; a request to
+the bare `/kitchen/…` path space belongs to the admin SPA's client-side routes
+and is **not** an API surface — see `specs/behaviors/http-not-found.md` for what
+such a request gets (never a false `200`).
 
 - `POST /entries` — multipart: entry JSON part (ULID, timestamp, note,
   optional recipe ref + component quantities, `reselect_of`, **or** a `macros`
@@ -608,7 +679,13 @@ existing conventions.
   source entry it summarizes — so a recent pill can re-log by cloning it (§
   Reselect cloning). See § Reselect cloning for the recent-summary shape and how
   `entry_ulid` is derived.
-- `POST /recipes` — agent-pushed one-off or reusable templates.
+- `POST /recipes` — agent-pushed one-off or reusable templates. **Upserts**:
+  `201` on create, `200` on replace, `409` on a name collision it must not
+  resolve by guessing — see § Recipe corrections for the key rules.
+- `DELETE /recipes/:ulid` — **archives** a recipe (soft, `archived_at`): gone
+  from the strip, still resolvable by ULID for historical entries and derived-item
+  provenance. Idempotent; `404` for an unknown or `sheet`-sourced ULID. See
+  § Recipe corrections.
 - `POST /entries/:ulid/promote` — creates a recipe from a logged entry.
 - Rollup queries (daily totals, weekly trend) are computed, never stored, over
   **effective** macros (`base × portion_multiplier` per entry); they feed the
@@ -1443,14 +1520,53 @@ inventory) is worse than one extra question. Two further guards:
 
 After a consumption entry reaches terminal `estimated`, a conservative,
 model-free pass matches its label against on-hand items (exact/alias/substring
-string match). A confident single match decrements the item's
-`on_hand_fraction` by a directional step and sets `entries.inventory_item_ulid`;
-an ambiguous or absent match is a no-op (unmatched entries are normal). Wired
-as an injected `onEntryEstimated` hook so the estimation pipeline stays
-inventory-agnostic. The match is label-only and the decrement is a fixed
-directional step — it consumes no macro quantities, so the portion multiplier
-does not enter here. (Were it ever to deplete by consumed amount, that amount is
-the **effective** macros, not the base.)
+string match). A confident single match decrements the item and sets
+`entries.inventory_item_ulid`; an ambiguous or absent match is a no-op
+(unmatched entries are normal). Wired as an injected `onEntryEstimated` hook so
+the estimation pipeline stays inventory-agnostic.
+
+**The decrement follows the matched item's OWN unit model**
+(§ count-vs-fraction). This is the load-bearing rule:
+
+- **Fraction-modelled item** — `on_hand_fraction` drops by a fixed directional
+  step.
+- **Counted item** (`units_total` set) — exactly **one whole sealed unit** comes
+  off `units_remaining`, with `finished-unit` semantics (§ Unit counts):
+  reaching zero goes terminal `finished`; otherwise the item reverts to
+  `stocked` with `opened_at` cleared and `eat_by` re-derived from the unopened
+  window. One matched entry is one serving is one unit — the same per-serving
+  convention § Consume from inventory settled on.
+
+Decrementing a counted item's *fraction* instead is not a small
+mis-attribution, it is a silent no-op: nothing reads `on_hand_fraction` on a
+counted item, so the count sits at its purchase value while the shelf empties,
+and every consumption is logged in the journal without moving the ledger.
+Counting exists precisely to be the EXACT alternative to an eyeballed fraction,
+so a count that never moves is worse than a fraction — unlike a fraction it
+doesn't look like a guess, and eat-first then nags about items that are gone
+while staying quiet about items that aren't.
+
+**One entry depletes at most once.** The matcher is skipped outright when the
+entry already carries an `inventory_item_ulid`. An entry can reach `estimated`
+more than once — a note/label `PATCH` re-queues estimation, and the hook itself
+is best-effort and retried — and without this guard each pass would take another
+unit off the shelf. The link column *is* the idempotency key.
+
+The match is label-only and the decrement is a fixed step (a directional
+fraction, or one unit) — it consumes no macro quantities, so the portion
+multiplier does not enter here. (Were it ever to deplete by consumed amount,
+that amount is the **effective** macros, not the base.)
+
+**Deliberately out of scope: recipe-component fan-out.** An entry logged against
+a recipe whose components map to several tracked products depletes at most the
+ONE item its own label matched — never one item per component. Fanning out needs
+a per-(entry, item) link carrying each decrement's quantity: the single
+`inventory_item_ulid` column cannot express it, and without a per-pair key the
+idempotency guard above has nothing to check. So it is separate work with its own
+schema, not an extension of the label matcher — and until it exists the matcher
+must not pretend to it. Component-level depletion does have an exact path today:
+`POST /inventory/convert` spends the named sources, and
+`POST /inventory/:ulid/consume` logs + depletes the derived item atomically.
 
 ### Non-inventory dismissal
 
@@ -1730,6 +1846,12 @@ and write the kitchen without hand-rolled `curl`.
     edit like the multiplier: never re-queues estimation, never changes
     source), `resolve`-style close-outs are NOT here (entries have no such
     state); `delete <ulid>`.
+    - **`log` and `patch` expose the SAME eight macro flags** — the full panel
+      (§ Nutrition panel), one flag per field, documented identically on both.
+      A field that can be logged but not corrected has no correction path at
+      all: `delete` + re-`log` mints a new ULID and destroys the entry's
+      identity for everything referencing it. The flag list and the two usage
+      strings derive from one source so the pair cannot drift apart again.
   - `inventory` — list (eat-first order; `--state`, `--closed`),
     `show <ulid>`, `add` (manual/seed create; `--units-total` makes it a
     counted item), `event <ulid> <opened|finished|finished-unit|tossed>
@@ -1742,8 +1864,10 @@ and write the kitchen without hand-rolled `curl`.
     ships).
   - `receipts` — list, `show <ulid>` (batch + line outcomes), `scan <photo…>`
     (multipart post; meta as a form field per the module's part-type rule).
-  - `recipes` — list (merged view), `push` (agent-authored recipe JSON),
-    `promote <entry-ulid> --name`.
+  - `recipes` — list (merged view), `push` (agent-authored recipe JSON;
+    **upserts**, optional `--ulid` to replace a specific record — § Recipe
+    corrections), `delete <ulid>` (archives — the retirement path, not a
+    destroy), `promote <entry-ulid> --name`.
   - `products` / `lexicon` — list/search + seed-grade create (the agentic
     seed path).
 - **`assist-kitchen` skill** (`skills/assist-kitchen/`): hand-authored
