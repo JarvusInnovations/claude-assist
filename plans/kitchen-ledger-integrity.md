@@ -1,5 +1,5 @@
 ---
-status: planned
+status: done
 depends: [kitchen-module]
 specs:
   - specs/modules/kitchen.md
@@ -81,7 +81,7 @@ it landed but didn't, or a correction with no path to make it.
 - **Panel parity**: move the eight `flag → field` pairs into `axi/reference.ts`
   as the single source, build both the `log` and `patch` usage strings from it,
   and import it in `commands/entries.ts` for the parse lists. Rebuild the bundle
-  - SKILL.md (`build:skills`).
+  and SKILL.md via `build:skills`.
 - **Recipe upsert/archive**: `archived_at TIMESTAMPTZ` migration; `RecipeStore`
   grows `findLiveByNormalizedName`, `replace`, `archive`; `list()` filters
   archived while `get()` does not (history must keep resolving).
@@ -102,35 +102,35 @@ it landed but didn't, or a correction with no path to make it.
 
 ## Validation
 
-- [ ] `entries patch --sugar N` / `--fiber N` set a terminal manual override on
+- [x] `entries patch --sugar N` / `--fiber N` set a terminal manual override on
       those fields, and the documented usage for both `log` and `patch`
       enumerates all eight panel flags (test asserts every flag appears in both,
       so the pair cannot drift).
-- [ ] `check:skills` green — the committed bundle and SKILL.md match the source.
-- [ ] `POST /recipes` with a new name creates (`201`); the same normalized name
+- [x] `check:skills` green — the committed bundle and SKILL.md match the source.
+- [x] `POST /recipes` with a new name creates (`201`); the same normalized name
       again replaces in place (`200`, same ULID, updated components) instead of
       forking; `GET /reselect` shows one pill.
-- [ ] A push whose name collides with a `promoted` or `sheet` recipe `409`s
+- [x] A push whose name collides with a `promoted` or `sheet` recipe `409`s
       naming the colliding ULID + source; nothing is written.
-- [ ] A push with an explicit `ulid` replaces that record (preserving its
+- [x] A push with an explicit `ulid` replaces that record (preserving its
       `source`) or creates it, idempotently.
-- [ ] `DELETE /recipes/:ulid` archives: the recipe leaves `GET /reselect` and the
+- [x] `DELETE /recipes/:ulid` archives: the recipe leaves `GET /reselect` and the
       merged listing, `GET` by ULID still resolves it, an entry that references it
       still resolves for promote/consume, a repeat DELETE is idempotent, and an
       unknown or sheet-sourced ULID `404`s.
-- [ ] Unmatched-route matrix: `GET /api/nope` → `404` JSON; `DELETE
+- [x] Unmatched-route matrix: `GET /api/nope` → `404` JSON; `DELETE
       /kitchen/recipes/x` → `404` JSON (no HTML, no `200`); `GET /kitchen/x` with
       `Accept: application/json` → `404` JSON; `GET /kitchen/x` with
       `Accept: text/html` → the SPA shell; `/apiary` is not treated as API space.
-- [ ] A logged entry matching a **counted** item decrements `units_remaining` by
+- [x] A logged entry matching a **counted** item decrements `units_remaining` by
       exactly one whole unit (not the fraction), reverting the item to `stocked`
       with an unopened-window `eat_by`; the last unit goes terminal `finished`.
-- [ ] A logged entry matching a **fraction** item still steps
+- [x] A logged entry matching a **fraction** item still steps
       `on_hand_fraction` (regression).
-- [ ] Idempotency: an entry that already carries `inventory_item_ulid` is not
+- [x] Idempotency: an entry that already carries `inventory_item_ulid` is not
       depleted again — a re-queue → re-estimate cycle takes no second unit.
-- [ ] A matched-item depletion failure leaves the entry intact (best-effort).
-- [ ] Full suite green: `bun test`, `bun run build`, `bun run type-check:axi`,
+- [x] A matched-item depletion failure leaves the entry intact (best-effort).
+- [x] Full suite green: `bun test`, `bun run build`, `bun run type-check:axi`,
       `bun run check:skills`.
 
 ## Risks / unknowns
@@ -152,4 +152,77 @@ it landed but didn't, or a correction with no path to make it.
 
 ## Notes
 
+- **Defect 1 was narrower than reported, and the fix is correspondingly narrow.**
+  `--sugar`/`--fiber` were already parsed by `entries patch` and already accepted
+  by the route schema and the pipeline — the gap was purely the *documented*
+  surface (`axi/reference.ts` → `--help` → the spliced SKILL.md), which named six
+  of eight. That is still the whole defect from a caller's point of view: an agent
+  reads the reference, concludes the flag doesn't exist, and reaches for
+  delete + re-log. The durable fix is that the flag list now lives once
+  (`MACRO_PANEL_FLAGS`) and generates both usage strings plus both parse lists, so
+  the pair can't drift again; a test asserts all eight appear in both usages.
+- **Recipe upsert semantics as built**: `ulid` supplied → create-or-replace that
+  record, preserving `ulid`/`created_at`/`source`; otherwise the normalized name
+  (case-folded, whitespace-collapsed) resolved against LIVE DB recipes only.
+  `201` create, `200` replace, `409` for a `promoted`/`sheet` collision or several
+  pushed forks — with every candidate ULID + source named in the message. A
+  sheet-name collision refuses too: the sheet can't be replaced from here, and
+  allowing a pushed twin under the same name recreates exactly the ambiguity the
+  upsert exists to remove. Archiving frees the name again (next push creates).
+- **Delete-vs-archive**: archive, uniformly, no hard delete. `list()` filters
+  `archived_at IS NOT NULL`; `get()` deliberately does not. That asymmetry is the
+  load-bearing part — the strip, the merged view, and the briefing's suggestions
+  all read `list()`, while an entry's `recipe_ulid`, promote's component
+  reconstruction, and a derived item's consume eligibility all read `get()`.
+- **Defect 4 landed fully for the label-matched path, NOT as the drift-detection
+  fallback.** The matcher's decrement is now unit-model-aware
+  (`finished-unit` semantics for a counted item, the directional fraction step
+  otherwise), so counted items move for the first time. The fallback wasn't
+  needed: the root cause was one branch, not an unbuilt resolver. Recipe-component
+  fan-out remains unbuilt and is now stated as out-of-scope *in the spec* rather
+  than left as an implied capability.
+- **Idempotency was missing for fractions too** and is fixed for both: the matcher
+  returns early when the entry already carries an `inventory_item_ulid`. A
+  note/label PATCH re-queues estimation, so the hook genuinely fires twice per
+  corrected entry (a new pipeline test asserts that it does) — every such
+  correction was previously taking another step off the shelf. The hook now hands
+  the matcher the whole `EntryRecord` rather than a field-picked subset, since a
+  hand-written pick is how that key would get dropped again.
+- **The false-200 fix is host-wide, not kitchen-scoped**, and is its own commit
+  against its own new behavior spec. Chose `404` over `405` for the wrong-verb
+  case deliberately: nothing exists at an unmatched path under any verb, and
+  `405` would assert that it does. The `Accept`-based rule is kept narrow (a named
+  JSON type and no HTML type), so browsers and `*/*` clients are untouched.
+- Verified independently before opening the PR: `bun run test` → every workspace
+  package `0 fail` (kitchen 395 pass, server 6 pass — a new package `test` script,
+  since `apps/server` had none); `bun run build` exit 0; `bun run type-check:axi`
+  clean; `bun run check:skills` reports all four bundles and SKILL.mds up to date;
+  full-diff and commit-message scrub scan clean.
+- **Migration `015-kitchen-recipe-archive.sql` has not been run against a live
+  database** — it is additive (`ADD COLUMN IF NOT EXISTS` + a partial index) and
+  applies on next boot.
+
 ## Follow-ups
+
+- **Deferred to its own plan — component-level depletion.** One entry depleting
+  one item per tracked recipe component needs a `(entry, item)` link table
+  carrying each decrement's quantity and kind; `entries.inventory_item_ulid`
+  cannot express it, and without a per-pair key the idempotency guard has nothing
+  to check. Wants its own migration, its own ambiguity policy (eat-first order
+  vs. honest refusal per component), and an honest partial-success wire shape.
+- **Deferred — `POST /entries/:ulid/promote` can still mint a same-named fork.**
+  The upsert covers `POST /recipes` only, which is what the spec now states.
+  Promote deliberately always inserts (it records a specific logged meal), but
+  promoting twice under one name reintroduces the indistinguishable-pill problem
+  the upsert just removed. Decide whether promote should upsert, suffix, or refuse.
+- **Tracked here, not fixed — test isolation via ambient `TZ`.** The weigh-ins
+  local-offset assertion only passed because a sibling test file sets
+  `process.env.TZ` at import time; it broke as soon as it ran without that file
+  loaded. Normalized the `-0` comparison so it passes either way, but the
+  cross-file TZ leak remains: any test in the package can be affected by that
+  import-time mutation, and it would be better as an explicit per-test fixture.
+- **None** for the recipe forks and drifted counts that already exist in a running
+  instance — the upsert refuses to guess which fork is canonical and the matcher
+  only decrements forward, so both are one-shot operational data corrections
+  (`recipes delete` for the stale fork, `inventory` recount for the count),
+  deliberately out of this plan's code scope.
