@@ -1104,3 +1104,72 @@ describe('directly-stated panel — born-manual, terminal, no estimation enqueue
     expect(after!.status).toBe('estimated');
   });
 });
+
+describe('depletion hook (§ Depletion matcher — the inventory seam)', () => {
+  it('hands the estimated entry over WHOLE, including the inventory_item_ulid idempotency key', async () => {
+    // The hook's contract is the record, not a field-picked subset: the matcher
+    // skips an entry that already depleted something, and it can only do that
+    // if `inventory_item_ulid` actually reaches it. An entry reaches `estimated`
+    // more than once (a note/label PATCH re-queues), so a dropped key means a
+    // second unit comes off the shelf for one meal.
+    const entries = new MemoryEntryStore();
+    const recipes = new MemoryRecipeStore();
+    const seen: Array<{ ulid: string; label: string | null; status: string; inventory_item_ulid: string | null }> = [];
+    const pipeline = new KitchenPipeline(entries, recipes, null, log, {
+      onEntryEstimated: async (entry) => {
+        seen.push({
+          ulid: entry.ulid,
+          label: entry.label,
+          status: entry.status,
+          inventory_item_ulid: entry.inventory_item_ulid,
+        });
+      },
+    });
+
+    const recipe = await recipes.insert({
+      ulid: generateUlid(),
+      name: 'Oat jar',
+      components: [{ label: 'oats', default_qty_g: 80, per_100g: { calories: 380, protein_g: 13, sat_fat_g: 1 } }],
+      source: 'pushed',
+    });
+
+    const ulid = generateUlid();
+    await pipeline.ingest({ ulid, recipe_ulid: recipe.ulid }, []);
+    await pipeline.settle();
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.ulid).toBe(ulid);
+    expect(seen[0]!.label).toBe('Oat jar');
+    expect(seen[0]!.status).toBe('estimated');
+    // Present on the shape (null until something is depleted) — not undefined,
+    // which is what a lossy hand-picked subset would produce.
+    expect(seen[0]!.inventory_item_ulid).toBeNull();
+
+    // A replay of the same ULID must not re-fire the hook (no second decrement).
+    await pipeline.ingest({ ulid, recipe_ulid: recipe.ulid }, []);
+    await pipeline.settle();
+    expect(seen).toHaveLength(1);
+  });
+
+  it('re-fires after a note/label re-queue — which is why the matcher needs its own guard', async () => {
+    const entries = new MemoryEntryStore();
+    const estimator: Estimator = { estimate: async () => mkModelEstimate({ label: 'oat jar' }) };
+    const fired: string[] = [];
+    const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), estimator, log, {
+      onEntryEstimated: async (entry) => {
+        fired.push(entry.ulid);
+      },
+    });
+
+    const ulid = generateUlid();
+    await pipeline.ingest({ ulid, note: 'oat jar' }, []);
+    await pipeline.settle();
+    expect(fired).toEqual([ulid]);
+
+    await pipeline.patch(ulid, { note: 'the big oat jar' });
+    await pipeline.settle();
+    // Twice for ONE meal: the pipeline is right to re-estimate, so preventing a
+    // double decrement is the matcher's job (it checks inventory_item_ulid).
+    expect(fired).toEqual([ulid, ulid]);
+  });
+});

@@ -156,6 +156,14 @@ export interface DepletableEntry {
   ulid: string;
   label: string | null;
   status: string;
+  /**
+   * The item this entry has ALREADY depleted, when it has. Non-null means the
+   * matcher must not run again (§ Depletion matcher — "one entry depletes at
+   * most once"): the link column is the idempotency key, and an entry can reach
+   * `estimated` more than once (a note/label PATCH re-queues estimation, and the
+   * hook itself is best-effort/retryable).
+   */
+  inventory_item_ulid?: string | null;
 }
 
 /** Digest/chat question text for a needs-info line; notes the count when > 1. */
@@ -1216,18 +1224,49 @@ export class InventoryPipeline {
 
   /**
    * After a consumption entry reaches terminal `estimated`, conservatively
-   * match its label against on-hand items and decrement the single best match's
-   * fraction, linking the entry. Ambiguous/absent match = no-op. No model call.
+   * match its label against on-hand items and decrement the single best match,
+   * linking the entry. Ambiguous/absent match = no-op. No model call.
+   *
+   * The decrement follows the matched item's OWN unit model
+   * (specs/modules/kitchen.md § Depletion matcher):
+   *
+   * - **counted item** — one whole sealed unit off `units_remaining`, with
+   *   `finished-unit` semantics (terminal `finished` at zero, otherwise back to
+   *   `stocked` on the unopened clock). One matched entry is one serving is one
+   *   unit, matching the per-serving convention § Consume from inventory uses.
+   * - **fraction item** — the fixed directional step off `on_hand_fraction`.
+   *
+   * Stepping a COUNTED item's fraction (what this did for every item) is a
+   * silent no-op: nothing reads that field on a counted item, so the count sat
+   * at its purchase value while the shelf emptied — every consumption logged in
+   * the journal, none of it in the ledger. Counting exists to be the exact
+   * alternative to an eyeballed fraction, so a count that never moves is worse
+   * than a fraction: unlike a fraction, it doesn't look like a guess.
    */
   async matchAndDeplete(entry: DepletableEntry): Promise<InventoryItemView | null> {
     if (entry.status !== 'estimated' || !entry.label) return null;
+    // Already depleted something — never take a second unit off the shelf for
+    // one meal (§ Depletion matcher, "one entry depletes at most once").
+    if (entry.inventory_item_ulid) return null;
     const onHand = await this.store.listItems({ states: ['stocked', 'open'], limit: 500 });
     const products = await this.productMap(onHand);
     const best = this.bestItemMatch(entry.label, onHand, products, 2 /* conservative */);
     if (!best) return null;
 
-    const next = clampFraction(best.on_hand_fraction - this.depletionStep);
-    const updated = await this.store.setItemFraction(best.ulid, next);
+    let updated: InventoryItemRecord | null;
+    if (best.units_total != null && best.units_remaining != null) {
+      try {
+        updated = await this.applyEventToRecord(best, 'finished-unit', {});
+      } catch (err) {
+        // Best-effort per the module's directional-inventory principle: a
+        // depletion that can't apply must never affect the entry.
+        this.log.warn({ err, entry: entry.ulid, item: best.ulid }, 'Counted depletion could not be applied');
+        return null;
+      }
+    } else {
+      const next = clampFraction(best.on_hand_fraction - this.depletionStep);
+      updated = await this.store.setItemFraction(best.ulid, next);
+    }
     if (this.linkEntry) {
       try {
         await this.linkEntry(entry.ulid, best.ulid);
