@@ -7,7 +7,8 @@
  * PATCH  /kitchen/entries/:ulid        - note/label re-queue, or a terminal macro override
  * DELETE /kitchen/entries/:ulid        - remove from all rollups
  * GET    /kitchen/reselect             - recipes (sheet+pushed+promoted) merged with recent items
- * POST   /kitchen/recipes              - agent-pushed template
+ * POST   /kitchen/recipes              - agent-pushed template; UPSERTS (201 create / 200 replace / 409 collision)
+ * DELETE /kitchen/recipes/:ulid        - archives a recipe (soft; still resolvable by ULID)
  * POST   /kitchen/entries/:ulid/promote - creates a recipe from a logged entry
  *
  * Photos never touch disk: @fastify/multipart's `toBuffer()` holds each
@@ -23,6 +24,7 @@ import {
   ManualOverrideConflictError,
   PatchValidationError,
   PromoteNotReadyError,
+  RecipeNameConflictError,
   RecipeNotFoundError,
   SourceEntryNotFoundError,
   type KitchenPipeline,
@@ -239,6 +241,10 @@ const RECIPES_BODY_SCHEMA = {
   required: ['name'],
   additionalProperties: false,
   properties: {
+    // Optional idempotency/replace key (specs/modules/kitchen.md § Recipe
+    // corrections): supplied, it create-or-replaces THAT record; omitted, the
+    // normalized name is the key.
+    ulid: { type: 'string', pattern: ULID_PATTERN.source },
     name: { type: 'string', minLength: 1, maxLength: 200 },
     components: { type: 'array', maxItems: 50, items: RECIPE_COMPONENT_SCHEMA },
   },
@@ -447,15 +453,41 @@ export const registerKitchenRoutes: FastifyPluginAsync<KitchenRoutesConfig> = as
   });
 
   // POST /kitchen/recipes - agent-pushed one-off or reusable template.
-  fastify.post<{ Body: { name: string; components?: RecipeComponent[] } }>(
+  // Upserts (specs/modules/kitchen.md § Recipe corrections): 201 on create, 200
+  // on replace, 409 on a name collision it must not resolve by guessing.
+  fastify.post<{ Body: { ulid?: string; name: string; components?: RecipeComponent[] } }>(
     '/kitchen/recipes',
     { schema: { body: RECIPES_BODY_SCHEMA } },
     async (request, reply) => {
-      const recipe = await pipeline.pushRecipe(request.body);
-      reply.status(201);
-      return recipe;
+      try {
+        const { recipe, created } = await pipeline.pushRecipe(request.body);
+        reply.status(created ? 201 : 200);
+        return recipe;
+      } catch (err) {
+        if (err instanceof RecipeNameConflictError) {
+          reply.status(409);
+          return { error: err.message };
+        }
+        throw err;
+      }
     }
   );
+
+  // DELETE /kitchen/recipes/:ulid - ARCHIVES the recipe (§ Recipe corrections).
+  // Never a row deletion: entries, promotions, and derived-item provenance all
+  // point at recipes and must keep resolving. Idempotent; 404 for an unknown
+  // ULID, including a sheet-sourced one (no row here to retire).
+  fastify.delete<{ Params: { ulid: string } }>('/kitchen/recipes/:ulid', async (request, reply) => {
+    const archived = await pipeline.archiveRecipe(request.params.ulid);
+    if (!archived) {
+      reply.status(404);
+      return {
+        error:
+          'Recipe not found. Sheet-sourced recipes are a read-through projection of the meal-bank sheet and cannot be archived here.',
+      };
+    }
+    return archived;
+  });
 
   // POST /kitchen/entries/:ulid/promote - creates a recipe from a logged entry.
   // No body schema: the body is entirely optional (a bare POST with no

@@ -64,6 +64,24 @@ export interface RecipeRecord {
   source: RecipeSource;
   created_at: Date;
   updated_at: Date;
+  /**
+   * Retirement stamp (§ Recipe corrections) — null while live. An archived
+   * recipe leaves the reselect strip and every merged listing but stays
+   * resolvable by ULID forever, so entries, promotions, and derived-item
+   * provenance never dangle. Always null on sheet-sourced projections (the
+   * module never writes the sheet, so there is nothing there to retire).
+   */
+  archived_at: Date | null;
+}
+
+/**
+ * Recipe identity for the upsert-on-name key (§ Recipe corrections):
+ * case-folded, whitespace-collapsed, trimmed. Two names differing only in case
+ * or spacing are the same recipe — nobody tapping a pill on the strip can tell
+ * them apart, so the system must not pretend they are distinct either.
+ */
+export function normalizeRecipeName(name: string): string {
+  return name.trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
 /**

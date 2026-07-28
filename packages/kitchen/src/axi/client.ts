@@ -38,7 +38,10 @@ function buildUrl(server: string, path: string, query?: Query): string {
 function suggestForStatus(status: number): string[] {
   if (status === 404) return ["Check the ulid — try a `list` command to look one up"];
   if (status === 400) return ["Check required params and value formats for this command"];
-  if (status === 409) return ["This resource is terminal (a manual override or a finished/tossed item) and can't be overwritten"];
+  if (status === 409)
+    return [
+      "Either the resource is terminal (a manual override, or a finished/tossed item) and can't be overwritten, or a recipe push collided with a name it may not replace — read the message: it names the colliding record(s)",
+    ];
   if (status === 503) return ["The server is up but this feature is disabled (e.g. no model API key configured)"];
   return [];
 }
@@ -139,6 +142,16 @@ export const api = {
     if (!res.ok) await parseError(res);
     return parseBody(res);
   },
+  /**
+   * POST that keeps the status alongside the body — for endpoints where the code
+   * carries meaning the body doesn't (an upsert's 201-created vs 200-replaced,
+   * so the caller can say which happened instead of guessing).
+   */
+  async postWithStatus(path: string, body?: unknown): Promise<{ status: number; body: any }> {
+    const res = await send("POST", path, { body });
+    if (!res.ok) await parseError(res);
+    return { status: res.status, body: await parseBody(res) };
+  },
   async postForm(path: string, form: FormData): Promise<any> {
     const res = await send("POST", path, { form });
     if (!res.ok) await parseError(res);
@@ -153,5 +166,11 @@ export const api = {
     const res = await send("DELETE", path);
     if (!res.ok) await parseError(res);
     return { ok: true, status: res.status };
+  },
+  /** DELETE whose response body matters (e.g. the archived row it returns). */
+  async delJson(path: string): Promise<any> {
+    const res = await send("DELETE", path);
+    if (!res.ok) await parseError(res);
+    return parseBody(res);
   },
 };

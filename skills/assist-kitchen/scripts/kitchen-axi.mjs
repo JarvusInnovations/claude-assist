@@ -671,7 +671,14 @@ var COMMAND_GROUPS = [
     group: "Recipes",
     commands: [
       { usage: "recipes list [--limit N]", summary: "the reselect strip \u2014 merged sheet + pushed + promoted recipes plus recent/frequent logged items" },
-      { usage: "recipes push '<recipe json>'", summary: 'agent-authored template: {"name": "...", "components": [{label, default_qty_g, per_100g:{calories, protein_g, sat_fat_g}}]}' },
+      {
+        usage: "recipes push '<recipe json>' [--ulid U]",
+        summary: 'agent-authored template: {"name": "...", "components": [{label, default_qty_g, per_100g:{calories, protein_g, sat_fat_g}}]}. UPSERTS \u2014 a correction REPLACES rather than forks: the key is the normalized name (case/spacing-insensitive), or --ulid for one specific record. Prints created vs replaced. A name already held by a promoted or sheet-sourced recipe is a 409 naming it (rename, or pass --ulid deliberately) \u2014 never a silent clobber and never a second same-named pill on the strip'
+      },
+      {
+        usage: "recipes delete <ulid>",
+        summary: "ARCHIVE a recipe \u2014 off the reselect strip permanently, but still resolvable by ulid, so entries logged from it and prepped items derived from it keep working. Idempotent; 404 for an unknown or sheet-sourced ulid (the meal-bank sheet is never written from here). There is no hard delete"
+      },
       { usage: "recipes promote <entry-ulid> --name NAME", summary: "create a reusable recipe from a logged entry" }
     ]
   },
@@ -784,7 +791,10 @@ function buildUrl(server, path, query) {
 function suggestForStatus(status) {
   if (status === 404) return ["Check the ulid \u2014 try a `list` command to look one up"];
   if (status === 400) return ["Check required params and value formats for this command"];
-  if (status === 409) return ["This resource is terminal (a manual override or a finished/tossed item) and can't be overwritten"];
+  if (status === 409)
+    return [
+      "Either the resource is terminal (a manual override, or a finished/tossed item) and can't be overwritten, or a recipe push collided with a name it may not replace \u2014 read the message: it names the colliding record(s)"
+    ];
   if (status === 503) return ["The server is up but this feature is disabled (e.g. no model API key configured)"];
   return [];
 }
@@ -862,6 +872,16 @@ var api = {
     if (!res.ok) await parseError(res);
     return parseBody(res);
   },
+  /**
+   * POST that keeps the status alongside the body — for endpoints where the code
+   * carries meaning the body doesn't (an upsert's 201-created vs 200-replaced,
+   * so the caller can say which happened instead of guessing).
+   */
+  async postWithStatus(path, body) {
+    const res = await send("POST", path, { body });
+    if (!res.ok) await parseError(res);
+    return { status: res.status, body: await parseBody(res) };
+  },
   async postForm(path, form) {
     const res = await send("POST", path, { form });
     if (!res.ok) await parseError(res);
@@ -876,6 +896,12 @@ var api = {
     const res = await send("DELETE", path);
     if (!res.ok) await parseError(res);
     return { ok: true, status: res.status };
+  },
+  /** DELETE whose response body matters (e.g. the archived row it returns). */
+  async delJson(path) {
+    const res = await send("DELETE", path);
+    if (!res.ok) await parseError(res);
+    return parseBody(res);
   }
 };
 
@@ -2155,12 +2181,24 @@ var RECIPES_HELP = `kitchen-axi recipes <subcommand> [args] [--json]
 
   list [--limit N]                  the reselect strip: merged sheet + pushed +
                                       promoted recipes, plus recent logged items
-  push '<recipe json>'              agent-authored template; body is
+  push '<recipe json>' [--ulid U]   agent-authored template; body is
                                       {"name": "...", "components": [
                                         {"label": "...", "default_qty_g": N,
                                          "per_100g": {"calories": N, "protein_g": N,
                                                       "sat_fat_g": N}} ]}
-  promote <entry-ulid> --name NAME  create a reusable recipe from a logged entry`;
+  delete <ulid>                     ARCHIVE a recipe: off the strip for good,
+                                      still resolvable for historical entries
+  promote <entry-ulid> --name NAME  create a reusable recipe from a logged entry
+
+  push UPSERTS \u2014 correcting a recipe replaces it instead of forking. The key is
+  the normalized name (case/spacing-insensitive), or --ulid to replace one
+  specific record. A name already held by a promoted or sheet-sourced recipe is
+  a 409, never a silent clobber: rename, or pass --ulid deliberately. Recipes
+  are tapped by NAME on the strip, so two same-named recipes are
+  indistinguishable and the stale one keeps logging wrong numbers.
+
+  delete never destroys \u2014 it archives. Entries, promotions, and prepped-item
+  provenance point at recipes and must keep resolving.`;
 var RECIPE_SCHEMA = [
   field("ulid"),
   field("name"),
@@ -2183,6 +2221,8 @@ async function recipesCommand(args) {
       return listRecipes(sub === void 0 ? args : rest);
     case "push":
       return pushRecipe(rest);
+    case "delete":
+      return deleteRecipe(rest);
     case "promote":
       return promote(rest);
     default:
@@ -2202,15 +2242,48 @@ async function listRecipes(args) {
   ]);
 }
 async function pushRecipe(args) {
-  const { positionals, flags } = parseArgs(args, ["json"], []);
+  const { positionals, flags } = parseArgs(args, ["json"], ["ulid"]);
   const jsonArg = positionals[0];
   if (!jsonArg) {
     throw new AxiError("recipes push needs a recipe JSON body", "VALIDATION_ERROR", [RECIPES_HELP]);
   }
   const body = parseJson(jsonArg, "recipe", RECIPES_HELP);
-  const recipe = await api.post("/api/kitchen/recipes", body);
+  if (typeof flags.ulid === "string") {
+    if (typeof body.ulid === "string" && body.ulid !== flags.ulid) {
+      throw new AxiError(
+        `recipes push: --ulid (${flags.ulid}) disagrees with the ulid in the JSON body (${body.ulid})`,
+        "VALIDATION_ERROR",
+        [RECIPES_HELP]
+      );
+    }
+    body.ulid = flags.ulid;
+  }
+  const { status, body: recipe } = await api.postWithStatus("/api/kitchen/recipes", body);
   if (flags.json) return rawJson(recipe);
-  return renderDetail("recipe", recipe, [...RECIPE_SCHEMA, custom("components", (r) => JSON.stringify(r.components ?? []))]);
+  const created = status === 201;
+  const cli = cliInvocation();
+  return renderOutput2([
+    renderDetail(created ? "created" : "replaced", recipe, [
+      ...RECIPE_SCHEMA,
+      custom("components", (r) => JSON.stringify(r.components ?? []))
+    ]),
+    renderHelp([
+      created ? `New recipe \u2014 pushing this same name again REPLACES this record rather than forking it` : `Upsert on name: recipe ${recipe?.ulid} was replaced in place, so the strip still shows one pill`,
+      `Run \`${cli} recipes delete ${recipe?.ulid}\` to retire it (archives; history keeps resolving)`
+    ])
+  ]);
+}
+async function deleteRecipe(args) {
+  const { positionals, flags } = parseArgs(args, ["json"], []);
+  const ulid = requirePositional(positionals, 0, "recipe ulid", RECIPES_HELP);
+  const archived = await api.delJson(`/api/kitchen/recipes/${encodeURIComponent(ulid)}`);
+  if (flags.json) return rawJson(archived);
+  return renderOutput2([
+    renderObject({ archived: archived?.ulid, name: archived?.name, archived_at: archived?.archived_at }),
+    renderHelp([
+      "Archived, not deleted \u2014 gone from the strip, still resolvable by ulid so entries logged from it (and prepped items derived from it) keep working"
+    ])
+  ]);
 }
 async function promote(args) {
   const { positionals, flags } = parseArgs(args, ["json"], ["name"]);
@@ -2360,7 +2433,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "eecaf40" : "dev";
+var VERSION = true ? "cbf55e9" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)

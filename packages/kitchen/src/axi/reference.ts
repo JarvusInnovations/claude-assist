@@ -144,7 +144,16 @@ export const COMMAND_GROUPS: CommandGroup[] = [
     group: "Recipes",
     commands: [
       { usage: "recipes list [--limit N]", summary: "the reselect strip — merged sheet + pushed + promoted recipes plus recent/frequent logged items" },
-      { usage: "recipes push '<recipe json>'", summary: 'agent-authored template: {"name": "...", "components": [{label, default_qty_g, per_100g:{calories, protein_g, sat_fat_g}}]}' },
+      {
+        usage: "recipes push '<recipe json>' [--ulid U]",
+        summary:
+          'agent-authored template: {"name": "...", "components": [{label, default_qty_g, per_100g:{calories, protein_g, sat_fat_g}}]}. UPSERTS — a correction REPLACES rather than forks: the key is the normalized name (case/spacing-insensitive), or --ulid for one specific record. Prints created vs replaced. A name already held by a promoted or sheet-sourced recipe is a 409 naming it (rename, or pass --ulid deliberately) — never a silent clobber and never a second same-named pill on the strip',
+      },
+      {
+        usage: "recipes delete <ulid>",
+        summary:
+          "ARCHIVE a recipe — off the reselect strip permanently, but still resolvable by ulid, so entries logged from it and prepped items derived from it keep working. Idempotent; 404 for an unknown or sheet-sourced ulid (the meal-bank sheet is never written from here). There is no hard delete",
+      },
       { usage: "recipes promote <entry-ulid> --name NAME", summary: "create a reusable recipe from a logged entry" },
     ],
   },

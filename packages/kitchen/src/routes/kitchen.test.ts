@@ -756,6 +756,210 @@ describe('kitchen routes', () => {
       const response = await fastify.inject({ method: 'POST', url: '/kitchen/recipes', payload: {} });
       expect(response.statusCode).toBe(400);
     });
+
+    it('UPSERTS on the normalized name — a correction replaces, it never forks', async () => {
+      const push = (payload: Record<string, unknown>) =>
+        fastify.inject({ method: 'POST', url: '/kitchen/recipes', payload });
+
+      const first = await push({
+        name: 'Oat jar',
+        components: [{ label: 'oats', default_qty_g: 40, per_100g: { calories: 380, protein_g: 13, sat_fat_g: 2 } }],
+      });
+      expect(first.statusCode).toBe(201);
+      const ulid = first.json().ulid;
+
+      // The correction: same name (differently cased/spaced — nobody tapping a
+      // pill could tell them apart), better numbers.
+      const corrected = await push({
+        name: '  oat   JAR ',
+        components: [{ label: 'oats', default_qty_g: 80, per_100g: { calories: 380, protein_g: 13, sat_fat_g: 2 } }],
+      });
+      expect(corrected.statusCode).toBe(200); // replaced, not created
+      expect(corrected.json().ulid).toBe(ulid); // same record — identity survives
+      expect(corrected.json().components[0].default_qty_g).toBe(80);
+
+      // One recipe, one pill: the whole point.
+      const strip = await fastify.inject({ method: 'GET', url: '/kitchen/reselect' });
+      expect(strip.json().recipes.filter((r: { ulid: string }) => r.ulid === ulid)).toHaveLength(1);
+      expect(strip.json().recipes).toHaveLength(1);
+    });
+
+    it('replaces a specific record by explicit ulid, preserving its source, and creates when absent', async () => {
+      const promoted = await recipes.insert({
+        ulid: generateUlid(),
+        name: 'Promoted bowl',
+        components: [],
+        source: 'promoted',
+      });
+
+      // An explicit ulid is explicit intent — it may replace a promoted record.
+      const replaced = await fastify.inject({
+        method: 'POST',
+        url: '/kitchen/recipes',
+        payload: { ulid: promoted.ulid, name: 'Promoted bowl v2', components: [] },
+      });
+      expect(replaced.statusCode).toBe(200);
+      expect(replaced.json().ulid).toBe(promoted.ulid);
+      expect(replaced.json().name).toBe('Promoted bowl v2');
+      expect(replaced.json().source).toBe('promoted'); // NOT re-founded as pushed
+
+      // A ulid that doesn't exist yet creates it (idempotent-on-ulid, like
+      // inventory add) — and a replay is a replace, never a duplicate.
+      const seeded = generateUlid();
+      const created = await fastify.inject({
+        method: 'POST',
+        url: '/kitchen/recipes',
+        payload: { ulid: seeded, name: 'Seeded jar', components: [] },
+      });
+      expect(created.statusCode).toBe(201);
+      expect(created.json().ulid).toBe(seeded);
+      const replay = await fastify.inject({
+        method: 'POST',
+        url: '/kitchen/recipes',
+        payload: { ulid: seeded, name: 'Seeded jar', components: [] },
+      });
+      expect(replay.statusCode).toBe(200);
+      expect((await recipes.list({})).filter((r) => r.name === 'Seeded jar')).toHaveLength(1);
+    });
+
+    it('409s rather than clobbering a promoted recipe via a name collision', async () => {
+      const promoted = await recipes.insert({
+        ulid: generateUlid(),
+        name: 'Promoted bowl',
+        components: [],
+        source: 'promoted',
+      });
+
+      const response = await fastify.inject({
+        method: 'POST',
+        url: '/kitchen/recipes',
+        payload: { name: 'promoted BOWL', components: [] },
+      });
+      expect(response.statusCode).toBe(409);
+      // The error has to be actionable: it names what it collided with, and both
+      // ways forward.
+      expect(response.json().error).toContain(promoted.ulid);
+      expect(response.json().error).toContain('promoted');
+      expect(response.json().error).toContain('ulid');
+      // Nothing was written.
+      expect(await recipes.list({})).toHaveLength(1);
+    });
+
+    it('409s on a collision with a sheet-sourced recipe (the sheet is never written from here)', async () => {
+      // A dedicated app so the pipeline reads a sheet projection.
+      const app = Fastify({ logger: false });
+      const sheetRecipe = {
+        ulid: generateUlid(),
+        name: 'Sheet bowl',
+        components: [],
+        source: 'sheet' as const,
+        created_at: new Date(),
+        updated_at: new Date(),
+        archived_at: null,
+      };
+      const sheetRecipes = new MemoryRecipeStore();
+      await app.register(registerKitchenRoutes, {
+        pipeline: new KitchenPipeline(new MemoryEntryStore(), sheetRecipes, null, app.log, {
+          readSheetRecipes: async () => [sheetRecipe],
+        }),
+      });
+      await app.ready();
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/kitchen/recipes',
+        payload: { name: 'sheet bowl', components: [] },
+      });
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error).toContain('sheet');
+      expect(await sheetRecipes.list({})).toHaveLength(0);
+      await app.close();
+    });
+
+    it('409s naming every candidate when duplicate pushed forks already share a name', async () => {
+      // The pre-upsert state of the world: two same-named forks. The upsert must
+      // not guess which one is canonical.
+      const a = await recipes.insert({ ulid: generateUlid(), name: 'Twin jar', components: [], source: 'pushed' });
+      const b = await recipes.insert({ ulid: generateUlid(), name: 'twin jar', components: [], source: 'pushed' });
+
+      const response = await fastify.inject({
+        method: 'POST',
+        url: '/kitchen/recipes',
+        payload: { name: 'Twin jar', components: [] },
+      });
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error).toContain(a.ulid);
+      expect(response.json().error).toContain(b.ulid);
+    });
+  });
+
+  describe('DELETE /kitchen/recipes/:ulid', () => {
+    it('archives: off the strip for good, still resolvable so history never dangles', async () => {
+      const recipe = await recipes.insert({
+        ulid: generateUlid(),
+        name: 'Retired jar',
+        components: [{ label: 'oats', default_qty_g: 40, per_100g: { calories: 380, protein_g: 13, sat_fat_g: 2 } }],
+        source: 'pushed',
+      });
+      // An entry logged from it — the thing that must not break.
+      const entryUlid = generateUlid();
+      await new KitchenPipeline(entries, recipes, estimator, fastify.log).ingest(
+        { ulid: entryUlid, recipe_ulid: recipe.ulid },
+        []
+      );
+
+      const response = await fastify.inject({ method: 'DELETE', url: `/kitchen/recipes/${recipe.ulid}` });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().archived_at).toBeTruthy();
+
+      // Gone from the strip and every merged listing — cannot be tapped again.
+      const strip = await fastify.inject({ method: 'GET', url: '/kitchen/reselect' });
+      expect(strip.json().recipes.map((r: { ulid: string }) => r.ulid)).not.toContain(recipe.ulid);
+
+      // Still resolvable by ULID, so a re-log of the historical entry and a
+      // promote's component reconstruction both still work.
+      expect(await recipes.get(recipe.ulid)).not.toBeNull();
+      const { body, contentType } = buildMultipart({
+        entry: JSON.stringify({ ulid: generateUlid(), recipe_ulid: recipe.ulid }),
+      });
+      const relog = await fastify.inject({
+        method: 'POST',
+        url: '/kitchen/entries',
+        headers: { 'content-type': contentType },
+        payload: body,
+      });
+      expect(relog.statusCode).toBe(201);
+      const promote = await fastify.inject({ method: 'POST', url: `/kitchen/entries/${entryUlid}/promote` });
+      expect(promote.statusCode).toBe(201);
+    });
+
+    it('is idempotent, and 404s an unknown ulid (a sheet recipe has no row to archive)', async () => {
+      const recipe = await recipes.insert({ ulid: generateUlid(), name: 'Twice', components: [], source: 'pushed' });
+
+      const first = await fastify.inject({ method: 'DELETE', url: `/kitchen/recipes/${recipe.ulid}` });
+      expect(first.statusCode).toBe(200);
+      const again = await fastify.inject({ method: 'DELETE', url: `/kitchen/recipes/${recipe.ulid}` });
+      expect(again.statusCode).toBe(200);
+      // The original stamp survives — a repeat archive is not a re-archive.
+      expect(again.json().archived_at).toBe(first.json().archived_at);
+
+      const missing = await fastify.inject({ method: 'DELETE', url: `/kitchen/recipes/${generateUlid()}` });
+      expect(missing.statusCode).toBe(404);
+      expect(missing.json().error).toContain('Sheet-sourced');
+    });
+
+    it('an archived name is free again — the next push creates rather than 409ing', async () => {
+      const recipe = await recipes.insert({ ulid: generateUlid(), name: 'Reused name', components: [], source: 'promoted' });
+      await fastify.inject({ method: 'DELETE', url: `/kitchen/recipes/${recipe.ulid}` });
+
+      const response = await fastify.inject({
+        method: 'POST',
+        url: '/kitchen/recipes',
+        payload: { name: 'Reused name', components: [] },
+      });
+      expect(response.statusCode).toBe(201);
+      expect(response.json().ulid).not.toBe(recipe.ulid);
+    });
   });
 
   describe('POST /kitchen/entries/:ulid/promote', () => {

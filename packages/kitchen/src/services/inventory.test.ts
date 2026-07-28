@@ -1204,6 +1204,7 @@ describe('consume from inventory (claude-assist#110 — one-tap known-macro log 
     source: 'pushed',
     created_at: new Date(),
     updated_at: new Date(),
+    archived_at: null,
   };
   // computeRecipeMacros(RECIPE): calories 240*3.8+300*0.6=912+180=1092, protein
   // 240*0.13+300*0.1=31.2+30=61.2, sat_fat 240*0.012+300*0.002=2.88+0.6=3.48.
