@@ -11,6 +11,7 @@ import {
   ManualOverrideConflictError,
   PatchValidationError,
   PromoteNotReadyError,
+  RecipeNameConflictError,
   RecipeNotFoundError,
   SourceEntryNotFoundError,
 } from './pipeline.js';
@@ -536,6 +537,68 @@ describe('promote', () => {
     const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), null, log);
     const { record } = await pipeline.ingest({ ulid: generateUlid(), note: 'still estimating' }, []);
     await expect(pipeline.promote(record.ulid)).rejects.toThrow(PromoteNotReadyError);
+  });
+
+  // The upsert on POST /recipes closed the same-named-fork hole for pushes;
+  // promote is the other door into the recipe table and was still a blind
+  // insert, so a repeat promote minted an indistinguishable twin.
+  it('refuses a second promote under a name a live recipe already holds', async () => {
+    const entries = new MemoryEntryStore();
+    const estimator = new ScriptedEstimator([
+      mkModelEstimate({ label: 'Turkey sandwich', calories: 380 }),
+      mkModelEstimate({ label: 'Turkey sandwich', calories: 420 }),
+    ]);
+    const recipes = new MemoryRecipeStore();
+    const pipeline = new KitchenPipeline(entries, recipes, estimator, log);
+
+    const first = await pipeline.ingest({ ulid: generateUlid(), note: 'turkey sandwich' }, []);
+    await pipeline.promote(first.record.ulid);
+
+    const second = await pipeline.ingest({ ulid: generateUlid(), note: 'turkey sandwich' }, []);
+    await expect(pipeline.promote(second.record.ulid)).rejects.toThrow(RecipeNameConflictError);
+
+    // Refusing, not replacing: the first recipe's macros survive intact rather
+    // than being silently rewritten from a different entry's numbers.
+    const live = await recipes.list({ limit: 50 });
+    expect(live).toHaveLength(1);
+    expect(live[0]!.components[0]!.per_100g.calories).toBe(380);
+  });
+
+  it('promotes under an explicit name when the entry label collides', async () => {
+    const entries = new MemoryEntryStore();
+    const estimator = new ScriptedEstimator([
+      mkModelEstimate({ label: 'Turkey sandwich', calories: 380 }),
+      mkModelEstimate({ label: 'Turkey sandwich', calories: 420 }),
+    ]);
+    const recipes = new MemoryRecipeStore();
+    const pipeline = new KitchenPipeline(entries, recipes, estimator, log);
+
+    const first = await pipeline.ingest({ ulid: generateUlid(), note: 'turkey sandwich' }, []);
+    await pipeline.promote(first.record.ulid);
+
+    const second = await pipeline.ingest({ ulid: generateUlid(), note: 'turkey sandwich' }, []);
+    const renamed = await pipeline.promote(second.record.ulid, 'Turkey sandwich (bigger)');
+
+    expect(renamed!.name).toBe('Turkey sandwich (bigger)');
+    expect(await recipes.list({ limit: 50 })).toHaveLength(2);
+  });
+
+  it('frees the name once the colliding recipe is archived', async () => {
+    const entries = new MemoryEntryStore();
+    const estimator = new ScriptedEstimator([
+      mkModelEstimate({ label: 'Turkey sandwich', calories: 380 }),
+      mkModelEstimate({ label: 'Turkey sandwich', calories: 420 }),
+    ]);
+    const recipes = new MemoryRecipeStore();
+    const pipeline = new KitchenPipeline(entries, recipes, estimator, log);
+
+    const first = await pipeline.ingest({ ulid: generateUlid(), note: 'turkey sandwich' }, []);
+    const original = await pipeline.promote(first.record.ulid);
+    await pipeline.archiveRecipe(original!.ulid);
+
+    const second = await pipeline.ingest({ ulid: generateUlid(), note: 'turkey sandwich' }, []);
+    const reused = await pipeline.promote(second.record.ulid);
+    expect(reused!.name).toBe('Turkey sandwich');
   });
 });
 

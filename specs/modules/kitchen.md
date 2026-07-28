@@ -590,6 +590,27 @@ available failure mode, because every tap looks like success.
 - The response is the bare recipe row either way; the status distinguishes
   create (`201`) from replace (`200`).
 
+**`POST /entries/:ulid/promote` refuses a `promoted` name twin.** Promote is the
+other door into the recipe table, and it inserts. Promoting twice under one label
+therefore used to mint a second `promoted` recipe with the same name — the exact
+indistinguishable-pill failure the upsert above exists to prevent, reached by a
+different route. Promote now **refuses with `409`** when a live `promoted` recipe
+already holds the normalized name.
+
+It refuses rather than replacing, unlike a push: a promoted recipe is the record
+of *one* entry's resolved macros, so replacing one derived from a **different**
+entry would silently rewrite it with unrelated numbers. The remedy is a distinct
+name (`{"name": "..."}` in the body) or archiving the existing recipe — which
+frees the name, since the check only sees live rows.
+
+**Scoped to `promoted` collisions only, deliberately.** An entry logged *from* a
+recipe carries that recipe's name by construction, and promoting it is an
+intended flow — component reconstruction exists to serve it — so a `pushed` or
+`sheet` twin is permitted here. That leaves a narrower ambiguity alive: one
+`pushed` and one `promoted` recipe can share a name, and the strip will show two
+pills. Collapsing names across sources is a broader design question than closing
+the fork hole, and is **not** decided here.
+
 **`DELETE /recipes/:ulid` archives — it never destroys.** An `archived_at`
 stamp, not a row deletion:
 

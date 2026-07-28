@@ -513,7 +513,7 @@ export const registerKitchenRoutes: FastifyPluginAsync<KitchenRoutesConfig> = as
         reply.status(201);
         return recipe;
       } catch (err) {
-        if (err instanceof PromoteNotReadyError) {
+        if (err instanceof PromoteNotReadyError || err instanceof RecipeNameConflictError) {
           reply.status(409);
           return { error: err.message };
         }

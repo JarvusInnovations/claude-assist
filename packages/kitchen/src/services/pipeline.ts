@@ -66,13 +66,18 @@ export class RecipeNotFoundError extends Error {
 export class RecipeNameConflictError extends Error {
   constructor(
     readonly name_: string,
-    readonly candidates: Array<{ ulid: string; source: string }>
+    readonly candidates: Array<{ ulid: string; source: string }>,
+    /**
+     * How the caller gets unstuck. Differs by entry point: a push can name an
+     * explicit `ulid` to replace a specific record, but promote derives its
+     * macros from one particular entry — replacing a recipe built from a
+     * DIFFERENT entry would silently rewrite it, so promote's only remedy is a
+     * distinct name.
+     */
+    remedy = 'Rename this recipe, or pass an explicit ulid to replace a specific record.'
   ) {
     const listed = candidates.map((c) => `${c.ulid} (${c.source})`).join(', ');
-    super(
-      `Recipe name "${name_}" already belongs to ${listed}, which a push may not replace by name. ` +
-        `Rename this recipe, or pass an explicit ulid to replace a specific record.`
-    );
+    super(`Recipe name "${name_}" already belongs to ${listed}. ${remedy}`);
     this.name = 'RecipeNameConflictError';
   }
 }
@@ -513,9 +518,7 @@ export class KitchenPipeline {
     // A sheet recipe can't be replaced (the module never writes the sheet), but
     // letting a pushed twin exist under the same name recreates the exact
     // ambiguity this upsert removes — so a collision there refuses too.
-    const sheetTwins = (await this.readSheetRecipes()).filter(
-      (r) => normalizeRecipeName(r.name) === normalized
-    );
+    const sheetTwins = await this.findSheetTwins(normalized);
 
     const blocking = [
       ...matches.filter((r) => r.source !== 'pushed'),
@@ -558,6 +561,31 @@ export class KitchenPipeline {
     return this.recipes.archive(ulid);
   }
 
+  /** Sheet-sourced recipes whose name normalizes to `normalized`. */
+  private async findSheetTwins(normalized: string): Promise<RecipeRecord[]> {
+    return (await this.readSheetRecipes()).filter(
+      (r) => normalizeRecipeName(r.name) === normalized
+    );
+  }
+
+  /**
+   * Every LIVE recipe already holding this name, across all sources (archived
+   * rows are excluded — archiving frees the name). Used by `promote`, which
+   * refuses on ANY collision rather than replacing; `pushRecipe` needs a
+   * narrower rule (a single `pushed` match is replaceable) so it does its own
+   * partitioning rather than calling this.
+   */
+  private async findLiveNameCollisions(
+    name: string
+  ): Promise<Array<{ ulid: string; source: string }>> {
+    const normalized = normalizeRecipeName(name);
+    const [matches, sheetTwins] = await Promise.all([
+      this.recipes.findLiveByNormalizedName(normalized),
+      this.findSheetTwins(normalized),
+    ]);
+    return [...matches, ...sheetTwins].map((r) => ({ ulid: r.ulid, source: r.source as string }));
+  }
+
   /** Creates a recipe from a logged entry's resolved macros (POST /entries/:ulid/promote). */
   async promote(ulid: string, nameOverride?: string): Promise<RecipeRecord | null> {
     const entry = await this.entries.get(ulid);
@@ -576,6 +604,31 @@ export class KitchenPipeline {
     // entry's own resolved macros (the entry's portion is treated as the
     // 100g reference — a ballpark, per the module's "ballpark now beats
     // precision later" principle).
+    // Promote is an INSERT, so promoting twice under one label used to mint a
+    // same-named `promoted` twin — the indistinguishable-pill problem
+    // `pushRecipe`'s upsert removed, arriving through the other door. Refuse
+    // rather than replace: a promoted recipe is the record of ONE entry's
+    // macros, so replacing one derived from a different entry would silently
+    // rewrite it (see RecipeNameConflictError's remedy note).
+    //
+    // Scoped to `promoted` collisions ONLY, deliberately. Promoting an entry
+    // that was itself logged FROM a recipe shares that recipe's name by
+    // construction, and it's an intended flow — reconstructComponents exists to
+    // serve it. So a pushed/sheet twin is allowed here. That leaves a narrower
+    // version of the ambiguity alive (one pushed + one promoted under one name);
+    // collapsing sources under a single name is a bigger design call than this
+    // fix, and it's recorded as such in the spec rather than decided here.
+    const collisions = (await this.findLiveNameCollisions(name)).filter(
+      (c) => c.source === 'promoted'
+    );
+    if (collisions.length > 0) {
+      throw new RecipeNameConflictError(
+        name,
+        collisions,
+        'Pass an explicit name to promote under, or archive the existing recipe first.'
+      );
+    }
+
     const components = (await this.reconstructComponents(entry)) ?? [
       {
         label: name,
