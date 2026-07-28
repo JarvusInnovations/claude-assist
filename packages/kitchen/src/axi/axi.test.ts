@@ -306,7 +306,11 @@ describe("weigh-ins --at offset handling", () => {
     const match = /([+-])(\d{2}):(\d{2})$/.exec(out);
     expect(match).not.toBeNull();
     const attached = (match![1] === "-" ? -1 : 1) * (Number(match![2]) * 60 + Number(match![3]));
-    const expected = -new Date(2026, 0, 15, 8, 30, 0).getTimezoneOffset();
+    // `+ 0` normalizes -0: on a UTC-offset-0 machine the negated
+    // getTimezoneOffset() is -0, and Object.is(-0, 0) is false, so a bare toBe
+    // failed there. (It only ever passed because a sibling test file sets
+    // process.env.TZ at import time — true isolation exposed it.)
+    const expected = -new Date(2026, 0, 15, 8, 30, 0).getTimezoneOffset() + 0;
     expect(attached).toBe(expected);
     // Round-trip: the string parses to the same instant the naive local time meant.
     expect(new Date(out).getTime()).toBe(new Date(2026, 0, 15, 8, 30, 0).getTime());
