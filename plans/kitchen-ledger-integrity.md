@@ -5,7 +5,7 @@ specs:
   - specs/modules/kitchen.md
   - specs/behaviors/http-not-found.md
 issues: []
-pr:
+pr: 155
 ---
 
 # Plan: Ledger integrity + CLI parity (counted depletion, recipe upsert/archive, no false 200s)
