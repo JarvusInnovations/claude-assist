@@ -3,8 +3,8 @@ status: done
 depends: [kitchen-ledger-integrity]
 specs:
   - specs/modules/kitchen.md
-issues: []
-pr: null
+issues: [156]
+pr: 155
 ---
 
 # Plan: Close the promote fork hole + make the test zone an explicit invariant
@@ -86,7 +86,11 @@ something else is setting the zone."
   disappears from the ledger. `services/consume-store.ts` already establishes the
   pattern (one `sql.begin` spanning both writes, with an in-memory analogue in
   `consume-memory-store.ts`), so this is a known shape rather than a design
-  question: a `convert-store.ts` plus its memory twin and the wiring. Tracked
-  upstream as claude-assist#116 and **deliberately left for its own plan** — it
-  is a new store layer, not a patch.
+  question: a `convert-store.ts` plus its memory twin and the wiring. Filed as
+  **#156** and **deliberately left for its own plan** — it is a new store layer,
+  not a patch.
+  (`consume-store.ts`'s comment cites "claude-assist#116" for this, which reads
+  like a tracking reference but is the *merged PR* that introduced `convert` —
+  the concern was raised in that PR's review and never filed. Nothing tracked it
+  until #156.)
 - Collapsing recipe names across sources (see Decisions) remains undecided.
