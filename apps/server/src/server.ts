@@ -19,6 +19,7 @@ import ledgerPlugin from '@jarvus/claude-assist-ledger';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import envPlugin from './plugins/env.js';
+import { resolveUnmatched } from './not-found.js';
 import type { CoverageLedgerConfig } from '@jarvus/claude-assist-core';
 import type { FastifyBaseLogger, FastifyInstance } from 'fastify';
 
@@ -528,9 +529,13 @@ await fastify.register(fastifyStatic, {
   prefix: '/',
 });
 
-// SPA fallback - serve index.html for non-API routes
+// Unmatched routes (specs/behaviors/http-not-found.md). The SPA shell answers
+// browser NAVIGATIONS to client-side routes and nothing else: an unmatched API
+// path, any non-GET/HEAD verb, and any JSON-preferring client each get a real
+// 404. Serving the HTML shell with a 200 to, say, `DELETE /kitchen/recipes/<id>`
+// tells an API client a write succeeded that never happened.
 fastify.setNotFoundHandler((request, reply) => {
-  if (request.url.startsWith('/api')) {
+  if (resolveUnmatched({ method: request.method, url: request.url, accept: request.headers.accept }) === 'json-404') {
     return reply.status(404).send({ error: 'Not found' });
   }
   return reply.sendFile('index.html');

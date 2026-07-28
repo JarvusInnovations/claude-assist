@@ -155,8 +155,11 @@ export default createPlugin('kitchen', async (fastify: FastifyInstance, options:
     concurrency: config.concurrency,
     readSheetRecipes,
     // Depletion matcher: an estimated entry plausibly depletes an on-hand item.
-    onEntryEstimated: (entry) =>
-      inventory.matchAndDeplete({ ulid: entry.ulid, label: entry.label, status: entry.status }).then(() => undefined),
+    // The whole record is handed over (EntryRecord structurally satisfies
+    // DepletableEntry) rather than a field-picked subset — the matcher needs
+    // `inventory_item_ulid` as its idempotency key, and a hand-written pick is
+    // exactly how that would get silently dropped again.
+    onEntryEstimated: (entry) => inventory.matchAndDeplete(entry).then(() => undefined),
   });
 
   await fastify.register(registerKitchenRoutes, {

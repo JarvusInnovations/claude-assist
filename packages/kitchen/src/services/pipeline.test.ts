@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import type { FastifyBaseLogger } from 'fastify';
 import { MemoryEntryStore, MemoryRecipeStore } from '../memory-store.js';
 import { generateUlid } from '../ulid.js';
+import { normalizeRecipeName } from '../types.js';
 import type { ModelEstimate } from '../types.js';
 import type { Estimator } from './estimator.js';
 import {
@@ -10,6 +11,7 @@ import {
   ManualOverrideConflictError,
   PatchValidationError,
   PromoteNotReadyError,
+  RecipeNameConflictError,
   RecipeNotFoundError,
   SourceEntryNotFoundError,
 } from './pipeline.js';
@@ -204,6 +206,7 @@ describe('sheet-sourced recipes', () => {
       source: 'sheet' as const,
       created_at: new Date(),
       updated_at: new Date(),
+      archived_at: null,
     };
     const pipeline = new KitchenPipeline(entries, recipes, null, log, {
       readSheetRecipes: async () => [sheetRecipe],
@@ -535,6 +538,68 @@ describe('promote', () => {
     const { record } = await pipeline.ingest({ ulid: generateUlid(), note: 'still estimating' }, []);
     await expect(pipeline.promote(record.ulid)).rejects.toThrow(PromoteNotReadyError);
   });
+
+  // The upsert on POST /recipes closed the same-named-fork hole for pushes;
+  // promote is the other door into the recipe table and was still a blind
+  // insert, so a repeat promote minted an indistinguishable twin.
+  it('refuses a second promote under a name a live recipe already holds', async () => {
+    const entries = new MemoryEntryStore();
+    const estimator = new ScriptedEstimator([
+      mkModelEstimate({ label: 'Turkey sandwich', calories: 380 }),
+      mkModelEstimate({ label: 'Turkey sandwich', calories: 420 }),
+    ]);
+    const recipes = new MemoryRecipeStore();
+    const pipeline = new KitchenPipeline(entries, recipes, estimator, log);
+
+    const first = await pipeline.ingest({ ulid: generateUlid(), note: 'turkey sandwich' }, []);
+    await pipeline.promote(first.record.ulid);
+
+    const second = await pipeline.ingest({ ulid: generateUlid(), note: 'turkey sandwich' }, []);
+    await expect(pipeline.promote(second.record.ulid)).rejects.toThrow(RecipeNameConflictError);
+
+    // Refusing, not replacing: the first recipe's macros survive intact rather
+    // than being silently rewritten from a different entry's numbers.
+    const live = await recipes.list({ limit: 50 });
+    expect(live).toHaveLength(1);
+    expect(live[0]!.components[0]!.per_100g.calories).toBe(380);
+  });
+
+  it('promotes under an explicit name when the entry label collides', async () => {
+    const entries = new MemoryEntryStore();
+    const estimator = new ScriptedEstimator([
+      mkModelEstimate({ label: 'Turkey sandwich', calories: 380 }),
+      mkModelEstimate({ label: 'Turkey sandwich', calories: 420 }),
+    ]);
+    const recipes = new MemoryRecipeStore();
+    const pipeline = new KitchenPipeline(entries, recipes, estimator, log);
+
+    const first = await pipeline.ingest({ ulid: generateUlid(), note: 'turkey sandwich' }, []);
+    await pipeline.promote(first.record.ulid);
+
+    const second = await pipeline.ingest({ ulid: generateUlid(), note: 'turkey sandwich' }, []);
+    const renamed = await pipeline.promote(second.record.ulid, 'Turkey sandwich (bigger)');
+
+    expect(renamed!.name).toBe('Turkey sandwich (bigger)');
+    expect(await recipes.list({ limit: 50 })).toHaveLength(2);
+  });
+
+  it('frees the name once the colliding recipe is archived', async () => {
+    const entries = new MemoryEntryStore();
+    const estimator = new ScriptedEstimator([
+      mkModelEstimate({ label: 'Turkey sandwich', calories: 380 }),
+      mkModelEstimate({ label: 'Turkey sandwich', calories: 420 }),
+    ]);
+    const recipes = new MemoryRecipeStore();
+    const pipeline = new KitchenPipeline(entries, recipes, estimator, log);
+
+    const first = await pipeline.ingest({ ulid: generateUlid(), note: 'turkey sandwich' }, []);
+    const original = await pipeline.promote(first.record.ulid);
+    await pipeline.archiveRecipe(original!.ulid);
+
+    const second = await pipeline.ingest({ ulid: generateUlid(), note: 'turkey sandwich' }, []);
+    const reused = await pipeline.promote(second.record.ulid);
+    expect(reused!.name).toBe('Turkey sandwich');
+  });
 });
 
 describe('promote — real component reconstruction', () => {
@@ -605,6 +670,7 @@ describe('promote — real component reconstruction', () => {
       source: 'sheet' as const,
       created_at: new Date(),
       updated_at: new Date(),
+      archived_at: null,
     };
     const pipeline = new KitchenPipeline(entries, recipes, null, log, {
       readSheetRecipes: async () => [sheetRecipe],
@@ -713,6 +779,7 @@ describe('reselect merge logic', () => {
       source: 'sheet' as const,
       created_at: new Date(),
       updated_at: new Date(),
+      archived_at: null,
     };
     const pipeline = new KitchenPipeline(entries, recipes, estimator, log, {
       readSheetRecipes: async () => [sheetRecipe],
@@ -744,6 +811,7 @@ describe('reselect merge logic', () => {
       source: 'sheet' as const,
       created_at: new Date(),
       updated_at: new Date(),
+      archived_at: null,
     };
     const pipeline = new KitchenPipeline(new MemoryEntryStore(), recipes, null, log, {
       readSheetRecipes: async () => [sheetRecipe],
@@ -1102,5 +1170,129 @@ describe('directly-stated panel — born-manual, terminal, no estimation enqueue
     expect(after!.calories).toBe(620);
     expect(after!.source).toBe('manual');
     expect(after!.status).toBe('estimated');
+  });
+});
+
+describe('depletion hook (§ Depletion matcher — the inventory seam)', () => {
+  it('hands the estimated entry over WHOLE, including the inventory_item_ulid idempotency key', async () => {
+    // The hook's contract is the record, not a field-picked subset: the matcher
+    // skips an entry that already depleted something, and it can only do that
+    // if `inventory_item_ulid` actually reaches it. An entry reaches `estimated`
+    // more than once (a note/label PATCH re-queues), so a dropped key means a
+    // second unit comes off the shelf for one meal.
+    const entries = new MemoryEntryStore();
+    const recipes = new MemoryRecipeStore();
+    const seen: Array<{ ulid: string; label: string | null; status: string; inventory_item_ulid: string | null }> = [];
+    const pipeline = new KitchenPipeline(entries, recipes, null, log, {
+      onEntryEstimated: async (entry) => {
+        seen.push({
+          ulid: entry.ulid,
+          label: entry.label,
+          status: entry.status,
+          inventory_item_ulid: entry.inventory_item_ulid,
+        });
+      },
+    });
+
+    const recipe = await recipes.insert({
+      ulid: generateUlid(),
+      name: 'Oat jar',
+      components: [{ label: 'oats', default_qty_g: 80, per_100g: { calories: 380, protein_g: 13, sat_fat_g: 1 } }],
+      source: 'pushed',
+    });
+
+    const ulid = generateUlid();
+    await pipeline.ingest({ ulid, recipe_ulid: recipe.ulid }, []);
+    await pipeline.settle();
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.ulid).toBe(ulid);
+    expect(seen[0]!.label).toBe('Oat jar');
+    expect(seen[0]!.status).toBe('estimated');
+    // Present on the shape (null until something is depleted) — not undefined,
+    // which is what a lossy hand-picked subset would produce.
+    expect(seen[0]!.inventory_item_ulid).toBeNull();
+
+    // A replay of the same ULID must not re-fire the hook (no second decrement).
+    await pipeline.ingest({ ulid, recipe_ulid: recipe.ulid }, []);
+    await pipeline.settle();
+    expect(seen).toHaveLength(1);
+  });
+
+  it('re-fires after a note/label re-queue — which is why the matcher needs its own guard', async () => {
+    const entries = new MemoryEntryStore();
+    const estimator: Estimator = { estimate: async () => mkModelEstimate({ label: 'oat jar' }) };
+    const fired: string[] = [];
+    const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), estimator, log, {
+      onEntryEstimated: async (entry) => {
+        fired.push(entry.ulid);
+      },
+    });
+
+    const ulid = generateUlid();
+    await pipeline.ingest({ ulid, note: 'oat jar' }, []);
+    await pipeline.settle();
+    expect(fired).toEqual([ulid]);
+
+    await pipeline.patch(ulid, { note: 'the big oat jar' });
+    await pipeline.settle();
+    // Twice for ONE meal: the pipeline is right to re-estimate, so preventing a
+    // double decrement is the matcher's job (it checks inventory_item_ulid).
+    expect(fired).toEqual([ulid, ulid]);
+  });
+});
+
+describe('recipe corrections (§ Recipe corrections — upsert + archive)', () => {
+  it('normalizeRecipeName folds case and collapses whitespace — the strip key', () => {
+    expect(normalizeRecipeName('Oat Jar')).toBe('oat jar');
+    expect(normalizeRecipeName('  oat   JAR ')).toBe('oat jar');
+    expect(normalizeRecipeName('oat\tjar')).toBe('oat jar');
+    expect(normalizeRecipeName('Oat Jars')).not.toBe('oat jar');
+  });
+
+  it('archived recipes leave every live listing but stay resolvable by ULID', async () => {
+    // The load-bearing asymmetry: list() (which feeds the strip, the merged view,
+    // and the briefing's suggestions) filters archived rows; get() does not, so
+    // an entry's recipe_ulid and a derived item's provenance never dangle.
+    const recipes = new MemoryRecipeStore();
+    const pipeline = new KitchenPipeline(new MemoryEntryStore(), recipes, null, log);
+    const { recipe } = await pipeline.pushRecipe({ name: 'Retired jar', components: [] });
+
+    expect((await pipeline.listAllRecipes()).map((r) => r.ulid)).toContain(recipe.ulid);
+
+    const archived = await pipeline.archiveRecipe(recipe.ulid);
+    expect(archived!.archived_at).not.toBeNull();
+    expect((await pipeline.listAllRecipes()).map((r) => r.ulid)).not.toContain(recipe.ulid);
+    expect((await pipeline.reselect()).recipes.map((r) => r.ulid)).not.toContain(recipe.ulid);
+    expect(await recipes.get(recipe.ulid)).not.toBeNull();
+
+    // …and an entry can still be logged from it deterministically.
+    const ulid = generateUlid();
+    const { record } = await pipeline.ingest({ ulid, recipe_ulid: recipe.ulid }, []);
+    expect(record.status).toBe('estimated');
+    expect(record.label).toBe('Retired jar');
+
+    // Unknown ULID (including any sheet-sourced one — no row here) → null → 404.
+    expect(await pipeline.archiveRecipe(generateUlid())).toBeNull();
+  });
+
+  it('replace preserves ulid, created_at, and source; it bumps updated_at only', async () => {
+    const recipes = new MemoryRecipeStore();
+    const pipeline = new KitchenPipeline(new MemoryEntryStore(), recipes, null, log);
+    const first = await pipeline.pushRecipe({ name: 'Oat jar', components: [] });
+    await Bun.sleep(2); // so an updated_at bump is observable
+
+    const second = await pipeline.pushRecipe({
+      name: 'Oat jar',
+      components: [{ label: 'oats', default_qty_g: 80, per_100g: { calories: 380, protein_g: 13, sat_fat_g: 1 } }],
+    });
+
+    expect(second.created).toBe(false);
+    expect(second.recipe.ulid).toBe(first.recipe.ulid);
+    expect(second.recipe.source).toBe('pushed');
+    expect(second.recipe.created_at.getTime()).toBe(first.recipe.created_at.getTime());
+    expect(second.recipe.updated_at.getTime()).toBeGreaterThan(first.recipe.updated_at.getTime());
+    expect(second.recipe.components).toHaveLength(1);
+    expect(await recipes.list({})).toHaveLength(1);
   });
 });

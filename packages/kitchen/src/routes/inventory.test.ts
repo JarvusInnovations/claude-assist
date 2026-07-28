@@ -436,6 +436,7 @@ describe('inventory routes', () => {
       source: 'pushed',
       created_at: new Date(),
       updated_at: new Date(),
+      archived_at: null,
     };
     const pl = new InventoryPipeline(s, null, null, app.log, {
       consumeStore: new MemoryConsumeStore(e, s),

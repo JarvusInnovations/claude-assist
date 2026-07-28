@@ -530,6 +530,110 @@ describe('depletion matcher', () => {
     expect(noMatch).toBeNull();
     expect(linked.length).toBe(1);
   });
+
+  it('decrements a COUNTED match by one whole sealed unit, not its meaningless fraction', async () => {
+    const store = new MemoryInventoryStore();
+    const linked: Array<[string, string]> = [];
+    const pipeline = new InventoryPipeline(store, null, null, log, {
+      depletionStep: 0.34,
+      linkEntry: async (e, i) => {
+        linked.push([e, i]);
+      },
+    });
+    // A sealed multipack: counted, and OPENED (so the opened clock is running).
+    const { item } = await pipeline.createItem({
+      raw_label: 'Sparkling Water 9-pack',
+      shelf_life_class: 'pantry',
+      acquired_at: '2026-07-01',
+      units_total: 9,
+      state: 'open',
+    });
+    expect(item.units_remaining).toBe(9);
+
+    const first = await pipeline.matchAndDeplete({ ulid: ULID(40), label: 'sparkling water', status: 'estimated' });
+    expect(first).not.toBeNull();
+    // The whole point: the COUNT moved.
+    expect(first!.units_remaining).toBe(8);
+    // …and the fraction was left alone (it means nothing on a counted item).
+    expect(first!.on_hand_fraction).toBe(1);
+    // finished-unit semantics: back to sealed, on the unopened clock.
+    expect(first!.state).toBe('stocked');
+    expect(first!.opened_at).toBeNull();
+    expect(linked).toEqual([[ULID(40), item.ulid]]);
+
+    // Seven further matched entries walk it down to one — the observed drift
+    // was exactly this many logged consumptions against an untouched count.
+    for (let n = 0; n < 7; n++) {
+      await pipeline.matchAndDeplete({ ulid: ULID(41 + n), label: 'sparkling water', status: 'estimated' });
+    }
+    const nearlyGone = await pipeline.getItemView(item.ulid);
+    expect(nearlyGone!.units_remaining).toBe(1);
+    expect(nearlyGone!.state).toBe('stocked');
+
+    // The last unit closes the item out, same as a whole-item finish.
+    const last = await pipeline.matchAndDeplete({ ulid: ULID(48), label: 'sparkling water', status: 'estimated' });
+    expect(last!.units_remaining).toBe(0);
+    expect(last!.state).toBe('finished');
+    expect(last!.on_hand_fraction).toBe(0);
+    expect(last!.closed_at).not.toBeNull();
+
+    // Terminal now, so it is out of the on-hand pool: a further entry matches
+    // nothing and depletes nothing (no negative counts).
+    const after = await pipeline.matchAndDeplete({ ulid: ULID(49), label: 'sparkling water', status: 'estimated' });
+    expect(after).toBeNull();
+  });
+
+  it('skips an entry that already depleted an item — a re-estimate takes no second unit', async () => {
+    const store = new MemoryInventoryStore();
+    const linked: Array<[string, string]> = [];
+    const pipeline = new InventoryPipeline(store, null, null, log, {
+      linkEntry: async (e, i) => {
+        linked.push([e, i]);
+      },
+    });
+    const { item } = await pipeline.createItem({
+      raw_label: 'Yogurt Cups 4-pack',
+      shelf_life_class: 'fridge_short',
+      acquired_at: '2026-07-20',
+      units_total: 4,
+    });
+
+    const first = await pipeline.matchAndDeplete({ ulid: ULID(50), label: 'yogurt cups', status: 'estimated' });
+    expect(first!.units_remaining).toBe(3);
+
+    // The same entry reaching `estimated` again (note/label PATCH re-queue, or a
+    // retried hook) now carries the link — the matcher must no-op.
+    const replay = await pipeline.matchAndDeplete({
+      ulid: ULID(50),
+      label: 'yogurt cups',
+      status: 'estimated',
+      inventory_item_ulid: item.ulid,
+    });
+    expect(replay).toBeNull();
+    expect((await pipeline.getItemView(item.ulid))!.units_remaining).toBe(3);
+    expect(linked).toEqual([[ULID(50), item.ulid]]);
+  });
+
+  it('guards a fraction item the same way (the link is the key, not the unit model)', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log, { depletionStep: 0.34 });
+    const { item } = await pipeline.createItem({
+      raw_label: 'Oat Milk',
+      shelf_life_class: 'fridge_short',
+      acquired_at: '2026-07-20',
+    });
+
+    await pipeline.matchAndDeplete({ ulid: ULID(60), label: 'oat milk', status: 'estimated' });
+    expect((await pipeline.getItemView(item.ulid))!.on_hand_fraction).toBeCloseTo(0.66, 2);
+
+    await pipeline.matchAndDeplete({
+      ulid: ULID(60),
+      label: 'oat milk',
+      status: 'estimated',
+      inventory_item_ulid: item.ulid,
+    });
+    expect((await pipeline.getItemView(item.ulid))!.on_hand_fraction).toBeCloseTo(0.66, 2);
+  });
 });
 
 describe('grouped questions', () => {
@@ -1100,6 +1204,7 @@ describe('consume from inventory (claude-assist#110 — one-tap known-macro log 
     source: 'pushed',
     created_at: new Date(),
     updated_at: new Date(),
+    archived_at: null,
   };
   // computeRecipeMacros(RECIPE): calories 240*3.8+300*0.6=912+180=1092, protein
   // 240*0.13+300*0.1=31.2+30=61.2, sat_fat 240*0.012+300*0.002=2.88+0.6=3.48.

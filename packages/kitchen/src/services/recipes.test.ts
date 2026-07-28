@@ -13,6 +13,7 @@ function mkRecipe(over: Partial<RecipeRecord> = {}): RecipeRecord {
     source: 'pushed',
     created_at: new Date(),
     updated_at: new Date(),
+    archived_at: null,
     ...over,
   };
 }

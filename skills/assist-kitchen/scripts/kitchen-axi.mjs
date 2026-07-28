@@ -568,6 +568,18 @@ function mergeHomeHeader(header, output) {
 
 // packages/kitchen/src/axi/reference.ts
 var DESCRIPTION = "Read and write the kitchen consumption journal and inventory \u2014 log meals, adjust portions, track stock, scan receipts, and seed products/lexicon.";
+var MACRO_PANEL_FLAGS = [
+  ["calories", "calories"],
+  ["protein", "protein_g"],
+  ["fat", "fat_g"],
+  ["sat-fat", "sat_fat_g"],
+  ["carbs", "carbs_g"],
+  ["sugar", "sugar_g"],
+  ["fiber", "fiber_g"],
+  ["sodium", "sodium_mg"]
+];
+var MACRO_PANEL_FLAG_NAMES = MACRO_PANEL_FLAGS.map(([flag]) => flag);
+var MACRO_PANEL_USAGE = MACRO_PANEL_FLAGS.map(([flag]) => `[--${flag} N]`).join(" ");
 var COMMAND_GROUPS = [
   {
     group: "Entries",
@@ -575,12 +587,12 @@ var COMMAND_GROUPS = [
       { usage: "entries list [--since DATE] [--limit N]", summary: "newest-first consumption entries (base macros + portion_multiplier; effective = base \xD7 multiplier)" },
       { usage: "entries show <ulid>", summary: "one entry with full nutrition, source, and status" },
       {
-        usage: 'entries log [note\u2026] [--recipe ULID] [--component "label=grams"]\u2026 [--at TIME] [--calories N] [--protein N] [--fat N] [--sat-fat N] [--carbs N] [--sugar N] [--fiber N] [--sodium N] [--label T]',
+        usage: `entries log [note\u2026] [--recipe ULID] [--component "label=grams"]\u2026 [--at TIME] ${MACRO_PANEL_USAGE} [--label T]`,
         summary: "log a deliberate, no-model entry (note and/or recipe + component quantities); recipe-referenced entries are computed deterministically; --at sets logged_at (default now \u2014 prefer a full local timestamp with offset; a bare YYYY-MM-DD backstops to local noon that day, never midnight UTC); a directly-stated panel (--calories/--protein/\u2026, optionally --label) records a born-manual, terminal entry verbatim with NO estimation (mutually exclusive with --recipe/--component)"
       },
       {
-        usage: "entries patch <ulid> [--note T] [--label T] [--calories N] [--protein N] [--fat N] [--sat-fat N] [--carbs N] [--sodium N] [--portion-basis T] [--multiplier M] [--at TIME]",
-        summary: "edit an entry: note/label re-queue estimation; any macro sets a terminal manual override; --multiplier rescales the base post-hoc and --at backdates logged_at (prefer a full local timestamp with offset; a bare YYYY-MM-DD backstops to local noon that day; neither re-queues, neither changes source)"
+        usage: `entries patch <ulid> [--note T] [--label T] ${MACRO_PANEL_USAGE} [--portion-basis T] [--multiplier M] [--at TIME]`,
+        summary: "edit an entry: note/label re-queue estimation; any of the EIGHT macro flags sets a terminal manual override (the same panel `log` accepts \u2014 every field is correctable in place, so never delete + re-log to fix a number); --multiplier rescales the base post-hoc and --at backdates logged_at (prefer a full local timestamp with offset; a bare YYYY-MM-DD backstops to local noon that day; neither re-queues, neither changes source)"
       },
       { usage: "entries delete <ulid>", summary: "remove an entry from all rollups" }
     ]
@@ -659,7 +671,14 @@ var COMMAND_GROUPS = [
     group: "Recipes",
     commands: [
       { usage: "recipes list [--limit N]", summary: "the reselect strip \u2014 merged sheet + pushed + promoted recipes plus recent/frequent logged items" },
-      { usage: "recipes push '<recipe json>'", summary: 'agent-authored template: {"name": "...", "components": [{label, default_qty_g, per_100g:{calories, protein_g, sat_fat_g}}]}' },
+      {
+        usage: "recipes push '<recipe json>' [--ulid U]",
+        summary: 'agent-authored template: {"name": "...", "components": [{label, default_qty_g, per_100g:{calories, protein_g, sat_fat_g}}]}. UPSERTS \u2014 a correction REPLACES rather than forks: the key is the normalized name (case/spacing-insensitive), or --ulid for one specific record. Prints created vs replaced. A name already held by a promoted or sheet-sourced recipe is a 409 naming it (rename, or pass --ulid deliberately) \u2014 never a silent clobber and never a second same-named pill on the strip'
+      },
+      {
+        usage: "recipes delete <ulid>",
+        summary: "ARCHIVE a recipe \u2014 off the reselect strip permanently, but still resolvable by ulid, so entries logged from it and prepped items derived from it keep working. Idempotent; 404 for an unknown or sheet-sourced ulid (the meal-bank sheet is never written from here). There is no hard delete"
+      },
       { usage: "recipes promote <entry-ulid> --name NAME", summary: "create a reusable recipe from a logged entry" }
     ]
   },
@@ -772,7 +791,10 @@ function buildUrl(server, path, query) {
 function suggestForStatus(status) {
   if (status === 404) return ["Check the ulid \u2014 try a `list` command to look one up"];
   if (status === 400) return ["Check required params and value formats for this command"];
-  if (status === 409) return ["This resource is terminal (a manual override or a finished/tossed item) and can't be overwritten"];
+  if (status === 409)
+    return [
+      "Either the resource is terminal (a manual override, or a finished/tossed item) and can't be overwritten, or a recipe push collided with a name it may not replace \u2014 read the message: it names the colliding record(s)"
+    ];
   if (status === 503) return ["The server is up but this feature is disabled (e.g. no model API key configured)"];
   return [];
 }
@@ -850,6 +872,16 @@ var api = {
     if (!res.ok) await parseError(res);
     return parseBody(res);
   },
+  /**
+   * POST that keeps the status alongside the body — for endpoints where the code
+   * carries meaning the body doesn't (an upsert's 201-created vs 200-replaced,
+   * so the caller can say which happened instead of guessing).
+   */
+  async postWithStatus(path, body) {
+    const res = await send("POST", path, { body });
+    if (!res.ok) await parseError(res);
+    return { status: res.status, body: await parseBody(res) };
+  },
   async postForm(path, form) {
     const res = await send("POST", path, { form });
     if (!res.ok) await parseError(res);
@@ -864,6 +896,12 @@ var api = {
     const res = await send("DELETE", path);
     if (!res.ok) await parseError(res);
     return { ok: true, status: res.status };
+  },
+  /** DELETE whose response body matters (e.g. the archived row it returns). */
+  async delJson(path) {
+    const res = await send("DELETE", path);
+    if (!res.ok) await parseError(res);
+    return parseBody(res);
   }
 };
 
@@ -1277,15 +1315,18 @@ var ENTRIES_HELP = `kitchen-axi entries <subcommand> [args] [--json]
        [--calories N] [--protein N]\u2026     directly-stated panel: born-manual, terminal,
        [--label T]                        NO estimation (mutually exclusive with --recipe/--component)
   patch <ulid> [flags]                 edit note/label (re-queue), macro override
-                                         (terminal), --multiplier M (post-hoc rescale),
+                                         (terminal \u2014 ANY of the eight panel flags),
+                                         --multiplier M (post-hoc rescale),
                                          or --at TIME (backdate logged_at)
   delete <ulid>                        remove from all rollups
 
   Macros on the wire are the BASE; effective = base \xD7 portion_multiplier. A
   macro flag on patch sets a terminal manual override; --multiplier and --at
   only touch their own field \u2014 neither re-queues estimation nor changes source.
-  Macro flags: --calories --protein --fat --sat-fat --carbs --sugar --fiber
-  --sodium (the eight-field nutrition panel; unknown stays null, never 0).`;
+  Macro flags (identical on log and patch): ${MACRO_PANEL_FLAG_NAMES.map((f) => `--${f}`).join(" ")}
+  \u2014 the eight-field nutrition panel; unknown stays null, never 0. Every field is
+  correctable in place, so never delete + re-log to fix a number (that mints a
+  new ULID and breaks anything referencing the entry).`;
 var DETAIL_SCHEMA = [
   field("ulid"),
   // `day` = owner-tz calendar date (authoritative bucketing key); `logged`
@@ -1359,22 +1400,12 @@ function parseComponent(raw) {
   }
   return { label, quantity_g: qty };
 }
-var MACRO_LOG_FLAGS = [
-  ["calories", "calories"],
-  ["protein", "protein_g"],
-  ["fat", "fat_g"],
-  ["sat-fat", "sat_fat_g"],
-  ["carbs", "carbs_g"],
-  ["sugar", "sugar_g"],
-  ["fiber", "fiber_g"],
-  ["sodium", "sodium_mg"]
-];
 function buildLogEntryFields(positionals, flags, components) {
   const note = positionals.join(" ").trim();
   const recipe = typeof flags.recipe === "string" ? flags.recipe : void 0;
   const label = typeof flags.label === "string" ? flags.label : void 0;
   const macros = {};
-  for (const [flag, key] of MACRO_LOG_FLAGS) {
+  for (const [flag, key] of MACRO_PANEL_FLAGS) {
     if (typeof flags[flag] === "string") {
       macros[key] = parseNumberFlag(flags[flag], flag, ENTRIES_HELP, { min: 0 });
     }
@@ -1406,7 +1437,7 @@ async function logEntry(args) {
   const { positionals, flags } = parseArgs(
     args,
     ["json"],
-    ["recipe", "component", "at", "label", "calories", "protein", "fat", "sat-fat", "carbs", "sugar", "fiber", "sodium"]
+    ["recipe", "component", "at", "label", ...MACRO_PANEL_FLAG_NAMES]
   );
   const components = collectFlag(args, "component").map(parseComponent);
   const entry = { ulid: generateUlid(), ...buildLogEntryFields(positionals, flags, components) };
@@ -1427,17 +1458,7 @@ function buildPatchBody(flags) {
   if (typeof flags.note === "string") body.note = flags.note;
   if (typeof flags.label === "string") body.label = flags.label;
   if (typeof flags["portion-basis"] === "string") body.portion_basis = flags["portion-basis"];
-  const macroFlags = [
-    ["calories", "calories"],
-    ["protein", "protein_g"],
-    ["fat", "fat_g"],
-    ["sat-fat", "sat_fat_g"],
-    ["carbs", "carbs_g"],
-    ["sugar", "sugar_g"],
-    ["fiber", "fiber_g"],
-    ["sodium", "sodium_mg"]
-  ];
-  for (const [flag, key] of macroFlags) {
+  for (const [flag, key] of MACRO_PANEL_FLAGS) {
     if (typeof flags[flag] === "string") body[key] = parseNumberFlag(flags[flag], flag, ENTRIES_HELP, { min: 0 });
   }
   if (typeof flags.multiplier === "string") {
@@ -1452,7 +1473,7 @@ function buildPatchBody(flags) {
   return body;
 }
 async function patchEntry(args) {
-  const { positionals, flags } = parseArgs(args, ["json"], ["note", "label", "portion-basis", "calories", "protein", "fat", "sat-fat", "carbs", "sugar", "fiber", "sodium", "multiplier", "at"]);
+  const { positionals, flags } = parseArgs(args, ["json"], ["note", "label", "portion-basis", ...MACRO_PANEL_FLAG_NAMES, "multiplier", "at"]);
   const ulid = requirePositional(positionals, 0, "entry ulid", ENTRIES_HELP);
   const body = buildPatchBody(flags);
   const updated = await api.patch(`/api/kitchen/entries/${encodeURIComponent(ulid)}`, body);
@@ -2160,12 +2181,24 @@ var RECIPES_HELP = `kitchen-axi recipes <subcommand> [args] [--json]
 
   list [--limit N]                  the reselect strip: merged sheet + pushed +
                                       promoted recipes, plus recent logged items
-  push '<recipe json>'              agent-authored template; body is
+  push '<recipe json>' [--ulid U]   agent-authored template; body is
                                       {"name": "...", "components": [
                                         {"label": "...", "default_qty_g": N,
                                          "per_100g": {"calories": N, "protein_g": N,
                                                       "sat_fat_g": N}} ]}
-  promote <entry-ulid> --name NAME  create a reusable recipe from a logged entry`;
+  delete <ulid>                     ARCHIVE a recipe: off the strip for good,
+                                      still resolvable for historical entries
+  promote <entry-ulid> --name NAME  create a reusable recipe from a logged entry
+
+  push UPSERTS \u2014 correcting a recipe replaces it instead of forking. The key is
+  the normalized name (case/spacing-insensitive), or --ulid to replace one
+  specific record. A name already held by a promoted or sheet-sourced recipe is
+  a 409, never a silent clobber: rename, or pass --ulid deliberately. Recipes
+  are tapped by NAME on the strip, so two same-named recipes are
+  indistinguishable and the stale one keeps logging wrong numbers.
+
+  delete never destroys \u2014 it archives. Entries, promotions, and prepped-item
+  provenance point at recipes and must keep resolving.`;
 var RECIPE_SCHEMA = [
   field("ulid"),
   field("name"),
@@ -2188,6 +2221,8 @@ async function recipesCommand(args) {
       return listRecipes(sub === void 0 ? args : rest);
     case "push":
       return pushRecipe(rest);
+    case "delete":
+      return deleteRecipe(rest);
     case "promote":
       return promote(rest);
     default:
@@ -2207,15 +2242,48 @@ async function listRecipes(args) {
   ]);
 }
 async function pushRecipe(args) {
-  const { positionals, flags } = parseArgs(args, ["json"], []);
+  const { positionals, flags } = parseArgs(args, ["json"], ["ulid"]);
   const jsonArg = positionals[0];
   if (!jsonArg) {
     throw new AxiError("recipes push needs a recipe JSON body", "VALIDATION_ERROR", [RECIPES_HELP]);
   }
   const body = parseJson(jsonArg, "recipe", RECIPES_HELP);
-  const recipe = await api.post("/api/kitchen/recipes", body);
+  if (typeof flags.ulid === "string") {
+    if (typeof body.ulid === "string" && body.ulid !== flags.ulid) {
+      throw new AxiError(
+        `recipes push: --ulid (${flags.ulid}) disagrees with the ulid in the JSON body (${body.ulid})`,
+        "VALIDATION_ERROR",
+        [RECIPES_HELP]
+      );
+    }
+    body.ulid = flags.ulid;
+  }
+  const { status, body: recipe } = await api.postWithStatus("/api/kitchen/recipes", body);
   if (flags.json) return rawJson(recipe);
-  return renderDetail("recipe", recipe, [...RECIPE_SCHEMA, custom("components", (r) => JSON.stringify(r.components ?? []))]);
+  const created = status === 201;
+  const cli = cliInvocation();
+  return renderOutput2([
+    renderDetail(created ? "created" : "replaced", recipe, [
+      ...RECIPE_SCHEMA,
+      custom("components", (r) => JSON.stringify(r.components ?? []))
+    ]),
+    renderHelp([
+      created ? `New recipe \u2014 pushing this same name again REPLACES this record rather than forking it` : `Upsert on name: recipe ${recipe?.ulid} was replaced in place, so the strip still shows one pill`,
+      `Run \`${cli} recipes delete ${recipe?.ulid}\` to retire it (archives; history keeps resolving)`
+    ])
+  ]);
+}
+async function deleteRecipe(args) {
+  const { positionals, flags } = parseArgs(args, ["json"], []);
+  const ulid = requirePositional(positionals, 0, "recipe ulid", RECIPES_HELP);
+  const archived = await api.delJson(`/api/kitchen/recipes/${encodeURIComponent(ulid)}`);
+  if (flags.json) return rawJson(archived);
+  return renderOutput2([
+    renderObject({ archived: archived?.ulid, name: archived?.name, archived_at: archived?.archived_at }),
+    renderHelp([
+      "Archived, not deleted \u2014 gone from the strip, still resolvable by ulid so entries logged from it (and prepped items derived from it) keep working"
+    ])
+  ]);
 }
 async function promote(args) {
   const { positionals, flags } = parseArgs(args, ["json"], ["name"]);
@@ -2365,7 +2433,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "6b90897" : "dev";
+var VERSION = true ? "cbf55e9" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)

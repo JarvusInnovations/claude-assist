@@ -3,7 +3,7 @@ import { AxiError } from "axi-sdk-js";
 import { DEFAULT_SERVER, resolveServer, buildMultipartForm } from "./client.js";
 import { parseArgs, collectFlag, parseNumberFlag, splitCsv } from "./args.js";
 import { sumEffective, effectiveMacro, targetLine } from "./format.js";
-import { commandReferenceText, COMMAND_GROUPS } from "./reference.js";
+import { commandReferenceText, COMMAND_GROUPS, MACRO_PANEL_FLAGS, MACRO_PANEL_FLAG_NAMES } from "./reference.js";
 import { spliceGeneratedRegions, commandReferenceMarkdown } from "./skill.js";
 import { buildLogEntryFields, buildPatchBody } from "./commands/entries.js";
 import { assertConvertShelfLifeClass } from "./commands/inventory.js";
@@ -230,6 +230,45 @@ describe("entries log — directly-stated panel wiring", () => {
   });
 });
 
+describe("macro-panel flag parity between entries log and entries patch", () => {
+  const PATCH_FLAGS = ["note", "label", "portion-basis", ...MACRO_PANEL_FLAG_NAMES, "multiplier", "at"];
+
+  it("names the full eight-field panel in one place", () => {
+    expect(MACRO_PANEL_FLAG_NAMES).toEqual(["calories", "protein", "fat", "sat-fat", "carbs", "sugar", "fiber", "sodium"]);
+  });
+
+  it("patch maps every panel flag to its server field — sugar and fiber included", () => {
+    const args = MACRO_PANEL_FLAGS.flatMap(([flag], i) => [`--${flag}`, String(i + 1)]);
+    const { flags } = parseArgs(args, ["json"], PATCH_FLAGS);
+    const body = buildPatchBody(flags);
+    expect(body).toEqual({
+      calories: 1,
+      protein_g: 2,
+      fat_g: 3,
+      sat_fat_g: 4,
+      carbs_g: 5,
+      sugar_g: 6,
+      fiber_g: 7,
+      sodium_mg: 8,
+    });
+  });
+
+  it("patches sugar or fiber alone (the correction path that had no flag documented)", () => {
+    expect(buildPatchBody(parseArgs(["--fiber", "12"], ["json"], PATCH_FLAGS).flags)).toEqual({ fiber_g: 12 });
+    expect(buildPatchBody(parseArgs(["--sugar", "3.5"], ["json"], PATCH_FLAGS).flags)).toEqual({ sugar_g: 3.5 });
+  });
+
+  it("documents every panel flag on BOTH usage lines (parity can't drift)", () => {
+    const entries = COMMAND_GROUPS.find((g) => g.group === "Entries")!.commands;
+    const log = entries.find((c) => c.usage.startsWith("entries log"))!.usage;
+    const patch = entries.find((c) => c.usage.startsWith("entries patch"))!.usage;
+    for (const flag of MACRO_PANEL_FLAG_NAMES) {
+      expect(log).toContain(`--${flag} `);
+      expect(patch).toContain(`--${flag} `);
+    }
+  });
+});
+
 describe("command reference (single source of truth)", () => {
   it("covers every spec-listed command group", () => {
     const groups = COMMAND_GROUPS.map((g) => g.group);
@@ -267,7 +306,11 @@ describe("weigh-ins --at offset handling", () => {
     const match = /([+-])(\d{2}):(\d{2})$/.exec(out);
     expect(match).not.toBeNull();
     const attached = (match![1] === "-" ? -1 : 1) * (Number(match![2]) * 60 + Number(match![3]));
-    const expected = -new Date(2026, 0, 15, 8, 30, 0).getTimezoneOffset();
+    // `+ 0` normalizes -0: on a UTC-offset-0 machine the negated
+    // getTimezoneOffset() is -0, and Object.is(-0, 0) is false, so a bare toBe
+    // failed there. (It only ever passed because a sibling test file sets
+    // process.env.TZ at import time — true isolation exposed it.)
+    const expected = -new Date(2026, 0, 15, 8, 30, 0).getTimezoneOffset() + 0;
     expect(attached).toBe(expected);
     // Round-trip: the string parses to the same instant the naive local time meant.
     expect(new Date(out).getTime()).toBe(new Date(2026, 0, 15, 8, 30, 0).getTime());

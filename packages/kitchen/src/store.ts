@@ -132,9 +132,37 @@ export interface EntryStore {
 
 export interface RecipeStore {
   insert(recipe: NewRecipe): Promise<RecipeRecord>;
+  /**
+   * By ULID, **archived rows included** (§ Recipe corrections): an entry's
+   * `recipe_ulid`, a promote's component reconstruction, and a derived item's
+   * derivation provenance must keep resolving after a recipe is retired.
+   */
   get(ulid: string): Promise<RecipeRecord | null>;
-  /** Pushed + promoted recipes (DB-persisted only — sheet recipes are a read-through projection). */
+  /**
+   * Live pushed + promoted recipes — archived rows excluded, so a retired
+   * recipe can never be tapped again (sheet recipes are a read-through
+   * projection and never appear here).
+   */
   list(filter: { limit?: number }): Promise<RecipeRecord[]>;
+  /**
+   * Every LIVE recipe whose name normalizes to `normalizedName` — the
+   * upsert-on-name key lookup (§ Recipe corrections). Returns all matches, not
+   * the first: more than one is a pre-existing fork the upsert must refuse to
+   * resolve by guessing, and the caller needs every candidate to say so.
+   */
+  findLiveByNormalizedName(normalizedName: string): Promise<RecipeRecord[]>;
+  /**
+   * Overwrite an existing recipe's name + components in place, bumping
+   * `updated_at`. `ulid`, `created_at`, and `source` are preserved — a
+   * correction replaces the record, it does not re-found it. Null when the ULID
+   * is unknown.
+   */
+  replace(ulid: string, update: { name: string; components: RecipeComponent[] }): Promise<RecipeRecord | null>;
+  /**
+   * Stamp `archived_at` (idempotent — an already-archived row keeps its
+   * original stamp and is returned unchanged). Null when the ULID is unknown.
+   */
+  archive(ulid: string): Promise<RecipeRecord | null>;
 }
 
 export function normalizeNewEntry(
@@ -236,6 +264,7 @@ function rowToRecipe(row: Record<string, unknown>): RecipeRecord {
     source: row.source as RecipeSource,
     created_at: row.created_at as Date,
     updated_at: row.updated_at as Date,
+    archived_at: (row.archived_at as Date | null) ?? null,
   };
 }
 
@@ -437,6 +466,7 @@ export class PgRecipeStore implements RecipeStore {
     return rowToRecipe(row!);
   }
 
+  // Archived rows deliberately included — history must keep resolving.
   async get(ulid: string): Promise<RecipeRecord | null> {
     const [row] = await this.sql`SELECT * FROM kitchen.recipes WHERE ulid = ${ulid}`;
     return row ? rowToRecipe(row) : null;
@@ -445,9 +475,49 @@ export class PgRecipeStore implements RecipeStore {
   async list(filter: { limit?: number }): Promise<RecipeRecord[]> {
     const limit = Math.min(filter.limit ?? 100, 500);
     const rows = await this.sql`
-      SELECT * FROM kitchen.recipes ORDER BY name ASC LIMIT ${limit}
+      SELECT * FROM kitchen.recipes
+      WHERE archived_at IS NULL
+      ORDER BY name ASC LIMIT ${limit}
     `;
     return rows.map(rowToRecipe);
+  }
+
+  async findLiveByNormalizedName(normalizedName: string): Promise<RecipeRecord[]> {
+    // Normalization mirrors normalizeRecipeName() exactly: trim, collapse
+    // internal whitespace, case-fold.
+    const rows = await this.sql`
+      SELECT * FROM kitchen.recipes
+      WHERE archived_at IS NULL
+        AND lower(regexp_replace(btrim(name), '\s+', ' ', 'g')) = ${normalizedName}
+      ORDER BY created_at ASC
+    `;
+    return rows.map(rowToRecipe);
+  }
+
+  async replace(
+    ulid: string,
+    update: { name: string; components: RecipeComponent[] }
+  ): Promise<RecipeRecord | null> {
+    const [row] = await this.sql`
+      UPDATE kitchen.recipes
+      SET name = ${update.name},
+          components = ${this.sql.json(update.components as never)},
+          updated_at = NOW()
+      WHERE ulid = ${ulid}
+      RETURNING *
+    `;
+    return row ? rowToRecipe(row) : null;
+  }
+
+  async archive(ulid: string): Promise<RecipeRecord | null> {
+    // COALESCE keeps the original stamp on a repeat archive (idempotent).
+    const [row] = await this.sql`
+      UPDATE kitchen.recipes
+      SET archived_at = COALESCE(archived_at, NOW())
+      WHERE ulid = ${ulid}
+      RETURNING *
+    `;
+    return row ? rowToRecipe(row) : null;
   }
 }
 

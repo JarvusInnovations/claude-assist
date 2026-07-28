@@ -85,6 +85,21 @@ in doubt, read the spec.
   self-heals at the next event). The item only goes terminal `tossed` when `--fraction` is
   omitted (full toss) or the remainder hits zero. Contrast `opened` (where `--fraction` is
   the absolute *remaining* fraction) and `finished` (always terminal, zeroed).
+- **Fixing a recipe? Push it again under the same name — never push a variant.** `recipes
+  push` **upserts**: the key is the normalized name (case- and spacing-insensitive), or
+  `--ulid` for one specific record, and the output says whether it created or replaced.
+  Recipes are tapped from the strip by **name**, so a second same-named recipe is
+  indistinguishable from the first and the stale one keeps logging wrong numbers on every
+  tap. Never work around a collision by appending "v2" or "(fixed)" to the name. A name
+  already held by a `promoted` or `sheet` recipe is a `409` naming the record — rename, or
+  pass `--ulid` if you really mean to replace that one. To retire a recipe, `recipes
+  delete <ulid>`: it **archives** (off the strip permanently, still resolvable so entries
+  logged from it and prepped items derived from it keep working). There is no hard delete.
+- **Never fix a logged entry by deleting and re-logging it.** All eight panel fields are
+  correctable in place with `entries patch` (`--calories --protein --fat --sat-fat --carbs
+  --sugar --fiber --sodium`). `entries delete` + `entries log` mints a **new ULID**, which
+  breaks the inventory link, the reselect strip's `entry_ulid`, and anything else pointing
+  at the entry. Delete is for an entry that shouldn't exist, not for a wrong number.
 - **Deliberate actions never go through the ambient classifier.** These commands are the
   deliberate paths — logging a meal, scanning a receipt, an explicit `inventory event` —
   and they hit the module directly. The free-text `inventory remark` resolver is for
@@ -147,7 +162,7 @@ in doubt, read the spec.
 - `scripts/kitchen-axi entries list [--since DATE] [--limit N]` — newest-first consumption entries (base macros + portion_multiplier; effective = base × multiplier)
 - `scripts/kitchen-axi entries show <ulid>` — one entry with full nutrition, source, and status
 - `scripts/kitchen-axi entries log [note…] [--recipe ULID] [--component "label=grams"]… [--at TIME] [--calories N] [--protein N] [--fat N] [--sat-fat N] [--carbs N] [--sugar N] [--fiber N] [--sodium N] [--label T]` — log a deliberate, no-model entry (note and/or recipe + component quantities); recipe-referenced entries are computed deterministically; --at sets logged_at (default now — prefer a full local timestamp with offset; a bare YYYY-MM-DD backstops to local noon that day, never midnight UTC); a directly-stated panel (--calories/--protein/…, optionally --label) records a born-manual, terminal entry verbatim with NO estimation (mutually exclusive with --recipe/--component)
-- `scripts/kitchen-axi entries patch <ulid> [--note T] [--label T] [--calories N] [--protein N] [--fat N] [--sat-fat N] [--carbs N] [--sodium N] [--portion-basis T] [--multiplier M] [--at TIME]` — edit an entry: note/label re-queue estimation; any macro sets a terminal manual override; --multiplier rescales the base post-hoc and --at backdates logged_at (prefer a full local timestamp with offset; a bare YYYY-MM-DD backstops to local noon that day; neither re-queues, neither changes source)
+- `scripts/kitchen-axi entries patch <ulid> [--note T] [--label T] [--calories N] [--protein N] [--fat N] [--sat-fat N] [--carbs N] [--sugar N] [--fiber N] [--sodium N] [--portion-basis T] [--multiplier M] [--at TIME]` — edit an entry: note/label re-queue estimation; any of the EIGHT macro flags sets a terminal manual override (the same panel `log` accepts — every field is correctable in place, so never delete + re-log to fix a number); --multiplier rescales the base post-hoc and --at backdates logged_at (prefer a full local timestamp with offset; a bare YYYY-MM-DD backstops to local noon that day; neither re-queues, neither changes source)
 - `scripts/kitchen-axi entries delete <ulid>` — remove an entry from all rollups
 
 ### Daily rollup
@@ -186,7 +201,8 @@ in doubt, read the spec.
 ### Recipes
 
 - `scripts/kitchen-axi recipes list [--limit N]` — the reselect strip — merged sheet + pushed + promoted recipes plus recent/frequent logged items
-- `scripts/kitchen-axi recipes push '<recipe json>'` — agent-authored template: {"name": "...", "components": [{label, default_qty_g, per_100g:{calories, protein_g, sat_fat_g}}]}
+- `scripts/kitchen-axi recipes push '<recipe json>' [--ulid U]` — agent-authored template: {"name": "...", "components": [{label, default_qty_g, per_100g:{calories, protein_g, sat_fat_g}}]}. UPSERTS — a correction REPLACES rather than forks: the key is the normalized name (case/spacing-insensitive), or --ulid for one specific record. Prints created vs replaced. A name already held by a promoted or sheet-sourced recipe is a 409 naming it (rename, or pass --ulid deliberately) — never a silent clobber and never a second same-named pill on the strip
+- `scripts/kitchen-axi recipes delete <ulid>` — ARCHIVE a recipe — off the reselect strip permanently, but still resolvable by ulid, so entries logged from it and prepped items derived from it keep working. Idempotent; 404 for an unknown or sheet-sourced ulid (the meal-bank sheet is never written from here). There is no hard delete
 - `scripts/kitchen-axi recipes promote <entry-ulid> --name NAME` — create a reusable recipe from a logged entry
 
 ### Products & lexicon

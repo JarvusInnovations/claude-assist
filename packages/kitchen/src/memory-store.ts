@@ -4,7 +4,15 @@
  * for the sibling pattern).
  */
 
-import type { EntryRecord, EntryStatus, EstimationSource, NutritionFields, RecipeRecord } from './types.js';
+import { normalizeRecipeName } from './types.js';
+import type {
+  EntryRecord,
+  EntryStatus,
+  EstimationSource,
+  NutritionFields,
+  RecipeComponent,
+  RecipeRecord,
+} from './types.js';
 import type {
   EntryStore,
   ExpenditureRecord,
@@ -194,11 +202,12 @@ export class MemoryRecipeStore implements RecipeStore {
 
   async insert(recipe: NewRecipe): Promise<RecipeRecord> {
     const now = new Date();
-    const record: RecipeRecord = { ...recipe, created_at: now, updated_at: now };
+    const record: RecipeRecord = { ...recipe, created_at: now, updated_at: now, archived_at: null };
     this.records.set(recipe.ulid, record);
     return structuredClone(record);
   }
 
+  // Archived rows deliberately included — history must keep resolving.
   async get(ulid: string): Promise<RecipeRecord | null> {
     const record = this.records.get(ulid);
     return record ? structuredClone(record) : null;
@@ -207,9 +216,44 @@ export class MemoryRecipeStore implements RecipeStore {
   async list(filter: { limit?: number }): Promise<RecipeRecord[]> {
     const limit = filter.limit ?? 100;
     return [...this.records.values()]
+      .filter((r) => r.archived_at === null)
       .sort((a, b) => a.name.localeCompare(b.name))
       .slice(0, limit)
       .map((r) => structuredClone(r));
+  }
+
+  async findLiveByNormalizedName(normalizedName: string): Promise<RecipeRecord[]> {
+    return [...this.records.values()]
+      .filter((r) => r.archived_at === null && normalizeRecipeName(r.name) === normalizedName)
+      .sort((a, b) => a.created_at.getTime() - b.created_at.getTime())
+      .map((r) => structuredClone(r));
+  }
+
+  async replace(
+    ulid: string,
+    update: { name: string; components: RecipeComponent[] }
+  ): Promise<RecipeRecord | null> {
+    const record = this.records.get(ulid);
+    if (!record) return null;
+    // ulid / created_at / source preserved — a correction replaces the record,
+    // it does not re-found it.
+    const next: RecipeRecord = {
+      ...record,
+      name: update.name,
+      components: structuredClone(update.components),
+      updated_at: new Date(),
+    };
+    this.records.set(ulid, next);
+    return structuredClone(next);
+  }
+
+  async archive(ulid: string): Promise<RecipeRecord | null> {
+    const record = this.records.get(ulid);
+    if (!record) return null;
+    // Idempotent: an already-archived row keeps its original stamp.
+    const next: RecipeRecord = { ...record, archived_at: record.archived_at ?? new Date() };
+    this.records.set(ulid, next);
+    return structuredClone(next);
   }
 }
 

@@ -136,6 +136,9 @@ function toRecipe(raw: MealBankRawRecord): RecipeRecord | null {
     source: 'sheet',
     created_at: now,
     updated_at: now,
+    // A sheet recipe is a read-through projection and the module never writes
+    // the sheet, so there is nothing here to retire (§ Recipe corrections).
+    archived_at: null,
   };
 }
 
