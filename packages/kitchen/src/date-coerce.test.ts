@@ -2,14 +2,15 @@
  * Bare-date → local-noon coercion (specs/modules/kitchen.md § Logged-at
  * backdating — "Bare-date coercion → local noon").
  *
- * DETERMINISM: these tests pin the machine zone to US-Eastern via TZ so the
- * "buckets on the intended day, not the day before" assertions are stable
- * regardless of the runner's ambient zone. Bun re-reads process.env.TZ on each
- * Date construction, so setting it here (before any Date is built) is enough.
- * Expectations are written against the concrete Eastern offsets (EDT -04:00 in
- * summer, EST -05:00 in winter) rather than the ambient zone.
+ * DETERMINISM: the assertions below are written against concrete Eastern
+ * offsets (EDT -04:00 in summer, EST -05:00 in winter), because the offset
+ * tracking the *dated* day across a DST boundary is the bug class they guard.
+ * The zone that makes them stable is pinned package-wide in `bunfig.toml`
+ * (`[test] env.TZ`) — deliberately NOT by mutating `process.env.TZ` here.
+ * Bun shares one process across a package's test files, so an import-time
+ * mutation leaked into every other suite and made their correctness depend on
+ * file load order. See bunfig.toml for the full account.
  */
-process.env.TZ = "America/New_York";
 
 import { describe, expect, it } from "bun:test";
 import { coerceBareDateToLocalNoon } from "./date-coerce.js";

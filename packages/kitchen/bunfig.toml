@@ -1,0 +1,10 @@
+# Test config for the kitchen package.
+#
+# `preload` pins the machine zone for every suite here — see src/test-setup.ts
+# for why that has to be package-wide rather than set inside one test file.
+#
+# It must be a preload, not `[test] env = { TZ = ... }`: bunfig's env lands too
+# late to affect Date construction, so the zone-dependent assertions still fail
+# under it (verified 2026-07-28).
+[test]
+preload = ["./src/test-setup.ts"]
