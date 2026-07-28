@@ -8,6 +8,7 @@
     "dev": "bun --watch src/server.ts",
     "start": "bun src/server.ts",
     "build": "tsc",
+    "test": "bun test src",
     "backup": "./bin/backup.sh",
     "backup:init": "./bin/backup-init.sh",
     "backup:list": "./bin/backup-list.sh",
