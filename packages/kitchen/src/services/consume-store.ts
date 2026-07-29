@@ -6,8 +6,10 @@
  * side must leave NEITHER applied — this is the hard requirement the plan
  * calls out, and it is deliberately NOT built by composing
  * `EntryStore.insertIfAbsent` + `InventoryStore.updateItemState` as two
- * separate calls (that gap — three separate writes with no shared
- * transaction — was flagged in `convert`'s review, claude-assist#116).
+ * separate calls (that gap — separate writes with no shared transaction — was
+ * flagged in `convert`'s review, claude-assist#116, and later closed there too:
+ * see `InventoryStore.applyConversion`, claude-assist#156. Every multi-write
+ * inventory event now holds the guarantee by this same mechanism).
  *
  * `kitchen.entries` and `kitchen.inventory_items` are each owned by their
  * own store interface (EntryStore / InventoryStore) for testability and
