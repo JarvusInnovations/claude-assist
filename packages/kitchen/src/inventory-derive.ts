@@ -149,11 +149,6 @@ export function needsNutrition(
   return PANEL_KEYS.some((key) => typeof n[key] !== 'number');
 }
 
-/** A full panel of asserted zeros — what a negligible product resolves to. */
-function zeroPanel(): NutritionPer100g {
-  return Object.fromEntries(PANEL_KEYS.map((key) => [key, 0])) as unknown as NutritionPer100g;
-}
-
 /**
  * A product's **effective** per-100g panel — the single place the negligible
  * marker's zero assertion lives (§ Nutritionally negligible products).
@@ -175,7 +170,12 @@ export function productPanel(
 ): NutritionPer100g | null {
   if (!product) return null;
   if (!product.nutrition_negligible) return product.nutrition_per_100g;
-  return { ...zeroPanel(), ...(product.nutrition_per_100g ?? {}) };
+  // Per-field, not a spread: a stored panel's explicit nulls are gaps the marker
+  // fills, so a number someone actually read wins and everything else is 0.
+  const stored = product.nutrition_per_100g;
+  const out = {} as NutritionPer100g;
+  for (const key of PANEL_KEYS) out[key] = stored?.[key] ?? 0;
+  return out;
 }
 
 /**
