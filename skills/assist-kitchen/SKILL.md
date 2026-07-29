@@ -85,6 +85,40 @@ in doubt, read the spec.
   self-heals at the next event). The item only goes terminal `tossed` when `--fraction` is
   omitted (full toss) or the remainder hits zero. Contrast `opened` (where `--fraction` is
   the absolute *remaining* fraction) and `finished` (always terminal, zeroed).
+- **Food moved between freezer and fridge? That is an event, and it restarts the clock.**
+  A shelf-life class is a claim about *where an item lives*, so when it physically changes
+  appliance, run `inventory event <ulid> moved --to <class>` — freezer→fridge to thaw
+  (`--to fridge_short`), fridge→freezer to park a clock (`--to frozen`). The clock
+  **restarts from the move date** on the destination class; state and `opened_at` are left
+  alone (moving a sealed pack doesn't open it). The failure this prevents is the dangerous
+  direction: an item still recorded `frozen` days after it thawed reads as indefinitely
+  safe while running a ~1-week fuse. Two things that look like substitutes and are not:
+  never fake a move with `event opened --at` or `recount --opened-at` on a sealed pack
+  (that trades a wrong date for a wrong *state*), and don't use `recount --shelf-life` for
+  a move — that says "the class was always wrong" and re-derives against the **old**
+  anchor, under-reporting urgency by however long the item sat in its previous storage. Use
+  `recount --shelf-life` only for a class that was genuinely mis-recorded from the start.
+  `--at` is the date the move **actually happened**, even if the decision came a day earlier.
+- **A package can be counted *and* openable — say which kind with `--unit-seal`.** For a
+  counted item (`--units-total N`), `--unit-seal individual` (the default) means each unit
+  has its own seal (a can 3-pack, yogurt cups), so opening one leaves the rest at the
+  unopened window and each `finished-unit` returns the item to `stocked` on a fresh clock.
+  `--unit-seal shared` means **one seal over all the units** — a 4-link vacuum pack, a
+  sliced loaf, an egg carton, a tray of prepped portions — so opening the container puts the
+  whole remainder on the opened clock, and `finished-unit` keeps the item `open` and only
+  moves the count. Set `shared` on anything you open once and then eat from several times;
+  otherwise the ledger reports a sealed-window safety margin for food that is physically
+  open. For any counted item `on_hand_fraction` is **derived** (`units_remaining /
+  units_total`), so recount it with `--units-remaining`, never `--fraction`.
+- **`recount` reaches every field an observation can settle, and `eat_by` is not one of
+  them.** Besides quantities and state it takes `--shelf-life`, `--needs-info` /
+  `--no-needs-info`, and `--product-ulid` / `--unlink-product`. `--no-needs-info` is the
+  door when there is no label to scan (a spice jar carries no Nutrition Facts panel at all,
+  so rescanning can never clear the flag), and `--product-ulid` attaches or re-points an
+  identity without inventing a decoy record to merge. `eat_by` is never settable — it is
+  derived from the class, which is exactly what makes the class mean something. And a
+  correctly-classed item gets a clock **even while `needs_info` is set**: not knowing the
+  brand has nothing to do with how fast it rots.
 - **Never retire a record with `finished` or `tossed` just to get it out of the way.** Those
   are claims about food: `finished` says it was eaten, `tossed` says it was wasted and feeds
   waste telemetry someone will later act on. For a record that was never real stock — a
@@ -204,14 +238,14 @@ in doubt, read the spec.
 
 - `scripts/kitchen-axi inventory list [--state S] [--closed] [--limit N]` — on-hand items in eat-first (eat_by ascending) order; --state filters, --closed includes finished/tossed
 - `scripts/kitchen-axi inventory show <ulid>` — one inventory item with derived eat_by / days-until / age
-- `scripts/kitchen-axi inventory add [--raw-label T] [--product-ulid U] [--store S] [--acquired-at DATE] [--fraction F] [--units-total N] [--state S] [--needs-info] [--shelf-life C] [--notes T] [--ulid U]` — create an item directly (manual/verbal purchase or seed); --units-total makes it a counted item (sealed multipack) instead of fraction-modeled; idempotent when --ulid supplied
-- `scripts/kitchen-axi inventory event <ulid> <opened|finished|finished-unit|tossed> [--fraction F] [--at DATE]` — explicit state change; for tossed, --fraction is the AMOUNT TOSSED (partial toss decrements + stays alive, terminal only at zero remainder or when omitted); finished-unit is a counted item's integer one-unit decrement. These four are CONSUMPTION/WASTE verbs only — the fifth state, dismissed, has its own verb ('inventory dismiss') and is what retires a record that was never real
-- `scripts/kitchen-axi inventory recount <ulid> [--fraction F] [--units-remaining N] [--units-total N] [--uncounted] [--state stocked|open] [--opened-at DATE] [--notes T]` — RECONCILE the ledger to observed reality ("it's actually 75% full", "really 2 of 3 cans", "never opened") — a correction, NOT a consumption event; never invents a clock, re-derives eat_by, can reclassify the unit model, and --state can resurrect a mis-closed item
+- `scripts/kitchen-axi inventory add [--raw-label T] [--product-ulid U] [--store S] [--acquired-at DATE] [--fraction F] [--units-total N] [--unit-seal individual|shared] [--state S] [--needs-info] [--shelf-life C] [--notes T] [--ulid U]` — create an item directly (manual/verbal purchase or seed); --units-total makes it a counted item instead of fraction-modeled, and --unit-seal says what that package seals — shared for one seal over N units (a 4-link pack, a sliced loaf), individual (default) for separately-sealed units (a can 3-pack); a supplied --shelf-life derives an eat_by even with --needs-info; idempotent when --ulid supplied
+- `scripts/kitchen-axi inventory event <ulid> <opened|finished|finished-unit|tossed|moved> [--fraction F] [--to CLASS] [--at DATE]` — explicit event; for tossed, --fraction is the AMOUNT TOSSED (partial toss decrements + stays alive, terminal only at zero remainder or when omitted); finished-unit is a counted item's integer one-unit decrement, whose outcome depends on --unit-seal (individual — back to a fresh sealed clock; shared — stays open on the container's clock). 'moved --to <class>' is the STORAGE MOVE: an item physically changed appliance (freezer to fridge to thaw, fridge to freezer to park a clock), so its clock RESTARTS from the move date on the destination class — state and opened_at are untouched, and --at is the date of the ACT, not of the intention. The consumption/waste verbs never reach the fifth state, dismissed, which has its own verb ('inventory dismiss')
+- `scripts/kitchen-axi inventory recount <ulid> [--fraction F] [--units-remaining N] [--units-total N] [--uncounted] [--unit-seal individual|shared] [--state stocked|open] [--opened-at DATE] [--shelf-life C] [--needs-info|--no-needs-info] [--product-ulid U|--unlink-product] [--notes T]` — RECONCILE the ledger to observed reality ("it's actually 75% full", "really 2 of 3 cans", "never opened", "this was always a fridge item", "this is that product") — a correction, NOT a consumption event; never invents a clock, re-derives eat_by (never settable), can reclassify the unit model + seal, corrects the class against the EXISTING anchor (a real storage move is 'event ... moved' instead), clears or re-queues needs-info without a label scan, re-points product_ulid, and --state can resurrect a mis-closed item
 - `scripts/kitchen-axi inventory dismiss <ulid> [--non-inventory]` — RETIRE a record that was never real stock — a phantom item, or a non-grocery receipt line (housewares). The ONLY terminal that claims neither consumption nor waste, so it never pollutes either telemetry: never close a phantom with 'event finished' (a consumption that didn't happen) or 'event tossed' (waste that didn't happen). --non-inventory also dismisses same-line siblings and teaches future receipts to skip the line. 409 if the item is already terminal
-- `scripts/kitchen-axi inventory merge <ulid> --into <ulid>` — fold a DUPLICATE item (two records, ONE physical package) into a survivor: fills only the survivor's EMPTY identity fields (this is the one way to move product_ulid onto an item), relinks its entries/receipt line/conversions, then retires it as dismissed. Quantities are never summed and the survivor keeps its OWN clock — use this, not dismiss, whenever either record has history
+- `scripts/kitchen-axi inventory merge <ulid> --into <ulid>` — fold a DUPLICATE item (two records, ONE physical package) into a survivor: fills only the survivor's EMPTY identity fields, relinks its entries/receipt line/conversions, then retires it as dismissed. Quantities are never summed and the survivor keeps its OWN clock — use this, not dismiss, whenever either record has history
 - `scripts/kitchen-axi inventory remark "<free text>" [--at DATE]` — free-text event resolver — matches a remark to an item and infers opened/finished/tossed; prints matched/unmatched honestly (unmatched is normal, not an error)
 - `scripts/kitchen-axi inventory questions [--limit N]` — open needs-info items as one-time questions
-- `scripts/kitchen-axi inventory convert [--from <ulid>[:amount]…] --to '<derived spec json>' [--at DATE]` — prep transform: create a NEW derived item with its own clock + provenance, optionally decrementing source item(s) (count or fraction); --from is OPTIONAL — with none it is a source-less "I made this" that decrements nothing. Pass --to recipe_ulid to make the item one-tap consume-eligible. THIS is how prepped food reaches the consume shelf — never plain 'inventory add'
+- `scripts/kitchen-axi inventory convert [--from <ulid>[:amount]…] --to '<derived spec json>' [--at DATE]` — prep transform: create a NEW derived item with its own clock + provenance (--to takes unit_seal alongside units_total for a counted batch: shared for a tray under one lid, individual for separately-lidded jars), optionally decrementing source item(s) (count or fraction); --from is OPTIONAL — with none it is a source-less "I made this" that decrements nothing. Pass --to recipe_ulid to make the item one-tap consume-eligible. THIS is how prepped food reaches the consume shelf — never plain 'inventory add'
 - `scripts/kitchen-axi inventory consume <item-ulid> [--quantity N] [--at DATE] [--ulid ENTRY_ULID]` — one-tap: log a consumption entry with the item's EXACT known macros (no model call) and deplete it, in ONE atomic step; only recipe-linked derived items qualify (else 400); idempotent on --ulid
 
 ### Receipts

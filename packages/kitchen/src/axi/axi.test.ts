@@ -3,12 +3,21 @@ import { AxiError } from "axi-sdk-js";
 import { DEFAULT_SERVER, resolveServer, buildMultipartForm } from "./client.js";
 import { parseArgs, collectFlag, parseNumberFlag, splitCsv } from "./args.js";
 import { sumEffective, effectiveMacro, targetLine, nestedSugarLine } from "./format.js";
-import { commandReferenceText, COMMAND_GROUPS, MACRO_PANEL_FLAGS, MACRO_PANEL_FLAG_NAMES } from "./reference.js";
+import {
+  commandReferenceText,
+  COMMAND_GROUPS,
+  MACRO_PANEL_FLAGS,
+  MACRO_PANEL_FLAG_NAMES,
+  SHELF_LIFE_CLASSES,
+  STORAGE_MOVE_SHELF_LIFE_CLASSES,
+  UNIT_SEALS,
+} from "./reference.js";
 import { spliceGeneratedRegions, commandReferenceMarkdown } from "./skill.js";
 import { buildLogEntryFields, buildPatchBody } from "./commands/entries.js";
 import {
   assertConvertShelfLifeClass,
   assertEventType,
+  assertMoveDestination,
   buildDismissBody,
   INVENTORY_HELP,
 } from "./commands/inventory.js";
@@ -501,6 +510,88 @@ describe("inventory retirement + merge are reachable and discoverable", () => {
     // `--at` goes through the same bare-date coercion every other verb uses
     // (local noon, never midnight UTC — which would land on the wrong day).
     expect(String(buildDismissBody({ at: "2026-07-19" }).at)).toStartWith("2026-07-19T12:00:00");
+  });
+});
+
+describe("storage moves + the open-container seal are reachable from the CLI", () => {
+  it("documents `moved --to`, `--unit-seal`, and the widened recount flags in the reference", () => {
+    const text = commandReferenceText();
+    expect(text).toContain("moved");
+    expect(text).toContain("[--to CLASS]");
+    expect(text).toContain("[--unit-seal individual|shared]");
+    for (const flag of ["--shelf-life C", "--needs-info|--no-needs-info", "--product-ulid U|--unlink-product"]) {
+      expect(text).toContain(flag);
+    }
+  });
+
+  it("accepts `moved` as an event type and still redirects the fifth state", () => {
+    expect(() => assertEventType("moved")).not.toThrow();
+    expect(() => assertEventType("dismissed", "01ABC")).toThrow(AxiError);
+  });
+
+  it("refuses a `moved` with no destination, and names the classes plus the recount alternative", () => {
+    try {
+      assertMoveDestination("moved", undefined);
+      throw new Error("should have thrown");
+    } catch (err) {
+      const suggestions = (err as AxiError).suggestions.join(" ");
+      expect(suggestions).toContain("fridge_short");
+      expect(suggestions).toContain("frozen");
+      // `unknown` is not a destination, and the honest alternative is named.
+      expect(suggestions).toContain("recount --shelf-life unknown");
+    }
+    // `unknown` supplied explicitly gets the same redirect, not a bare enum error.
+    try {
+      assertMoveDestination("moved", "unknown");
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect((err as AxiError).suggestions.join(" ")).toContain("recount --shelf-life unknown");
+    }
+    expect(() => assertMoveDestination("moved", "fridge_short")).not.toThrow();
+    expect(() => assertMoveDestination("moved", "frozen")).not.toThrow();
+  });
+
+  it("refuses `--to` on any other verb and names BOTH the move and the class-correction verbs", () => {
+    // The two are not substitutes (§ Reconcile / § Storage moves), so the
+    // refusal has to say which one the caller meant rather than just "no".
+    try {
+      assertMoveDestination("opened", "frozen");
+      throw new Error("should have thrown");
+    } catch (err) {
+      const suggestions = (err as AxiError).suggestions.join(" ");
+      expect(suggestions).toContain("moved --to");
+      expect(suggestions).toContain("recount <ulid> --shelf-life");
+    }
+    expect(() => assertMoveDestination("tossed", undefined)).not.toThrow();
+  });
+
+  it("teaches the storage move and the shared seal in the inventory help", () => {
+    // Both are decisive rules an agent has to know at write time: the dangerous
+    // direction is an item still recorded frozen days after it thawed.
+    expect(INVENTORY_HELP).toContain("moved --to");
+    expect(INVENTORY_HELP).toContain("--unit-seal");
+    expect(INVENTORY_HELP).toContain("shared");
+    // …and the two workarounds it has to NOT reach for.
+    expect(INVENTORY_HELP).toContain("recount --shelf-life");
+    expect(INVENTORY_HELP).toContain("date of\n  the ACT");
+  });
+
+  it("no longer claims merge is the ONLY way to move a product onto an item", () => {
+    // Reconcile reaches product_ulid now; help that still said otherwise would
+    // push agents into minting a decoy item to merge.
+    expect(INVENTORY_HELP).not.toContain("ONLY way to attach a product");
+    expect(commandReferenceText()).not.toContain("the one way to move product_ulid");
+  });
+
+  it("stops refusing `prepared` on --shelf-life, a class the server accepts", () => {
+    // Drift the widening surfaced: the CLI's class list omitted `prepared`
+    // while it was a real member of the enum, so `add --shelf-life prepared`
+    // failed client-side for something the API takes.
+    expect(SHELF_LIFE_CLASSES).toContain("prepared");
+    // A move destination is every real class except `unknown` — not a place.
+    expect(STORAGE_MOVE_SHELF_LIFE_CLASSES).not.toContain("unknown");
+    expect(STORAGE_MOVE_SHELF_LIFE_CLASSES).toContain("prepared");
+    expect(UNIT_SEALS).toEqual(["individual", "shared"]);
   });
 });
 
