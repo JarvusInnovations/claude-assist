@@ -9,6 +9,8 @@ import {
   ConsumeValidationError,
   ConversionValidationError,
   InventoryPipeline,
+  ItemConflictError,
+  ItemValidationError,
   NotCountedItemError,
   ReconcileValidationError,
 } from './inventory.js';
@@ -884,6 +886,183 @@ describe('non-inventory dismissal', () => {
     const view = await pipeline.getBatchView(ULID(41));
     expect(view!.lines[0]!.match_outcome).toBe('unmatched');
     expect(view!.lines[0]!.inventory_item_ulid).not.toBeNull();
+  });
+});
+
+describe('item merge (§ Item corrections)', () => {
+  /**
+   * A pipeline wired the way the module wires it, so the entries relink crosses
+   * the same store seam the depletion matcher's `linkEntry` does.
+   */
+  function harness() {
+    const store = new MemoryInventoryStore();
+    const entries = new MemoryEntryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log, {
+      consumeStore: new MemoryConsumeStore(entries, store),
+      resolveRecipe: async () => null,
+      linkEntry: (entryUlid, itemUlid) => entries.linkInventoryItem(entryUlid, itemUlid),
+      relinkEntries: (from, to) => entries.relinkInventoryItem(from, to),
+    });
+    return { store, entries, pipeline };
+  }
+
+  it('relinks each real dependent onto the survivor and retires the loser as dismissed', async () => {
+    const { store, entries, pipeline } = harness();
+    const product = await store.insertProduct({
+      ulid: ULID(70), name: 'Rolled Oats', shelf_life_class: 'pantry', aliases: [],
+      nutrition_per_100g: null, ingredients: null, package_size: null,
+      shelf_life_days_unopened: null, shelf_life_days_opened: null,
+    });
+    const { item: survivor } = await pipeline.createItem({ product_ulid: product.ulid, acquired_at: '2026-07-01' });
+    const { item: loser } = await pipeline.createItem({ product_ulid: product.ulid, acquired_at: '2026-07-02' });
+
+    // Dependent 1 — a consumption entry that depleted the loser.
+    const { record: entry } = await entries.insertIfAbsent({
+      ulid: ULID(71), logged_at: new Date('2026-07-03T12:00:00Z'), note: 'oatmeal',
+      recipe_ulid: null, component_quantities: null,
+    });
+    await entries.linkInventoryItem(entry.ulid, loser.ulid);
+
+    // Dependent 2 — the receipt line whose representative unit the loser was.
+    const batch = await store.insertBatchIfAbsent({ ulid: ULID(72), source: 'receipt', store: 'Example Grocer', purchased_at: new Date('2026-07-02') });
+    const line = await store.insertLine({
+      ulid: ULID(73), batch_ulid: batch.record.ulid, raw_text: 'ROLLED OATS',
+      match_outcome: 'matched', product_ulid: product.ulid, inventory_item_ulid: loser.ulid,
+    });
+
+    // Dependent 3 — a conversion that SPENT the loser as an input.
+    const { derived } = await pipeline.convert({
+      sources: [{ item_ulid: loser.ulid, amount: 0.5 }],
+      derived: { name: 'Overnight oats jar', units_total: 2 },
+      at: '2026-07-03',
+    });
+
+    const result = await pipeline.mergeItems(loser.ulid, survivor.ulid);
+    expect(result).not.toBeNull();
+    expect(result!.relinked).toEqual({ entries: 1, batch_lines: 1, derivations: 0, derivation_sources: 1 });
+
+    expect((await entries.get(entry.ulid))!.inventory_item_ulid).toBe(survivor.ulid);
+    expect((await store.listLines(batch.record.ulid)).find((l) => l.ulid === line.ulid)!.inventory_item_ulid).toBe(survivor.ulid);
+    const derivation = (await store.getDerivationsByDerivedItemUlids([derived.ulid])).get(derived.ulid)!;
+    expect(derivation.sources.map((s) => s.item_ulid)).toEqual([survivor.ulid]);
+
+    // The loser is retired as dismissed — no consumption, no waste — with a
+    // forward pointer, and is off every on-hand listing.
+    expect(result!.merged.state).toBe('dismissed');
+    expect(result!.merged.merged_into).toBe(survivor.ulid);
+    expect(result!.merged.notes ?? '').not.toContain('tossed');
+    const onHand = (await pipeline.listInventory({})).map((i) => i.ulid);
+    expect(onHand).toContain(survivor.ulid);
+    expect(onHand).not.toContain(loser.ulid);
+  });
+
+  it("moves the loser's derivation only when the survivor has none", async () => {
+    const { store, pipeline } = harness();
+    const { item: oats } = await pipeline.createItem({ raw_label: 'Rolled oats', shelf_life_class: 'pantry', acquired_at: '2026-07-01' });
+
+    // Survivor is a plain item, loser is a made (derived) one: its provenance —
+    // which is what makes an item consume-eligible — moves across.
+    const { item: survivor } = await pipeline.createItem({ raw_label: 'Oat jar', acquired_at: '2026-07-03' });
+    const { derived: loser } = await pipeline.convert({
+      sources: [{ item_ulid: oats.ulid, amount: 0.25 }],
+      derived: { name: 'Overnight oats jar' },
+      at: '2026-07-03',
+    });
+    const first = await pipeline.mergeItems(loser.ulid, survivor.ulid);
+    expect(first!.relinked.derivations).toBe(1);
+    expect((await pipeline.getItemView(survivor.ulid))!.derived_from).not.toBeNull();
+
+    // Now the survivor carries provenance of its own: derived_item_ulid is 1:1,
+    // so a second loser's stays with the loser rather than one being dropped.
+    const { derived: second } = await pipeline.convert({
+      sources: [{ item_ulid: oats.ulid, amount: 0.25 }],
+      derived: { name: 'Overnight oats jar' },
+      at: '2026-07-04',
+    });
+    const again = await pipeline.mergeItems(second.ulid, survivor.ulid);
+    expect(again!.relinked.derivations).toBe(0);
+    expect((await store.getDerivationsByDerivedItemUlids([second.ulid])).has(second.ulid)).toBe(true);
+  });
+
+  it('fills only the survivor’s empty identity fields, re-derives eat_by on its OWN clock, and never sums quantities', async () => {
+    const { store, pipeline } = harness();
+    const product = await store.insertProduct({
+      ulid: ULID(74), name: 'Grape Tomatoes', shelf_life_class: 'produce', aliases: [],
+      nutrition_per_100g: null, ingredients: null, package_size: null,
+      shelf_life_days_unopened: null, shelf_life_days_opened: null,
+    });
+    const { item: survivor } = await pipeline.createItem({
+      raw_label: 'GRAPE TOMATO PINT', store: 'Example Grocer', acquired_at: '2026-07-18',
+      on_hand_fraction: 0.5, needs_info: true,
+    });
+    const { item: loser } = await pipeline.createItem({
+      product_ulid: product.ulid, raw_label: 'New item', store: 'Other Grocer', acquired_at: '2026-07-19',
+    });
+
+    const result = await pipeline.mergeItems(loser.ulid, survivor.ulid);
+    const merged = result!.item;
+    // Gap filled: the identity the loser carried.
+    expect(merged.product_ulid).toBe(product.ulid);
+    expect(merged.needs_info).toBe(false);
+    expect(merged.shelf_life_class).toBe('produce');
+    // NOT overwritten: the survivor's own label and store win.
+    expect(merged.raw_label).toBe('GRAPE TOMATO PINT');
+    expect(merged.store).toBe('Example Grocer');
+    // The survivor's own clock, not the loser's day-later one (7/18 + 7d).
+    expect(merged.acquired_at).toBe('2026-07-18');
+    expect(merged.eat_by).toBe('2026-07-25');
+    // Two records were ONE package: quantities are never added.
+    expect(merged.on_hand_fraction).toBe(0.5);
+  });
+
+  it('merges an already-terminal loser, retracting a finished that was only a workaround', async () => {
+    const { pipeline } = harness();
+    const { item: survivor } = await pipeline.createItem({ raw_label: 'Tomatoes', acquired_at: '2026-07-18' });
+    const { item: loser } = await pipeline.createItem({ raw_label: 'Tomatoes', acquired_at: '2026-07-19' });
+    // The pre-merge era's only reachable retirement: a consumption that never
+    // happened. Merging must not be blocked by it, and must not preserve it.
+    await pipeline.applyEvent(loser.ulid, 'finished', { at: '2026-07-19' });
+
+    const result = await pipeline.mergeItems(loser.ulid, survivor.ulid);
+    expect(result!.merged.state).toBe('dismissed');
+    expect(result!.merged.merged_into).toBe(survivor.ulid);
+    // The original close date is kept — the merge corrects the CLAIM, not the date.
+    expect(result!.merged.closed_at).toBe('2026-07-19');
+  });
+
+  it('is idempotent on a replay and refuses a self-merge, an unknown side, or a cross-target replay', async () => {
+    const { entries, pipeline } = harness();
+    const { item: survivor } = await pipeline.createItem({ raw_label: 'A', acquired_at: '2026-07-18' });
+    const { item: loser } = await pipeline.createItem({ raw_label: 'B', acquired_at: '2026-07-18' });
+    const { item: third } = await pipeline.createItem({ raw_label: 'C', acquired_at: '2026-07-18' });
+    const { record: entry } = await entries.insertIfAbsent({
+      ulid: ULID(75), logged_at: new Date('2026-07-19T12:00:00Z'), note: 'B',
+      recipe_ulid: null, component_quantities: null,
+    });
+    await entries.linkInventoryItem(entry.ulid, loser.ulid);
+
+    const first = await pipeline.mergeItems(loser.ulid, survivor.ulid);
+    expect(first!.relinked.entries).toBe(1);
+    const closedAt = first!.merged.closed_at;
+
+    const replay = await pipeline.mergeItems(loser.ulid, survivor.ulid);
+    expect(replay!.relinked.entries).toBe(0);
+    expect(replay!.merged.closed_at).toBe(closedAt);
+
+    expect(pipeline.mergeItems(survivor.ulid, survivor.ulid)).rejects.toThrow(ItemValidationError);
+    expect(await pipeline.mergeItems(survivor.ulid, ULID(76))).toBeNull();
+    expect(pipeline.mergeItems(loser.ulid, third.ulid)).rejects.toThrow(ItemConflictError);
+    // And a survivor that was itself merged away is refused.
+    expect(pipeline.mergeItems(third.ulid, loser.ulid)).rejects.toThrow(ItemConflictError);
+  });
+
+  it('reports entries: 0 rather than claiming a move when the entries hook is unwired', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log); // no relinkEntries
+    const { item: survivor } = await pipeline.createItem({ raw_label: 'A', acquired_at: '2026-07-18' });
+    const { item: loser } = await pipeline.createItem({ raw_label: 'B', acquired_at: '2026-07-18' });
+    const result = await pipeline.mergeItems(loser.ulid, survivor.ulid);
+    expect(result!.relinked.entries).toBe(0);
   });
 });
 
