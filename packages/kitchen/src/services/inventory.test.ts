@@ -2441,3 +2441,352 @@ describe('receipt prices (§ Prices — capture as printed)', () => {
     expect(items.length).toBe(5); // 1 + 3 + 1 fan-out unaffected
   });
 });
+
+describe('price history (§ Price history)', () => {
+  /** Seed a purchase of `productUlid` at a store on a date, priced as printed. */
+  async function purchase(
+    store: MemoryInventoryStore,
+    opts: {
+      n: number;
+      product_ulid: string;
+      store_name: string | null;
+      purchased_at: string;
+      raw_text: string;
+      price_cents: number | null;
+      quantity?: number;
+      item_ulid?: string | null;
+    }
+  ) {
+    const batch = await store.insertBatchIfAbsent({
+      ulid: ULID(opts.n),
+      source: 'receipt',
+      store: opts.store_name,
+      purchased_at: new Date(opts.purchased_at),
+    });
+    return store.insertLine({
+      ulid: ULID(opts.n + 1),
+      batch_ulid: batch.record.ulid,
+      raw_text: opts.raw_text,
+      quantity: opts.quantity ?? 1,
+      price_cents: opts.price_cents,
+      match_outcome: 'matched',
+      product_ulid: opts.product_ulid,
+      inventory_item_ulid: opts.item_ulid ?? null,
+    });
+  }
+
+  async function seedProduct(store: MemoryInventoryStore, n: number, name: string, extra = {}) {
+    return store.insertProduct({
+      ulid: ULID(n),
+      name,
+      shelf_life_class: 'pantry',
+      aliases: [],
+      nutrition_per_100g: null,
+      ingredients: null,
+      package_size: null,
+      shelf_life_days_unopened: null,
+      shelf_life_days_opened: null,
+      ...extra,
+    });
+  }
+
+  it('normalizes a store-brand item bought at three different package sizes, newest first', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    const product = await seedProduct(store, 200, 'Store-brand rolled oats');
+    await purchase(store, { n: 210, product_ulid: product.ulid, store_name: 'Grocer A', purchased_at: '2026-05-02', raw_text: 'ROLLED OATS 12 OZ', price_cents: 349 });
+    await purchase(store, { n: 220, product_ulid: product.ulid, store_name: 'Grocer B', purchased_at: '2026-06-02', raw_text: 'ROLLED OATS 16 OZ', price_cents: 399 });
+    await purchase(store, { n: 230, product_ulid: product.ulid, store_name: 'Grocer A', purchased_at: '2026-07-02', raw_text: 'ROLLED OATS 42 OZ', price_cents: 799 });
+
+    const history = await pipeline.priceHistory(product.ulid);
+    expect(history!.product_name).toBe('Store-brand rolled oats');
+    expect(history!.count).toBe(3);
+    expect(history!.points.map((p) => p.purchased_at)).toEqual(['2026-07-02', '2026-06-02', '2026-05-02']);
+    // Every point normalized off its OWN package size, so the per-100g series
+    // is comparable even though no two packages match.
+    expect(history!.points.every((p) => p.unit_basis === 'line')).toBe(true);
+    const per100 = history!.points.map((p) => p.cents_per_100g!);
+    expect(per100[0]).toBeLessThan(per100[1]!); // the 42 oz is the cheapest per gram
+    expect(per100[1]).toBeLessThan(per100[2]!);
+  });
+
+  it('falls back to the lexicon package size the store recorded, per store', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    const product = await seedProduct(store, 240, 'Store-brand yogurt');
+    // The line text carries no size; the lexicon mapping for that store does.
+    await store.upsertLexicon({
+      ulid: ULID(241),
+      store: 'Grocer A',
+      line_text: 'PLAIN YOGURT',
+      product_ulid: product.ulid,
+      package_size: '32 oz',
+      shelf_life_class: 'fridge_short',
+    });
+    await purchase(store, { n: 250, product_ulid: product.ulid, store_name: 'Grocer A', purchased_at: '2026-07-02', raw_text: 'PLAIN YOGURT', price_cents: 449 });
+    await purchase(store, { n: 260, product_ulid: product.ulid, store_name: 'Grocer B', purchased_at: '2026-07-03', raw_text: 'PLAIN YOGURT', price_cents: 499 });
+
+    const history = await pipeline.priceHistory(product.ulid);
+    const byStore = new Map(history!.points.map((p) => [p.store, p]));
+    expect(byStore.get('Grocer A')!.unit_basis).toBe('lexicon');
+    expect(byStore.get('Grocer A')!.cents_per_100g).toBeCloseTo(49.47, 1);
+    // Grocer B has no mapping and the product carries no size — honestly null.
+    expect(byStore.get('Grocer B')!.unit_basis).toBeNull();
+    expect(byStore.get('Grocer B')!.cents_per_100g).toBeNull();
+    expect(byStore.get('Grocer B')!.price_cents).toBe(499);
+  });
+
+  it('scopes to one store on request', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    const product = await seedProduct(store, 270, 'Store-brand rice');
+    await purchase(store, { n: 280, product_ulid: product.ulid, store_name: 'Grocer A', purchased_at: '2026-07-02', raw_text: 'RICE 2 LB', price_cents: 299 });
+    await purchase(store, { n: 290, product_ulid: product.ulid, store_name: 'Grocer B', purchased_at: '2026-07-03', raw_text: 'RICE 2 LB', price_cents: 349 });
+
+    const scoped = await pipeline.priceHistory(product.ulid, { store: 'Grocer B' });
+    expect(scoped!.count).toBe(1);
+    expect(scoped!.points[0]!.price_cents).toBe(349);
+  });
+
+  it('unions both records’ purchases after a product merge, and empties the loser', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    // Two records for one real product — the duplicate the merge path exists for.
+    const survivor = await seedProduct(store, 300, 'Store-brand oat milk', { package_size: '64 fl oz' });
+    const loser = await seedProduct(store, 310, 'OAT MILK 64OZ', { package_size: '64 fl oz' });
+    await purchase(store, { n: 320, product_ulid: survivor.ulid, store_name: 'Grocer A', purchased_at: '2026-06-02', raw_text: 'OAT MILK', price_cents: 429 });
+    await purchase(store, { n: 330, product_ulid: loser.ulid, store_name: 'Grocer A', purchased_at: '2026-07-02', raw_text: 'OAT MILK', price_cents: 459 });
+
+    expect((await pipeline.priceHistory(survivor.ulid))!.count).toBe(1);
+    const merge = await pipeline.mergeProducts(loser.ulid, survivor.ulid);
+    expect(merge!.relinked.batch_lines).toBe(1);
+
+    // The merge relinks purchase_batch_lines.product_ulid, which is exactly the
+    // column this read keys on — so the union needs no history-specific step.
+    const merged = await pipeline.priceHistory(survivor.ulid);
+    expect(merged!.count).toBe(2);
+    expect(merged!.points.map((p) => p.price_cents)).toEqual([459, 429]);
+    expect(merged!.points.every((p) => p.unit_basis === 'product_net_content' || p.unit_basis === 'product_package_size')).toBe(true);
+
+    // The retired loser still resolves by ULID (history must survive
+    // retirement) and honestly reads empty — its lines moved.
+    const loserHistory = await pipeline.priceHistory(loser.ulid);
+    expect(loserHistory).not.toBeNull();
+    expect(loserHistory!.count).toBe(0);
+  });
+
+  it('is null for an unknown product', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    expect(await pipeline.priceHistory(ULID(399))).toBeNull();
+  });
+
+  it('reads prices a real receipt parse recorded, with no seeding of its own', async () => {
+    const store = new MemoryInventoryStore();
+    const product = await seedProduct(store, 340, 'Store-brand black beans');
+    await store.upsertLexicon({
+      ulid: ULID(341),
+      store: 'Example Grocer',
+      line_text: 'BLACK BEANS 15 OZ',
+      product_ulid: product.ulid,
+      package_size: '15 oz',
+      shelf_life_class: 'pantry',
+    });
+    const parser = new FakeReceiptParser({
+      store: 'Example Grocer',
+      total_cents: 356,
+      lines: [{ text: 'BLACK BEANS 15 OZ', quantity: 2, price_cents: 356 }],
+    });
+    const pipeline = new InventoryPipeline(store, parser, null, log);
+    await pipeline.ingestReceipt({ ulid: ULID(350), purchased_at: '2026-07-22' }, [photo]);
+    await pipeline.settle();
+
+    const history = await pipeline.priceHistory(product.ulid);
+    expect(history!.count).toBe(1);
+    const point = history!.points[0]!;
+    expect(point.price_cents).toBe(356);
+    expect(point.quantity).toBe(2);
+    expect(point.package_price_cents).toBe(178); // per can, a read-time division
+    expect(point.cents_per_100g).toBeCloseTo(41.86, 1);
+  });
+});
+
+describe('waste costing (§ Waste costing)', () => {
+  async function harness() {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    const product = await store.insertProduct({
+      ulid: ULID(400),
+      name: 'Store-brand greens',
+      shelf_life_class: 'produce',
+      aliases: [],
+      nutrition_per_100g: null,
+      ingredients: null,
+      package_size: null,
+      shelf_life_days_unopened: null,
+      shelf_life_days_opened: null,
+    });
+    return { store, pipeline, product };
+  }
+
+  /** A priced receipt line, optionally naming the item it created. */
+  async function pricedBatch(
+    store: MemoryInventoryStore,
+    opts: { n: number; product_ulid: string; purchased_at: string; price_cents: number | null; item_ulid?: string; quantity?: number }
+  ) {
+    const batch = await store.insertBatchIfAbsent({
+      ulid: ULID(opts.n),
+      source: 'receipt',
+      store: 'Example Grocer',
+      purchased_at: new Date(opts.purchased_at),
+    });
+    const line = await store.insertLine({
+      ulid: ULID(opts.n + 1),
+      batch_ulid: batch.record.ulid,
+      raw_text: 'MIXED GREENS 5 OZ',
+      quantity: opts.quantity ?? 1,
+      price_cents: opts.price_cents,
+      match_outcome: 'matched',
+      product_ulid: opts.product_ulid,
+      inventory_item_ulid: opts.item_ulid ?? null,
+    });
+    return { batch: batch.record, line };
+  }
+
+  it('costs a partial toss by the fraction discarded, off the item’s OWN receipt line', async () => {
+    const { store, pipeline, product } = await harness();
+    const { batch } = await pricedBatch(store, { n: 410, product_ulid: product.ulid, purchased_at: '2026-07-18', price_cents: 499 });
+    const { item } = await pipeline.createItem({
+      product_ulid: product.ulid,
+      batch_ulid: batch.ulid,
+      store: 'Example Grocer',
+      acquired_at: '2026-07-18',
+    });
+    // A quarter goes in the bin; the item stays alive (directional).
+    await pipeline.applyEvent(item.ulid, 'tossed', { fraction: 0.25, at: '2026-07-21' });
+
+    const report = await pipeline.wasteReport();
+    expect(report.count).toBe(1);
+    const row = report.waste[0]!;
+    expect(row.product_name).toBe('Store-brand greens');
+    expect(row.tossed_at).toBe('2026-07-21');
+    expect(row.amount_fraction).toBe(0.25);
+    expect(row.terminal).toBe(false);
+    expect(row.cost_basis).toBe('batch_line');
+    expect(row.cost_cents).toBeCloseTo(124.75, 2); // a quarter of 499¢, not 499¢
+    expect(row.priced_at).toBe('2026-07-18');
+    expect(report.totals).toEqual({ rows: 1, cost_cents: 124.75, cost_unknown_rows: 0 });
+  });
+
+  it('costs a counted item’s toss by the SEALED UNITS discarded, not the whole pack', async () => {
+    const { store, pipeline, product } = await harness();
+    const { batch } = await pricedBatch(store, { n: 420, product_ulid: product.ulid, purchased_at: '2026-07-01', price_cents: 1200 });
+    const { item } = await pipeline.createItem({
+      product_ulid: product.ulid,
+      batch_ulid: batch.ulid,
+      acquired_at: '2026-07-01',
+      units_total: 12,
+    });
+    // Ten units were eaten one at a time; the last two spoiled and were tossed.
+    for (let i = 0; i < 10; i++) {
+      await pipeline.applyEvent(item.ulid, 'finished-unit', { at: '2026-07-05' });
+    }
+    const tossed = await pipeline.applyEvent(item.ulid, 'tossed', { at: '2026-07-10' });
+    expect(tossed!.state).toBe('tossed');
+    // on_hand_fraction is still 1.0 on a counted item — the note's unit count is
+    // what keeps the cost honest.
+    expect(tossed!.notes).toContain('tossed 1 (2u) 2026-07-10');
+
+    const report = await pipeline.wasteReport();
+    const row = report.waste[0]!;
+    expect(row.units).toBe(2);
+    expect(row.cost_cents).toBe(200); // two twelfths of 1200¢
+    expect(row.terminal).toBe(true);
+  });
+
+  it('reads an item with no priced purchase as UNKNOWN cost, never zero', async () => {
+    const { pipeline } = await harness();
+    // A manually-seeded item: no batch, no receipt, no price anywhere.
+    const { item } = await pipeline.createItem({ raw_label: 'Leftover soup', shelf_life_class: 'prepared', acquired_at: '2026-07-19' });
+    await pipeline.applyEvent(item.ulid, 'tossed', { at: '2026-07-24' });
+
+    const report = await pipeline.wasteReport();
+    expect(report.count).toBe(1);
+    const row = report.waste[0]!;
+    expect(row.product_name).toBe('Leftover soup');
+    expect(row.cost_cents).toBeNull();
+    expect(row.cost_basis).toBe('unknown');
+    expect(row.price_line_ulid).toBeNull();
+    // The total does NOT absorb the unknown row as a zero — it says how partial
+    // it is (§ Waste costing).
+    expect(report.totals).toEqual({ rows: 1, cost_cents: 0, cost_unknown_rows: 1 });
+  });
+
+  it('falls back to the product’s nearest priced purchase when the item’s own line is unpriced', async () => {
+    const { store, pipeline, product } = await harness();
+    // An earlier purchase carried a price; the item's own line did not.
+    await pricedBatch(store, { n: 430, product_ulid: product.ulid, purchased_at: '2026-06-10', price_cents: 449 });
+    const { batch } = await pricedBatch(store, { n: 440, product_ulid: product.ulid, purchased_at: '2026-07-18', price_cents: null });
+    const { item } = await pipeline.createItem({
+      product_ulid: product.ulid,
+      batch_ulid: batch.ulid,
+      acquired_at: '2026-07-18',
+    });
+    await pipeline.applyEvent(item.ulid, 'tossed', { at: '2026-07-22' });
+
+    const row = (await pipeline.wasteReport()).waste[0]!;
+    expect(row.cost_basis).toBe('product_price');
+    expect(row.cost_cents).toBe(449);
+    expect(row.priced_at).toBe('2026-06-10');
+  });
+
+  it('excludes a mistakenly-tossed duplicate that was merged away — structured state, not the note', async () => {
+    const { store, pipeline, product } = await harness();
+    const { batch } = await pricedBatch(store, { n: 450, product_ulid: product.ulid, purchased_at: '2026-07-18', price_cents: 500 });
+    const { item: survivor } = await pipeline.createItem({ product_ulid: product.ulid, batch_ulid: batch.ulid, acquired_at: '2026-07-18' });
+    const { item: duplicate } = await pipeline.createItem({ product_ulid: product.ulid, batch_ulid: batch.ulid, acquired_at: '2026-07-19' });
+
+    // The duplicate was closed out as `tossed` before anyone noticed it was a
+    // duplicate — a claim about food that never existed.
+    await pipeline.applyEvent(duplicate.ulid, 'tossed', { at: '2026-07-20' });
+    expect((await pipeline.wasteReport()).count).toBe(1);
+
+    // Merging it away retracts its state; the stale `tossed …` note stays in
+    // the notes, but the read gates on state, so the waste goes with it.
+    const merge = await pipeline.mergeItems(duplicate.ulid, survivor.ulid);
+    expect(merge!.merged.state).toBe('dismissed');
+    expect(merge!.merged.notes).toContain('tossed');
+    const report = await pipeline.wasteReport();
+    expect(report.count).toBe(0);
+    expect(report.totals).toEqual({ rows: 0, cost_cents: 0, cost_unknown_rows: 0 });
+  });
+
+  it('reports every toss on an item, newest first, and windows by toss date', async () => {
+    const { store, pipeline, product } = await harness();
+    const { batch } = await pricedBatch(store, { n: 460, product_ulid: product.ulid, purchased_at: '2026-07-01', price_cents: 800 });
+    const { item } = await pipeline.createItem({ product_ulid: product.ulid, batch_ulid: batch.ulid, acquired_at: '2026-07-01' });
+    await pipeline.applyEvent(item.ulid, 'tossed', { fraction: 0.25, at: '2026-07-05' });
+    await pipeline.applyEvent(item.ulid, 'tossed', { fraction: 0.25, at: '2026-07-09' });
+
+    const all = await pipeline.wasteReport();
+    expect(all.waste.map((r) => r.tossed_at)).toEqual(['2026-07-09', '2026-07-05']);
+    expect(all.totals.cost_cents).toBe(400); // two quarters of 800¢
+    // Neither partial closed the item, so neither is terminal.
+    expect(all.waste.every((r) => r.terminal === false)).toBe(true);
+
+    const windowed = await pipeline.wasteReport({ since: '2026-07-07' });
+    expect(windowed.count).toBe(1);
+    expect(windowed.waste[0]!.tossed_at).toBe('2026-07-09');
+    expect((await pipeline.wasteReport({ until: '2026-07-06' })).count).toBe(1);
+  });
+
+  it('never counts a dismissal or a finish as waste', async () => {
+    const { pipeline } = await harness();
+    const { item: housewares } = await pipeline.createItem({ raw_label: 'SOUP MUG', store: 'Example Grocer', needs_info: true, acquired_at: '2026-07-18' });
+    await pipeline.dismissItem(housewares.ulid, { nonInventory: true });
+    const { item: eaten } = await pipeline.createItem({ raw_label: 'Rice', shelf_life_class: 'pantry', acquired_at: '2026-07-18' });
+    await pipeline.applyEvent(eaten.ulid, 'finished', { at: '2026-07-20' });
+
+    expect((await pipeline.wasteReport()).count).toBe(0);
+  });
+});
