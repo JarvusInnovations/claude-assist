@@ -1,5 +1,5 @@
 ---
-status: planned
+status: done
 depends: [item-corrections]
 specs:
   - specs/modules/kitchen.md
@@ -84,8 +84,9 @@ re-litigate them.
   inventory write rather than a rider on this one — every read-modify-write here
   (`updateItemState`, reconcile, the event pipeline) has the same window, and it
   predates this change. Filed under Follow-ups.
-- **No migration run against any database.** `019` is additive with nullable
-  columns and applies on next boot; nothing here backfills or rewrites a row.
+- **No migration run against a live database.** `019` is additive with nullable
+  columns and applies on next boot; nothing here backfills or rewrites a row. (It
+  *was* applied to a throwaway container to validate the SQL — see Notes.)
 - **The receipt parser, the estimator, and the pages module** are untouched.
 - **Extending the label scan's `unit_model_hint` to distinguish the two seals.**
   It is currently `'counted' | 'fraction'`; a third value would be a genuine
@@ -161,51 +162,51 @@ re-litigate them.
 
 ## Validation
 
-- [ ] `bun run test`, `bun run build`, `bun run type-check:axi`,
+- [x] `bun run test`, `bun run build`, `bun run type-check:axi`,
       `bun run check:skills` all green.
-- [ ] A sealed pack acquired frozen and `moved --to fridge_short` on day 8 gets an
+- [x] A sealed pack acquired frozen and `moved --to fridge_short` on day 8 gets an
       `eat_by` of day 8 + the fridge unopened window — not day 0 + it, and not a
       resumed frozen clock.
-- [ ] The inverse works: an **opened** item moved to `frozen` takes `frozen`'s
+- [x] The inverse works: an **opened** item moved to `frozen` takes `frozen`'s
       **opened** window from the move date, and its `opened_at` and state survive.
-- [ ] A move records `moved <from>→<to> <date>` in `notes`, and repeated moves
+- [x] A move records `moved <from>→<to> <date>` in `notes`, and repeated moves
       re-anchor to the latest while keeping every line in the note history.
-- [ ] A move into the item's current class still re-anchors (not a no-op); `to:
+- [x] A move into the item's current class still re-anchors (not a no-op); `to:
       'unknown'` is `400`; a `to` on any other event type is `400`; a `moved` on a
       terminal item is `409`.
-- [ ] The reported date is the act's date: `--at` yesterday anchors to yesterday,
+- [x] The reported date is the act's date: `--at` yesterday anchors to yesterday,
       omitted `--at` anchors to today.
-- [ ] A frozen item keeps an `eat_by` and sorts below perishables in the eat-first
+- [x] A frozen item keeps an `eat_by` and sorts below perishables in the eat-first
       read rather than being suppressed.
-- [ ] `PATCH` accepts `shelf_life_class`, `needs_info`, `product_ulid`, and
+- [x] `PATCH` accepts `shelf_life_class`, `needs_info`, `product_ulid`, and
       `unit_seal`; a `shelf_life_class` correction re-derives against the existing
       anchor and does **not** stamp `storage_moved_at`.
-- [ ] `product_ulid` on reconcile clears `needs_info`, adopts the product's class
+- [x] `product_ulid` on reconcile clears `needs_info`, adopts the product's class
       only when the item has none, folds in the product's day-window overrides,
       and rejects an unknown or archived target (naming the survivor when the
       archived product was merged).
-- [ ] An item created with `needs_info: true` **and** an explicit class derives an
+- [x] An item created with `needs_info: true` **and** an explicit class derives an
       `eat_by` and appears in eat-first; a receipt-seeded `needs_info` item with no
       class still has `eat_by: null`.
-- [ ] `finished-unit` on a `shared`-seal counted item keeps it `open`, keeps
+- [x] `finished-unit` on a `shared`-seal counted item keeps it `open`, keeps
       `opened_at`, keeps the opened-window `eat_by`, and decrements the count;
       the last unit still goes terminal `finished`.
-- [ ] `finished-unit` on a **stocked** `shared`-seal item implies the open (stamps
+- [x] `finished-unit` on a **stocked** `shared`-seal item implies the open (stamps
       `opened_at` at the event date, derives the opened window).
-- [ ] `finished-unit` on an `individual`-seal item is unchanged: back to `stocked`,
+- [x] `finished-unit` on an `individual`-seal item is unchanged: back to `stocked`,
       `opened_at` cleared, fresh unopened clock.
-- [ ] `consume` with `--quantity` follows the same split on both seals.
-- [ ] `on_hand_fraction` on the wire is `units_remaining / units_total` for a
+- [x] `consume` with `--quantity` follows the same split on both seals.
+- [x] `on_hand_fraction` on the wire is `units_remaining / units_total` for a
       counted item (`1` of `4` reads `0.25`, zero reads `0`), and untouched for a
       fraction-modeled one. `PATCH on_hand_fraction` on a counted item still `400`s.
-- [ ] The interaction case: a counted `shared`-seal pack that is **opened, then
+- [x] The interaction case: a counted `shared`-seal pack that is **opened, then
       moved between storages** keeps its count, keeps `open`, and takes the
       destination class's **opened** window from the move date.
-- [ ] `unit_seal` is refused without a count (on create and on reconcile), and
+- [x] `unit_seal` is refused without a count (on create and on reconcile), and
       reverting a counted item to the fraction model clears it.
-- [ ] Migration `019` re-applies cleanly (both `ADD COLUMN IF NOT EXISTS` and the
+- [x] Migration `019` re-applies cleanly (both `ADD COLUMN IF NOT EXISTS` and the
       `DO $$` CHECK block no-op on a second run).
-- [ ] `moved`, `--unit-seal`, and the widened `recount` flags appear in the
+- [x] `moved`, `--unit-seal`, and the widened `recount` flags appear in the
       generated reference and the spliced SKILL.md.
 
 ## Risks / unknowns
@@ -239,8 +240,115 @@ re-litigate them.
 
 ## Notes
 
-*Populated at closeout.*
+- **The `max(base, storage_moved_at)` anchor is the whole storage-move feature, and
+  it is four lines.** Every alternative considered was worse: a fourth branch in
+  `deriveEatBy` needed an ordering rule between "moved" and "opened" that callers
+  would have to know; rewriting `acquired_at` on a move destroys `age_days` and
+  contradicts the spec's untouchable-`acquired_at` rule; storing the computed
+  `eat_by` as owner-set makes the class stop meaning anything. Taking the latest
+  legitimate window start turns move-then-open and open-then-move into the same
+  expression, and it re-anchors a `prepared` dish for free — which is right, and
+  which none of the branch-based designs got without a special case.
+- **The state machine gained its first state-PRESERVING transition.** Every prior
+  event either advanced the state or (for `finished-unit`) had the pipeline
+  override the table's answer. `moved` returns the state it was given. That is
+  what makes it composable with the open-container model: a move on an opened
+  shared-seal pack keeps the count, the open state, and the opened window, and only
+  the anchor changes — the three-way interaction test is one assertion block
+  because nothing had to be special-cased for it.
+- **`unit_seal` nullable, read as `individual`, was chosen over `NOT NULL DEFAULT`.**
+  A non-null default claims a seal for every fraction-modeled row, where the notion
+  doesn't apply, and would need a backfill on a table whose existing counted rows
+  are indistinguishable from either kind. Nullable keeps "no seal" and
+  "individually sealed" distinguishable in storage and the migration free of any
+  data motion; the cost is that the default lives in `unitSealOf` rather than in a
+  constraint, so a test asserts it instead.
+- **`on_hand_fraction` becoming derived caught a live wrong number, not a
+  hypothetical.** An existing depletion-matcher test asserted
+  `on_hand_fraction === 1` on a 9-pack with 8 units left, with the comment "the
+  fraction was left alone (it means nothing on a counted item)". It didn't mean
+  nothing — it went out on the wire, and the briefing's eat-first SQL read the
+  column directly, so the daily read reported a nearly-empty pack as full. That
+  assertion was the defect written down; it now asserts 8/9.
+- **`product_ulid` on reconcile was the one genuinely arguable call, and the
+  deciding argument was the alternative's cost.** Merge could already move a
+  product onto an item — but only when a *second item row* carried the right one.
+  With no such row the only path was to mint a decoy item and merge it, which
+  fabricates two records to fix one field. Relinking has no dependents to move (the
+  item *is* the dependent), so nothing merge does is needed. Narrowing followed:
+  live products only, an archived target refused by name of its `merged_into`
+  survivor, and the item's own class snapshot always winning over the product's.
+- **`needs_info` suppressing `eat_by` was one ternary, and the fix is confined to
+  `createItem`.** The receipt-intake path already passes no class on an unknown
+  line, so its `needs_info` items keep a null `eat_by` for the honest reason
+  (`unknown` has no window) rather than because of the flag. Only a caller that
+  supplies a class explicitly is affected — which is exactly the case that was
+  broken.
+- **Two pieces of stale text were corrected because leaving them would misdirect an
+  agent, not for tidiness.** `inventory merge`'s help claimed to be "the ONLY way
+  to attach a product to an existing item" (true when written, and now the thing
+  that would push an agent into the decoy-merge), and the CLI's shelf-life class
+  list omitted `prepared` while the server's enum has it, so
+  `add --shelf-life prepared` failed client-side for a class the API accepts.
+- **Migration `019` was validated against a real Postgres, not only its memory
+  mirror.** The unit suite exercises `MemoryInventoryStore`, so the pg statements
+  had no coverage of the SQL itself. Applied all 19 kitchen migrations to a
+  throwaway container, re-applied `019` to confirm idempotency (both
+  `ADD COLUMN IF NOT EXISTS` no-ops and the `DO $$` CHECK block no-ops), then ran
+  the real statement shapes over real rows: an insert carrying both new columns, an
+  update carrying `storage_moved_at`/`unit_seal`/`shelf_life_class`/`needs_info`/
+  `product_ulid`, a bogus `unit_seal` correctly refused by the CHECK, null values
+  in both columns accepted (so no backfill is needed), and the briefing's
+  `COALESCE(units_remaining::numeric / NULLIF(units_total,0), on_hand_fraction)`
+  expression returning `0.75` for a 3-of-4 pack and `1` for a fraction row.
+- **What the issue got slightly wrong, and one thing the module's own spec did.**
+  The issue proposed `--to <shelf-life-class>` and that is what shipped, but its
+  framing of ask 3 ("consider whether a frozen item should carry an `eat_by` at
+  all") points the wrong way: nulling it is *worse*, because eat-first already
+  orders `eat_by ASC NULLS LAST` so 180 days sinks below everything perishable
+  without a special case, and a null would make a genuinely-frozen item
+  indistinguishable from one whose class was never established. The spec's own
+  § Principles was factually wrong about a **sausage-link pack**, listing it as an
+  example of "individually-sealed atomic units" — it is the canonical *shared*-seal
+  package, and that mis-example is arguably why the model never grew the
+  distinction. Fixed in place.
+- Verified before opening the PR: `bun run test` exit 0, every workspace package
+  `0 fail` (kitchen 522 pass, up from 477); `bun run build` exit 0 (14/14);
+  `bun run type-check:axi` clean; `bun run check:skills` reports all four bundles
+  and all four SKILL.mds up to date. Full-diff and commit-message scrub scan clean.
+- The three unrelated CLI bundles were reverted after `build:skills` touched only
+  their VERSION git-SHA stamp, so the diff stays on `kitchen-axi.mjs`.
 
 ## Follow-ups
 
-*Populated at closeout.*
+- **Row locking / concurrent-write safety across every inventory write — the one
+  explicitly-deferred item, and it needs its own pass.** Every write here is
+  read-modify-write with no row lock: `updateItemStateWith` reads the current row
+  and then UPDATEs a full column list from it, `reconcileItem` reads then writes,
+  and the event pipeline does the same. Two concurrent events on one item can
+  therefore lose one of them entirely — not a merge conflict, a silent overwrite,
+  because each writes every column from its own stale snapshot. This change adds
+  writes to that pattern without making it worse (the `moved` and reconcile paths
+  are read-then-update exactly like `opened` already was), and the honest fix is
+  `SELECT … FOR UPDATE` inside a transaction on every item write, applied
+  uniformly — including `PgConsumeStore`'s inline copy of the UPDATE, which is a
+  second place the same column list is maintained by hand. Not started here.
+- **Deferred — teach the label scan to judge the seal.** `products.unit_model_hint`
+  is `'counted' | 'fraction'`, and a vision model looking at a package can plausibly
+  tell a shrink-wrapped multipack from a single vacuum seal over four links. A third
+  hint value would let receipt intake seed `unit_seal` instead of leaving it
+  `individual` by default. It is a prompt change with a real false-positive budget
+  (guessing `shared` wrongly under-reports safety margin in the *safe* direction,
+  but guessing `individual` wrongly under-reports urgency), so it wants its own
+  spec paragraph rather than a rider.
+- **Tracked, not fixed — `PgConsumeStore` maintains a second copy of the item
+  UPDATE's column list.** It deliberately omits the five columns a consume never
+  sets (now noted in a comment there), but the two lists have to be kept in step by
+  hand, which is exactly how a column added later goes silently unwritten on the
+  consume path. Folding it onto `updateItemStateWith` means threading a transaction
+  handle through `ConsumeStore`, which is a refactor of that seam, not a line.
+- **None for existing rows.** `019` needs no backfill: a null `unit_seal` reads as
+  `individual`, which is the behavior every existing counted row already had, and a
+  null `storage_moved_at` means "no move recorded", which is true of all of them.
+  An instance that wants a real seal recorded on a pack it owns has one CLI call
+  (`inventory recount <ulid> --unit-seal shared`), which is the point.
