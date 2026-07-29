@@ -14,6 +14,7 @@ import type {
   InventoryDerivationRecord,
   InventoryItemRecord,
   InventoryState,
+  ItemRelinkCounts,
   LexiconRecord,
   LineMatchOutcome,
   NutritionPer100g,
@@ -68,6 +69,22 @@ export interface ProductRelinkCounts {
   items: number;
   lexicon_lines: number;
   batch_lines: number;
+}
+
+/**
+ * The survivor-side gap fill of an item merge (§ Item corrections) — the only
+ * item fields a merge writes on the survivor, and only where the survivor's own
+ * value is null. Quantities, clocks, and notes are deliberately absent: a merge
+ * asserts the two rows are ONE package, so summing quantities would manufacture
+ * stock and importing the loser's clock is the artifact that made the duplicate
+ * misreport in the first place.
+ */
+export interface ItemIdentityPatch {
+  product_ulid?: string | null;
+  raw_label?: string | null;
+  store?: string | null;
+  batch_ulid?: string | null;
+  shelf_life_class?: ShelfLifeClass | null;
 }
 
 export interface NewLexicon {
@@ -206,6 +223,30 @@ export interface InventoryStore {
   updateItemState(ulid: string, update: ItemStateUpdate): Promise<InventoryItemRecord | null>;
   setItemFraction(ulid: string, fraction: number): Promise<InventoryItemRecord | null>;
   resolveNeedsInfo(ulid: string, resolution: ResolveNeedsInfo): Promise<InventoryItemRecord | null>;
+  /**
+   * Write the identity fields an item merge fills on the survivor
+   * (§ Item corrections). Only the supplied keys change; the caller has already
+   * decided which of them are gaps, so this method does no null-guarding of its
+   * own. An empty patch is a no-op returning the current row.
+   */
+  updateItemIdentity(ulid: string, patch: ItemIdentityPatch): Promise<InventoryItemRecord | null>;
+  /**
+   * Repoint every dependent reference from one item to another — consumption
+   * entries are NOT included (they live in the phase-1 `EntryStore`; the
+   * pipeline relinks them through an injected hook, the same seam the depletion
+   * matcher's `linkEntry` uses). The relink half of an item merge.
+   */
+  relinkItemReferences(fromUlid: string, toUlid: string): Promise<Omit<ItemRelinkCounts, 'entries'>>;
+  /**
+   * Retire an item as the loser of a merge: terminal `dismissed`, `closed_at`
+   * stamped, `merged_into` set. Idempotent — a replay keeps the first stamp and
+   * the first survivor rather than sliding either forward. Applied from ANY
+   * prior state, including a terminal one (§ Item corrections — the merge is the
+   * assertion that this row was never independent stock, so a `finished` or
+   * `tossed` on it is a claim about food that does not exist). Null for an
+   * unknown ULID; never deletes a row.
+   */
+  retireMergedItem(ulid: string, mergedInto: string, at: Date): Promise<InventoryItemRecord | null>;
 
   // Batches
   insertBatchIfAbsent(batch: NewBatch): Promise<{ record: PurchaseBatchRecord; created: boolean }>;
@@ -326,6 +367,7 @@ export function rowToItem(row: Record<string, unknown>): InventoryItemRecord {
     eat_by: toDateOrNull(row.eat_by),
     shelf_life_class: (row.shelf_life_class as ShelfLifeClass | null) ?? null,
     notes: (row.notes as string | null) ?? null,
+    merged_into: (row.merged_into as string | null) ?? null,
     created_at: toDate(row.created_at),
     updated_at: toDate(row.updated_at),
   };
@@ -662,6 +704,83 @@ export class PgInventoryStore implements InventoryStore {
         shelf_life_class = ${resolution.shelf_life_class},
         eat_by = ${resolution.eat_by},
         needs_info = FALSE
+      WHERE ulid = ${ulid}
+      RETURNING *
+    `;
+    return row ? rowToItem(row) : null;
+  }
+
+  async updateItemIdentity(ulid: string, patch: ItemIdentityPatch): Promise<InventoryItemRecord | null> {
+    const current = await this.getItem(ulid);
+    if (!current) return null;
+    // Read-merge-write over the five identity columns, mirroring updateProduct's
+    // shape rather than building a dynamic SET clause.
+    const merged = { ...current, ...patch };
+    const [row] = await this.sql`
+      UPDATE kitchen.inventory_items SET
+        product_ulid = ${merged.product_ulid},
+        raw_label = ${merged.raw_label},
+        store = ${merged.store},
+        batch_ulid = ${merged.batch_ulid},
+        shelf_life_class = ${merged.shelf_life_class}
+      WHERE ulid = ${ulid}
+      RETURNING *
+    `;
+    return row ? rowToItem(row) : null;
+  }
+
+  async relinkItemReferences(
+    fromUlid: string,
+    toUlid: string
+  ): Promise<Omit<ItemRelinkCounts, 'entries'>> {
+    const lines = await this.sql`
+      UPDATE kitchen.purchase_batch_lines SET inventory_item_ulid = ${toUlid}
+      WHERE inventory_item_ulid = ${fromUlid} RETURNING ulid
+    `;
+    // derived_item_ulid is UNIQUE (1:1 — a derived item is made by exactly one
+    // conversion), so the loser's provenance can only move onto a survivor that
+    // has none. When the survivor already carries its own, the loser's stays put:
+    // dropping one to satisfy the constraint would destroy provenance.
+    const derivations = await this.sql`
+      UPDATE kitchen.inventory_derivations SET derived_item_ulid = ${toUlid}
+      WHERE derived_item_ulid = ${fromUlid}
+        AND NOT EXISTS (
+          SELECT 1 FROM kitchen.inventory_derivations d2 WHERE d2.derived_item_ulid = ${toUlid}
+        )
+      RETURNING ulid
+    `;
+    // The loser as a conversion INPUT: sources is [{item_ulid, amount,
+    // amount_kind}], so the ulid is rewritten inside the array, element-wise.
+    const sources = await this.sql`
+      UPDATE kitchen.inventory_derivations d SET sources = (
+        SELECT COALESCE(jsonb_agg(
+          CASE WHEN e->>'item_ulid' = ${fromUlid}
+            THEN jsonb_set(e, '{item_ulid}', to_jsonb(${toUlid}::text))
+            ELSE e
+          END
+          ORDER BY ord
+        ), '[]'::jsonb)
+        FROM jsonb_array_elements(d.sources) WITH ORDINALITY AS t(e, ord)
+      )
+      WHERE d.sources @> jsonb_build_array(jsonb_build_object('item_ulid', ${fromUlid}::text))
+      RETURNING ulid
+    `;
+    return {
+      batch_lines: lines.length,
+      derivations: derivations.length,
+      derivation_sources: sources.length,
+    };
+  }
+
+  async retireMergedItem(ulid: string, mergedInto: string, at: Date): Promise<InventoryItemRecord | null> {
+    // COALESCE on both stamps: a replayed merge must not slide closed_at forward
+    // or repoint an item that already went somewhere (the service refuses the
+    // cross-target case before reaching here).
+    const [row] = await this.sql`
+      UPDATE kitchen.inventory_items SET
+        state = 'dismissed',
+        closed_at = COALESCE(closed_at, ${at}),
+        merged_into = COALESCE(merged_into, ${mergedInto})
       WHERE ulid = ${ulid}
       RETURNING *
     `;

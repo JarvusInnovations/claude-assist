@@ -129,6 +129,15 @@ export interface EntryStore {
 
   /** Phase 2: link an entry to the inventory item the depletion matcher decremented. */
   linkInventoryItem(entryUlid: string, itemUlid: string): Promise<void>;
+
+  /**
+   * Move every entry that depleted one item onto another, returning how many
+   * moved — the entries half of an item merge (specs/modules/kitchen.md
+   * § Item corrections). Lives here rather than on the inventory store because
+   * `kitchen.entries` is this store's table; the inventory pipeline reaches it
+   * through an injected hook, the same seam `linkInventoryItem` uses.
+   */
+  relinkInventoryItem(fromItemUlid: string, toItemUlid: string): Promise<number>;
 }
 
 export interface RecipeStore {
@@ -419,6 +428,15 @@ export class PgEntryStore implements EntryStore {
     await this.sql`
       UPDATE kitchen.entries SET inventory_item_ulid = ${itemUlid} WHERE ulid = ${entryUlid}
     `;
+  }
+
+  async relinkInventoryItem(fromItemUlid: string, toItemUlid: string): Promise<number> {
+    const rows = await this.sql`
+      UPDATE kitchen.entries SET inventory_item_ulid = ${toItemUlid}
+      WHERE inventory_item_ulid = ${fromItemUlid}
+      RETURNING ulid
+    `;
+    return rows.length;
   }
 
   async recentLabels(limit: number): Promise<RecentEntrySummary[]> {

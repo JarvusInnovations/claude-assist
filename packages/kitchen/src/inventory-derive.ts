@@ -221,6 +221,7 @@ export function toItemView(
     days_until_eat_by: dayDiff(today, record.eat_by),
     age_days: dayDiff(record.acquired_at, today),
     notes: record.notes,
+    merged_into: record.merged_into,
     derived_from: derivedFrom,
     created_at: record.created_at.toISOString(),
     updated_at: record.updated_at.toISOString(),

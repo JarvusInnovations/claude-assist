@@ -162,6 +162,17 @@ export class MemoryEntryStore implements EntryStore {
     if (record) record.inventory_item_ulid = itemUlid;
   }
 
+  async relinkInventoryItem(fromItemUlid: string, toItemUlid: string): Promise<number> {
+    let moved = 0;
+    for (const record of this.records.values()) {
+      if (record.inventory_item_ulid === fromItemUlid) {
+        record.inventory_item_ulid = toItemUlid;
+        moved++;
+      }
+    }
+    return moved;
+  }
+
   async recentLabels(limit: number): Promise<RecentEntrySummary[]> {
     const byLabel = new Map<string, RecentEntrySummary>();
     const sorted = [...this.records.values()]

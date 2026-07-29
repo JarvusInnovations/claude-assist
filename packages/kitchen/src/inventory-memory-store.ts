@@ -9,12 +9,14 @@ import type {
   InventoryDerivationRecord,
   InventoryItemRecord,
   InventoryState,
+  ItemRelinkCounts,
   LexiconRecord,
   ProductRecord,
   PurchaseBatchRecord,
 } from './inventory-types.js';
 import type {
   InventoryStore,
+  ItemIdentityPatch,
   ItemListFilter,
   ItemStateUpdate,
   NewBatch,
@@ -245,6 +247,7 @@ export class MemoryInventoryStore implements InventoryStore {
       eat_by: item.eat_by,
       shelf_life_class: item.shelf_life_class,
       notes: item.notes,
+      merged_into: null,
       created_at: now,
       updated_at: now,
     };
@@ -294,6 +297,55 @@ export class MemoryInventoryStore implements InventoryStore {
     const i = this.items.get(ulid);
     if (!i) return null;
     i.on_hand_fraction = fraction;
+    i.updated_at = new Date();
+    return structuredClone(i);
+  }
+
+  async updateItemIdentity(ulid: string, patch: ItemIdentityPatch): Promise<InventoryItemRecord | null> {
+    const i = this.items.get(ulid);
+    if (!i) return null;
+    Object.assign(i, patch);
+    i.updated_at = new Date();
+    return structuredClone(i);
+  }
+
+  async relinkItemReferences(
+    fromUlid: string,
+    toUlid: string
+  ): Promise<Omit<ItemRelinkCounts, 'entries'>> {
+    let batchLines = 0;
+    for (const line of this.lines.values()) {
+      if (line.inventory_item_ulid === fromUlid) {
+        line.inventory_item_ulid = toUlid;
+        batchLines++;
+      }
+    }
+    // derived_item_ulid is the map key here (1:1, UNIQUE in pg) — the loser's
+    // provenance moves only onto a survivor that has none.
+    let derivations = 0;
+    const own = this.derivations.get(fromUlid);
+    if (own && !this.derivations.has(toUlid)) {
+      this.derivations.delete(fromUlid);
+      own.derived_item_ulid = toUlid;
+      this.derivations.set(toUlid, own);
+      derivations++;
+    }
+    let derivationSources = 0;
+    for (const d of this.derivations.values()) {
+      if (!d.sources.some((s) => s.item_ulid === fromUlid)) continue;
+      d.sources = d.sources.map((s) => (s.item_ulid === fromUlid ? { ...s, item_ulid: toUlid } : s));
+      derivationSources++;
+    }
+    return { batch_lines: batchLines, derivations, derivation_sources: derivationSources };
+  }
+
+  async retireMergedItem(ulid: string, mergedInto: string, at: Date): Promise<InventoryItemRecord | null> {
+    const i = this.items.get(ulid);
+    if (!i) return null;
+    i.state = 'dismissed';
+    // First retirement wins on both stamps — a replay must not slide either.
+    i.closed_at ??= at;
+    i.merged_into ??= mergedInto;
     i.updated_at = new Date();
     return structuredClone(i);
   }
