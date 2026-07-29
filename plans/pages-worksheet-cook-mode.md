@@ -1,10 +1,11 @@
 ---
-status: planned
+status: done
 depends: [pages-admin-tab, entries-direct-panel, convert-atomicity]
 specs:
   - specs/modules/pages.md
   - specs/modules/kitchen.md
 issues: [129, 130]
+pr: 167
 ---
 
 # Plan: The worksheet response pattern + kitchen cook mode
@@ -139,45 +140,45 @@ digest tier.
 
 ## Validation
 
-- [ ] `GET /pages/:slug` responds `text/html; charset=utf-8`; the index, the
+- [x] `GET /pages/:slug` responds `text/html; charset=utf-8`; the index, the
       helper, and the 404 body each carry a charset too.
-- [ ] A body containing em dash, `°`, `✓`, `×`, `≈`, `·`, `é`, and `→` round-trips
+- [x] A body containing em dash, `°`, `✓`, `×`, `≈`, `·`, `é`, and `→` round-trips
       byte-for-byte through publish → serve, decodes as strict UTF-8, and contains
       no replacement character.
-- [ ] `validateWorksheetDefinition` rejects each malformed shape (wrong kind,
+- [x] `validateWorksheetDefinition` rejects each malformed shape (wrong kind,
       future version, empty fields/components, non-identifier field key, an
       undeclared `per_basis` key, duplicate component labels, unknown top-level
       keys) and names the offending path.
-- [ ] `validateWorksheetSubmission` rejects a non-ULID key, an undeclared
+- [x] `validateWorksheetSubmission` rejects a non-ULID key, an undeclared
       component, a duplicated component, an out-of-range quantity, and a
       client-supplied `totals`.
-- [ ] `computeWorksheetTotals` matches a hand-checked fixture, both at planned
+- [x] `computeWorksheetTotals` matches a hand-checked fixture, both at planned
       quantities and at stated ones; a field no component carries is `null`; a
       stated `0` totals `0`; an omitted component contributes its planned
       quantity.
-- [ ] Publishing with a `worksheet` stores the definition on the version and
+- [x] Publishing with a `worksheet` stores the definition on the version and
       renders a document whose non-ASCII steps survive; both-or-neither of
       `html`/`worksheet` is a `400`.
-- [ ] A malformed submission `400`s and appends **nothing**.
-- [ ] A free-form payload on a worksheet page, and a worksheet payload on a
+- [x] A malformed submission `400`s and appends **nothing**.
+- [x] A free-form payload on a worksheet page, and a worksheet payload on a
       non-worksheet page, are both stored verbatim.
-- [ ] Cook mode `eaten` produces exactly one born-`manual` entry carrying the
+- [x] Cook mode `eaten` produces exactly one born-`manual` entry carrying the
       stated panel and converts nothing.
-- [ ] Cook mode `packed` produces exactly one conversion (derived ULID = the
+- [x] Cook mode `packed` produces exactly one conversion (derived ULID = the
       submission key, recipe + sources + units carried) and **no** entry.
-- [ ] A double-submit under the same key writes once and reports
+- [x] A double-submit under the same key writes once and reports
       `already-logged` / `created: false`, at both the pages layer and the
       kitchen layer; a new key writes again.
-- [ ] `applyConversion` replays a caller-supplied derived ULID by writing
+- [x] `applyConversion` replays a caller-supplied derived ULID by writing
       nothing — sources unchanged, one item, one derivation — including when the
       first attempt already drove a source terminal.
-- [ ] A resubmission appends a new response row and leaves the earlier one
+- [x] A resubmission appends a new response row and leaves the earlier one
       byte-identical.
-- [ ] A failed cook-mode write returns `502`, stores the computed totals, leaves
+- [x] A failed cook-mode write returns `502`, stores the computed totals, leaves
       the row unprocessed, and notifies at `notice` even for a digest-opted page;
       a retry under the same key then succeeds exactly once.
-- [ ] No sink wired → `503` with `status: 'unavailable'`, never a silent success.
-- [ ] `bun run test`, `bun run build`, `bun run type-check:axi`,
+- [x] No sink wired → `503` with `status: 'unavailable'`, never a silent success.
+- [x] `bun run test`, `bun run build`, `bun run type-check:axi`,
       `bun run check:skills` all green.
 
 ## Risks / unknowns
@@ -200,8 +201,48 @@ digest tier.
 
 ## Notes
 
-(Populated at closeout.)
+- **Amending a stated non-feature.** § Conversions § Retries had argued convert's
+  non-idempotence was deliberate and that a caller-supplied derived ULID was
+  "deliberately not part of it." Cook mode is the caller that changes the
+  calculus, so the section is amended in place with a dated note rather than
+  quietly reversed — the *default* it argued for is preserved, and idempotency is
+  opt-in.
+- **One pre-existing test was amended, not just added to.** The
+  `applyConversion` case "rolls back when the derivation insert itself fails"
+  reused the derived ULID to provoke the collision; that path is now an idempotent
+  replay. The genuine `UNIQUE(derived_item_ulid)` rollback it covered is retained
+  under a real collision (a fresh derived item whose derivation points at an
+  already-provenanced one).
+- **The disposition is fixed at publish, and that was a judgment call.** Letting
+  the submitter choose at submit time is arguably more honest about plans
+  changing, but it costs the confirmation its certainty ("one submit, one
+  consequence") and starts down the form-builder road. A sheet whose destiny
+  changes is a republish, which is free because versions are retained.
+- **Two implementations of the totals formula** (server authoritative, client for
+  live display) is a knowing duplication. Mitigated by storing only the server's
+  numbers and saying so in the spec; a genuine drift would surface as a display
+  disagreeing with the record.
+- **`escapeHtml` is now duplicated** between `worksheet.ts` and
+  `routes/public.ts`. Left alone at two call sites; worth folding if a third
+  appears.
+- **A flaky pre-existing test**, `packages/kitchen/src/services/mealbank.test.ts`,
+  timed out its 5 s `beforeAll` on one local run (three `gitsheets` CLI spawns in
+  one hook) and failed identically on an untouched `main` checkout. It passed on
+  every subsequent run. Not caused by this plan; noted in case it recurs in CI.
 
 ## Follow-ups
 
-(Populated at closeout.)
+- Tracked as: **per-batch measured macros for a packed item.** A packed batch's
+  consume-time macros still come from its linked recipe, since
+  `derived_from.recipe_ulid` is the only macro-inheritance channel — so a batch
+  weighed materially off-recipe logs the recipe's numbers when eaten. The measured
+  weights are recorded (derived-item `notes` + the response payload) but not
+  *inherited*. Closing that needs either a per-batch recipe minted from the
+  worksheet or item-level macros, both of which touch the item model; the
+  limitation is stated in `specs/modules/kitchen.md` § Cook mode so it can't be
+  mistaken for an oversight.
+- Tracked as: **a `pages-axi` worksheet-publish ergonomic.** The HTTP surface is
+  the contract and is complete; a CLI flag that takes a worksheet JSON file is
+  additive convenience and can land on its own.
+- Tracked as: **the app-side cook-mode screen** lives in the capture app repo, per
+  the issue's own note; nothing in this repo blocks it.
