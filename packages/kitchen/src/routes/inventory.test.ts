@@ -553,3 +553,263 @@ describe('inventory routes', () => {
     expect(missing.statusCode).toBe(404);
   });
 });
+
+/**
+ * Product corrections (specs/modules/kitchen.md § Product corrections).
+ *
+ * The defect these close: `POST /kitchen/products` was create-only, no
+ * PATCH/DELETE route existed, and the body schema had no `ulid` property under
+ * `additionalProperties: false` — so a caller supplying an existing product's
+ * ULID had it stripped, got a fresh record, and was answered 201.
+ */
+describe('product corrections routes', () => {
+  let fastify: FastifyInstance;
+  let store: MemoryInventoryStore;
+  let pipeline: InventoryPipeline;
+
+  const FULL_PANEL = {
+    calories: 120, protein_g: 4, fat_g: 2, sat_fat_g: 0.5,
+    carbs_g: 20, sugar_g: 6, added_sugar_g: 0, fiber_g: 3, sodium_mg: 90,
+  };
+
+  beforeEach(async () => {
+    fastify = Fastify({ logger: false });
+    store = new MemoryInventoryStore();
+    pipeline = new InventoryPipeline(store, new FakeReceiptParser({ store: 'Example Grocer', lines: [] }), null, fastify.log);
+    await fastify.register(registerInventoryRoutes, { inventory: pipeline });
+    await fastify.ready();
+  });
+
+  afterEach(async () => {
+    await fastify.close();
+  });
+
+  const post = (payload: Record<string, unknown>) =>
+    fastify.inject({ method: 'POST', url: '/kitchen/products', payload });
+  const patch = (ulid: string, payload: Record<string, unknown>) =>
+    fastify.inject({ method: 'PATCH', url: `/kitchen/products/${ulid}`, payload });
+
+  it('POST honors an explicit ulid — 201 create, 200 replace, never a silent duplicate', async () => {
+    const ulid = generateUlid();
+    const created = await post({ ulid, name: 'Rolled Oats', shelf_life_class: 'pantry' });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().ulid).toBe(ulid);
+
+    // THE REGRESSION: re-posting that ULID must not mint a second record. It
+    // used to be stripped and answered 201.
+    const replaced = await post({ ulid, name: 'Rolled Oats', nutrition_per_100g: FULL_PANEL });
+    expect(replaced.statusCode).toBe(200);
+    expect(replaced.json().ulid).toBe(ulid);
+    expect(replaced.json().nutrition_per_100g.calories).toBe(120);
+
+    const list = await fastify.inject({ method: 'GET', url: '/kitchen/products' });
+    expect(list.json().count).toBe(1);
+  });
+
+  it('an explicit-ulid replace states the whole record — omitted fields revert (the only way to clear one)', async () => {
+    const ulid = generateUlid();
+    await post({ ulid, name: 'Olive Oil', shelf_life_class: 'pantry', package_size: '16 oz', nutrition_per_100g: FULL_PANEL });
+    const replaced = await post({ ulid, name: 'Olive Oil' });
+    expect(replaced.statusCode).toBe(200);
+    expect(replaced.json().package_size).toBeNull();
+    expect(replaced.json().nutrition_per_100g).toBeNull();
+    expect(replaced.json().shelf_life_class).toBe('unknown');
+  });
+
+  it('POST without a ulid keys on the normalized name and ENRICHES — a bare re-seed never erases a panel', async () => {
+    const created = await post({ name: 'Greek Yogurt', shelf_life_class: 'fridge_short', nutrition_per_100g: FULL_PANEL });
+    expect(created.statusCode).toBe(201);
+    const ulid = created.json().ulid;
+
+    // The receipt-seed shape: name only, differing in case and spacing.
+    const reseeded = await post({ name: '  greek   yogurt ' });
+    expect(reseeded.statusCode).toBe(200);
+    expect(reseeded.json().ulid).toBe(ulid);
+    expect(reseeded.json().nutrition_per_100g.calories).toBe(120); // NOT clobbered
+    expect(reseeded.json().shelf_life_class).toBe('fridge_short'); // `unknown` never overrides
+
+    // A partial panel fills a gap without erasing the banked fields.
+    const partial = await post({ name: 'Greek Yogurt', nutrition_per_100g: { sodium_mg: 55 } });
+    expect(partial.json().nutrition_per_100g.sodium_mg).toBe(55);
+    expect(partial.json().nutrition_per_100g.protein_g).toBe(4);
+  });
+
+  it('POST refuses an ambiguous name key with 409 naming both candidates', async () => {
+    const a = generateUlid();
+    const b = generateUlid();
+    await post({ ulid: a, name: 'Paprika' });
+    await post({ ulid: b, name: 'paprika' }); // explicit ulid is the escape hatch, so this is allowed
+
+    const ambiguous = await post({ name: 'Paprika' });
+    expect(ambiguous.statusCode).toBe(409);
+    expect(ambiguous.json().error).toContain(a);
+    expect(ambiguous.json().error).toContain(b);
+  });
+
+  it('PATCH is partial — unspecified fields survive, and the panel merges per-field', async () => {
+    const created = await post({
+      name: 'Canned Tomatoes',
+      shelf_life_class: 'pantry',
+      package_size: '28 oz',
+      aliases: ['tomatoes'],
+      nutrition_per_100g: { ...FULL_PANEL, sodium_mg: null },
+    });
+    const ulid = created.json().ulid;
+
+    const filled = await patch(ulid, { nutrition_per_100g: { sodium_mg: 180 } });
+    expect(filled.statusCode).toBe(200);
+    expect(filled.json().nutrition_per_100g.sodium_mg).toBe(180);
+    expect(filled.json().nutrition_per_100g.calories).toBe(120); // other eight untouched
+    expect(filled.json().package_size).toBe('28 oz'); // top-level untouched
+    expect(filled.json().aliases).toEqual(['tomatoes']);
+    expect(filled.json().shelf_life_class).toBe('pantry');
+
+    // An explicit null clears exactly one field — a patch is the owner stating
+    // what is true, unlike an enrich, which must never null-clobber a guess.
+    const cleared = await patch(ulid, { nutrition_per_100g: { calories: null } });
+    expect(cleared.json().nutrition_per_100g.calories).toBeNull();
+    expect(cleared.json().nutrition_per_100g.sodium_mg).toBe(180);
+
+    // …and a null panel clears the whole thing.
+    const wiped = await patch(ulid, { nutrition_per_100g: null });
+    expect(wiped.json().nutrition_per_100g).toBeNull();
+
+    expect((await patch(ulid, {})).statusCode).toBe(400); // minProperties: 1
+    expect((await patch(generateUlid(), { package_size: '1 lb' })).statusCode).toBe(404);
+  });
+
+  it('PATCH renames (identity is the ulid) but refuses a rename into a live twin', async () => {
+    const mangled = (await post({ name: 'OLV OL X-VRG 750ML' })).json();
+    const other = (await post({ name: 'Olive Oil' })).json();
+
+    const renamed = await patch(mangled.ulid, { name: 'Extra Virgin Olive Oil' });
+    expect(renamed.statusCode).toBe(200);
+    expect(renamed.json().name).toBe('Extra Virgin Olive Oil');
+    expect(renamed.json().ulid).toBe(mangled.ulid);
+
+    const collision = await patch(mangled.ulid, { name: 'olive oil' });
+    expect(collision.statusCode).toBe(409);
+    expect(collision.json().error).toContain(other.ulid);
+
+    // Restating the name it already has is never a collision with itself.
+    expect((await patch(other.ulid, { name: 'Olive Oil', package_size: '750 ml' })).statusCode).toBe(200);
+  });
+
+  it('merge relinks every dependent to the survivor and archives the loser', async () => {
+    const survivor = (await post({ name: 'Whole Milk', shelf_life_class: 'fridge_short', nutrition_per_100g: FULL_PANEL })).json();
+    const dupe = (await post({ name: 'Milk, Whole', package_size: '1 gal', aliases: ['milk'] })).json();
+
+    // Everything that points at a product: an item, a lexicon line, a batch line.
+    const { item } = await pipeline.createItem({ product_ulid: dupe.ulid, raw_label: 'WHOLE MILK', acquired_at: '2026-07-20' });
+    await pipeline.upsertLexicon({ store: 'Example Grocer', line_text: 'WHOLE MILK', product_ulid: dupe.ulid });
+    const batch = await store.insertBatchIfAbsent({ ulid: generateUlid(), source: 'receipt', store: 'Example Grocer', purchased_at: new Date('2026-07-20') });
+    await store.insertLine({
+      ulid: generateUlid(), batch_ulid: batch.record.ulid, raw_text: 'WHOLE MILK',
+      match_outcome: 'matched', product_ulid: dupe.ulid, inventory_item_ulid: item.ulid,
+    });
+
+    const merged = await fastify.inject({ method: 'POST', url: `/kitchen/products/${dupe.ulid}/merge`, payload: { into: survivor.ulid } });
+    expect(merged.statusCode).toBe(200);
+    expect(merged.json().relinked).toEqual({ items: 1, lexicon_lines: 1, batch_lines: 1 });
+    expect(merged.json().merged.merged_into).toBe(survivor.ulid);
+    expect(merged.json().merged.archived_at).not.toBeNull();
+
+    // The survivor gained what only the duplicate carried, kept its own panel,
+    // and answers to the loser's old name.
+    expect(merged.json().product.package_size).toBe('1 gal');
+    expect(merged.json().product.nutrition_per_100g.calories).toBe(120);
+    expect(merged.json().product.aliases).toContain('Milk, Whole');
+
+    // Dependents now resolve to the survivor…
+    const view = await fastify.inject({ method: 'GET', url: `/kitchen/inventory/${item.ulid}` });
+    expect(view.json().product_ulid).toBe(survivor.ulid);
+    expect(view.json().product_name).toBe('Whole Milk');
+    // …and the loser is off the listing but still resolvable by ULID.
+    const list = await fastify.inject({ method: 'GET', url: '/kitchen/products' });
+    expect(list.json().products.map((p: { ulid: string }) => p.ulid)).toEqual([survivor.ulid]);
+    expect(await store.getProduct(dupe.ulid)).not.toBeNull();
+
+    // Idempotent: the same merge again relinks nothing and still succeeds.
+    const replay = await fastify.inject({ method: 'POST', url: `/kitchen/products/${dupe.ulid}/merge`, payload: { into: survivor.ulid } });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json().relinked).toEqual({ items: 0, lexicon_lines: 0, batch_lines: 0 });
+  });
+
+  it('merge refuses a self-merge (400), an unknown side (404), and a retargeted loser (409)', async () => {
+    const a = (await post({ name: 'Cumin' })).json();
+    const b = (await post({ name: 'Ground Cumin' })).json();
+    const c = (await post({ name: 'Cumin Seed' })).json();
+
+    const self = await fastify.inject({ method: 'POST', url: `/kitchen/products/${a.ulid}/merge`, payload: { into: a.ulid } });
+    expect(self.statusCode).toBe(400);
+
+    const unknown = await fastify.inject({ method: 'POST', url: `/kitchen/products/${a.ulid}/merge`, payload: { into: generateUlid() } });
+    expect(unknown.statusCode).toBe(404);
+
+    await fastify.inject({ method: 'POST', url: `/kitchen/products/${b.ulid}/merge`, payload: { into: a.ulid } });
+    const retargeted = await fastify.inject({ method: 'POST', url: `/kitchen/products/${b.ulid}/merge`, payload: { into: c.ulid } });
+    expect(retargeted.statusCode).toBe(409);
+    expect(retargeted.json().error).toContain(a.ulid);
+
+    // And merging INTO a retired record is refused rather than burying it twice.
+    const intoRetired = await fastify.inject({ method: 'POST', url: `/kitchen/products/${c.ulid}/merge`, payload: { into: b.ulid } });
+    expect(intoRetired.statusCode).toBe(409);
+  });
+
+  it('DELETE archives (never destroys), is idempotent, and blocks a replace of the retired record', async () => {
+    const p = (await post({ name: 'Misread Receipt Line' })).json();
+    const { item } = await pipeline.createItem({ product_ulid: p.ulid, acquired_at: '2026-07-20' });
+
+    const archived = await fastify.inject({ method: 'DELETE', url: `/kitchen/products/${p.ulid}` });
+    expect(archived.statusCode).toBe(200);
+    expect(archived.json().archived_at).not.toBeNull();
+    expect(archived.json().merged_into).toBeNull();
+
+    expect((await fastify.inject({ method: 'DELETE', url: `/kitchen/products/${p.ulid}` })).statusCode).toBe(200);
+    expect((await fastify.inject({ method: 'DELETE', url: `/kitchen/products/${generateUlid()}` })).statusCode).toBe(404);
+
+    // Off the listing, still resolvable by ULID — history never breaks.
+    expect((await fastify.inject({ method: 'GET', url: '/kitchen/products' })).json().count).toBe(0);
+    const view = await fastify.inject({ method: 'GET', url: `/kitchen/inventory/${item.ulid}` });
+    expect(view.json().product_name).toBe('Misread Receipt Line');
+
+    // A retired record is refused, not resurrected…
+    expect((await post({ ulid: p.ulid, name: 'Misread Receipt Line' })).statusCode).toBe(409);
+    // …and its name is free again for a fresh record.
+    const fresh = await post({ name: 'Misread Receipt Line' });
+    expect(fresh.statusCode).toBe(201);
+    expect(fresh.json().ulid).not.toBe(p.ulid);
+  });
+
+  it('a nutrition_negligible product clears needs_nutrition with no panel at all', async () => {
+    // A spice jar: no Nutrition Facts panel exists to scan, so the flag is
+    // otherwise unclearable (§ Nutritionally negligible products).
+    const spice = (await post({ name: 'Smoked Paprika', shelf_life_class: 'pantry' })).json();
+    const { item } = await pipeline.createItem({ product_ulid: spice.ulid, acquired_at: '2026-07-20' });
+
+    const flagged = await fastify.inject({ method: 'GET', url: `/kitchen/inventory/${item.ulid}` });
+    expect(flagged.json().needs_nutrition).toBe(true);
+
+    const marked = await patch(spice.ulid, { nutrition_negligible: true });
+    expect(marked.statusCode).toBe(200);
+    expect(marked.json().nutrition_negligible).toBe(true);
+    expect(marked.json().nutrition_per_100g).toBeNull(); // zeros are derived, never written
+
+    const cleared = await fastify.inject({ method: 'GET', url: `/kitchen/inventory/${item.ulid}` });
+    expect(cleared.json().needs_nutrition).toBe(false);
+
+    // Reversible — the marker is one boolean, and unmarking restores the flag.
+    await patch(spice.ulid, { nutrition_negligible: false });
+    const reflagged = await fastify.inject({ method: 'GET', url: `/kitchen/inventory/${item.ulid}` });
+    expect(reflagged.json().needs_nutrition).toBe(true);
+  });
+
+  it('the marker survives an enrich — only an explicit PATCH clears it', async () => {
+    const spice = (await post({ name: 'Ground Cinnamon', nutrition_negligible: true })).json();
+    expect(spice.nutrition_negligible).toBe(true);
+
+    const reseeded = await post({ name: 'Ground Cinnamon', package_size: '2.5 oz' });
+    expect(reseeded.json().nutrition_negligible).toBe(true);
+    expect((await patch(spice.ulid, { nutrition_negligible: false })).json().nutrition_negligible).toBe(false);
+  });
+});

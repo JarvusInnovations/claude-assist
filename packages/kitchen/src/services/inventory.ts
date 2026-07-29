@@ -36,6 +36,8 @@ import type {
   ParsedLabel,
   ParsedReceiptLine,
   ProductInput,
+  ProductMergeResult,
+  ProductPatchInput,
   ProductRecord,
   PurchaseBatchRecord,
   PurchaseBatchView,
@@ -44,8 +46,15 @@ import type {
   ShelfLifeClass,
 } from '../inventory-types.js';
 import { CONVERT_SHELF_LIFE_CLASSES, PACKAGE_DURABLE_SHELF_LIFE_CLASSES } from '../inventory-types.js';
-import type { InventoryStore, ItemStateUpdate, NewItem } from '../inventory-store.js';
-import { deriveEatBy, normalizeLexiconLine, parsePackageCount, toItemView, toIsoDate } from '../inventory-derive.js';
+import type { InventoryStore, ItemStateUpdate, NewItem, NewProduct, ProductPatch } from '../inventory-store.js';
+import {
+  deriveEatBy,
+  normalizeLexiconLine,
+  normalizeProductName,
+  parsePackageCount,
+  toItemView,
+  toIsoDate,
+} from '../inventory-derive.js';
 import { InvalidTransitionError, isTerminal, transitionInventory } from '../inventory-state.js';
 import { matchScore, parseRemark } from '../inventory-remark.js';
 import { generateUlid } from '../ulid.js';
@@ -77,6 +86,33 @@ export class ConversionValidationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'ConversionValidationError';
+  }
+}
+
+/**
+ * Thrown on a malformed product write (blank name, self-merge) — a 400 at the
+ * route (specs/modules/kitchen.md § Product corrections).
+ */
+export class ProductValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ProductValidationError';
+  }
+}
+
+/**
+ * Thrown when a product write cannot be honored as asked — an ambiguous name
+ * key, a rename into a live twin, a replace of an archived record, or a merge
+ * into a retired one. A `409` at the route, never a silent near-miss: the
+ * create-only `POST /products` used to strip an unknown `ulid`, mint a second
+ * record, and answer `201`, which is indistinguishable from success
+ * (§ Product corrections — "a write that cannot do what was asked says so").
+ * The message always names the colliding ULIDs and the way forward.
+ */
+export class ProductConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ProductConflictError';
   }
 }
 
@@ -1428,23 +1464,197 @@ export class InventoryPipeline {
   }
 
   async createProduct(input: ProductInput): Promise<ProductRecord> {
-    return this.store.insertProduct({
-      ulid: generateUlid(),
-      name: input.name.trim(),
-      shelf_life_class: input.shelf_life_class ?? 'unknown',
-      aliases: dedupeAliases(input.aliases ?? []),
-      nutrition_per_100g: normalizeNutrition(input.nutrition_per_100g),
-      serving_size_g: input.serving_size_g ?? null,
-      nutrition_per_serving: normalizeNutrition(input.nutrition_per_serving),
-      servings_per_container: input.servings_per_container ?? null,
-      unit_model_hint: input.unit_model_hint ?? null,
-      net_content_g: input.net_content_g ?? null,
-      net_content_ml: input.net_content_ml ?? null,
-      ingredients: input.ingredients?.trim() || null,
-      package_size: input.package_size ?? null,
-      shelf_life_days_unopened: input.shelf_life_days_unopened ?? null,
-      shelf_life_days_opened: input.shelf_life_days_opened ?? null,
+    return this.store.insertProduct({ ulid: generateUlid(), ...productFields(input) });
+  }
+
+  /**
+   * `POST /products` — a real upsert (specs/modules/kitchen.md § Product
+   * corrections). Two branches:
+   *
+   * - **explicit `ulid`** → create-or-replace that exact record. A replace
+   *   **states the whole record**: omitted fields revert to their defaults, so
+   *   this is the only way to clear one. An explicit key is explicit intent, so
+   *   it deliberately bypasses the name-key checks below — otherwise the escape
+   *   hatch for correcting one of two same-named duplicates would be blocked by
+   *   the very collision it exists to resolve. An archived target is refused
+   *   rather than resurrected.
+   * - **no `ulid`** → the normalized name is the key, resolved against LIVE
+   *   products: no match creates, exactly one match **enriches** in place, more
+   *   than one throws `ProductConflictError` naming every candidate.
+   *
+   * The name key enriches rather than replacing because a product is an
+   * accretion several writers build (receipt seed, label scan, owner
+   * correction): replacing would let a bare `{name}` re-seed erase a scanned
+   * nutrition panel — a write destroying data it never mentioned.
+   *
+   * `created` distinguishes insert from replace/enrich so the route can answer
+   * `201` vs `200`.
+   */
+  async upsertProduct(input: ProductInput & { ulid?: string }): Promise<{ product: ProductRecord; created: boolean }> {
+    const name = input.name.trim();
+    if (!name) throw new ProductValidationError('name must not be blank');
+    const normalizedInput: ProductInput = { ...input, name };
+
+    if (input.ulid) {
+      const existing = await this.store.getProduct(input.ulid);
+      if (existing?.archived_at) {
+        throw new ProductConflictError(
+          `Product ${existing.ulid} is archived and cannot be replaced${
+            existing.merged_into ? ` — it was merged into ${existing.merged_into}` : ''
+          }. Post to the surviving record, or use a new ulid.`
+        );
+      }
+      if (existing) {
+        const replaced = await this.store.updateProduct(input.ulid, productFields(normalizedInput));
+        // Vanished between read and write — fall through to a create rather
+        // than reporting a replace that didn't happen.
+        if (replaced) return { product: replaced, created: false };
+      }
+      return { product: await this.store.insertProduct({ ulid: input.ulid, ...productFields(normalizedInput) }), created: true };
+    }
+
+    const matches = await this.store.findLiveProductsByNormalizedName(normalizeProductName(name));
+    if (matches.length > 1) {
+      throw new ProductConflictError(
+        `Product name "${name}" already belongs to ${matches.map((p) => p.ulid).join(', ')}. ` +
+          'Pass an explicit ulid to enrich a specific record, or merge the duplicates ' +
+          '(POST /products/:ulid/merge {"into": "<survivor>"}).'
+      );
+    }
+    const existing = matches[0];
+    if (existing) {
+      return { product: await this.enrichProduct(existing, normalizedInput), created: false };
+    }
+    return { product: await this.createProduct(normalizedInput), created: true };
+  }
+
+  /**
+   * `PATCH /products/:ulid` — the correction door (§ Product corrections).
+   * Partial: only the keys present in `patch` change. An explicit `null`
+   * **clears** a nullable field, which is where this differs from every enrich
+   * path in the module — an enrich merges a guess that may simply not have read
+   * a field, while a patch body is the owner stating what is true.
+   *
+   * Both nutrition panels merge **per-field**, so filling one missing field
+   * never requires restating the other eight; `nutrition_per_100g: null` clears
+   * the whole panel.
+   *
+   * `name` is patchable — a product's identity is its ULID (items, lexicon
+   * lines, and batch lines all link by `product_ulid`), and receipt-derived
+   * names badly need correcting. The one guard: a rename that *changes* the
+   * normalized name into a live twin's throws `ProductConflictError`, since it
+   * would manufacture the duplicate the merge path exists to remove. Restating
+   * the name it already has is never a collision.
+   *
+   * Null for an unknown ULID (a `404` at the route).
+   */
+  async patchProduct(ulid: string, patch: ProductPatchInput): Promise<ProductRecord | null> {
+    const existing = await this.store.getProduct(ulid);
+    if (!existing) return null;
+
+    const out: ProductPatch = {};
+
+    if (patch.name !== undefined) {
+      const name = patch.name.trim();
+      if (!name) throw new ProductValidationError('name must not be blank');
+      const normalized = normalizeProductName(name);
+      if (normalized !== normalizeProductName(existing.name)) {
+        const twins = (await this.store.findLiveProductsByNormalizedName(normalized)).filter((p) => p.ulid !== ulid);
+        if (twins.length > 0) {
+          throw new ProductConflictError(
+            `Product name "${name}" already belongs to ${twins.map((p) => p.ulid).join(', ')}. ` +
+              'Pick a distinct name, or merge into it (POST /products/:ulid/merge {"into": "<survivor>"}).'
+          );
+        }
+      }
+      out.name = name;
+    }
+
+    if (patch.shelf_life_class !== undefined) out.shelf_life_class = patch.shelf_life_class;
+    if (patch.aliases !== undefined) out.aliases = dedupeAliases(patch.aliases);
+    if (patch.serving_size_g !== undefined) out.serving_size_g = patch.serving_size_g;
+    if (patch.servings_per_container !== undefined) out.servings_per_container = patch.servings_per_container;
+    if (patch.unit_model_hint !== undefined) out.unit_model_hint = patch.unit_model_hint;
+    if (patch.net_content_g !== undefined) out.net_content_g = patch.net_content_g;
+    if (patch.net_content_ml !== undefined) out.net_content_ml = patch.net_content_ml;
+    if (patch.package_size !== undefined) out.package_size = patch.package_size;
+    if (patch.shelf_life_days_unopened !== undefined) out.shelf_life_days_unopened = patch.shelf_life_days_unopened;
+    if (patch.shelf_life_days_opened !== undefined) out.shelf_life_days_opened = patch.shelf_life_days_opened;
+    if (patch.nutrition_negligible !== undefined) out.nutrition_negligible = patch.nutrition_negligible;
+    if (patch.ingredients !== undefined) out.ingredients = patch.ingredients?.trim() || null;
+    if (patch.nutrition_per_100g !== undefined) {
+      out.nutrition_per_100g = patchPanel(existing.nutrition_per_100g, patch.nutrition_per_100g);
+    }
+    if (patch.nutrition_per_serving !== undefined) {
+      out.nutrition_per_serving = patchPanel(existing.nutrition_per_serving, patch.nutrition_per_serving);
+    }
+
+    return this.store.updateProduct(ulid, out);
+  }
+
+  /**
+   * `POST /products/:ulid/merge` — fold a duplicate into a survivor
+   * (§ Product corrections). A plain delete is the wrong tool: the losing
+   * record is what inventory items, lexicon lines, and batch lines already
+   * point at, so removing it orphans live rows and throws away the mapping work
+   * the lexicon represents. So: enrich the survivor from the loser (never
+   * null-clobbering — the survivor's own values win, the loser fills the gaps),
+   * relink every dependent, then archive the loser with `merged_into` set.
+   *
+   * Idempotent — re-merging an already-merged loser into the same survivor
+   * succeeds with zero relinks. Null when either ULID is unknown.
+   */
+  async mergeProducts(loserUlid: string, survivorUlid: string): Promise<ProductMergeResult | null> {
+    if (loserUlid === survivorUlid) {
+      throw new ProductValidationError('into must differ from the product being merged');
+    }
+    const loser = await this.store.getProduct(loserUlid);
+    const survivor = await this.store.getProduct(survivorUlid);
+    if (!loser || !survivor) return null;
+
+    if (survivor.archived_at) {
+      throw new ProductConflictError(
+        `Merge target ${survivor.ulid} is archived${
+          survivor.merged_into ? ` (merged into ${survivor.merged_into})` : ''
+        } — merging into a retired record would bury the data twice. Retarget the survivor.`
+      );
+    }
+    if (loser.merged_into && loser.merged_into !== survivorUlid) {
+      throw new ProductConflictError(
+        `Product ${loser.ulid} was already merged into ${loser.merged_into}, not ${survivorUlid}.`
+      );
+    }
+
+    const enriched = await this.enrichProduct(survivor, {
+      name: survivor.name,
+      shelf_life_class: loser.shelf_life_class,
+      aliases: [...loser.aliases, loser.name],
+      nutrition_per_100g: loser.nutrition_per_100g,
+      serving_size_g: loser.serving_size_g,
+      nutrition_per_serving: loser.nutrition_per_serving,
+      servings_per_container: loser.servings_per_container,
+      unit_model_hint: loser.unit_model_hint,
+      net_content_g: loser.net_content_g,
+      net_content_ml: loser.net_content_ml,
+      ingredients: loser.ingredients,
+      package_size: loser.package_size,
+      nutrition_negligible: loser.nutrition_negligible,
     });
+    const relinked = await this.store.relinkProductReferences(loserUlid, survivorUlid);
+    const merged = await this.store.archiveProduct(loserUlid, survivorUlid);
+
+    return { product: enriched, merged: merged ?? loser, relinked };
+  }
+
+  /**
+   * `DELETE /products/:ulid` — **archive**, never destroy (§ Product
+   * corrections). An archived product leaves every listing and stops being a
+   * name-match candidate, but stays resolvable by ULID so a linked item still
+   * renders its name and derives its shelf life. Idempotent; null for an
+   * unknown ULID.
+   */
+  async archiveProduct(ulid: string): Promise<ProductRecord | null> {
+    return this.store.archiveProduct(ulid);
   }
 
   async listProducts(filter: { q?: string; limit?: number }): Promise<ProductRecord[]> {
@@ -1504,6 +1714,10 @@ export class InventoryPipeline {
       net_content_ml: input.net_content_ml ?? existing.net_content_ml,
       ingredients: (input.ingredients?.trim() || null) ?? existing.ingredients,
       package_size: input.package_size ?? existing.package_size,
+      // Never un-marks: an enrich carries no evidence AGAINST negligibility
+      // (§ Nutritionally negligible products — the marker is cleared only by an
+      // explicit PATCH).
+      nutrition_negligible: existing.nutrition_negligible || (input.nutrition_negligible ?? false),
     });
     return merged ?? existing;
   }
@@ -1632,6 +1846,56 @@ export function scaleNutrition(total: NutritionFields, share: number): Nutrition
 /** Project a derivation row to the provenance shape embedded on the item view. */
 function toDerivedFromView(d: InventoryDerivationRecord): DerivedFromView {
   return { sources: d.sources, recipe_ulid: d.recipe_ulid };
+}
+
+/**
+ * The full stored fact set for a product, defaults filled — used by both an
+ * insert and an explicit-ulid **replace** (§ Product corrections), which is why
+ * every omitted field lands on its default rather than being skipped: a replace
+ * states the whole record, and that is the only way a caller can clear a field.
+ */
+function productFields(input: ProductInput): Omit<NewProduct, 'ulid'> {
+  return {
+    name: input.name.trim(),
+    shelf_life_class: input.shelf_life_class ?? 'unknown',
+    aliases: dedupeAliases(input.aliases ?? []),
+    nutrition_per_100g: normalizeNutrition(input.nutrition_per_100g),
+    serving_size_g: input.serving_size_g ?? null,
+    nutrition_per_serving: normalizeNutrition(input.nutrition_per_serving),
+    servings_per_container: input.servings_per_container ?? null,
+    unit_model_hint: input.unit_model_hint ?? null,
+    net_content_g: input.net_content_g ?? null,
+    net_content_ml: input.net_content_ml ?? null,
+    ingredients: input.ingredients?.trim() || null,
+    package_size: input.package_size ?? null,
+    shelf_life_days_unopened: input.shelf_life_days_unopened ?? null,
+    shelf_life_days_opened: input.shelf_life_days_opened ?? null,
+    nutrition_negligible: input.nutrition_negligible ?? false,
+  };
+}
+
+/**
+ * Apply a `PATCH` panel body onto a stored panel **per field** (§ Product
+ * corrections): a supplied number sets that field, a supplied `null` clears just
+ * that field, an omitted field is untouched, and `incoming: null` clears the
+ * whole panel. Distinct from `mergeNutrition`, which never null-clobbers because
+ * its input is a scan that may simply not have read a line.
+ */
+function patchPanel(
+  existing: NutritionPer100g | null,
+  incoming: Partial<NutritionPer100g> | null | undefined
+): NutritionPer100g | null {
+  if (incoming === null) return null;
+  if (incoming === undefined) return existing;
+  const out = {} as NutritionPer100g;
+  let any = false;
+  for (const k of NUTRITION_KEYS) {
+    const supplied = Object.prototype.hasOwnProperty.call(incoming, k) ? incoming[k] : undefined;
+    const value = supplied !== undefined ? supplied : existing?.[k] ?? null;
+    out[k] = typeof value === 'number' && Number.isFinite(value) ? value : null;
+    if (out[k] !== null) any = true;
+  }
+  return any ? out : null;
 }
 
 function dedupeAliases(aliases: string[]): string[] {

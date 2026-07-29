@@ -163,8 +163,20 @@ export const COMMAND_GROUPS: CommandGroup[] = [
     commands: [
       { usage: "products list [--q TEXT] [--limit N]", summary: "products (durable item facts); --q substring-matches name/aliases" },
       {
-        usage: "products add --name NAME [--shelf-life C] [--aliases a,b] [--package-size S] [--nutrition '<json>'] [--shelf-life-days-unopened N] [--shelf-life-days-opened N]",
-        summary: "seed a product",
+        usage: "products add --name NAME [--ulid U] [--shelf-life C] [--aliases a,b] [--package-size S] [--nutrition '<json>'] [--negligible] [--shelf-life-days-unopened N] [--shelf-life-days-opened N]",
+        summary: "seed a product — UPSERTS on --ulid (create/replace) or the normalized name (enrich in place)",
+      },
+      {
+        usage: "products update <ulid> [--name NAME] [--nutrition '<json>'] [--negligible|--no-negligible] [any add flag]",
+        summary: "correct a product in place — partial, only the flags you pass change (the door for adding nutrition later)",
+      },
+      {
+        usage: "products merge <ulid> --into <ulid>",
+        summary: "fold a duplicate into a survivor: relink its items/lexicon/batch lines, then retire it",
+      },
+      {
+        usage: "products archive <ulid>",
+        summary: "retire a product (soft — still resolvable by ulid so linked items keep working)",
       },
       { usage: "lexicon list [--store S] [--limit N]", summary: "receipt-line → product mappings per store" },
       {

@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'bun:test';
 import { InvalidTransitionError, isTerminal, transitionInventory } from './inventory-state.js';
-import { deriveEatBy, dayDiff, needsNutrition, toIsoDate, SHELF_LIFE_WINDOWS, parsePackageCount } from './inventory-derive.js';
+import {
+  deriveEatBy,
+  dayDiff,
+  needsNutrition,
+  normalizeProductName,
+  productPanel,
+  toIsoDate,
+  SHELF_LIFE_WINDOWS,
+  parsePackageCount,
+} from './inventory-derive.js';
 import { matchScore, parseRemark } from './inventory-remark.js';
 
 describe('inventory state machine', () => {
@@ -164,19 +173,70 @@ describe('needs-nutrition signal (§ Nutrition panel)', () => {
     calories: 100, protein_g: 5, fat_g: 3, sat_fat_g: 1,
     carbs_g: 12, sugar_g: 4, added_sugar_g: 2, fiber_g: 2, sodium_mg: 80,
   };
+  /** A panel-bearing product fixture; `nutrition_negligible` off unless stated. */
+  const p = (panel: Record<string, number | null> | null, negligible = false) => ({
+    nutrition_per_100g: panel as never,
+    nutrition_negligible: negligible,
+  });
 
   it('flags a product with no panel or a partial panel; a full panel clears it', () => {
     expect(needsNutrition(null)).toBe(false); // no product = the needs_info case, not this one
-    expect(needsNutrition({ nutrition_per_100g: null })).toBe(true);
-    expect(needsNutrition({ nutrition_per_100g: { ...full, sodium_mg: null } })).toBe(true);
-    expect(needsNutrition({ nutrition_per_100g: { ...full } })).toBe(false);
+    expect(needsNutrition(p(null))).toBe(true);
+    expect(needsNutrition(p({ ...full, sodium_mg: null }))).toBe(true);
+    expect(needsNutrition(p({ ...full }))).toBe(false);
   });
 
   it('counts added_sugar_g among the fields a complete panel must carry', () => {
     // A panel seeded before added sugar was tracked is INCOMPLETE, and the
     // resolving action is the same as ever: rescan the label, which prints
     // "Includes Xg Added Sugars". A 0 there is complete; a null is not.
-    expect(needsNutrition({ nutrition_per_100g: { ...full, added_sugar_g: null } })).toBe(true);
-    expect(needsNutrition({ nutrition_per_100g: { ...full, added_sugar_g: 0 } })).toBe(false);
+    expect(needsNutrition(p({ ...full, added_sugar_g: null }))).toBe(true);
+    expect(needsNutrition(p({ ...full, added_sugar_g: 0 }))).toBe(false);
+  });
+
+  it('exempts a nutrition_negligible product however empty its panel is', () => {
+    // A spice jar carries NO Nutrition Facts panel (FDA exempts foods with
+    // insignificant amounts of every nutrient), so a rescan can never clear the
+    // flag — § Nutritionally negligible products.
+    expect(needsNutrition(p(null, true))).toBe(false);
+    expect(needsNutrition(p({ ...full, sodium_mg: null }, true))).toBe(false);
+  });
+});
+
+describe('negligible products contribute zeros, not nulls (§ Nutritionally negligible products)', () => {
+  const partial = { calories: 282, protein_g: null, fat_g: null, sat_fat_g: null,
+    carbs_g: null, sugar_g: null, added_sugar_g: null, fiber_g: null, sodium_mg: null };
+
+  it('resolves an unmarked product to its stored panel, verbatim', () => {
+    expect(productPanel(null)).toBeNull();
+    expect(productPanel({ nutrition_per_100g: null, nutrition_negligible: false })).toBeNull();
+    expect(productPanel({ nutrition_per_100g: partial as never, nutrition_negligible: false })).toEqual(partial);
+  });
+
+  it('resolves a marked product with no panel to an all-zero panel', () => {
+    // Load-bearing, not cosmetic: one null contribution makes a whole day's
+    // field read unknown, so a pinch of paprika with a null sodium would cost
+    // the day its entire sodium figure. Zero is the assertion the marker makes.
+    const panel = productPanel({ nutrition_per_100g: null, nutrition_negligible: true })!;
+    expect(panel.calories).toBe(0);
+    expect(panel.sodium_mg).toBe(0);
+    expect(Object.values(panel).every((v) => v === 0)).toBe(true);
+  });
+
+  it('lets a real stored value win over the asserted zero, field by field', () => {
+    // A marker plus a partial panel is legal: the numbers someone actually read
+    // stand, and the marker fills the rest. Nothing is written to storage — the
+    // zeros are derived here, so unmarking restores the honest nulls.
+    const panel = productPanel({ nutrition_per_100g: partial as never, nutrition_negligible: true })!;
+    expect(panel.calories).toBe(282);
+    expect(panel.sodium_mg).toBe(0);
+  });
+});
+
+describe('product name key (§ Product corrections)', () => {
+  it('case-folds, collapses whitespace, and trims — the same rule recipes use', () => {
+    expect(normalizeProductName('  Smoked   PAPRIKA ')).toBe('smoked paprika');
+    expect(normalizeProductName('Olive Oil')).toBe(normalizeProductName('olive  oil'));
+    expect(normalizeProductName('Olive Oil')).not.toBe(normalizeProductName('Olive Oil Spray'));
   });
 });

@@ -17,14 +17,18 @@
  *   POST   /kitchen/inventory/convert      - prep transform: decrement source(s), create a derived item
  *   POST   /kitchen/inventory/:ulid/consume - one-tap known-macro log + deplete, ONE atomic operation
  * Products & lexicon (agentic seed + reads):
- *   POST   /kitchen/products               GET /kitchen/products
+ *   POST   /kitchen/products               - UPSERTS on an explicit ulid or the normalized name (201/200/409)
+ *   GET    /kitchen/products               - live products (archived excluded)
+ *   PATCH  /kitchen/products/:ulid         - partial correction; null clears, panels merge per-field
+ *   POST   /kitchen/products/:ulid/merge   - fold a duplicate into a survivor: relink dependents, archive the loser
+ *   DELETE /kitchen/products/:ulid         - archives (soft; still resolvable by ULID)
  *   POST   /kitchen/lexicon                GET /kitchen/lexicon
  *
  * Photos never touch disk (@fastify/multipart toBuffer holds them in memory
  * for the request only).
  */
 
-import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
+import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import multipart from '@fastify/multipart';
 import { ULID_PATTERN } from '../ulid.js';
 import { InvalidTransitionError } from '../inventory-state.js';
@@ -35,6 +39,8 @@ import {
   ConversionValidationError,
   LabelParserUnavailableError,
   NotCountedItemError,
+  ProductConflictError,
+  ProductValidationError,
   ReconcileValidationError,
   type InventoryPipeline,
 } from '../services/inventory.js';
@@ -476,15 +482,76 @@ export const registerInventoryRoutes: FastifyPluginAsync<InventoryRoutesConfig> 
 
   // ── Products ──────────────────────────────────────────────────────────────────
 
+  // POST /kitchen/products - UPSERTS (specs/modules/kitchen.md § Product
+  // corrections): 201 on create, 200 on an explicit-ulid replace or a name-key
+  // enrich, 409 on an ambiguous name key or an archived target. `ulid` is a
+  // real key here — it used to be stripped by `additionalProperties: false`,
+  // minting a duplicate and answering 201 for a write that ignored the request.
   fastify.post<{ Body: Record<string, unknown> }>(
     '/kitchen/products',
     { schema: { body: PRODUCT_BODY_SCHEMA } },
     async (request, reply) => {
-      const product = await inventory.createProduct(request.body as never);
-      reply.status(201);
-      return product;
+      try {
+        const { product, created } = await inventory.upsertProduct(request.body as never);
+        reply.status(created ? 201 : 200);
+        return product;
+      } catch (err) {
+        return productErrorReply(err, reply);
+      }
     }
   );
+
+  // PATCH /kitchen/products/:ulid - partial correction (§ Product corrections).
+  // Only supplied keys change; explicit null clears; both nutrition panels merge
+  // per-field so filling one missing field never restates the other eight.
+  fastify.patch<{ Params: { ulid: string }; Body: Record<string, unknown> }>(
+    '/kitchen/products/:ulid',
+    { schema: { body: PRODUCT_PATCH_SCHEMA } },
+    async (request, reply) => {
+      try {
+        const product = await inventory.patchProduct(request.params.ulid, request.body as never);
+        if (!product) {
+          reply.status(404);
+          return { error: 'Product not found' };
+        }
+        return product;
+      } catch (err) {
+        return productErrorReply(err, reply);
+      }
+    }
+  );
+
+  // POST /kitchen/products/:ulid/merge - fold a duplicate into a survivor
+  // (§ Product corrections). Items, lexicon lines, and batch lines point at the
+  // loser, so a plain delete would orphan them; merge relinks then archives.
+  fastify.post<{ Params: { ulid: string }; Body: { into: string } }>(
+    '/kitchen/products/:ulid/merge',
+    { schema: { body: PRODUCT_MERGE_SCHEMA } },
+    async (request, reply) => {
+      try {
+        const result = await inventory.mergeProducts(request.params.ulid, request.body.into);
+        if (!result) {
+          reply.status(404);
+          return { error: 'Product not found (either the product being merged or the `into` survivor)' };
+        }
+        return result;
+      } catch (err) {
+        return productErrorReply(err, reply);
+      }
+    }
+  );
+
+  // DELETE /kitchen/products/:ulid - ARCHIVES (§ Product corrections). Never a
+  // row deletion: items, lexicon lines, and batch lines point at products and
+  // must keep resolving. Idempotent.
+  fastify.delete<{ Params: { ulid: string } }>('/kitchen/products/:ulid', async (request, reply) => {
+    const archived = await inventory.archiveProduct(request.params.ulid);
+    if (!archived) {
+      reply.status(404);
+      return { error: 'Product not found' };
+    }
+    return archived;
+  });
 
   fastify.get<{ Querystring: { q?: string; limit?: string } }>(
     '/kitchen/products',
@@ -541,8 +608,28 @@ const limitQuery = {
   properties: { limit: { type: 'string', pattern: '^[0-9]+$' } },
 } as const;
 
+/**
+ * Map a product-write failure to its status (§ Product corrections): a malformed
+ * request is `400`, an unhonorable one is `409`. Shared by all four product
+ * write routes so no door can quietly answer with a different code — or worse,
+ * with a success.
+ */
+function productErrorReply(err: unknown, reply: FastifyReply): { error: string } {
+  if (err instanceof ProductValidationError) {
+    reply.status(400);
+    return { error: err.message };
+  }
+  if (err instanceof ProductConflictError) {
+    reply.status(409);
+    return { error: err.message };
+  }
+  throw err;
+}
+
 const NUTRITION_SCHEMA = {
-  type: 'object',
+  // Nullable: on a product write, `null` clears the whole panel (a patch clears
+  // a single field by supplying that field as null instead).
+  type: ['object', 'null'],
   additionalProperties: false,
   properties: {
     calories: { type: ['number', 'null'], minimum: 0 },
@@ -630,20 +717,59 @@ const CONVERT_BODY_SCHEMA = {
   },
 } as const;
 
+/**
+ * The stored product facts a caller may state, shared by the upsert body and the
+ * patch body (which widens each to accept an explicit null). Single-sourced so a
+ * new product field can't reach one door and not the other.
+ */
+const PRODUCT_FACT_PROPERTIES = {
+  name: { type: 'string', minLength: 1, maxLength: 200 },
+  shelf_life_class: { type: 'string', enum: [...SHELF_LIFE_CLASSES] },
+  aliases: { type: 'array', maxItems: 20, items: { type: 'string', maxLength: 100 } },
+  nutrition_per_100g: NUTRITION_SCHEMA,
+  nutrition_per_serving: NUTRITION_SCHEMA,
+  serving_size_g: { type: ['number', 'null'], exclusiveMinimum: 0 },
+  servings_per_container: { type: ['number', 'null'], exclusiveMinimum: 0 },
+  unit_model_hint: { type: ['string', 'null'], enum: ['counted', 'fraction', null] },
+  net_content_g: { type: ['number', 'null'], exclusiveMinimum: 0 },
+  net_content_ml: { type: ['number', 'null'], exclusiveMinimum: 0 },
+  ingredients: { type: ['string', 'null'], maxLength: 4000 },
+  package_size: { type: ['string', 'null'], maxLength: 100 },
+  shelf_life_days_unopened: { type: ['number', 'null'], minimum: 0 },
+  shelf_life_days_opened: { type: ['number', 'null'], minimum: 0 },
+  // § Nutritionally negligible products — the ~0-at-any-realistic-serving
+  // assertion that lets `needs_nutrition` be satisfied honestly for spices,
+  // salt, vinegar, and the rest of the panel-exempt categories.
+  nutrition_negligible: { type: 'boolean' },
+} as const;
+
+// `ulid` is a REAL upsert key (§ Product corrections). Its absence here — with
+// `additionalProperties: false` — is what made a supplied ULID vanish silently
+// and a duplicate come back as 201.
 const PRODUCT_BODY_SCHEMA = {
   type: 'object',
   required: ['name'],
   additionalProperties: false,
   properties: {
-    name: { type: 'string', minLength: 1, maxLength: 200 },
-    shelf_life_class: { type: 'string', enum: [...SHELF_LIFE_CLASSES] },
-    aliases: { type: 'array', maxItems: 20, items: { type: 'string', maxLength: 100 } },
-    nutrition_per_100g: NUTRITION_SCHEMA,
-    ingredients: { type: 'string', maxLength: 4000 },
-    package_size: { type: 'string', maxLength: 100 },
-    shelf_life_days_unopened: { type: 'number', minimum: 0 },
-    shelf_life_days_opened: { type: 'number', minimum: 0 },
+    ulid: { type: 'string', pattern: ULID_PATTERN.source },
+    ...PRODUCT_FACT_PROPERTIES,
   },
+} as const;
+
+// A patch states only what changes (`minProperties: 1`), and `null` clears.
+// `ulid` is not patchable — identity is not a fact about the product.
+const PRODUCT_PATCH_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  minProperties: 1,
+  properties: PRODUCT_FACT_PROPERTIES,
+} as const;
+
+const PRODUCT_MERGE_SCHEMA = {
+  type: 'object',
+  required: ['into'],
+  additionalProperties: false,
+  properties: { into: { type: 'string', pattern: ULID_PATTERN.source } },
 } as const;
 
 const LEXICON_BODY_SCHEMA = {

@@ -15,7 +15,7 @@ import type {
   ProductRecord,
   ShelfLifeClass,
 } from './inventory-types.js';
-import { NUTRITION_FIELD_KEYS } from './types.js';
+import { NUTRITION_FIELD_KEYS, normalizeRecipeName } from './types.js';
 
 /** Default (unopened, opened) day windows per shelf-life class; null = no eat-by. */
 export const SHELF_LIFE_WINDOWS: Record<ShelfLifeClass, { unopened: number | null; opened: number | null }> = {
@@ -132,14 +132,61 @@ const PANEL_KEYS: readonly (keyof NutritionPer100g)[] = NUTRITION_FIELD_KEYS;
  * panel with any of the nine fields null/absent. A label rescan is the
  * resolving action. Items with NO linked product are the `needs_info` case
  * instead — this flag stays false there to avoid double-badging.
+ *
+ * A `nutrition_negligible` product is **exempt** (§ Nutritionally negligible
+ * products): the flag means "a number is missing that could be found", and for
+ * a spice jar — which carries no Nutrition Facts panel at all, because FDA
+ * exempts foods with insignificant amounts of every nutrient — that is simply
+ * untrue. An unclearable flag trains the reader to ignore the clearable ones.
  */
 export function needsNutrition(
-  product: Pick<ProductRecord, 'nutrition_per_100g'> | null | undefined
+  product: Pick<ProductRecord, 'nutrition_per_100g' | 'nutrition_negligible'> | null | undefined
 ): boolean {
   if (!product) return false;
+  if (product.nutrition_negligible) return false;
   const n = product.nutrition_per_100g;
   if (!n) return true;
   return PANEL_KEYS.some((key) => typeof n[key] !== 'number');
+}
+
+/**
+ * A product's **effective** per-100g panel — the single place the negligible
+ * marker's zero assertion lives (§ Nutritionally negligible products).
+ *
+ * A marked product resolves to `0` for every field it doesn't otherwise state,
+ * never `null`. That is load-bearing rather than cosmetic: under the module's
+ * per-field null semantics one unknown contribution makes a whole day's field
+ * read *unknown* (§ Nutrition panel), so a pinch of paprika with a null sodium
+ * costs the day its entire sodium figure. Asserting zero is the same move
+ * § Filling `added_sugar_g` already requires of whole foods, which state `0`
+ * **by definition, not `null`**.
+ *
+ * The zeros are derived here, never written into storage: the assertion stays
+ * one reversible boolean, and a real panel found later supersedes the marker
+ * without anyone having to tell asserted zeros from scanned ones.
+ */
+export function productPanel(
+  product: Pick<ProductRecord, 'nutrition_per_100g' | 'nutrition_negligible'> | null | undefined
+): NutritionPer100g | null {
+  if (!product) return null;
+  if (!product.nutrition_negligible) return product.nutrition_per_100g;
+  // Per-field, not a spread: a stored panel's explicit nulls are gaps the marker
+  // fills, so a number someone actually read wins and everything else is 0.
+  const stored = product.nutrition_per_100g;
+  const out = {} as NutritionPer100g;
+  for (const key of PANEL_KEYS) out[key] = stored?.[key] ?? 0;
+  return out;
+}
+
+/**
+ * Product identity for the name-key upsert and the rename-collision guard
+ * (§ Product corrections): case-folded, whitespace-collapsed, trimmed. The same
+ * normalization § Recipe corrections keys recipes on — two names differing only
+ * in case or spacing are one product, and letting both exist recreates the
+ * indistinguishable-duplicate problem the upsert exists to remove.
+ */
+export function normalizeProductName(name: string): string {
+  return normalizeRecipeName(name);
 }
 
 /**
@@ -148,7 +195,7 @@ export function needsNutrition(
  */
 export function toItemView(
   record: InventoryItemRecord,
-  product: Pick<ProductRecord, 'name' | 'nutrition_per_100g'> | null,
+  product: Pick<ProductRecord, 'name' | 'nutrition_per_100g' | 'nutrition_negligible'> | null,
   now = new Date(),
   derivedFrom: DerivedFromView | null = null
 ): InventoryItemView {

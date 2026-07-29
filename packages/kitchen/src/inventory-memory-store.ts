@@ -24,10 +24,11 @@ import type {
   NewLexicon,
   NewProduct,
   ProductPatch,
+  ProductRelinkCounts,
   ResolveNeedsInfo,
 } from './inventory-store.js';
 import { DEFAULT_ON_HAND_ITEM_STATES } from './inventory-store.js';
-import { deriveEatBy, normalizeLexiconLine } from './inventory-derive.js';
+import { deriveEatBy, normalizeLexiconLine, normalizeProductName } from './inventory-derive.js';
 
 function nullsLastEatBy(a: InventoryItemRecord, b: InventoryItemRecord): number {
   const av = a.eat_by ? a.eat_by.getTime() : Number.POSITIVE_INFINITY;
@@ -58,6 +59,9 @@ export class MemoryInventoryStore implements InventoryStore {
       unit_model_hint: product.unit_model_hint ?? null,
       net_content_g: product.net_content_g ?? null,
       net_content_ml: product.net_content_ml ?? null,
+      nutrition_negligible: product.nutrition_negligible ?? false,
+      archived_at: null,
+      merged_into: null,
       created_at: now,
       updated_at: now,
     };
@@ -82,6 +86,7 @@ export class MemoryInventoryStore implements InventoryStore {
     const limit = Math.min(filter.limit ?? 100, 500);
     const q = filter.q?.toLowerCase();
     return [...this.products.values()]
+      .filter((p) => !p.archived_at)
       .filter((p) =>
         !q ||
         p.name.toLowerCase().includes(q) ||
@@ -90,6 +95,50 @@ export class MemoryInventoryStore implements InventoryStore {
       .sort((a, b) => a.name.localeCompare(b.name))
       .slice(0, limit)
       .map((p) => structuredClone(p));
+  }
+
+  async findLiveProductsByNormalizedName(normalized: string): Promise<ProductRecord[]> {
+    return [...this.products.values()]
+      .filter((p) => !p.archived_at && normalizeProductName(p.name) === normalized)
+      .sort((a, b) => a.created_at.getTime() - b.created_at.getTime())
+      .map((p) => structuredClone(p));
+  }
+
+  async archiveProduct(ulid: string, mergedInto: string | null = null): Promise<ProductRecord | null> {
+    const p = this.products.get(ulid);
+    if (!p) return null;
+    // First retirement wins — a replay must not slide the stamp forward.
+    p.archived_at ??= new Date();
+    p.merged_into ??= mergedInto;
+    p.updated_at = new Date();
+    return structuredClone(p);
+  }
+
+  async relinkProductReferences(fromUlid: string, toUlid: string): Promise<ProductRelinkCounts> {
+    let items = 0;
+    for (const item of this.items.values()) {
+      if (item.product_ulid === fromUlid) {
+        item.product_ulid = toUlid;
+        item.updated_at = new Date();
+        items++;
+      }
+    }
+    let lexiconLines = 0;
+    for (const line of this.lexicon.values()) {
+      if (line.product_ulid === fromUlid) {
+        line.product_ulid = toUlid;
+        line.updated_at = new Date();
+        lexiconLines++;
+      }
+    }
+    let batchLines = 0;
+    for (const line of this.lines.values()) {
+      if (line.product_ulid === fromUlid) {
+        line.product_ulid = toUlid;
+        batchLines++;
+      }
+    }
+    return { items, lexicon_lines: lexiconLines, batch_lines: batchLines };
   }
 
   async getProductsByUlids(ulids: string[]): Promise<Map<string, ProductRecord>> {
