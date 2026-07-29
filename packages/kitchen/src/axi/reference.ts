@@ -133,6 +133,11 @@ export const COMMAND_GROUPS: CommandGroup[] = [
       { usage: 'inventory remark "<free text>" [--at DATE]', summary: "free-text event resolver — matches a remark to an item and infers opened/finished/tossed; prints matched/unmatched honestly (unmatched is normal, not an error)" },
       { usage: "inventory questions [--limit N]", summary: "open needs-info items as one-time questions" },
       {
+        usage: "inventory waste [--since DATE] [--until DATE] [--limit N]",
+        summary:
+          "the COSTED toss log — every recorded toss with the amount discarded and what it cost, scaled to the fraction (or sealed units) actually thrown out, never the whole package. Price comes from the item's OWN receipt line when knowable, else the nearest priced purchase of the product (cost_basis says which). A null cost with basis 'unknown' means no price is on file for that product — NOT that the food was free; totals sum only known costs and report the unknown rows separately. Dismissed/merged-away records never appear (retracting the record retracts its waste)",
+      },
+      {
         usage: "inventory convert [--from <ulid>[:amount]…] --to '<derived spec json>' [--at DATE]",
         summary: "prep transform: create a NEW derived item with its own clock + provenance (--to takes unit_seal alongside units_total for a counted batch: shared for a tray under one lid, individual for separately-lidded jars), optionally decrementing source item(s) (count or fraction); --from is OPTIONAL — with none it is a source-less \"I made this\" that decrements nothing. Pass --to recipe_ulid to make the item one-tap consume-eligible. THIS is how prepped food reaches the consume shelf — never plain 'inventory add'",
       },
@@ -181,6 +186,11 @@ export const COMMAND_GROUPS: CommandGroup[] = [
       {
         usage: "products update <ulid> [--name NAME] [--nutrition '<json>'] [--negligible|--no-negligible|--force-negligible] [any add flag]",
         summary: "correct a product in place — partial, only the flags you pass change (the door for adding nutrition later). --negligible is REFUSED for anything salt-bearing (garlic powder qualifies; garlic salt does not) — --force-negligible overrides",
+      },
+      {
+        usage: "products prices <ulid> [--store S] [--limit N]",
+        summary:
+          "PRICE HISTORY — every recorded purchase of one product, newest first, with the printed price, the per-package price (line price ÷ quantity), and a NORMALIZED per-100g/per-100ml unit price plus the basis that produced it (a measure on the line, the store's lexicon package size, the product's label net content, or its package-size string). Compare the per-100 columns, never the raw prices: a 12 oz and a 16 oz package are not comparable at face value. A null unit price means no package size resolved for that purchase — nothing is guessed. Derived at read time from the receipt lines themselves, so nothing is stored and a corrected line corrects the history",
       },
       {
         usage: "products merge <ulid> --into <ulid>",

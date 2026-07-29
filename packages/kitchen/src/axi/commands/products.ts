@@ -20,6 +20,10 @@ export const PRODUCTS_HELP = `kitchen-axi products <subcommand> [args] [--json]
                                       only the flags you pass change. Also
                                       [--name NAME] to rename, and
                                       [--no-negligible] to un-mark
+  prices <ulid> [--store S] [--limit N]
+                                    PRICE HISTORY: every recorded purchase of
+                                      this product, newest first, normalized to
+                                      a comparable unit price
   merge <ulid> --into <ulid>        fold a DUPLICATE into a survivor: relink its
                                       items, receipt-lexicon lines, and batch
                                       lines, then retire it
@@ -63,7 +67,19 @@ export const PRODUCTS_HELP = `kitchen-axi products <subcommand> [args] [--json]
 
   archive never destroys, and merge never deletes the duplicate — inventory
   items, lexicon lines, and receipt batch lines point at products and must keep
-  resolving.`;
+  resolving.
+
+  prices reads what receipts already recorded — nothing is stored for it, so a
+  corrected line or a re-scanned label corrects the history immediately. Each
+  point carries the printed price, the per-package price (the line price ÷ its
+  quantity), and a NORMALIZED unit price with the basis that produced it: a
+  measure on the line itself, the lexicon package size for that store's line
+  text, the product's label net content, or its package-size string. Compare
+  cents_per_100g (or cents_per_100ml) across points, NOT the raw prices — a 12
+  oz and a 16 oz package are not comparable at face value. A null unit price
+  means no package size could be resolved for that purchase, so nothing was
+  guessed; scan the label or set --package-size to fix it. Weight and volume
+  are never cross-converted, so a product bought both ways yields two series.`;
 
 const PRODUCT_ROW_SCHEMA: FieldDef[] = [
   field("ulid"),
@@ -89,6 +105,23 @@ const PRODUCT_DETAIL_SCHEMA: FieldDef[] = [
   },
   { type: "boolYesNo", key: "nutrition_negligible", as: "negligible" },
   field("ingredients"),
+];
+
+/**
+ * A price point leads with when/where, then the printed price, then the
+ * normalized comparison. `basis` sits beside the per-100 columns because a null
+ * there is only readable as "no size resolved" when the basis says so.
+ */
+const PRICE_POINT_SCHEMA: FieldDef[] = [
+  field("purchased_at", "date"),
+  field("store"),
+  field("raw_text", "line"),
+  field("quantity", "qty"),
+  field("price_cents", "price¢"),
+  field("package_price_cents", "per_pkg¢"),
+  field("cents_per_100g", "per_100g¢"),
+  field("cents_per_100ml", "per_100ml¢"),
+  field("unit_basis", "basis"),
 ];
 
 /** The write flags shared by `add` and `update` (single-sourced so they can't drift). */
@@ -121,6 +154,8 @@ export async function productsCommand(args: string[]): Promise<string> {
       return addProduct(rest);
     case "update":
       return updateProduct(rest);
+    case "prices":
+      return productPrices(rest);
     case "merge":
       return mergeProduct(rest);
     case "archive":
@@ -224,6 +259,24 @@ async function updateProduct(args: string[]): Promise<string> {
     renderDetail("updated", product, PRODUCT_DETAIL_SCHEMA),
     renderHelp([
       "Only the flags you passed changed; a nutrition panel merges per-field, so filling one field never restates the other eight",
+    ]),
+  ]);
+}
+
+async function productPrices(args: string[]): Promise<string> {
+  const { positionals, flags } = parseArgs(args, ["json"], ["store", "limit"]);
+  const ulid = requirePositional(positionals, 0, "product ulid", PRODUCTS_HELP);
+  const store = typeof flags.store === "string" ? flags.store : undefined;
+  const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", PRODUCTS_HELP, { min: 1 })) : undefined;
+  const result = await api.get(`/api/kitchen/products/${encodeURIComponent(ulid)}/prices`, { store, limit });
+  if (flags.json) return rawJson(result);
+  const points = result?.points ?? [];
+  return renderOutput([
+    renderObject({ product: result?.product_name, ulid: result?.product_ulid, purchases: result?.count ?? 0 }),
+    renderList("prices", points, PRICE_POINT_SCHEMA),
+    renderHelp([
+      "Compare per_100g / per_100ml, not price¢ — package sizes differ between purchases and stores",
+      "A null per_100g/per_100ml with basis null means no package size resolved for that purchase; nothing was guessed. Scan the label, or set the size with `products update <ulid> --package-size '16 oz'`",
     ]),
   ]);
 }

@@ -85,40 +85,6 @@ in doubt, read the spec.
   self-heals at the next event). The item only goes terminal `tossed` when `--fraction` is
   omitted (full toss) or the remainder hits zero. Contrast `opened` (where `--fraction` is
   the absolute *remaining* fraction) and `finished` (always terminal, zeroed).
-- **Food moved between freezer and fridge? That is an event, and it restarts the clock.**
-  A shelf-life class is a claim about *where an item lives*, so when it physically changes
-  appliance, run `inventory event <ulid> moved --to <class>` — freezer→fridge to thaw
-  (`--to fridge_short`), fridge→freezer to park a clock (`--to frozen`). The clock
-  **restarts from the move date** on the destination class; state and `opened_at` are left
-  alone (moving a sealed pack doesn't open it). The failure this prevents is the dangerous
-  direction: an item still recorded `frozen` days after it thawed reads as indefinitely
-  safe while running a ~1-week fuse. Two things that look like substitutes and are not:
-  never fake a move with `event opened --at` or `recount --opened-at` on a sealed pack
-  (that trades a wrong date for a wrong *state*), and don't use `recount --shelf-life` for
-  a move — that says "the class was always wrong" and re-derives against the **old**
-  anchor, under-reporting urgency by however long the item sat in its previous storage. Use
-  `recount --shelf-life` only for a class that was genuinely mis-recorded from the start.
-  `--at` is the date the move **actually happened**, even if the decision came a day earlier.
-- **A package can be counted *and* openable — say which kind with `--unit-seal`.** For a
-  counted item (`--units-total N`), `--unit-seal individual` (the default) means each unit
-  has its own seal (a can 3-pack, yogurt cups), so opening one leaves the rest at the
-  unopened window and each `finished-unit` returns the item to `stocked` on a fresh clock.
-  `--unit-seal shared` means **one seal over all the units** — a 4-link vacuum pack, a
-  sliced loaf, an egg carton, a tray of prepped portions — so opening the container puts the
-  whole remainder on the opened clock, and `finished-unit` keeps the item `open` and only
-  moves the count. Set `shared` on anything you open once and then eat from several times;
-  otherwise the ledger reports a sealed-window safety margin for food that is physically
-  open. For any counted item `on_hand_fraction` is **derived** (`units_remaining /
-  units_total`), so recount it with `--units-remaining`, never `--fraction`.
-- **`recount` reaches every field an observation can settle, and `eat_by` is not one of
-  them.** Besides quantities and state it takes `--shelf-life`, `--needs-info` /
-  `--no-needs-info`, and `--product-ulid` / `--unlink-product`. `--no-needs-info` is the
-  door when there is no label to scan (a spice jar carries no Nutrition Facts panel at all,
-  so rescanning can never clear the flag), and `--product-ulid` attaches or re-points an
-  identity without inventing a decoy record to merge. `eat_by` is never settable — it is
-  derived from the class, which is exactly what makes the class mean something. And a
-  correctly-classed item gets a clock **even while `needs_info` is set**: not knowing the
-  brand has nothing to do with how fast it rots.
 - **Never retire a record with `finished` or `tossed` just to get it out of the way.** Those
   are claims about food: `finished` says it was eaten, `tossed` says it was wasted and feeds
   waste telemetry someone will later act on. For a record that was never real stock — a
@@ -175,6 +141,16 @@ in doubt, read the spec.
   convert --to '{…,"recipe_ulid":"…"}'`. If no recipe exists yet, `recipes push` one first
   (its components fix the macros), then convert against it.
 
+- **A cost of `null` means unknown, and never zero.** Both money reads — `products prices`
+  and `inventory waste` — are derived from the prices receipts already recorded, so they are
+  honest about gaps. An unreadable line price, a manually-seeded item, or a product bought
+  before receipt scanning has **no price on file**: the row reads `cost null` / `basis
+  unknown`, and the waste totals sum only the known rows and count the unknown ones
+  separately. Never report a null as free or fold it in as a 0 — that would make waste look
+  costless, which is the opposite of what the read is for. Same rule on the price side: a
+  null `per_100g` means no package size resolved for that purchase, not a free package, and
+  it is fixed by scanning the label or setting `--package-size`, never by assuming a size.
+
 ## Common workflows
 
 - **"Log what I just ate"** → `scripts/kitchen-axi entries log "<description>"` (the
@@ -205,6 +181,14 @@ in doubt, read the spec.
   or `inventory event <ulid> <type>` when you have the item.
 - **"Scan this receipt"** → `scripts/kitchen-axi receipts scan <photo…> --store "<store>"`, then
   `receipts show <ulid>` to see extracted lines (parses asynchronously).
+- **"What has this cost me / is it cheaper at the other store?"** →
+  `scripts/kitchen-axi products prices <ulid>` (add `--store "<store>"` to scope). Compare
+  the `per_100g` / `per_100ml` columns, never the raw prices — packages differ in size
+  between purchases and stores, which is exactly what the normalization is for.
+- **"How much food am I throwing away?"** → `scripts/kitchen-axi inventory waste
+  [--since DATE]`. Each row is one toss with the amount discarded and its cost, scaled to
+  the fraction (or sealed units) actually thrown out. Read the totals as
+  known-cost-plus-unknown-rows, not as one number.
 
 ## Commands
 
@@ -245,6 +229,7 @@ in doubt, read the spec.
 - `scripts/kitchen-axi inventory merge <ulid> --into <ulid>` — fold a DUPLICATE item (two records, ONE physical package) into a survivor: fills only the survivor's EMPTY identity fields, relinks its entries/receipt line/conversions, then retires it as dismissed. Quantities are never summed and the survivor keeps its OWN clock — use this, not dismiss, whenever either record has history
 - `scripts/kitchen-axi inventory remark "<free text>" [--at DATE]` — free-text event resolver — matches a remark to an item and infers opened/finished/tossed; prints matched/unmatched honestly (unmatched is normal, not an error)
 - `scripts/kitchen-axi inventory questions [--limit N]` — open needs-info items as one-time questions
+- `scripts/kitchen-axi inventory waste [--since DATE] [--until DATE] [--limit N]` — the COSTED toss log — every recorded toss with the amount discarded and what it cost, scaled to the fraction (or sealed units) actually thrown out, never the whole package. Price comes from the item's OWN receipt line when knowable, else the nearest priced purchase of the product (cost_basis says which). A null cost with basis 'unknown' means no price is on file for that product — NOT that the food was free; totals sum only known costs and report the unknown rows separately. Dismissed/merged-away records never appear (retracting the record retracts its waste)
 - `scripts/kitchen-axi inventory convert [--from <ulid>[:amount]…] --to '<derived spec json>' [--at DATE]` — prep transform: create a NEW derived item with its own clock + provenance (--to takes unit_seal alongside units_total for a counted batch: shared for a tray under one lid, individual for separately-lidded jars), optionally decrementing source item(s) (count or fraction); --from is OPTIONAL — with none it is a source-less "I made this" that decrements nothing. Pass --to recipe_ulid to make the item one-tap consume-eligible. THIS is how prepped food reaches the consume shelf — never plain 'inventory add'
 - `scripts/kitchen-axi inventory consume <item-ulid> [--quantity N] [--at DATE] [--ulid ENTRY_ULID]` — one-tap: log a consumption entry with the item's EXACT known macros (no model call) and deplete it, in ONE atomic step; only recipe-linked derived items qualify (else 400); idempotent on --ulid
 
@@ -266,6 +251,7 @@ in doubt, read the spec.
 - `scripts/kitchen-axi products list [--q TEXT] [--limit N]` — products (durable item facts); --q substring-matches name/aliases
 - `scripts/kitchen-axi products add --name NAME [--ulid U] [--shelf-life C] [--aliases a,b] [--package-size S] [--nutrition '<json>'] [--negligible] [--shelf-life-days-unopened N] [--shelf-life-days-opened N]` — seed a product — UPSERTS on --ulid (create/replace) or the normalized name (enrich in place)
 - `scripts/kitchen-axi products update <ulid> [--name NAME] [--nutrition '<json>'] [--negligible|--no-negligible|--force-negligible] [any add flag]` — correct a product in place — partial, only the flags you pass change (the door for adding nutrition later). --negligible is REFUSED for anything salt-bearing (garlic powder qualifies; garlic salt does not) — --force-negligible overrides
+- `scripts/kitchen-axi products prices <ulid> [--store S] [--limit N]` — PRICE HISTORY — every recorded purchase of one product, newest first, with the printed price, the per-package price (line price ÷ quantity), and a NORMALIZED per-100g/per-100ml unit price plus the basis that produced it (a measure on the line, the store's lexicon package size, the product's label net content, or its package-size string). Compare the per-100 columns, never the raw prices: a 12 oz and a 16 oz package are not comparable at face value. A null unit price means no package size resolved for that purchase — nothing is guessed. Derived at read time from the receipt lines themselves, so nothing is stored and a corrected line corrects the history
 - `scripts/kitchen-axi products merge <ulid> --into <ulid>` — fold a duplicate into a survivor: relink its items/lexicon/batch lines, then retire it
 - `scripts/kitchen-axi products archive <ulid>` — retire a product (soft — still resolvable by ulid so linked items keep working)
 - `scripts/kitchen-axi lexicon list [--store S] [--limit N]` — receipt-line → product mappings per store
@@ -281,12 +267,5 @@ in doubt, read the spec.
 - Model-backed steps degrade gracefully: with no model key configured, receipts still post
   (batch stays `parsing`) and label intake returns 503 — the inventory surface stays
   "roughly right, self-healing".
-- `--negligible` asserts that **every** panel field is ~0 at a realistic serving — sodium
-  included. Salt is the trap: it is ~0 on eight fields and ~38,700 mg of sodium per 100 g on
-  the ninth, so marking it would claim zero sodium for the biggest sodium line in the
-  kitchen. **Garlic powder qualifies; garlic salt does not.** The API refuses the marker
-  (400) on evidence of salt in the name, aliases, ingredients, or a stated sodium — also
-  bouillon, MSG, baking soda/powder, and soy/fish sauce. Pass `--force-negligible` only when
-  a realistic serving really does contribute ~0 sodium.
 - This skill is a generic toolkit surface — no instance identity. Installation, hooks, and
   which commands a chat surface exposes are the operator's concern.

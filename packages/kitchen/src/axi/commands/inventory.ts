@@ -43,6 +43,9 @@ export const INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json
                                              relink its dependents, then retire it
   remark "<free text>" [--at DATE]          free-text event resolver (honest match)
   questions [--limit N]                     open needs-info items as questions
+  waste [--since DATE] [--until DATE] [--limit N]
+                                             the COSTED toss log: what was thrown
+                                             out, how much of it, and what it cost
   convert [--from <ulid>[:amount]…] --to '<json>' [--at DATE]
                                              prep transform: create a derived item, optionally decrementing source(s)
   consume <item-ulid> [--quantity N] [--at DATE] [--ulid ENTRY_ULID]
@@ -177,6 +180,17 @@ export const INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json
   if the item is already terminal — resurrect it with 'recount --state
   stocked' first, then dismiss.
 
+  'waste' costs the toss log. Each row is one recorded toss with the amount
+  discarded and what that amount cost — scaled to the fraction (or sealed
+  units) actually thrown out, never the whole package. The price comes from
+  the item's OWN receipt line when it is knowable, else the nearest priced
+  purchase of the same product; cost_basis says which, and price_line_ulid
+  names the line. A cost of NULL with basis 'unknown' means the product has
+  no price on file (a manually-seeded item, or a purchase from before receipt
+  scanning) — it does NOT mean the food was free, and totals report it as an
+  unknown row rather than adding zero. Items retired as dismissed or merged
+  away never appear: retracting the record retracts its waste.
+
   'merge' is for TWO RECORDS, ONE PHYSICAL PACKAGE. Prefer it over dismiss
   whenever either side has history: dismiss retires a row but relinks
   nothing, so a consumption entry that depleted the loser, the receipt line
@@ -240,6 +254,23 @@ const QUESTION_SCHEMA: FieldDef[] = [
   field("question"),
 ];
 
+/**
+ * Waste rows lead with WHAT and HOW MUCH, then the cost and its provenance.
+ * `cost_basis` sits next to `cost_cents` on purpose: a null cost is only
+ * readable as "unknown" if the basis is right beside it.
+ */
+const WASTE_ROW_SCHEMA: FieldDef[] = [
+  field("tossed_at"),
+  field("product_name", "name"),
+  field("amount_fraction", "amount"),
+  field("units"),
+  field("cost_cents", "cost¢"),
+  field("cost_basis", "basis"),
+  field("store"),
+  { type: "boolYesNo", key: "terminal" },
+  field("item_ulid", "item"),
+];
+
 const EVENT_TYPES = ["opened", "finished", "finished-unit", "tossed", "moved"];
 
 export async function inventoryCommand(args: string[]): Promise<string> {
@@ -265,6 +296,8 @@ export async function inventoryCommand(args: string[]): Promise<string> {
       return remark(rest);
     case "questions":
       return questions(rest);
+    case "waste":
+      return waste(rest);
     case "convert":
       return convert(rest);
     case "consume":
@@ -517,6 +550,30 @@ async function questions(args: string[]): Promise<string> {
   if (flags.json) return rawJson(result);
   const q = result?.questions ?? [];
   return renderList("questions", q, QUESTION_SCHEMA);
+}
+
+async function waste(args: string[]): Promise<string> {
+  const { flags } = parseArgs(args, ["json"], ["since", "until", "limit"]);
+  const since = typeof flags.since === "string" ? validateDate(flags.since, "--since", INVENTORY_HELP) : undefined;
+  const until = typeof flags.until === "string" ? validateDate(flags.until, "--until", INVENTORY_HELP) : undefined;
+  const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", INVENTORY_HELP, { min: 1 })) : undefined;
+  const result = await api.get("/api/kitchen/inventory/waste", { since, until, limit });
+  if (flags.json) return rawJson(result);
+  const rows = result?.waste ?? [];
+  const totals = result?.totals ?? {};
+  return renderOutput([
+    renderList("waste", rows, WASTE_ROW_SCHEMA),
+    renderObject({
+      rows: totals.rows ?? 0,
+      known_cost_cents: totals.cost_cents ?? 0,
+      unknown_cost_rows: totals.cost_unknown_rows ?? 0,
+    }),
+    renderHelp([
+      "known_cost_cents sums ONLY the rows with a price on file — unknown_cost_rows are excluded, not counted as zero",
+      "cost null / basis unknown means no priced purchase exists for that product, NOT that the food was free — seed the price by scanning the receipt, or the product via `receipts scan`",
+      "cost scales to the amount discarded (fraction, or sealed units for a counted pack), never the whole package",
+    ]),
+  ]);
 }
 
 /** Parse one `--from <ulid>[:amount]` value into a convert source. */

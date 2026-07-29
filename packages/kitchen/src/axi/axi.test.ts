@@ -592,6 +592,27 @@ describe("storage moves + the open-container seal are reachable from the CLI", (
     expect(STORAGE_MOVE_SHELF_LIFE_CLASSES).not.toContain("unknown");
     expect(STORAGE_MOVE_SHELF_LIFE_CLASSES).toContain("prepared");
     expect(UNIT_SEALS).toEqual(["individual", "shared"]);
+describe("price + waste reads are discoverable, and say what null cost means", () => {
+  it("documents both read verbs in the reference and the group help", () => {
+    const text = commandReferenceText();
+    expect(text).toContain("products prices <ulid>");
+    expect(text).toContain("inventory waste");
+    expect(INVENTORY_HELP).toContain("waste [--since DATE]");
+    expect(PRODUCTS_HELP).toContain("prices <ulid>");
+  });
+
+  it("states in both surfaces that an unknown cost is NOT free", () => {
+    // The one misreading that would invert the feature's meaning: reading a
+    // null cost as zero and concluding the waste was free.
+    const wasteRef = COMMAND_GROUPS.flatMap((g) => g.commands).find((c) => c.usage.startsWith("inventory waste"));
+    expect(wasteRef!.summary).toContain("NOT that the food was free");
+    expect(INVENTORY_HELP).toContain("does NOT mean the food was free");
+  });
+
+  it("steers the reader to the normalized column, not the raw price", () => {
+    const pricesRef = COMMAND_GROUPS.flatMap((g) => g.commands).find((c) => c.usage.startsWith("products prices"));
+    expect(pricesRef!.summary).toContain("Compare the per-100 columns");
+    expect(PRODUCTS_HELP).toContain("cents_per_100g");
   });
 });
 

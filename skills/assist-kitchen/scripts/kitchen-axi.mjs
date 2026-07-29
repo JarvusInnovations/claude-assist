@@ -660,6 +660,10 @@ var COMMAND_GROUPS = [
       { usage: 'inventory remark "<free text>" [--at DATE]', summary: "free-text event resolver \u2014 matches a remark to an item and infers opened/finished/tossed; prints matched/unmatched honestly (unmatched is normal, not an error)" },
       { usage: "inventory questions [--limit N]", summary: "open needs-info items as one-time questions" },
       {
+        usage: "inventory waste [--since DATE] [--until DATE] [--limit N]",
+        summary: "the COSTED toss log \u2014 every recorded toss with the amount discarded and what it cost, scaled to the fraction (or sealed units) actually thrown out, never the whole package. Price comes from the item's OWN receipt line when knowable, else the nearest priced purchase of the product (cost_basis says which). A null cost with basis 'unknown' means no price is on file for that product \u2014 NOT that the food was free; totals sum only known costs and report the unknown rows separately. Dismissed/merged-away records never appear (retracting the record retracts its waste)"
+      },
+      {
         usage: "inventory convert [--from <ulid>[:amount]\u2026] --to '<derived spec json>' [--at DATE]",
         summary: `prep transform: create a NEW derived item with its own clock + provenance (--to takes unit_seal alongside units_total for a counted batch: shared for a tray under one lid, individual for separately-lidded jars), optionally decrementing source item(s) (count or fraction); --from is OPTIONAL \u2014 with none it is a source-less "I made this" that decrements nothing. Pass --to recipe_ulid to make the item one-tap consume-eligible. THIS is how prepped food reaches the consume shelf \u2014 never plain 'inventory add'`
       },
@@ -706,6 +710,10 @@ var COMMAND_GROUPS = [
       {
         usage: "products update <ulid> [--name NAME] [--nutrition '<json>'] [--negligible|--no-negligible|--force-negligible] [any add flag]",
         summary: "correct a product in place \u2014 partial, only the flags you pass change (the door for adding nutrition later). --negligible is REFUSED for anything salt-bearing (garlic powder qualifies; garlic salt does not) \u2014 --force-negligible overrides"
+      },
+      {
+        usage: "products prices <ulid> [--store S] [--limit N]",
+        summary: "PRICE HISTORY \u2014 every recorded purchase of one product, newest first, with the printed price, the per-package price (line price \xF7 quantity), and a NORMALIZED per-100g/per-100ml unit price plus the basis that produced it (a measure on the line, the store's lexicon package size, the product's label net content, or its package-size string). Compare the per-100 columns, never the raw prices: a 12 oz and a 16 oz package are not comparable at face value. A null unit price means no package size resolved for that purchase \u2014 nothing is guessed. Derived at read time from the receipt lines themselves, so nothing is stored and a corrected line corrects the history"
       },
       {
         usage: "products merge <ulid> --into <ulid>",
@@ -1645,6 +1653,9 @@ var INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json]
                                              relink its dependents, then retire it
   remark "<free text>" [--at DATE]          free-text event resolver (honest match)
   questions [--limit N]                     open needs-info items as questions
+  waste [--since DATE] [--until DATE] [--limit N]
+                                             the COSTED toss log: what was thrown
+                                             out, how much of it, and what it cost
   convert [--from <ulid>[:amount]\u2026] --to '<json>' [--at DATE]
                                              prep transform: create a derived item, optionally decrementing source(s)
   consume <item-ulid> [--quantity N] [--at DATE] [--ulid ENTRY_ULID]
@@ -1779,6 +1790,17 @@ var INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json]
   if the item is already terminal \u2014 resurrect it with 'recount --state
   stocked' first, then dismiss.
 
+  'waste' costs the toss log. Each row is one recorded toss with the amount
+  discarded and what that amount cost \u2014 scaled to the fraction (or sealed
+  units) actually thrown out, never the whole package. The price comes from
+  the item's OWN receipt line when it is knowable, else the nearest priced
+  purchase of the same product; cost_basis says which, and price_line_ulid
+  names the line. A cost of NULL with basis 'unknown' means the product has
+  no price on file (a manually-seeded item, or a purchase from before receipt
+  scanning) \u2014 it does NOT mean the food was free, and totals report it as an
+  unknown row rather than adding zero. Items retired as dismissed or merged
+  away never appear: retracting the record retracts its waste.
+
   'merge' is for TWO RECORDS, ONE PHYSICAL PACKAGE. Prefer it over dismiss
   whenever either side has history: dismiss retires a row but relinks
   nothing, so a consumption entry that depleted the loser, the receipt line
@@ -1838,6 +1860,17 @@ var QUESTION_SCHEMA = [
   field("acquired_at"),
   field("question")
 ];
+var WASTE_ROW_SCHEMA = [
+  field("tossed_at"),
+  field("product_name", "name"),
+  field("amount_fraction", "amount"),
+  field("units"),
+  field("cost_cents", "cost\xA2"),
+  field("cost_basis", "basis"),
+  field("store"),
+  { type: "boolYesNo", key: "terminal" },
+  field("item_ulid", "item")
+];
 var EVENT_TYPES = ["opened", "finished", "finished-unit", "tossed", "moved"];
 async function inventoryCommand(args) {
   const sub = args[0];
@@ -1862,6 +1895,8 @@ async function inventoryCommand(args) {
       return remark(rest);
     case "questions":
       return questions(rest);
+    case "waste":
+      return waste(rest);
     case "convert":
       return convert(rest);
     case "consume":
@@ -2069,6 +2104,29 @@ async function questions(args) {
   if (flags.json) return rawJson(result);
   const q = result?.questions ?? [];
   return renderList("questions", q, QUESTION_SCHEMA);
+}
+async function waste(args) {
+  const { flags } = parseArgs(args, ["json"], ["since", "until", "limit"]);
+  const since = typeof flags.since === "string" ? validateDate(flags.since, "--since", INVENTORY_HELP) : void 0;
+  const until = typeof flags.until === "string" ? validateDate(flags.until, "--until", INVENTORY_HELP) : void 0;
+  const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", INVENTORY_HELP, { min: 1 })) : void 0;
+  const result = await api.get("/api/kitchen/inventory/waste", { since, until, limit });
+  if (flags.json) return rawJson(result);
+  const rows = result?.waste ?? [];
+  const totals = result?.totals ?? {};
+  return renderOutput2([
+    renderList("waste", rows, WASTE_ROW_SCHEMA),
+    renderObject({
+      rows: totals.rows ?? 0,
+      known_cost_cents: totals.cost_cents ?? 0,
+      unknown_cost_rows: totals.cost_unknown_rows ?? 0
+    }),
+    renderHelp([
+      "known_cost_cents sums ONLY the rows with a price on file \u2014 unknown_cost_rows are excluded, not counted as zero",
+      "cost null / basis unknown means no priced purchase exists for that product, NOT that the food was free \u2014 seed the price by scanning the receipt, or the product via `receipts scan`",
+      "cost scales to the amount discarded (fraction, or sealed units for a counted pack), never the whole package"
+    ])
+  ]);
 }
 function parseSource(raw) {
   const sep = raw.indexOf(":");
@@ -2611,6 +2669,10 @@ var PRODUCTS_HELP = `kitchen-axi products <subcommand> [args] [--json]
                                       only the flags you pass change. Also
                                       [--name NAME] to rename, and
                                       [--no-negligible] to un-mark
+  prices <ulid> [--store S] [--limit N]
+                                    PRICE HISTORY: every recorded purchase of
+                                      this product, newest first, normalized to
+                                      a comparable unit price
   merge <ulid> --into <ulid>        fold a DUPLICATE into a survivor: relink its
                                       items, receipt-lexicon lines, and batch
                                       lines, then retire it
@@ -2654,7 +2716,19 @@ var PRODUCTS_HELP = `kitchen-axi products <subcommand> [args] [--json]
 
   archive never destroys, and merge never deletes the duplicate \u2014 inventory
   items, lexicon lines, and receipt batch lines point at products and must keep
-  resolving.`;
+  resolving.
+
+  prices reads what receipts already recorded \u2014 nothing is stored for it, so a
+  corrected line or a re-scanned label corrects the history immediately. Each
+  point carries the printed price, the per-package price (the line price \xF7 its
+  quantity), and a NORMALIZED unit price with the basis that produced it: a
+  measure on the line itself, the lexicon package size for that store's line
+  text, the product's label net content, or its package-size string. Compare
+  cents_per_100g (or cents_per_100ml) across points, NOT the raw prices \u2014 a 12
+  oz and a 16 oz package are not comparable at face value. A null unit price
+  means no package size could be resolved for that purchase, so nothing was
+  guessed; scan the label or set --package-size to fix it. Weight and volume
+  are never cross-converted, so a product bought both ways yields two series.`;
 var PRODUCT_ROW_SCHEMA = [
   field("ulid"),
   field("name"),
@@ -2678,6 +2752,17 @@ var PRODUCT_DETAIL_SCHEMA = [
   },
   { type: "boolYesNo", key: "nutrition_negligible", as: "negligible" },
   field("ingredients")
+];
+var PRICE_POINT_SCHEMA = [
+  field("purchased_at", "date"),
+  field("store"),
+  field("raw_text", "line"),
+  field("quantity", "qty"),
+  field("price_cents", "price\xA2"),
+  field("package_price_cents", "per_pkg\xA2"),
+  field("cents_per_100g", "per_100g\xA2"),
+  field("cents_per_100ml", "per_100ml\xA2"),
+  field("unit_basis", "basis")
 ];
 var WRITE_VALUE_FLAGS = [
   "name",
@@ -2707,6 +2792,8 @@ async function productsCommand(args) {
       return addProduct(rest);
     case "update":
       return updateProduct(rest);
+    case "prices":
+      return productPrices(rest);
     case "merge":
       return mergeProduct(rest);
     case "archive":
@@ -2789,6 +2876,23 @@ async function updateProduct(args) {
     renderDetail("updated", product, PRODUCT_DETAIL_SCHEMA),
     renderHelp([
       "Only the flags you passed changed; a nutrition panel merges per-field, so filling one field never restates the other eight"
+    ])
+  ]);
+}
+async function productPrices(args) {
+  const { positionals, flags } = parseArgs(args, ["json"], ["store", "limit"]);
+  const ulid = requirePositional(positionals, 0, "product ulid", PRODUCTS_HELP);
+  const store = typeof flags.store === "string" ? flags.store : void 0;
+  const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", PRODUCTS_HELP, { min: 1 })) : void 0;
+  const result = await api.get(`/api/kitchen/products/${encodeURIComponent(ulid)}/prices`, { store, limit });
+  if (flags.json) return rawJson(result);
+  const points = result?.points ?? [];
+  return renderOutput2([
+    renderObject({ product: result?.product_name, ulid: result?.product_ulid, purchases: result?.count ?? 0 }),
+    renderList("prices", points, PRICE_POINT_SCHEMA),
+    renderHelp([
+      "Compare per_100g / per_100ml, not price\xA2 \u2014 package sizes differ between purchases and stores",
+      "A null per_100g/per_100ml with basis null means no package size resolved for that purchase; nothing was guessed. Scan the label, or set the size with `products update <ulid> --package-size '16 oz'`"
     ])
   ]);
 }
@@ -2898,7 +3002,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "fb9ee6c" : "dev";
+var VERSION = true ? "55819c5" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)
