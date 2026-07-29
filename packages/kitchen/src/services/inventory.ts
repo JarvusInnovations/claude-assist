@@ -36,6 +36,8 @@ import type {
   NutritionPer100g,
   ParsedLabel,
   ParsedReceiptLine,
+  PriceHistoryView,
+  PricePoint,
   ProductInput,
   ProductMergeResult,
   ProductPatchInput,
@@ -45,6 +47,8 @@ import type {
   ReceiptInput,
   ReconcileInput,
   ShelfLifeClass,
+  WasteReportView,
+  WasteRow,
 } from '../inventory-types.js';
 import {
   CONVERT_SHELF_LIFE_CLASSES,
@@ -73,6 +77,15 @@ import {
   unitSealOf,
 } from '../inventory-derive.js';
 import { InvalidTransitionError, isTerminal, transitionInventory } from '../inventory-state.js';
+import {
+  nearestPricedLine,
+  packagePriceCents,
+  parseTossNotes,
+  pricePoint,
+  tossNoteLine,
+  wasteCost,
+  type PriceLine,
+} from '../inventory-pricing.js';
 import { matchScore, parseRemark } from '../inventory-remark.js';
 import { generateUlid } from '../ulid.js';
 import type { ReceiptParser } from './receipt-parser.js';
@@ -738,7 +751,10 @@ export class InventoryPipeline {
    * - `tossed`: optional AMOUNT tossed — decrements on-hand and terminates
    *   (state `tossed`) only when the remainder reaches zero or no fraction was
    *   supplied (full toss). The tossed amount is appended to the item's
-   *   `notes` (`tossed <amount> <date>`) so waste telemetry stays possible.
+   *   `notes` (`tossed <amount> <date>`, plus `(<n>u)` for the sealed units a
+   *   counted item's terminal toss discards) so waste telemetry stays
+   *   possible — it is the only record of a waste QUANTITY the schema keeps
+   *   (§ Waste costing).
    * - `finished`: always terminal and zeroing (on_hand_fraction AND, when the
    *   item is counted, units_remaining — a whole-item finish means none left).
    * - `finished-unit`: counted items only (§ count-vs-fraction) — an integer
@@ -798,10 +814,18 @@ export class InventoryPipeline {
       // Amount tossed: the supplied fraction, or everything on hand (full toss).
       const tossedAmount = clampFraction(opts.fraction ?? item.on_hand_fraction);
       const remaining = clampFraction(item.on_hand_fraction - tossedAmount);
-      const wasteNote = `tossed ${tossedAmount} ${toIsoDate(at)}`;
+      const partial = opts.fraction !== undefined && remaining > 0;
+      // A counted item's terminal toss discards its whole SEALED REMAINDER, and
+      // that unit count is what a waste cost must scale by: `on_hand_fraction`
+      // does not track a counted item's units (finished-unit never touches it),
+      // so the fraction alone reads 1.0 for a pack with 2 of 12 left and would
+      // charge the whole pack (§ Waste costing). A partial fraction toss of a
+      // counted item states no unit count, and none is invented.
+      const unitsDiscarded = !partial && item.units_total != null ? item.units_remaining : null;
+      const wasteNote = tossNoteLine(tossedAmount, toIsoDate(at)!, unitsDiscarded);
       const notes = item.notes ? `${item.notes}\n${wasteNote}` : wasteNote;
 
-      if (opts.fraction !== undefined && remaining > 0) {
+      if (partial) {
         // Partial toss: decrement, keep the current state alive (directional —
         // self-heals at the next event). transitionInventory above has already
         // rejected terminal items.
@@ -1640,6 +1664,158 @@ export class InventoryPipeline {
     return out;
   }
 
+  // ── Price history + waste costing (§ Price history, § Waste costing) ────────
+
+  /**
+   * One product's recorded purchases, newest first, each normalized to a
+   * comparable unit price (§ Price history). A pure read-time derivation: the
+   * batch line's transcribed price, its batch's date/store, the lexicon's
+   * package size for that store's line text, and the product's net content.
+   *
+   * The divisor is resolved PER POINT, because package sizes differ between
+   * purchases and between stores — a 12 oz and a 16 oz bag of one product are
+   * not comparable at face value. Unpriced lines still appear (the purchase
+   * happened); their normalized prices are null, never 0.
+   *
+   * Null for an unknown product ULID. An ARCHIVED product resolves — history
+   * must survive retirement — and reads empty once a merge moved its lines onto
+   * the survivor, where they show up as the union.
+   */
+  async priceHistory(
+    productUlid: string,
+    opts: { store?: string; limit?: number } = {}
+  ): Promise<PriceHistoryView | null> {
+    const product = await this.store.getProduct(productUlid);
+    if (!product) return null;
+    const lines = await this.store.listProductPriceLines({
+      product_ulids: [productUlid],
+      store: opts.store,
+      limit: opts.limit,
+    });
+    // One lexicon read per distinct (store, normalized line) — a product's
+    // history is usually the same line text over and over.
+    const lexiconSizes = new Map<string, string | null>();
+    const points: PricePoint[] = [];
+    for (const line of lines) {
+      let packageSize: string | null = null;
+      if (line.store) {
+        const key = `${line.store}\x00${normalizeLine(line.raw_text)}`;
+        if (!lexiconSizes.has(key)) {
+          const lexicon = await this.store.getLexicon(line.store, normalizeLine(line.raw_text));
+          lexiconSizes.set(key, lexicon?.package_size ?? null);
+        }
+        packageSize = lexiconSizes.get(key) ?? null;
+      }
+      points.push(pricePoint(line, packageSize, product));
+    }
+    return {
+      product_ulid: product.ulid,
+      product_name: product.name,
+      points,
+      count: points.length,
+    };
+  }
+
+  /**
+   * Every recorded toss with its cost attributed (§ Waste costing), newest
+   * first. Derived at read time: the toss amounts come from each item's notes
+   * (the schema's only record of a waste quantity) and the prices from the same
+   * batch lines § Price history reads.
+   *
+   * Whether a toss COUNTS is a structured-state question, not a note question —
+   * `listTossedCandidates` excludes `dismissed`/`merged_into` items, so the
+   * duplicate that was mistakenly tossed and then merged away contributes
+   * nothing: retracting its state retracts its waste.
+   *
+   * Cost attribution prefers the item's OWN batch line, falls back to the
+   * product's nearest priced purchase, and reads `unknown` (null cents, never
+   * 0) when neither exists.
+   */
+  async wasteReport(
+    opts: { since?: string; until?: string; limit?: number } = {}
+  ): Promise<WasteReportView> {
+    const limit = Math.min(opts.limit ?? 50, 500);
+    // Fetch generously (store caps at 500) — the real window/ordering is by the
+    // parsed toss DATE, which no column holds. Same shape as listQuestions.
+    const candidates = await this.store.listTossedCandidates(500);
+    const productUlids = [
+      ...new Set(candidates.map((i) => i.product_ulid).filter((u): u is string => !!u)),
+    ];
+    const products = await this.store.getProductsByUlids(productUlids);
+    const linesByProduct = new Map<string, PriceLine[]>();
+    if (productUlids.length > 0) {
+      const lines = await this.store.listProductPriceLines({
+        product_ulids: productUlids,
+        limit: 1000,
+      });
+      for (const line of lines) {
+        if (!line.product_ulid) continue;
+        const bucket = linesByProduct.get(line.product_ulid);
+        if (bucket) bucket.push(line);
+        else linesByProduct.set(line.product_ulid, [line]);
+      }
+    }
+
+    const rows: WasteRow[] = [];
+    for (const item of candidates) {
+      const tosses = parseTossNotes(item.notes);
+      if (tosses.length === 0) continue;
+      const attribution = attributeItemPrice(
+        item,
+        item.product_ulid ? linesByProduct.get(item.product_ulid) ?? [] : []
+      );
+      const packagePrice = attribution.line ? packagePriceCents(attribution.line) : null;
+      const product = item.product_ulid ? products.get(item.product_ulid) ?? null : null;
+      tosses.forEach((toss, index) => {
+        if (opts.since && toss.tossed_at < opts.since) return;
+        if (opts.until && toss.tossed_at > opts.until) return;
+        const cost =
+          attribution.basis === 'unknown'
+            ? { cost_cents: null, cost_basis: 'unknown' as const }
+            : wasteCost(toss, packagePrice, attribution.basis, item.units_total);
+        rows.push({
+          item_ulid: item.ulid,
+          product_ulid: item.product_ulid,
+          product_name: product?.name ?? item.raw_label,
+          store: item.store,
+          tossed_at: toss.tossed_at,
+          amount_fraction: toss.amount_fraction,
+          units: toss.units,
+          // Only the LAST toss on a terminal item is the one that closed it;
+          // any earlier line was a partial that left the item alive.
+          terminal: item.state === 'tossed' && index === tosses.length - 1,
+          cost_cents: cost.cost_cents,
+          cost_basis: cost.cost_basis,
+          price_line_ulid: cost.cost_basis === 'unknown' ? null : attribution.line?.line_ulid ?? null,
+          priced_at:
+            cost.cost_basis === 'unknown' || !attribution.line
+              ? null
+              : toIsoDate(attribution.line.purchased_at),
+        });
+      });
+    }
+
+    rows.sort((a, b) => (a.tossed_at < b.tossed_at ? 1 : a.tossed_at > b.tossed_at ? -1 : 0));
+    const capped = rows.slice(0, limit);
+    // Totals sum ONLY known costs and count the unknowns separately — a partial
+    // total that says how partial it is (§ Waste costing).
+    let costCents = 0;
+    let unknown = 0;
+    for (const row of capped) {
+      if (row.cost_cents == null) unknown++;
+      else costCents += row.cost_cents;
+    }
+    return {
+      waste: capped,
+      count: capped.length,
+      totals: {
+        rows: capped.length,
+        cost_cents: Math.round(costCents * 100) / 100,
+        cost_unknown_rows: unknown,
+      },
+    };
+  }
+
   /**
    * Dismiss a non-grocery line (housewares etc.) to the terminal `dismissed`
    * state — removed from inventory without the food-waste semantics of a toss
@@ -2231,6 +2407,43 @@ export class InventoryPipeline {
  * with existing importers (index.ts's public re-export).
  */
 export const normalizeLine = normalizeLexiconLine;
+
+/**
+ * Which priced line an item's waste cost is attributed to (§ Waste costing),
+ * most-authoritative first:
+ *
+ * 1. **The item's own batch line** — for a receipt-born item this is what was
+ *    *actually paid* for that package, so it wins whenever it is knowable and
+ *    carries a price. Matched by the line's representative
+ *    `inventory_item_ulid` when it points at this item, else by the batch (a
+ *    multi-quantity line fans out to N items and only the earliest is named on
+ *    the line).
+ * 2. **The product's nearest priced purchase** — the latest priced line at or
+ *    before the item was acquired (the price in force when it entered the
+ *    house), else the earliest priced line after it for an item that predates
+ *    every recorded price. This is also where an item whose own line's price was
+ *    unreadable lands.
+ * 3. **Nothing** — `unknown`. The caller reports a null cost, never 0.
+ *
+ * Exported for direct testing: the attribution order is the design decision
+ * this feature turns on.
+ */
+export function attributeItemPrice(
+  item: Pick<InventoryItemRecord, 'ulid' | 'batch_ulid' | 'acquired_at'>,
+  productLines: readonly PriceLine[]
+): { line: PriceLine | null; basis: 'batch_line' | 'product_price' | 'unknown' } {
+  if (item.batch_ulid) {
+    const sameBatch = productLines.filter(
+      (l) => l.batch_ulid === item.batch_ulid && l.price_cents != null
+    );
+    const own =
+      sameBatch.find((l) => l.inventory_item_ulid === item.ulid) ?? sameBatch[0] ?? null;
+    if (own) return { line: own, basis: 'batch_line' };
+  }
+  const nearest = nearestPricedLine(productLines, item.acquired_at);
+  if (nearest) return { line: nearest, basis: 'product_price' };
+  return { line: null, basis: 'unknown' };
+}
 
 /** Candidate match strings for an item: product name + aliases + raw label. */
 export function candidateStrings(item: InventoryItemRecord, product?: ProductRecord): string[] {

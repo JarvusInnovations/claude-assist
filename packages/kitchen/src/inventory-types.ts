@@ -767,3 +767,100 @@ export interface ConsumeResult {
   /** False on an idempotent replay of `ulid` — neither table was touched again. */
   created: boolean;
 }
+
+// ── Price history (§ Price history) ──────────────────────────────────────────
+
+/**
+ * Which source supplied the size a price point normalized by, most-specific
+ * first (§ Price history): a measure printed on the line itself, the lexicon's
+ * package size for that store's line text, the product's label-derived net
+ * content, or the product's package-size string. `null` = none did, and both
+ * `cents_per_100*` are then null — an unknown divisor is never guessed.
+ */
+export type UnitBasis = 'line' | 'lexicon' | 'product_net_content' | 'product_package_size' | null;
+
+/**
+ * One recorded purchase of a product, normalized for comparison. Derived
+ * entirely at read time from a batch line, its batch, the lexicon, and the
+ * product — nothing here is stored (§ Price history).
+ */
+export interface PricePoint {
+  line_ulid: string;
+  batch_ulid: string;
+  /** The batch's purchase date (ISO date). */
+  purchased_at: string;
+  store: string | null;
+  /** The receipt line as printed — the measure a weighed/sized line carries lives here. */
+  raw_text: string;
+  /** Physical units the line covers. */
+  quantity: number;
+  /** The line's printed extended price (§ Prices); null = unreadable, never 0. */
+  price_cents: number | null;
+  /** `price_cents / quantity` — the per-physical-unit price; null when unpriced. */
+  package_price_cents: number | null;
+  unit_basis: UnitBasis;
+  /** Grams the package normalized to (weight-stated packages only). */
+  unit_grams: number | null;
+  /** Millilitres the package normalized to (volume-stated packages only). */
+  unit_millilitres: number | null;
+  cents_per_100g: number | null;
+  cents_per_100ml: number | null;
+}
+
+/** Response of `GET /products/:ulid/prices`. */
+export interface PriceHistoryView {
+  product_ulid: string;
+  product_name: string;
+  points: PricePoint[];
+  count: number;
+}
+
+// ── Waste costing (§ Waste costing) ─────────────────────────────────────────
+
+/**
+ * How a waste row's cost was attributed: the item's OWN batch line (what was
+ * actually paid for that package), the product's nearest priced purchase, or
+ * `unknown` — no priced purchase exists, so the cost is null rather than a
+ * fabricated 0.
+ */
+export type WasteCostBasis = 'batch_line' | 'product_price' | 'unknown';
+
+/** One recorded toss with its cost attributed (§ Waste costing). */
+export interface WasteRow {
+  item_ulid: string;
+  product_ulid: string | null;
+  /** The product name, falling back to the item's raw label. */
+  product_name: string | null;
+  store: string | null;
+  /** ISO date the toss was recorded for. */
+  tossed_at: string;
+  /** Package fraction discarded; null when the amount was unrecoverable. */
+  amount_fraction: number | null;
+  /** Sealed units discarded (counted items only); null otherwise. */
+  units: number | null;
+  /** True when this toss closed the item (terminal `tossed`). */
+  terminal: boolean;
+  /** Null on an unknown cost — NEVER 0 (§ Waste costing). */
+  cost_cents: number | null;
+  cost_basis: WasteCostBasis;
+  /** The batch line the cost came from; null when unknown. */
+  price_line_ulid: string | null;
+  /** That line's purchase date (ISO date); null when unknown. */
+  priced_at: string | null;
+}
+
+/**
+ * Response of `GET /inventory/waste`. `totals.cost_cents` sums ONLY the rows
+ * with a known cost, and `cost_unknown_rows` counts the rest — a partial total
+ * that says how partial it is, never a whole-looking total that quietly drops
+ * rows.
+ */
+export interface WasteReportView {
+  waste: WasteRow[];
+  count: number;
+  totals: {
+    rows: number;
+    cost_cents: number;
+    cost_unknown_rows: number;
+  };
+}

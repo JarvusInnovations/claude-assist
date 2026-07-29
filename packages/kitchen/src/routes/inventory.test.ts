@@ -1066,3 +1066,110 @@ describe('product corrections routes', () => {
     expect(empty.statusCode).toBe(400);
   });
 });
+
+describe('price history + waste routes', () => {
+  let fastify: FastifyInstance;
+  let store: MemoryInventoryStore;
+  let pipeline: InventoryPipeline;
+
+  beforeEach(async () => {
+    fastify = Fastify({ logger: false });
+    store = new MemoryInventoryStore();
+    pipeline = new InventoryPipeline(store, new FakeReceiptParser({ store: 'Example Grocer', lines: [] }), null, fastify.log);
+    await fastify.register(registerInventoryRoutes, { inventory: pipeline });
+    await fastify.ready();
+  });
+
+  afterEach(async () => {
+    await fastify.close();
+  });
+
+  async function seedPurchase(opts: {
+    product_ulid: string;
+    purchased_at: string;
+    raw_text: string;
+    price_cents: number | null;
+  }) {
+    const batch = await store.insertBatchIfAbsent({
+      ulid: generateUlid(),
+      source: 'receipt',
+      store: 'Example Grocer',
+      purchased_at: new Date(opts.purchased_at),
+    });
+    await store.insertLine({
+      ulid: generateUlid(),
+      batch_ulid: batch.record.ulid,
+      raw_text: opts.raw_text,
+      quantity: 1,
+      price_cents: opts.price_cents,
+      match_outcome: 'matched',
+      product_ulid: opts.product_ulid,
+      inventory_item_ulid: null,
+    });
+    return batch.record;
+  }
+
+  it('GET /kitchen/products/:ulid/prices returns unit-normalized points, newest first', async () => {
+    const product = (
+      await fastify.inject({ method: 'POST', url: '/kitchen/products', payload: { name: 'Store-brand pasta' } })
+    ).json();
+    await seedPurchase({ product_ulid: product.ulid, purchased_at: '2026-06-01', raw_text: 'PASTA 12 OZ', price_cents: 149 });
+    await seedPurchase({ product_ulid: product.ulid, purchased_at: '2026-07-01', raw_text: 'PASTA 16 OZ', price_cents: 179 });
+
+    const res = await fastify.inject({ method: 'GET', url: `/kitchen/products/${product.ulid}/prices` });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.product_name).toBe('Store-brand pasta');
+    expect(body.count).toBe(2);
+    expect(body.points.map((p: { purchased_at: string }) => p.purchased_at)).toEqual(['2026-07-01', '2026-06-01']);
+    expect(body.points[0].unit_basis).toBe('line');
+    expect(body.points[0].cents_per_100g).toBeGreaterThan(0);
+  });
+
+  it('GET /kitchen/products/:ulid/prices 404s an unknown product and validates its query', async () => {
+    expect((await fastify.inject({ method: 'GET', url: `/kitchen/products/${generateUlid()}/prices` })).statusCode).toBe(404);
+    const bad = await fastify.inject({ method: 'GET', url: '/kitchen/products/x/prices?limit=many' });
+    expect(bad.statusCode).toBe(400);
+  });
+
+  it('GET /kitchen/inventory/waste is reached as a literal path, not as an item ulid', async () => {
+    // /inventory/:ulid is registered too; find-my-way must prefer the literal.
+    const res = await fastify.inject({ method: 'GET', url: '/kitchen/inventory/waste' });
+    expect(res.statusCode).toBe(200);
+    const empty = res.json();
+    expect(empty.waste).toEqual([]);
+    expect(empty.count).toBe(0);
+    expect(empty.totals).toEqual({ rows: 0, cost_cents: 0, cost_unknown_rows: 0 });
+  });
+
+  it('GET /kitchen/inventory/waste costs each toss and keeps unknown costs unknown', async () => {
+    const product = (
+      await fastify.inject({ method: 'POST', url: '/kitchen/products', payload: { name: 'Store-brand spinach' } })
+    ).json();
+    const batch = await seedPurchase({ product_ulid: product.ulid, purchased_at: '2026-07-18', raw_text: 'SPINACH 5 OZ', price_cents: 399 });
+    const { item: priced } = await pipeline.createItem({
+      product_ulid: product.ulid,
+      batch_ulid: batch.ulid,
+      acquired_at: '2026-07-18',
+    });
+    const { item: unpriced } = await pipeline.createItem({ raw_label: 'Leftover chili', shelf_life_class: 'prepared', acquired_at: '2026-07-19' });
+
+    await fastify.inject({ method: 'POST', url: `/kitchen/inventory/${priced.ulid}/events`, payload: { type: 'tossed', fraction: 0.5, at: '2026-07-22' } });
+    await fastify.inject({ method: 'POST', url: `/kitchen/inventory/${unpriced.ulid}/events`, payload: { type: 'tossed', at: '2026-07-23' } });
+
+    const res = await fastify.inject({ method: 'GET', url: '/kitchen/inventory/waste?since=2026-07-20' });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.count).toBe(2);
+    const byItem = new Map(body.waste.map((r: { item_ulid: string }) => [r.item_ulid, r]));
+    expect(byItem.get(priced.ulid)).toMatchObject({ cost_cents: 199.5, cost_basis: 'batch_line' });
+    expect(byItem.get(unpriced.ulid)).toMatchObject({ cost_cents: null, cost_basis: 'unknown' });
+    // The known half totals honestly; the unknown row is counted, not zeroed.
+    expect(body.totals).toEqual({ rows: 2, cost_cents: 199.5, cost_unknown_rows: 1 });
+  });
+
+  it('GET /kitchen/inventory/waste rejects a malformed date window', async () => {
+    const res = await fastify.inject({ method: 'GET', url: '/kitchen/inventory/waste?since=last%20week' });
+    expect(res.statusCode).toBe(400);
+  });
+});

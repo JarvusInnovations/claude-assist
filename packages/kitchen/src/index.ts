@@ -372,6 +372,20 @@ export {
 } from './inventory-state.js';
 export { parseRemark, matchScore, type ParsedRemark } from './inventory-remark.js';
 export {
+  parseMeasure,
+  measureToUnits,
+  resolveUnitBasis,
+  packagePriceCents,
+  pricePoint,
+  parseTossNotes,
+  tossNoteLine,
+  wasteCost,
+  nearestPricedLine,
+  type Measure,
+  type PriceLine,
+  type TossRecord,
+} from './inventory-pricing.js';
+export {
   PgInventoryStore,
   DEFAULT_ON_HAND_ITEM_STATES,
   type InventoryStore,
