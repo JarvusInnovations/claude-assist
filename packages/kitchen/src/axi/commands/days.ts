@@ -8,7 +8,7 @@ import { cliInvocation } from "../invocation.js";
  * `kitchen-axi days` — the per-owner-local-day rollup (specs/modules/kitchen.md
  * § Timezone & local-day bucketing). The MODULE owns the day boundaries via its
  * configured owner timezone; this command never supplies, knows, or computes an
- * offset. One row per local day over the window — the eight-field panel,
+ * offset. One row per local day over the window — the nine-field panel,
  * calories, and the net line (when a TDEE base is configured). An agent asking
  * "how did the week go" calls this ONCE instead of listing entries and
  * hand-summing them by UTC date (the recurring mis-bucketing footgun this
@@ -18,8 +18,12 @@ import { cliInvocation } from "../invocation.js";
 export const DAYS_HELP = `kitchen-axi days [--since <n|date>] [--json]
 
   Per-owner-local-day rollup: one row per day over the window, each with the
-  eight-field nutrition panel + calories (EFFECTIVE totals) and — when the
+  nine-field nutrition panel + calories (EFFECTIVE totals) and — when the
   instance sets a TDEE base — the net line ((TDEE base + burns) − intake).
+
+  \`sugar\` is TOTAL sugar and has no target; \`added_sugar\` is the part added in
+  processing and is the one that carries a ceiling. A null in either column means
+  no entry that day carried the field — unknown, not zero.
 
   --since <n|date>   window start: a day count (e.g. 7 or 7d = last 7 days) or a
                      date (YYYY-MM-DD). Default: last 7 days.
@@ -37,6 +41,10 @@ const DAY_SCHEMA: FieldDef[] = [
   field("sat_fat_g", "sat_fat"),
   field("carbs_g", "carbs"),
   field("sugar_g", "sugar"),
+  // Total sugar and its added share, side by side and unjudged: `days` is a
+  // table, not the home view's nested figure, and NEITHER column carries a
+  // verdict here (§ Display: only added sugar has a threshold at all).
+  field("added_sugar_g", "added_sugar"),
   field("fiber_g", "fiber"),
   field("sodium_mg", "sodium"),
   field("entry_count", "entries"),

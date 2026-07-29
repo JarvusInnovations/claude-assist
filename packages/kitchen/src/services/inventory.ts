@@ -1621,6 +1621,7 @@ export function scaleNutrition(total: NutritionFields, share: number): Nutrition
     sat_fat_g: scale(total.sat_fat_g),
     carbs_g: scale(total.carbs_g),
     sugar_g: scale(total.sugar_g),
+    added_sugar_g: scale(total.added_sugar_g),
     fiber_g: scale(total.fiber_g),
     sodium_mg: scale(total.sodium_mg),
     confidence: total.confidence,
@@ -1656,6 +1657,7 @@ const NUTRITION_KEYS: (keyof NutritionPer100g)[] = [
   'sodium_mg',
   'fiber_g',
   'sugar_g',
+  'added_sugar_g',
 ];
 
 function normalizeNutrition(input: Partial<NutritionPer100g> | null | undefined): NutritionPer100g | null {

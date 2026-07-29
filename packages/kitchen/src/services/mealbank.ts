@@ -53,12 +53,20 @@ interface MealBankRawRecord {
   fat_g?: unknown;
   carbs_g?: unknown;
   sugar_g?: unknown;
+  added_sugar_g?: unknown;
   fiber_g?: unknown;
   sodium_mg?: unknown;
 }
 
 /** Optional full-panel extension fields (§ Nutrition panel) — absent means unknown, never 0. */
-const OPTIONAL_PANEL_KEYS = ['fat_g', 'carbs_g', 'sugar_g', 'fiber_g', 'sodium_mg'] as const;
+const OPTIONAL_PANEL_KEYS = [
+  'fat_g',
+  'carbs_g',
+  'sugar_g',
+  'added_sugar_g',
+  'fiber_g',
+  'sodium_mg',
+] as const;
 
 function optionalPanel(source: Record<string, unknown>): Partial<RecipeComponentMacros> {
   const out: Partial<RecipeComponentMacros> = {};

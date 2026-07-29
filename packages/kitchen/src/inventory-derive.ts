@@ -11,9 +11,11 @@ import type {
   DerivedFromView,
   InventoryItemRecord,
   InventoryItemView,
+  NutritionPer100g,
   ProductRecord,
   ShelfLifeClass,
 } from './inventory-types.js';
+import { NUTRITION_FIELD_KEYS } from './types.js';
 
 /** Default (unopened, opened) day windows per shelf-life class; null = no eat-by. */
 export const SHELF_LIFE_WINDOWS: Record<ShelfLifeClass, { unopened: number | null; opened: number | null }> = {
@@ -118,22 +120,16 @@ export function toIsoDate(date: Date | null): string | null {
   return date.toISOString().slice(0, 10);
 }
 
-/** The eight § Nutrition panel keys a product's per-100g reference must carry to be complete. */
-const PANEL_KEYS = [
-  'calories',
-  'protein_g',
-  'fat_g',
-  'sat_fat_g',
-  'carbs_g',
-  'sugar_g',
-  'fiber_g',
-  'sodium_mg',
-] as const;
+/**
+ * The nine § Nutrition panel keys a product's per-100g reference must carry to
+ * be complete — the canonical list (types.ts), never a second copy.
+ */
+const PANEL_KEYS: readonly (keyof NutritionPer100g)[] = NUTRITION_FIELD_KEYS;
 
 /**
  * Whether an item's linked product is missing nutrition data (§ Nutrition
  * panel — the "needs nutrition" signal): no `nutrition_per_100g` at all, or a
- * panel with any of the eight fields null/absent. A label rescan is the
+ * panel with any of the nine fields null/absent. A label rescan is the
  * resolving action. Items with NO linked product are the `needs_info` case
  * instead — this flag stays false there to avoid double-badging.
  */

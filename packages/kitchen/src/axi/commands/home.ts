@@ -1,7 +1,7 @@
 import { api, resolveServer } from "../client.js";
 import { parseArgs, rawJson } from "../args.js";
 import { renderOutput, renderObject, renderList, renderHelp, field, type FieldDef } from "../toon.js";
-import { targetLine, type MacroKey, type TargetBound } from "../format.js";
+import { targetLine, nestedSugarLine, type MacroKey, type TargetBound } from "../format.js";
 import { discoveryHelp } from "../reference.js";
 import { cliInvocation } from "../invocation.js";
 
@@ -102,6 +102,9 @@ export async function homeCommand(args: string[]): Promise<string> {
   const todayRow: Record<string, any> =
     (summary && Array.isArray(summary.days) ? summary.days.find((d: any) => d.day === today) : null) ?? {};
   const totalOf = (key: MacroKey): number => (typeof todayRow[key] === "number" ? todayRow[key] : 0);
+  // Null-preserving read, for the fields where "no entry carried it" must NOT
+  // read as zero (§ Nutrition panel: unknown is null, never 0).
+  const rawOf = (key: MacroKey): number | null => (typeof todayRow[key] === "number" ? todayRow[key] : null);
 
   // Daily targets (§ Daily targets): when the instance configures a line for
   // a field, its plain total becomes `logged / target` with a direction-aware
@@ -129,7 +132,11 @@ export async function homeCommand(args: string[]): Promise<string> {
     fat_g: vsTarget("fat_g"),
     sat_fat_g: vsTarget("sat_fat_g"),
     carbs_g: vsTarget("carbs_g"),
-    sugar_g: vsTarget("sugar_g"),
+    // ONE nested figure for the sugar pair (§ Display: one nested bar, not
+    // two): total sugar as the extent, added sugar inside it carrying the only
+    // ceiling. Total sugar never gets an over/under verdict — there is no
+    // guideline to breach, and a line here fires on fruit-and-dairy days.
+    sugar_g: nestedSugarLine(rawOf("sugar_g"), rawOf("added_sugar_g"), targets.added_sugar_g),
     fiber_g: vsTarget("fiber_g"),
     sodium_mg: vsTarget("sodium_mg"),
     // Net-energy context (§ Expenditure & net energy): shown only when the

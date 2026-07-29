@@ -22,18 +22,18 @@ export interface CommandGroup {
 }
 
 /**
- * The eight nutrition-panel flags (specs/modules/kitchen.md § Nutrition panel)
+ * The nine nutrition-panel flags (specs/modules/kitchen.md § Nutrition panel)
  * as `[flag, server field]` pairs — the SINGLE source for both `entries log`
  * (where they build a directly-stated panel) and `entries patch` (where any of
  * them sets a terminal manual override).
  *
- * Single-sourced deliberately: the documented `patch` usage previously
- * enumerated six of the eight, omitting `--sugar`/`--fiber` even though the
- * parser accepted them. Fiber and sugar are tracked daily targets, so an agent
+ * Single-sourced deliberately: the documented `patch` usage once enumerated six
+ * of the then-eight, omitting `--sugar`/`--fiber` even though the parser
+ * accepted them. Fiber and added sugar are tracked daily targets, so an agent
  * reading the reference and concluding they can't be corrected falls back to
  * delete + re-log — which mints a new ULID and destroys the entry's identity.
  * A field that can be logged but not corrected has no correction path at all,
- * so the flag list and both usage strings now derive from this one array
+ * so the flag list and both usage strings derive from this one array
  * (§ Agent tooling).
  */
 export const MACRO_PANEL_FLAGS: readonly (readonly [flag: string, field: string])[] = [
@@ -43,6 +43,7 @@ export const MACRO_PANEL_FLAGS: readonly (readonly [flag: string, field: string]
   ["sat-fat", "sat_fat_g"],
   ["carbs", "carbs_g"],
   ["sugar", "sugar_g"],
+  ["added-sugar", "added_sugar_g"],
   ["fiber", "fiber_g"],
   ["sodium", "sodium_mg"],
 ];
@@ -61,11 +62,11 @@ export const COMMAND_GROUPS: CommandGroup[] = [
       { usage: "entries show <ulid>", summary: "one entry with full nutrition, source, and status" },
       {
         usage: `entries log [note…] [--recipe ULID] [--component "label=grams"]… [--at TIME] ${MACRO_PANEL_USAGE} [--label T]`,
-        summary: "log a deliberate, no-model entry (note and/or recipe + component quantities); recipe-referenced entries are computed deterministically; --at sets logged_at (default now — prefer a full local timestamp with offset; a bare YYYY-MM-DD backstops to local noon that day, never midnight UTC); a directly-stated panel (--calories/--protein/…, optionally --label) records a born-manual, terminal entry verbatim with NO estimation (mutually exclusive with --recipe/--component)",
+        summary: "log a deliberate, no-model entry (note and/or recipe + component quantities); recipe-referenced entries are computed deterministically; --at sets logged_at (default now — prefer a full local timestamp with offset; a bare YYYY-MM-DD backstops to local noon that day, never midnight UTC); a directly-stated panel (--calories/--protein/…, optionally --label) records a born-manual, terminal entry verbatim with NO estimation (mutually exclusive with --recipe/--component); --sugar is TOTAL sugar (untargeted context) while --added-sugar is the processed/prepared share that carries the ceiling — whole foods are --added-sugar 0, never omitted",
       },
       {
         usage: `entries patch <ulid> [--note T] [--label T] ${MACRO_PANEL_USAGE} [--portion-basis T] [--multiplier M] [--at TIME]`,
-        summary: "edit an entry: note/label re-queue estimation; any of the EIGHT macro flags sets a terminal manual override (the same panel `log` accepts — every field is correctable in place, so never delete + re-log to fix a number); --multiplier rescales the base post-hoc and --at backdates logged_at (prefer a full local timestamp with offset; a bare YYYY-MM-DD backstops to local noon that day; neither re-queues, neither changes source)",
+        summary: "edit an entry: note/label re-queue estimation; any of the NINE macro flags sets a terminal manual override (the same panel `log` accepts — every field is correctable in place, so never delete + re-log to fix a number); --multiplier rescales the base post-hoc and --at backdates logged_at (prefer a full local timestamp with offset; a bare YYYY-MM-DD backstops to local noon that day; neither re-queues, neither changes source)",
       },
       { usage: "entries delete <ulid>", summary: "remove an entry from all rollups" },
     ],
@@ -75,7 +76,7 @@ export const COMMAND_GROUPS: CommandGroup[] = [
     commands: [
       {
         usage: "days [--since <n|date>]",
-        summary: "per-owner-local-day rollup: one row per day (eight-field panel + calories + net line when a TDEE base is set), bucketed by the instance's OWNER timezone SERVER-SIDE. --since is a day count (7 / 7d) or a date; default last 7 days. USE THIS for any multi-day or weekly total — never list entries and hand-sum them by timestamp (UTC-vs-local mis-bucketing is the exact footgun this retires; group only by the `day` field)",
+        summary: "per-owner-local-day rollup: one row per day (nine-field panel + calories + net line when a TDEE base is set), bucketed by the instance's OWNER timezone SERVER-SIDE. --since is a day count (7 / 7d) or a date; default last 7 days. USE THIS for any multi-day or weekly total — never list entries and hand-sum them by timestamp (UTC-vs-local mis-bucketing is the exact footgun this retires; group only by the `day` field)",
       },
     ],
   },

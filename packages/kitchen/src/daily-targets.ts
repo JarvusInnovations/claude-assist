@@ -9,19 +9,42 @@
  * (a half-parsed budget is worse than none).
  */
 
-/** The panel field names a target may attach to (§ Nutrition panel). */
+/**
+ * The panel field names a target may attach to (§ Nutrition panel). Mirrors
+ * `NUTRITION_FIELD_KEYS` in types.ts MINUS `sugar_g`: total sugar is captured
+ * and displayed but deliberately **untargeted** (§ `added_sugar_g` vs
+ * `sugar_g`) — there is no established total-sugar guideline, and a borrowed
+ * line fires hardest on a day of fruit, milk, and plain yogurt. The ceiling
+ * belongs to `added_sugar_g`, which is here.
+ *
+ * Deliberately NOT derived from `NUTRITION_FIELD_KEYS` — the divergence is the
+ * point, so it is stated once, here, with its reason.
+ */
 export const DAILY_TARGET_FIELDS = [
   'calories',
   'protein_g',
   'fat_g',
   'sat_fat_g',
   'carbs_g',
-  'sugar_g',
+  'added_sugar_g',
   'fiber_g',
   'sodium_mg',
 ] as const;
 
 export type DailyTargetField = (typeof DAILY_TARGET_FIELDS)[number];
+
+/**
+ * Panel fields that exist but can never carry a target, with the reason. A
+ * config naming one fails boot with that reason rather than the generic
+ * unknown-field message — an instance carrying the retired `sugar_g` ceiling
+ * needs to be told where the line went, not that the field doesn't exist.
+ */
+const UNTARGETABLE_FIELDS: Record<string, string> = {
+  sugar_g:
+    'total sugar carries no target — it is captured and displayed as context only ' +
+    '(no established guideline exists for it). Move the ceiling to "added_sugar_g" ' +
+    '(e.g. {"added_sugar_g":{"max":36}})',
+};
 
 /** Exactly one bound per field: a cap (stay under) or a floor (reach it). */
 export type DailyTargetBound = { max: number } | { min: number };
@@ -62,8 +85,12 @@ export function parseDailyTargets(raw: string | undefined): DailyTargets | undef
   const targets: DailyTargets = {};
   for (const [field, bound] of entries) {
     if (!(DAILY_TARGET_FIELDS as readonly string[]).includes(field)) {
+      const retired = UNTARGETABLE_FIELDS[field];
+      if (retired) {
+        throw new DailyTargetsConfigError(`"${field}" ${retired}`);
+      }
       throw new DailyTargetsConfigError(
-        `unknown field "${field}" (panel fields: ${DAILY_TARGET_FIELDS.join(', ')})`
+        `unknown field "${field}" (targetable fields: ${DAILY_TARGET_FIELDS.join(', ')})`
       );
     }
     if (bound === null || typeof bound !== 'object' || Array.isArray(bound)) {

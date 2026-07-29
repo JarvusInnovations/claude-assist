@@ -15,7 +15,7 @@ export const PRODUCTS_HELP = `kitchen-axi products <subcommand> [args] [--json]
 
   shelf-life classes: ${SHELF_LIFE_CLASSES.join(", ")}
   --nutrition is a JSON object of per-100g macros, e.g.
-    '{"calories": 52, "protein_g": 0.3, "carbs_g": 14, "fiber_g": 2.4, "sugar_g": 10}'
+    '{"calories": 52, "protein_g": 0.3, "carbs_g": 14, "fiber_g": 2.4, "sugar_g": 10, "added_sugar_g": 0}'
   --ingredients is the printed ingredients list as a single string`;
 
 const PRODUCT_ROW_SCHEMA: FieldDef[] = [

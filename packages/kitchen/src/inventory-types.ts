@@ -90,10 +90,11 @@ export const INVENTORY_EVENT_TYPES: readonly InventoryEventType[] = [
 
 /**
  * Reference nutrition per 100g on a product. Any field null = unknown.
- * The full dietary panel: the six fields an entry tracks plus fiber_g/sugar_g
- * (panels state them and they matter for the module's dietary purpose). This is
- * a product-nutrition shape, distinct from RecipeComponentMacros — the two are
- * not conflated.
+ * The full nine-field dietary panel (§ Nutrition panel), including
+ * `added_sugar_g` — US Nutrition Facts panels have printed "Includes Xg Added
+ * Sugars" since the 2016 rule, so a label scan is the highest-confidence source
+ * there is for it. This is a product-nutrition shape, distinct from
+ * RecipeComponentMacros — the two are not conflated.
  */
 export interface NutritionPer100g {
   calories: number | null;
@@ -104,6 +105,7 @@ export interface NutritionPer100g {
   sodium_mg: number | null;
   fiber_g: number | null;
   sugar_g: number | null;
+  added_sugar_g: number | null;
 }
 
 /** A row in kitchen.products. */

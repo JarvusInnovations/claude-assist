@@ -46,6 +46,12 @@ export interface RecipeComponentMacros {
   fat_g?: number | null;
   carbs_g?: number | null;
   sugar_g?: number | null;
+  /**
+   * The added-sugar share of `sugar_g` (§ `added_sugar_g` vs `sugar_g`). An
+   * unprocessed whole-food component states `0` — by definition, not `null`;
+   * omitting it makes the field unknown, which drops the recipe's total.
+   */
+  added_sugar_g?: number | null;
   fiber_g?: number | null;
   sodium_mg?: number | null;
 }
@@ -85,7 +91,7 @@ export function normalizeRecipeName(name: string): string {
 }
 
 /**
- * Flattened nutrition estimate carried on an entry — the eight-field panel
+ * Flattened nutrition estimate carried on an entry — the nine-field panel
  * (§ Nutrition panel). Unknown fields are null, never 0.
  */
 export interface NutritionFields {
@@ -94,7 +100,14 @@ export interface NutritionFields {
   fat_g: number | null;
   sat_fat_g: number | null;
   carbs_g: number | null;
+  /** TOTAL sugar (intrinsic + added). Displayed, deliberately untargeted. */
   sugar_g: number | null;
+  /**
+   * The portion of `sugar_g` added in processing or preparation — the field
+   * that carries the ceiling (§ `added_sugar_g` vs `sugar_g`). `0` for
+   * unprocessed whole foods by definition; `null` only when genuinely unknown.
+   */
+  added_sugar_g: number | null;
   fiber_g: number | null;
   sodium_mg: number | null;
   /** 0..1; null for manual overrides (there's nothing to be confident about — it's exact). */
@@ -103,9 +116,14 @@ export interface NutritionFields {
 }
 
 /**
- * The nutrition fields a PATCH macro override can set (excludes `confidence`
- * and `portion_basis`, which aren't part of `EntryPatchInput` — `as const`
- * so the tuple's literal type narrows correctly when used to index it).
+ * The CANONICAL nine-field panel list (§ Nutrition panel) — the one place the
+ * module's field set is enumerated. Every other panel iteration derives from
+ * this (the day rollup, recipe-component summing, the product per-100g
+ * completeness check, the CLI's effective-macro totals), so adding a field is
+ * one edit here plus the interfaces, never a scavenger hunt through hardcoded
+ * arrays. Also the fields a PATCH macro override can set (excludes
+ * `confidence` and `portion_basis`, which aren't part of `EntryPatchInput`) —
+ * `as const` so the tuple's literal type narrows correctly when indexing.
  */
 export const NUTRITION_FIELD_KEYS = [
   'calories',
@@ -114,13 +132,14 @@ export const NUTRITION_FIELD_KEYS = [
   'sat_fat_g',
   'carbs_g',
   'sugar_g',
+  'added_sugar_g',
   'fiber_g',
   'sodium_mg',
 ] as const satisfies readonly (keyof NutritionFields)[];
 
 /**
  * A directly-stated nutrition panel supplied at creation (specs/modules/kitchen.md
- * § Directly-stated panel entries). The eight panel fields, each a number or
+ * § Directly-stated panel entries). The nine panel fields, each a number or
  * absent — an absent field is stored `null` (unknown), never coerced to `0`.
  * The caller has already done the arithmetic; the numbers ARE the answer, so no
  * estimator runs and no field is re-derived, defaulted, or rounded.
@@ -132,6 +151,7 @@ export interface StatedMacros {
   sat_fat_g?: number;
   carbs_g?: number;
   sugar_g?: number;
+  added_sugar_g?: number;
   fiber_g?: number;
   sodium_mg?: number;
 }
@@ -197,6 +217,7 @@ export interface EntryPatchInput {
   sat_fat_g?: number;
   carbs_g?: number;
   sugar_g?: number;
+  added_sugar_g?: number;
   fiber_g?: number;
   sodium_mg?: number;
   portion_basis?: string;
@@ -258,6 +279,7 @@ export interface ModelEstimate {
   sat_fat_g: number | null;
   carbs_g: number | null;
   sugar_g: number | null;
+  added_sugar_g: number | null;
   fiber_g: number | null;
   sodium_mg: number | null;
   confidence: number;

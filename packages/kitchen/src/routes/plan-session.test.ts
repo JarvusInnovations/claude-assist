@@ -17,6 +17,7 @@ const NUL_NUTRITION = (over: Partial<NutritionFields>): NutritionFields => ({
   sat_fat_g: null,
   carbs_g: null,
   sugar_g: null,
+  added_sugar_g: null,
   fiber_g: null,
   sodium_mg: null,
   confidence: null,

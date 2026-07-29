@@ -53,6 +53,7 @@ export interface RecentEntrySummary {
   sat_fat_g: number | null;
   carbs_g: number | null;
   sugar_g: number | null;
+  added_sugar_g: number | null;
   fiber_g: number | null;
   sodium_mg: number | null;
   last_logged_at: Date;
@@ -189,6 +190,7 @@ export const EMPTY_NUTRITION: NutritionFields = {
   sat_fat_g: null,
   carbs_g: null,
   sugar_g: null,
+  added_sugar_g: null,
   fiber_g: null,
   sodium_mg: null,
   confidence: null,
@@ -236,6 +238,7 @@ export function rowToEntry(row: Record<string, unknown>): EntryRecord {
     sat_fat_g: parseNumeric(row.sat_fat_g),
     carbs_g: parseNumeric(row.carbs_g),
     sugar_g: parseNumeric(row.sugar_g),
+    added_sugar_g: parseNumeric(row.added_sugar_g),
     fiber_g: parseNumeric(row.fiber_g),
     sodium_mg: parseNumeric(row.sodium_mg),
     confidence: parseNumeric(row.confidence),
@@ -335,6 +338,7 @@ export class PgEntryStore implements EntryStore {
         calories = ${nutrition.calories}, protein_g = ${nutrition.protein_g},
         fat_g = ${nutrition.fat_g}, sat_fat_g = ${nutrition.sat_fat_g},
         carbs_g = ${nutrition.carbs_g}, sugar_g = ${nutrition.sugar_g},
+        added_sugar_g = ${nutrition.added_sugar_g},
         fiber_g = ${nutrition.fiber_g}, sodium_mg = ${nutrition.sodium_mg},
         confidence = ${nutrition.confidence}, portion_basis = ${nutrition.portion_basis},
         label = COALESCE(${label}, label),
@@ -372,6 +376,7 @@ export class PgEntryStore implements EntryStore {
         calories = ${merged.calories}, protein_g = ${merged.protein_g},
         fat_g = ${merged.fat_g}, sat_fat_g = ${merged.sat_fat_g},
         carbs_g = ${merged.carbs_g}, sugar_g = ${merged.sugar_g},
+        added_sugar_g = ${merged.added_sugar_g},
         fiber_g = ${merged.fiber_g}, sodium_mg = ${merged.sodium_mg},
         confidence = NULL, portion_basis = ${merged.portion_basis},
         label = ${extra.label ?? current.label}, note = ${extra.note ?? current.note},
@@ -427,6 +432,7 @@ export class PgEntryStore implements EntryStore {
         (array_agg(sat_fat_g ORDER BY logged_at DESC))[1] AS sat_fat_g,
         (array_agg(carbs_g ORDER BY logged_at DESC))[1] AS carbs_g,
         (array_agg(sugar_g ORDER BY logged_at DESC))[1] AS sugar_g,
+        (array_agg(added_sugar_g ORDER BY logged_at DESC))[1] AS added_sugar_g,
         (array_agg(fiber_g ORDER BY logged_at DESC))[1] AS fiber_g,
         (array_agg(sodium_mg ORDER BY logged_at DESC))[1] AS sodium_mg,
         MAX(logged_at) AS last_logged_at,
@@ -446,6 +452,7 @@ export class PgEntryStore implements EntryStore {
       sat_fat_g: parseNumeric(row.sat_fat_g),
       carbs_g: parseNumeric(row.carbs_g),
       sugar_g: parseNumeric(row.sugar_g),
+      added_sugar_g: parseNumeric(row.added_sugar_g),
       fiber_g: parseNumeric(row.fiber_g),
       sodium_mg: parseNumeric(row.sodium_mg),
       last_logged_at: row.last_logged_at as Date,

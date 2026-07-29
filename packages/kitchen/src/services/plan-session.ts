@@ -16,19 +16,12 @@
 
 import type { KitchenPipeline } from './pipeline.js';
 import type { InventoryPipeline } from './inventory.js';
+import { NUTRITION_FIELD_KEYS } from '../types.js';
 import type { EntryRecord } from '../types.js';
 import type { InventoryState } from '../inventory-types.js';
 
-const MACRO_KEYS = [
-  'calories',
-  'protein_g',
-  'fat_g',
-  'sat_fat_g',
-  'carbs_g',
-  'sugar_g',
-  'fiber_g',
-  'sodium_mg',
-] as const;
+/** The canonical panel list (§ Nutrition panel), never a second copy of it. */
+const MACRO_KEYS = NUTRITION_FIELD_KEYS;
 type MacroKey = (typeof MACRO_KEYS)[number];
 export type MacroTotals = Record<MacroKey, number>;
 
@@ -97,6 +90,7 @@ export function sumEffectiveTotals(entries: EntryRecord[]): MacroTotals {
     sat_fat_g: 0,
     carbs_g: 0,
     sugar_g: 0,
+    added_sugar_g: 0,
     fiber_g: 0,
     sodium_mg: 0,
   };
@@ -201,7 +195,8 @@ export function composePreloadPrompt(ctx: PlanningContext): string {
       (ctx.pendingCount ? `, ${ctx.pendingCount} still estimating` : '') +
       '): ' +
       `${t.calories} kcal, ${t.protein_g} g protein, ${t.fat_g} g fat (${t.sat_fat_g} g sat), ` +
-      `${t.carbs_g} g carbs, ${t.sugar_g} g sugar, ${t.fiber_g} g fiber, ` +
+      `${t.carbs_g} g carbs, ${t.sugar_g} g sugar (${t.added_sugar_g} g added), ` +
+      `${t.fiber_g} g fiber, ` +
       `${t.sodium_mg} mg sodium (effective totals).`,
   );
   lines.push('');

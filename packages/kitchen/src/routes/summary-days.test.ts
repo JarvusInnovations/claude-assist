@@ -55,6 +55,7 @@ describe('summary group=day + module-owned local-day (§ Timezone & local-day bu
         sat_fat_g: null,
         carbs_g: null,
         sugar_g: null,
+        added_sugar_g: null,
         fiber_g: null,
         sodium_mg: null,
         confidence: 0.9,
@@ -202,6 +203,37 @@ describe('summary group=day + module-owned local-day (§ Timezone & local-day bu
     expect(row.day).toBe('2026-07-25'); // owner-local, not the UTC 26th
     expect(row.occurred_local).toBe('2026-07-25T20:47:00-04:00'); // not a bare Z
     expect(row.occurred_at).toBe('2026-07-26T00:47:00.000Z'); // raw instant retained for ordering
+  });
+
+  it('rolls up added_sugar_g: an asserted 0 counts, an absent field stays null', async () => {
+    await build({ tz: 'America/New_York' });
+    // A fruit-and-dairy day: lots of TOTAL sugar, essentially no added sugar —
+    // the exact day the retired total-sugar ceiling used to call a breach.
+    await seedEntry('2026-07-20T13:00:00Z', { calories: 300, sugar_g: 32, added_sugar_g: 0 });
+    await seedEntry('2026-07-20T17:00:00Z', { calories: 250, sugar_g: 24, added_sugar_g: 1.5 });
+    // A different day where nothing carried added sugar at all.
+    await seedEntry('2026-07-21T17:00:00Z', { calories: 400, sugar_g: 10 });
+
+    const res = await fastify.inject({ method: 'GET', url: '/kitchen/summary?group=day&since=2026-07-19T00:00:00Z' });
+    const days = res.json().days as Array<Record<string, string | number | null>>;
+    const fruitDay = days.find((d) => d.day === '2026-07-20')!;
+    const unknownDay = days.find((d) => d.day === '2026-07-21')!;
+
+    expect(fruitDay.sugar_g).toBe(56);
+    expect(fruitDay.added_sugar_g).toBe(1.5); // 0 + 1.5 — the asserted zero is a real summand
+    // No entry carried it, so the day's total is UNKNOWN — never a fabricated
+    // 0, which would read as a verified clean day (§ Nutrition panel).
+    expect(unknownDay.sugar_g).toBe(10);
+    expect(unknownDay.added_sugar_g).toBeNull();
+  });
+
+  it('scales added_sugar_g by the portion multiplier like every other panel field', async () => {
+    await build({ tz: 'America/New_York' });
+    await seedEntry('2026-07-20T17:00:00Z', { calories: 400, sugar_g: 30, added_sugar_g: 20 }, 0.5);
+    const res = await fastify.inject({ method: 'GET', url: '/kitchen/summary?group=day&since=2026-07-19T00:00:00Z' });
+    const day = res.json().days[0];
+    expect(day.sugar_g).toBe(15);
+    expect(day.added_sugar_g).toBe(10);
   });
 
   it('windowed mode is unchanged (a caller without group=day still gets one aggregate)', async () => {

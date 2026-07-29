@@ -60,7 +60,8 @@ When several photos are supplied they are complementary views of ONE product, no
    - DUAL-COLUMN PANELS: when a panel prints multiple serving-size columns (e.g. "2 tsp (11.6g)" and "1 tsp (5.8g)"), use the FIRST/primary column consistently for serving_size_g, servings_per_container, and nutrition_per_serving — never mix columns.
    - serving_size_g: the serving size in grams as printed on the panel (e.g. "per 55g serving" -> 55). If the serving is printed only in a volume/count unit with a gram equivalent in parentheses, use the gram number. Null if no gram serving size is readable.
    - servings_per_container: the printed "servings per container" number, if shown. Null otherwise.
-   - nutrition_per_serving: the PER-SERVING values exactly as printed (calories, protein_g, fat_g, sat_fat_g, carbs_g, sugar_g, fiber_g, sodium_mg). Any single value you cannot read is null; a partial panel fills what it shows and leaves the rest null.
+   - nutrition_per_serving: the PER-SERVING values exactly as printed (calories, protein_g, fat_g, sat_fat_g, carbs_g, sugar_g, added_sugar_g, fiber_g, sodium_mg). Any single value you cannot read is null; a partial panel fills what it shows and leaves the rest null.
+   - added_sugar_g: the panel's "Includes Xg Added Sugars" line, which US Nutrition Facts panels have printed since the 2016 rule. It sits indented UNDER Total Sugars and is never larger than it — never copy Total Sugars into it. A legible panel printing Total Sugars but no Added Sugars line is the ABSENT LINE = 0 case above (record 0). A label is the highest-confidence source for added sugar there is, so read this line carefully.
    - nutrition_per_100g: ONLY if the panel itself prints a per-100g (or per-100ml) column, transcribe it; otherwise null. Never compute it yourself.
 5. Ingredients: transcribe whatever ingredient information is legible, even if rough — a full ingredients panel verbatim (a single comma-separated string), a partial/cut-off list, or front-of-pack ingredient callouts. Null ONLY when there is genuinely no ingredient information anywhere in the photos.
 6. Suggest up to 3 short alias strings someone might use when logging (e.g. "feta", "feta cheese").
@@ -77,8 +78,8 @@ Return ONLY a JSON object inside <label> tags. No markdown, no text outside the 
   "package_size": "as printed or null",
   "serving_size_g": 0,
   "servings_per_container": 0,
-  "nutrition_per_serving": {"calories": 0, "protein_g": 0, "fat_g": 0, "sat_fat_g": 0, "carbs_g": 0, "sugar_g": 0, "fiber_g": 0, "sodium_mg": 0},
-  "nutrition_per_100g": {"calories": 0, "protein_g": 0, "fat_g": 0, "sat_fat_g": 0, "carbs_g": 0, "sugar_g": 0, "fiber_g": 0, "sodium_mg": 0},
+  "nutrition_per_serving": {"calories": 0, "protein_g": 0, "fat_g": 0, "sat_fat_g": 0, "carbs_g": 0, "sugar_g": 0, "added_sugar_g": 0, "fiber_g": 0, "sodium_mg": 0},
+  "nutrition_per_100g": {"calories": 0, "protein_g": 0, "fat_g": 0, "sat_fat_g": 0, "carbs_g": 0, "sugar_g": 0, "added_sugar_g": 0, "fiber_g": 0, "sodium_mg": 0},
   "ingredients": "ingredients as printed (full, partial, or callouts), or null",
   "unit_model_hint": "counted|fraction|null",
   "net_content": {"value": 0, "unit": "g"},
@@ -260,6 +261,7 @@ function parsePanel(raw: unknown): Partial<NutritionPer100g> | null {
     sat_fat_g: numOrNull(r.sat_fat_g),
     carbs_g: numOrNull(r.carbs_g),
     sugar_g: numOrNull(r.sugar_g),
+    added_sugar_g: numOrNull(r.added_sugar_g),
     fiber_g: numOrNull(r.fiber_g),
     sodium_mg: numOrNull(r.sodium_mg),
   };
@@ -287,6 +289,7 @@ export function derivePer100gFromServing(
     sat_fat_g: scale(perServing.sat_fat_g),
     carbs_g: scale(perServing.carbs_g),
     sugar_g: scale(perServing.sugar_g),
+    added_sugar_g: scale(perServing.added_sugar_g),
     fiber_g: scale(perServing.fiber_g),
     sodium_mg: scale(perServing.sodium_mg),
   };
