@@ -77,6 +77,22 @@ Registered outside the `/api` prefix (`routes/public.ts`):
   its own last submission (`window.pagesLastResponse()`, backed by the
   `?latest=1` read below), so a page can restore prior input on load.
 
+### Encoding: every served body declares `charset=utf-8`
+
+Stored HTML is UTF-8 and is served byte-for-byte, so **every response from this
+surface carries an explicit charset**: `text/html; charset=utf-8` for the page
+and the index, `application/javascript; charset=utf-8` for the helper,
+`text/plain; charset=utf-8` for the not-found body.
+
+A `text/*` response without the parameter leaves decoding to the browser's
+locale default, which mangles every multibyte glyph (`→ ✓ × ≈ ° é —`). An
+authored page could self-declare `<meta charset="utf-8">`, and pages did — but
+that makes correct rendering something each caller has to remember, and a page
+that forgets renders garbled with no error anywhere. **The module owns the
+default.** This is not cosmetic where a page carries instructions: a corrupted
+degree sign in a cooking temperature is a wrong number, not a wrong-looking
+one — which is why the worksheet pattern below depends on it.
+
 ## API surface (under `/api`)
 
 - `POST /api/pages` — publish (`201` on create, `200` on republish). Body
