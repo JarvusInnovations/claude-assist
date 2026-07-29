@@ -95,11 +95,20 @@ in doubt, read the spec.
   pass `--ulid` if you really mean to replace that one. To retire a recipe, `recipes
   delete <ulid>`: it **archives** (off the strip permanently, still resolvable so entries
   logged from it and prepped items derived from it keep working). There is no hard delete.
-- **Never fix a logged entry by deleting and re-logging it.** All eight panel fields are
+- **Never fix a logged entry by deleting and re-logging it.** All nine panel fields are
   correctable in place with `entries patch` (`--calories --protein --fat --sat-fat --carbs
-  --sugar --fiber --sodium`). `entries delete` + `entries log` mints a **new ULID**, which
+  --sugar --added-sugar --fiber --sodium`). `entries delete` + `entries log` mints a **new ULID**, which
   breaks the inventory link, the reselect strip's `entry_ulid`, and anything else pointing
   at the entry. Delete is for an entry that shouldn't exist, not for a wrong number.
+- **Total sugar and added sugar are two different numbers, and only one has a line.**
+  `--sugar` is TOTAL sugar (intrinsic + added) and carries **no target** — there is no
+  established guideline for it, so it is context, never a breach. `--added-sugar` is the
+  share added in processing or preparation and is the one with a ceiling. Unprocessed whole
+  foods (fruit, vegetables, plain dairy, eggs, meat, fish, plain grains) are
+  `--added-sugar 0` — a **0 you state**, not a field you omit: an omitted field is `null`
+  (unknown) and silently drops the day's added-sugar total. Fruit juice counts as added
+  even when it's "100% juice". Don't read a big `sugar` number as a problem; read
+  `added_sugar`.
 - **Deliberate actions never go through the ambient classifier.** These commands are the
   deliberate paths — logging a meal, scanning a receipt, an explicit `inventory event` —
   and they hit the module directly. The free-text `inventory remark` resolver is for
@@ -131,7 +140,7 @@ in doubt, read the spec.
 - **"Fix the calories on that entry"** → `scripts/kitchen-axi entries patch <ulid> --calories N`
   (terminal manual override — use only when you mean to pin it).
 - **"Log a meal whose macros I already computed"** (a page/UI totalled it) →
-  `scripts/kitchen-axi entries log --calories N --protein N --sat-fat N --sugar N --fiber N --sodium N --label "<meal>"`
+  `scripts/kitchen-axi entries log --calories N --protein N --sat-fat N --sugar N --added-sugar N --fiber N --sodium N --label "<meal>"`
   (directly-stated panel: born-`manual`, terminal, no estimation, no race — not `--component` + `patch`).
 - **"What's today looking like?"** → bare `scripts/kitchen-axi` (home view: effective totals,
   pending estimates, eat-first items, open questions). Fields with an owner-set daily target
@@ -161,13 +170,13 @@ in doubt, read the spec.
 
 - `scripts/kitchen-axi entries list [--since DATE] [--limit N]` — newest-first consumption entries (base macros + portion_multiplier; effective = base × multiplier)
 - `scripts/kitchen-axi entries show <ulid>` — one entry with full nutrition, source, and status
-- `scripts/kitchen-axi entries log [note…] [--recipe ULID] [--component "label=grams"]… [--at TIME] [--calories N] [--protein N] [--fat N] [--sat-fat N] [--carbs N] [--sugar N] [--fiber N] [--sodium N] [--label T]` — log a deliberate, no-model entry (note and/or recipe + component quantities); recipe-referenced entries are computed deterministically; --at sets logged_at (default now — prefer a full local timestamp with offset; a bare YYYY-MM-DD backstops to local noon that day, never midnight UTC); a directly-stated panel (--calories/--protein/…, optionally --label) records a born-manual, terminal entry verbatim with NO estimation (mutually exclusive with --recipe/--component)
-- `scripts/kitchen-axi entries patch <ulid> [--note T] [--label T] [--calories N] [--protein N] [--fat N] [--sat-fat N] [--carbs N] [--sugar N] [--fiber N] [--sodium N] [--portion-basis T] [--multiplier M] [--at TIME]` — edit an entry: note/label re-queue estimation; any of the EIGHT macro flags sets a terminal manual override (the same panel `log` accepts — every field is correctable in place, so never delete + re-log to fix a number); --multiplier rescales the base post-hoc and --at backdates logged_at (prefer a full local timestamp with offset; a bare YYYY-MM-DD backstops to local noon that day; neither re-queues, neither changes source)
+- `scripts/kitchen-axi entries log [note…] [--recipe ULID] [--component "label=grams"]… [--at TIME] [--calories N] [--protein N] [--fat N] [--sat-fat N] [--carbs N] [--sugar N] [--added-sugar N] [--fiber N] [--sodium N] [--label T]` — log a deliberate, no-model entry (note and/or recipe + component quantities); recipe-referenced entries are computed deterministically; --at sets logged_at (default now — prefer a full local timestamp with offset; a bare YYYY-MM-DD backstops to local noon that day, never midnight UTC); a directly-stated panel (--calories/--protein/…, optionally --label) records a born-manual, terminal entry verbatim with NO estimation (mutually exclusive with --recipe/--component); --sugar is TOTAL sugar (untargeted context) while --added-sugar is the processed/prepared share that carries the ceiling — whole foods are --added-sugar 0, never omitted
+- `scripts/kitchen-axi entries patch <ulid> [--note T] [--label T] [--calories N] [--protein N] [--fat N] [--sat-fat N] [--carbs N] [--sugar N] [--added-sugar N] [--fiber N] [--sodium N] [--portion-basis T] [--multiplier M] [--at TIME]` — edit an entry: note/label re-queue estimation; any of the NINE macro flags sets a terminal manual override (the same panel `log` accepts — every field is correctable in place, so never delete + re-log to fix a number); --multiplier rescales the base post-hoc and --at backdates logged_at (prefer a full local timestamp with offset; a bare YYYY-MM-DD backstops to local noon that day; neither re-queues, neither changes source)
 - `scripts/kitchen-axi entries delete <ulid>` — remove an entry from all rollups
 
 ### Daily rollup
 
-- `scripts/kitchen-axi days [--since <n|date>]` — per-owner-local-day rollup: one row per day (eight-field panel + calories + net line when a TDEE base is set), bucketed by the instance's OWNER timezone SERVER-SIDE. --since is a day count (7 / 7d) or a date; default last 7 days. USE THIS for any multi-day or weekly total — never list entries and hand-sum them by timestamp (UTC-vs-local mis-bucketing is the exact footgun this retires; group only by the `day` field)
+- `scripts/kitchen-axi days [--since <n|date>]` — per-owner-local-day rollup: one row per day (nine-field panel + calories + net line when a TDEE base is set), bucketed by the instance's OWNER timezone SERVER-SIDE. --since is a day count (7 / 7d) or a date; default last 7 days. USE THIS for any multi-day or weekly total — never list entries and hand-sum them by timestamp (UTC-vs-local mis-bucketing is the exact footgun this retires; group only by the `day` field)
 
 ### Expenditure
 

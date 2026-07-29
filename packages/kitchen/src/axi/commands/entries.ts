@@ -26,7 +26,7 @@ export const ENTRIES_HELP = `kitchen-axi entries <subcommand> [args] [--json]
        [--calories N] [--protein N]…     directly-stated panel: born-manual, terminal,
        [--label T]                        NO estimation (mutually exclusive with --recipe/--component)
   patch <ulid> [flags]                 edit note/label (re-queue), macro override
-                                         (terminal — ANY of the eight panel flags),
+                                         (terminal — ANY of the nine panel flags),
                                          --multiplier M (post-hoc rescale),
                                          or --at TIME (backdate logged_at)
   delete <ulid>                        remove from all rollups
@@ -35,9 +35,13 @@ export const ENTRIES_HELP = `kitchen-axi entries <subcommand> [args] [--json]
   macro flag on patch sets a terminal manual override; --multiplier and --at
   only touch their own field — neither re-queues estimation nor changes source.
   Macro flags (identical on log and patch): ${MACRO_PANEL_FLAG_NAMES.map((f) => `--${f}`).join(" ")}
-  — the eight-field nutrition panel; unknown stays null, never 0. Every field is
+  — the nine-field nutrition panel; unknown stays null, never 0. Every field is
   correctable in place, so never delete + re-log to fix a number (that mints a
-  new ULID and breaks anything referencing the entry).`;
+  new ULID and breaks anything referencing the entry).
+  --sugar is TOTAL sugar (no target); --added-sugar is the part added in
+  processing or preparation and is the one with a ceiling. Whole foods (fruit,
+  plain dairy, eggs, meat, plain grains) are --added-sugar 0 — a null there
+  silently drops the day's added-sugar total.`;
 
 const DETAIL_SCHEMA: FieldDef[] = [
   field("ulid"),
@@ -56,6 +60,7 @@ const DETAIL_SCHEMA: FieldDef[] = [
   field("sat_fat_g", "base_sat_fat"),
   field("carbs_g", "base_carbs"),
   field("sugar_g", "base_sugar"),
+  field("added_sugar_g", "base_added_sugar"),
   field("fiber_g", "base_fiber"),
   field("sodium_mg", "base_sodium"),
   custom("eff_kcal", (e) => effectiveMacro(e, "calories")),
@@ -207,7 +212,7 @@ export function buildPatchBody(flags: Record<string, string | boolean>): Record<
   if (typeof flags.label === "string") body.label = flags.label;
   if (typeof flags["portion-basis"] === "string") body.portion_basis = flags["portion-basis"];
 
-  // Same eight-field panel `log` accepts, from the same source (§ Agent
+  // Same nine-field panel `log` accepts, from the same source (§ Agent
   // tooling) — every logged field must be correctable in place.
   for (const [flag, key] of MACRO_PANEL_FLAGS) {
     if (typeof flags[flag] === "string") body[key] = parseNumberFlag(flags[flag] as string, flag, ENTRIES_HELP, { min: 0 });

@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { AxiError } from "axi-sdk-js";
 import { DEFAULT_SERVER, resolveServer, buildMultipartForm } from "./client.js";
 import { parseArgs, collectFlag, parseNumberFlag, splitCsv } from "./args.js";
-import { sumEffective, effectiveMacro, targetLine } from "./format.js";
+import { sumEffective, effectiveMacro, targetLine, nestedSugarLine } from "./format.js";
 import { commandReferenceText, COMMAND_GROUPS, MACRO_PANEL_FLAGS, MACRO_PANEL_FLAG_NAMES } from "./reference.js";
 import { spliceGeneratedRegions, commandReferenceMarkdown } from "./skill.js";
 import { buildLogEntryFields, buildPatchBody } from "./commands/entries.js";
@@ -102,6 +102,43 @@ describe("daily-target lines (§ Daily targets — direction-aware remaining)", 
   });
 });
 
+describe("nested sugar figure (§ Display: one nested bar, not two)", () => {
+  it("shows a fruit-and-dairy day as high total sugar with NO over verdict", () => {
+    // The exact false alarm this split retires: a day of fruit, milk, and plain
+    // yogurt carries a big TOTAL sugar number and almost no added sugar. The
+    // total must read as a bare quantity — no threshold, no breach language —
+    // while the verdict belongs solely to the added portion.
+    const line = nestedSugarLine(62.4, 1.2, { max: 36 });
+    expect(line).toBe("62.4 total, added 1.2 / 36 max (34.8 left)");
+    expect(line).not.toContain("over");
+  });
+
+  it("puts the verdict on the ADDED portion when that is what breached", () => {
+    const line = nestedSugarLine(70, 48, { max: 36 });
+    expect(line).toBe("70 total, added 48 / 36 max (12 over)");
+    // Still one figure, and the overrun is measured against the added ceiling —
+    // never against the total, which has no line to cross.
+    expect(line).not.toContain("70 / ");
+  });
+
+  it("renders a missing added portion as unknown, never as a clean 0", () => {
+    // A day (typically a historical one, never backfilled) where no entry
+    // carried added sugar is UNKNOWN. Reporting 0 there would invent a verified
+    // clean day out of missing data.
+    expect(nestedSugarLine(48, null, { max: 36 })).toBe("48 total, added unknown");
+    expect(nestedSugarLine(48, null)).toBe("48 total, added unknown");
+  });
+
+  it("keeps the pair in ONE figure when no ceiling is configured", () => {
+    expect(nestedSugarLine(30, 5)).toBe("30 total, added 5");
+    expect(nestedSugarLine(null, null)).toBe("unknown total, added unknown");
+  });
+
+  it("shows an asserted zero as zero — a whole-food day is 0 added, not unknown", () => {
+    expect(nestedSugarLine(41, 0, { max: 36 })).toBe("41 total, added 0 / 36 max (36 left)");
+  });
+});
+
 describe("receipts scan multipart part-type rule", () => {
   it("sends the receipt meta as a form FIELD, not a file part", async () => {
     const form = await buildMultipartForm("receipt", { ulid: "01ABC", store: "Corner Market" }, []);
@@ -175,11 +212,11 @@ describe("entries --at wiring (claude-assist#111)", () => {
 });
 
 describe("entries log — directly-stated panel wiring", () => {
-  const LOG_FLAGS = ["recipe", "component", "at", "label", "calories", "protein", "fat", "sat-fat", "carbs", "sugar", "fiber", "sodium"];
+  const LOG_FLAGS = ["recipe", "component", "at", "label", ...MACRO_PANEL_FLAG_NAMES];
 
   it("builds a macros panel from per-field flags (mirrors patch macro flags)", () => {
     const { positionals, flags } = parseArgs(
-      ["--calories", "620", "--protein", "41", "--fat", "22", "--sat-fat", "7", "--carbs", "58", "--sugar", "12", "--fiber", "9", "--sodium", "880", "--label", "test bowl"],
+      ["--calories", "620", "--protein", "41", "--fat", "22", "--sat-fat", "7", "--carbs", "58", "--sugar", "12", "--added-sugar", "4", "--fiber", "9", "--sodium", "880", "--label", "test bowl"],
       ["json"],
       LOG_FLAGS,
     );
@@ -191,6 +228,7 @@ describe("entries log — directly-stated panel wiring", () => {
       sat_fat_g: 7,
       carbs_g: 58,
       sugar_g: 12,
+      added_sugar_g: 4,
       fiber_g: 9,
       sodium_mg: 880,
     });
@@ -233,11 +271,21 @@ describe("entries log — directly-stated panel wiring", () => {
 describe("macro-panel flag parity between entries log and entries patch", () => {
   const PATCH_FLAGS = ["note", "label", "portion-basis", ...MACRO_PANEL_FLAG_NAMES, "multiplier", "at"];
 
-  it("names the full eight-field panel in one place", () => {
-    expect(MACRO_PANEL_FLAG_NAMES).toEqual(["calories", "protein", "fat", "sat-fat", "carbs", "sugar", "fiber", "sodium"]);
+  it("names the full nine-field panel in one place", () => {
+    expect(MACRO_PANEL_FLAG_NAMES).toEqual([
+      "calories",
+      "protein",
+      "fat",
+      "sat-fat",
+      "carbs",
+      "sugar",
+      "added-sugar",
+      "fiber",
+      "sodium",
+    ]);
   });
 
-  it("patch maps every panel flag to its server field — sugar and fiber included", () => {
+  it("patch maps every panel flag to its server field — added sugar included", () => {
     const args = MACRO_PANEL_FLAGS.flatMap(([flag], i) => [`--${flag}`, String(i + 1)]);
     const { flags } = parseArgs(args, ["json"], PATCH_FLAGS);
     const body = buildPatchBody(flags);
@@ -248,14 +296,27 @@ describe("macro-panel flag parity between entries log and entries patch", () => 
       sat_fat_g: 4,
       carbs_g: 5,
       sugar_g: 6,
-      fiber_g: 7,
-      sodium_mg: 8,
+      added_sugar_g: 7,
+      fiber_g: 8,
+      sodium_mg: 9,
     });
   });
 
   it("patches sugar or fiber alone (the correction path that had no flag documented)", () => {
     expect(buildPatchBody(parseArgs(["--fiber", "12"], ["json"], PATCH_FLAGS).flags)).toEqual({ fiber_g: 12 });
     expect(buildPatchBody(parseArgs(["--sugar", "3.5"], ["json"], PATCH_FLAGS).flags)).toEqual({ sugar_g: 3.5 });
+  });
+
+  it("patches added sugar alone — correcting it in place, never delete + re-log", () => {
+    // The entry keeps its ULID (and everything referencing it) while the one
+    // wrong number is fixed; a whole-food entry the estimator left null becomes
+    // an asserted 0 this way.
+    expect(buildPatchBody(parseArgs(["--added-sugar", "4.5"], ["json"], PATCH_FLAGS).flags)).toEqual({
+      added_sugar_g: 4.5,
+    });
+    expect(buildPatchBody(parseArgs(["--added-sugar", "0"], ["json"], PATCH_FLAGS).flags)).toEqual({
+      added_sugar_g: 0,
+    });
   });
 
   it("documents every panel flag on BOTH usage lines (parity can't drift)", () => {

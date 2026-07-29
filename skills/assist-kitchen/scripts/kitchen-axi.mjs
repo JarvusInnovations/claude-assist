@@ -575,6 +575,7 @@ var MACRO_PANEL_FLAGS = [
   ["sat-fat", "sat_fat_g"],
   ["carbs", "carbs_g"],
   ["sugar", "sugar_g"],
+  ["added-sugar", "added_sugar_g"],
   ["fiber", "fiber_g"],
   ["sodium", "sodium_mg"]
 ];
@@ -588,11 +589,11 @@ var COMMAND_GROUPS = [
       { usage: "entries show <ulid>", summary: "one entry with full nutrition, source, and status" },
       {
         usage: `entries log [note\u2026] [--recipe ULID] [--component "label=grams"]\u2026 [--at TIME] ${MACRO_PANEL_USAGE} [--label T]`,
-        summary: "log a deliberate, no-model entry (note and/or recipe + component quantities); recipe-referenced entries are computed deterministically; --at sets logged_at (default now \u2014 prefer a full local timestamp with offset; a bare YYYY-MM-DD backstops to local noon that day, never midnight UTC); a directly-stated panel (--calories/--protein/\u2026, optionally --label) records a born-manual, terminal entry verbatim with NO estimation (mutually exclusive with --recipe/--component)"
+        summary: "log a deliberate, no-model entry (note and/or recipe + component quantities); recipe-referenced entries are computed deterministically; --at sets logged_at (default now \u2014 prefer a full local timestamp with offset; a bare YYYY-MM-DD backstops to local noon that day, never midnight UTC); a directly-stated panel (--calories/--protein/\u2026, optionally --label) records a born-manual, terminal entry verbatim with NO estimation (mutually exclusive with --recipe/--component); --sugar is TOTAL sugar (untargeted context) while --added-sugar is the processed/prepared share that carries the ceiling \u2014 whole foods are --added-sugar 0, never omitted"
       },
       {
         usage: `entries patch <ulid> [--note T] [--label T] ${MACRO_PANEL_USAGE} [--portion-basis T] [--multiplier M] [--at TIME]`,
-        summary: "edit an entry: note/label re-queue estimation; any of the EIGHT macro flags sets a terminal manual override (the same panel `log` accepts \u2014 every field is correctable in place, so never delete + re-log to fix a number); --multiplier rescales the base post-hoc and --at backdates logged_at (prefer a full local timestamp with offset; a bare YYYY-MM-DD backstops to local noon that day; neither re-queues, neither changes source)"
+        summary: "edit an entry: note/label re-queue estimation; any of the NINE macro flags sets a terminal manual override (the same panel `log` accepts \u2014 every field is correctable in place, so never delete + re-log to fix a number); --multiplier rescales the base post-hoc and --at backdates logged_at (prefer a full local timestamp with offset; a bare YYYY-MM-DD backstops to local noon that day; neither re-queues, neither changes source)"
       },
       { usage: "entries delete <ulid>", summary: "remove an entry from all rollups" }
     ]
@@ -602,7 +603,7 @@ var COMMAND_GROUPS = [
     commands: [
       {
         usage: "days [--since <n|date>]",
-        summary: "per-owner-local-day rollup: one row per day (eight-field panel + calories + net line when a TDEE base is set), bucketed by the instance's OWNER timezone SERVER-SIDE. --since is a day count (7 / 7d) or a date; default last 7 days. USE THIS for any multi-day or weekly total \u2014 never list entries and hand-sum them by timestamp (UTC-vs-local mis-bucketing is the exact footgun this retires; group only by the `day` field)"
+        summary: "per-owner-local-day rollup: one row per day (nine-field panel + calories + net line when a TDEE base is set), bucketed by the instance's OWNER timezone SERVER-SIDE. --since is a day count (7 / 7d) or a date; default last 7 days. USE THIS for any multi-day or weekly total \u2014 never list entries and hand-sum them by timestamp (UTC-vs-local mis-bucketing is the exact footgun this retires; group only by the `day` field)"
       }
     ]
   },
@@ -1130,6 +1131,10 @@ function formatRelativeTime(value) {
   return fmt(Math.floor(mon / 12), "y");
 }
 
+// packages/kitchen/src/types.ts
+var LOGGED_AT_FUTURE_SKEW_MS = 24 * 60 * 60 * 1e3;
+var LOGGED_AT_MAX_AGE_MS = 5 * 365 * 24 * 60 * 60 * 1e3;
+
 // packages/kitchen/src/axi/format.ts
 function effectiveMacro(entry, key) {
   const base = entry[key];
@@ -1147,6 +1152,11 @@ function targetLine(logged, bound) {
   }
   const toGo = round(bound.min - logged);
   return toGo > 0 ? `${logged} / ${bound.min} min (${toGo} to go)` : `${logged} / ${bound.min} min (met)`;
+}
+function nestedSugarLine(total, added, addedBound) {
+  const extent = total === null ? "unknown" : `${round(total)}`;
+  const inner = added === null ? "added unknown" : addedBound ? `added ${targetLine(round(added), addedBound)}` : `added ${round(added)}`;
+  return `${extent} total, ${inner}`;
 }
 var ENTRY_ROW_SCHEMA = [
   { type: "field", key: "ulid" },
@@ -1220,6 +1230,7 @@ async function homeCommand(args) {
   const failed = todayEntries.filter((e) => e.status === "failed").length;
   const todayRow = (summary && Array.isArray(summary.days) ? summary.days.find((d) => d.day === today) : null) ?? {};
   const totalOf = (key) => typeof todayRow[key] === "number" ? todayRow[key] : 0;
+  const rawOf = (key) => typeof todayRow[key] === "number" ? todayRow[key] : null;
   const targets = summary && summary.targets && typeof summary.targets === "object" ? summary.targets : {};
   const vsTarget = (key) => {
     const bound = targets[key];
@@ -1240,7 +1251,11 @@ async function homeCommand(args) {
     fat_g: vsTarget("fat_g"),
     sat_fat_g: vsTarget("sat_fat_g"),
     carbs_g: vsTarget("carbs_g"),
-    sugar_g: vsTarget("sugar_g"),
+    // ONE nested figure for the sugar pair (§ Display: one nested bar, not
+    // two): total sugar as the extent, added sugar inside it carrying the only
+    // ceiling. Total sugar never gets an over/under verdict — there is no
+    // guideline to breach, and a line here fires on fruit-and-dairy days.
+    sugar_g: nestedSugarLine(rawOf("sugar_g"), rawOf("added_sugar_g"), targets.added_sugar_g),
     fiber_g: vsTarget("fiber_g"),
     sodium_mg: vsTarget("sodium_mg"),
     // Net-energy context (§ Expenditure & net energy): shown only when the
@@ -1315,7 +1330,7 @@ var ENTRIES_HELP = `kitchen-axi entries <subcommand> [args] [--json]
        [--calories N] [--protein N]\u2026     directly-stated panel: born-manual, terminal,
        [--label T]                        NO estimation (mutually exclusive with --recipe/--component)
   patch <ulid> [flags]                 edit note/label (re-queue), macro override
-                                         (terminal \u2014 ANY of the eight panel flags),
+                                         (terminal \u2014 ANY of the nine panel flags),
                                          --multiplier M (post-hoc rescale),
                                          or --at TIME (backdate logged_at)
   delete <ulid>                        remove from all rollups
@@ -1324,9 +1339,13 @@ var ENTRIES_HELP = `kitchen-axi entries <subcommand> [args] [--json]
   macro flag on patch sets a terminal manual override; --multiplier and --at
   only touch their own field \u2014 neither re-queues estimation nor changes source.
   Macro flags (identical on log and patch): ${MACRO_PANEL_FLAG_NAMES.map((f) => `--${f}`).join(" ")}
-  \u2014 the eight-field nutrition panel; unknown stays null, never 0. Every field is
+  \u2014 the nine-field nutrition panel; unknown stays null, never 0. Every field is
   correctable in place, so never delete + re-log to fix a number (that mints a
-  new ULID and breaks anything referencing the entry).`;
+  new ULID and breaks anything referencing the entry).
+  --sugar is TOTAL sugar (no target); --added-sugar is the part added in
+  processing or preparation and is the one with a ceiling. Whole foods (fruit,
+  plain dairy, eggs, meat, plain grains) are --added-sugar 0 \u2014 a null there
+  silently drops the day's added-sugar total.`;
 var DETAIL_SCHEMA = [
   field("ulid"),
   // `day` = owner-tz calendar date (authoritative bucketing key); `logged`
@@ -1344,6 +1363,7 @@ var DETAIL_SCHEMA = [
   field("sat_fat_g", "base_sat_fat"),
   field("carbs_g", "base_carbs"),
   field("sugar_g", "base_sugar"),
+  field("added_sugar_g", "base_added_sugar"),
   field("fiber_g", "base_fiber"),
   field("sodium_mg", "base_sodium"),
   custom("eff_kcal", (e) => effectiveMacro(e, "calories")),
@@ -1492,8 +1512,12 @@ async function deleteEntry(args) {
 var DAYS_HELP = `kitchen-axi days [--since <n|date>] [--json]
 
   Per-owner-local-day rollup: one row per day over the window, each with the
-  eight-field nutrition panel + calories (EFFECTIVE totals) and \u2014 when the
+  nine-field nutrition panel + calories (EFFECTIVE totals) and \u2014 when the
   instance sets a TDEE base \u2014 the net line ((TDEE base + burns) \u2212 intake).
+
+  \`sugar\` is TOTAL sugar and has no target; \`added_sugar\` is the part added in
+  processing and is the one that carries a ceiling. A null in either column means
+  no entry that day carried the field \u2014 unknown, not zero.
 
   --since <n|date>   window start: a day count (e.g. 7 or 7d = last 7 days) or a
                      date (YYYY-MM-DD). Default: last 7 days.
@@ -1510,6 +1534,10 @@ var DAY_SCHEMA = [
   field("sat_fat_g", "sat_fat"),
   field("carbs_g", "carbs"),
   field("sugar_g", "sugar"),
+  // Total sugar and its added share, side by side and unjudged: `days` is a
+  // table, not the home view's nested figure, and NEITHER column carries a
+  // verdict here (§ Display: only added sugar has a threshold at all).
+  field("added_sugar_g", "added_sugar"),
   field("fiber_g", "fiber"),
   field("sodium_mg", "sodium"),
   field("entry_count", "entries"),
@@ -2306,7 +2334,7 @@ var PRODUCTS_HELP = `kitchen-axi products <subcommand> [args] [--json]
 
   shelf-life classes: ${SHELF_LIFE_CLASSES.join(", ")}
   --nutrition is a JSON object of per-100g macros, e.g.
-    '{"calories": 52, "protein_g": 0.3, "carbs_g": 14, "fiber_g": 2.4, "sugar_g": 10}'
+    '{"calories": 52, "protein_g": 0.3, "carbs_g": 14, "fiber_g": 2.4, "sugar_g": 10, "added_sugar_g": 0}'
   --ingredients is the printed ingredients list as a single string`;
 var PRODUCT_ROW_SCHEMA = [
   field("ulid"),
@@ -2433,7 +2461,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "cbf55e9" : "dev";
+var VERSION = true ? "dd76ce2" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)
