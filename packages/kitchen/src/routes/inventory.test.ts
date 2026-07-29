@@ -609,6 +609,109 @@ describe('inventory routes', () => {
     const missing = await fastify.inject({ method: 'PATCH', url: `/kitchen/inventory/${generateUlid()}`, payload: { on_hand_fraction: 0.5 } });
     expect(missing.statusCode).toBe(404);
   });
+
+  it("POST /kitchen/inventory/:ulid/events 'moved' re-anchors the clock; 400 without a destination", async () => {
+    const { item } = await pipeline.createItem({ raw_label: 'Sealed Pack', shelf_life_class: 'frozen', acquired_at: '2026-07-01' });
+    const moved = await fastify.inject({
+      method: 'POST',
+      url: `/kitchen/inventory/${item.ulid}/events`,
+      payload: { type: 'moved', to: 'fridge_short', at: '2026-07-09' },
+    });
+    expect(moved.statusCode).toBe(200);
+    expect(moved.json().shelf_life_class).toBe('fridge_short');
+    expect(moved.json().storage_moved_at).toBe('2026-07-09');
+    expect(moved.json().eat_by).toBe('2026-07-23'); // 14 d from the move, not from acquisition
+    expect(moved.json().state).toBe('stocked');
+
+    const noDestination = await fastify.inject({
+      method: 'POST',
+      url: `/kitchen/inventory/${item.ulid}/events`,
+      payload: { type: 'moved' },
+    });
+    expect(noDestination.statusCode).toBe(400);
+
+    // `unknown` is off the schema's enum: a move states where the item LIVES.
+    const unknown = await fastify.inject({
+      method: 'POST',
+      url: `/kitchen/inventory/${item.ulid}/events`,
+      payload: { type: 'moved', to: 'unknown' },
+    });
+    expect(unknown.statusCode).toBe(400);
+
+    // A destination on a consumption verb is refused, never silently dropped.
+    const wrongVerb = await fastify.inject({
+      method: 'POST',
+      url: `/kitchen/inventory/${item.ulid}/events`,
+      payload: { type: 'opened', to: 'frozen' },
+    });
+    expect(wrongVerb.statusCode).toBe(400);
+  });
+
+  it('PATCH /kitchen/inventory/:ulid reaches shelf_life_class, needs_info, and product_ulid', async () => {
+    // The defect: the body schema was additionalProperties:false over six
+    // properties, so the three fields most likely to be wrong were unreachable
+    // by the verb documented as reconciling the ledger to observed reality.
+    const product = await pipeline.createProduct({ name: 'Bagged Greens', shelf_life_class: 'produce' });
+    const { item } = await pipeline.createItem({ raw_label: 'UNKNOWN LINE', needs_info: true, acquired_at: '2026-07-01' });
+
+    const classed = await fastify.inject({
+      method: 'PATCH',
+      url: `/kitchen/inventory/${item.ulid}`,
+      payload: { shelf_life_class: 'produce' },
+    });
+    expect(classed.statusCode).toBe(200);
+    expect(classed.json().eat_by).toBe('2026-07-08'); // derived from the EXISTING anchor
+    expect(classed.json().storage_moved_at).toBeNull(); // a correction never re-anchors
+
+    const linked = await fastify.inject({
+      method: 'PATCH',
+      url: `/kitchen/inventory/${item.ulid}`,
+      payload: { product_ulid: product.ulid },
+    });
+    expect(linked.statusCode).toBe(200);
+    expect(linked.json().product_ulid).toBe(product.ulid);
+    expect(linked.json().needs_info).toBe(false);
+
+    const requeued = await fastify.inject({
+      method: 'PATCH',
+      url: `/kitchen/inventory/${item.ulid}`,
+      payload: { needs_info: true },
+    });
+    expect(requeued.json().needs_info).toBe(true);
+
+    const unknownProduct = await fastify.inject({
+      method: 'PATCH',
+      url: `/kitchen/inventory/${item.ulid}`,
+      payload: { product_ulid: generateUlid() },
+    });
+    expect(unknownProduct.statusCode).toBe(400);
+
+    // eat_by stays unreachable — it is derived, and that is the feature.
+    const override = await fastify.inject({
+      method: 'PATCH',
+      url: `/kitchen/inventory/${item.ulid}`,
+      payload: { eat_by: '2026-12-01' },
+    });
+    expect(override.statusCode).toBe(400);
+  });
+
+  it('POST /kitchen/inventory accepts unit_seal with a count and refuses it without one', async () => {
+    const shared = await fastify.inject({
+      method: 'POST',
+      url: '/kitchen/inventory',
+      payload: { raw_label: 'Link Sausage 4-count', shelf_life_class: 'fridge_short', units_total: 4, unit_seal: 'shared' },
+    });
+    expect(shared.statusCode).toBe(201);
+    expect(shared.json().unit_seal).toBe('shared');
+    expect(shared.json().units_remaining).toBe(4);
+
+    const sealless = await fastify.inject({
+      method: 'POST',
+      url: '/kitchen/inventory',
+      payload: { raw_label: 'Yogurt tub', shelf_life_class: 'fridge_short', unit_seal: 'shared' },
+    });
+    expect(sealless.statusCode).toBe(400);
+  });
 });
 
 /**

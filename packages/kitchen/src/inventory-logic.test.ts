@@ -3,14 +3,18 @@ import { InvalidTransitionError, isTerminal, transitionInventory } from './inven
 import {
   deriveEatBy,
   dayDiff,
+  isCounted,
   needsNutrition,
   normalizeProductName,
+  onHandFractionOf,
   productPanel,
   toIsoDate,
+  unitSealOf,
   SHELF_LIFE_WINDOWS,
   parsePackageCount,
 } from './inventory-derive.js';
 import { matchScore, parseRemark } from './inventory-remark.js';
+import type { UnitSeal } from './inventory-types.js';
 
 describe('inventory state machine', () => {
   it('stocked → open → finished/tossed, terminals reject further events', () => {
@@ -33,6 +37,46 @@ describe('inventory state machine', () => {
     expect(() => transitionInventory('finished', 'finished-unit')).toThrow(InvalidTransitionError);
     expect(() => transitionInventory('tossed', 'finished-unit')).toThrow(InvalidTransitionError);
     expect(() => transitionInventory('dismissed', 'finished-unit')).toThrow(InvalidTransitionError);
+  });
+
+  it('moved is state-PRESERVING from either live state, and terminal-rejects (§ Storage moves)', () => {
+    // A storage move changes the clock, never the open state: moving a sealed
+    // pack doesn't open it, moving an open one doesn't re-seal it.
+    expect(transitionInventory('stocked', 'moved')).toBe('stocked');
+    expect(transitionInventory('open', 'moved')).toBe('open');
+    expect(() => transitionInventory('finished', 'moved')).toThrow(InvalidTransitionError);
+    expect(() => transitionInventory('tossed', 'moved')).toThrow(InvalidTransitionError);
+    expect(() => transitionInventory('dismissed', 'moved')).toThrow(InvalidTransitionError);
+  });
+});
+
+describe('unit seal + derived fraction (§ count-vs-fraction)', () => {
+  const counted = (units_total: number, units_remaining: number, unit_seal: UnitSeal | null = null) =>
+    ({ units_total, units_remaining, unit_seal, on_hand_fraction: 1 }) as const;
+
+  it('defaults a counted item to `individual` and leaves a fraction item with no seal', () => {
+    expect(unitSealOf(counted(4, 4))).toBe('individual');
+    expect(unitSealOf(counted(4, 4, 'shared'))).toBe('shared');
+    expect(unitSealOf(counted(4, 4, 'individual'))).toBe('individual');
+    // The notion doesn't apply to a divisible container.
+    expect(unitSealOf({ units_total: null, units_remaining: null, unit_seal: null })).toBeNull();
+    // …and a stray stored value can't resurrect it.
+    expect(unitSealOf({ units_total: null, units_remaining: null, unit_seal: 'shared' })).toBeNull();
+    expect(isCounted(counted(4, 1))).toBe(true);
+    expect(isCounted({ units_total: null, units_remaining: null })).toBe(false);
+  });
+
+  it('derives a counted item’s on-hand fraction from the count, not the stored column', () => {
+    // The defect this replaces: the stored column stays at 1 while units are
+    // consumed, so a pack with 1 of 4 left reported itself as full.
+    expect(onHandFractionOf(counted(4, 1))).toBeCloseTo(0.25, 10);
+    expect(onHandFractionOf(counted(4, 4))).toBe(1);
+    // Zero units agrees with what a terminal close writes to the column.
+    expect(onHandFractionOf(counted(4, 0))).toBe(0);
+    // A fraction-modeled item still reads its own stored value.
+    expect(
+      onHandFractionOf({ units_total: null, units_remaining: null, on_hand_fraction: 0.6 })
+    ).toBe(0.6);
   });
 });
 
@@ -107,6 +151,76 @@ describe('eat-by derivation', () => {
   it('dayDiff floors whole days and null-propagates', () => {
     expect(dayDiff(new Date('2026-07-01'), new Date('2026-07-05'))).toBe(4);
     expect(dayDiff(null, new Date())).toBeNull();
+  });
+
+  describe('a storage move re-anchors the clock (§ Storage moves)', () => {
+    it('restarts an unopened window from the move date, not from acquisition', () => {
+      // Acquired frozen on the 1st, thawed into the fridge on the 8th. The
+      // fridge window must run from the 8th (8 + 14 = the 22nd); resuming from
+      // acquisition would say the 15th, which is the whole defect.
+      const eatBy = deriveEatBy({
+        shelfLifeClass: 'fridge_short',
+        acquiredAt: acquired,
+        openedAt: null,
+        storageMovedAt: new Date('2026-07-08'),
+      });
+      expect(toIsoDate(eatBy)).toBe('2026-07-22');
+    });
+
+    it('keeps the OPENED window when an already-open item moves, anchored at the move', () => {
+      // Opened on the 3rd, moved to the freezer on the 10th → frozen's OPENED
+      // window (90 d) from the 10th. The window CHOICE follows open state; only
+      // its anchor moves.
+      const eatBy = deriveEatBy({
+        shelfLifeClass: 'frozen',
+        acquiredAt: acquired,
+        openedAt: new Date('2026-07-03'),
+        storageMovedAt: new Date('2026-07-10'),
+      });
+      expect(toIsoDate(eatBy)).toBe('2026-10-08');
+    });
+
+    it('takes the LATEST anchor, so move-then-open and open-then-move both come out right', () => {
+      // Moved on the 5th, then opened on the 12th → the open wins (7 d → 19th).
+      const openedAfter = deriveEatBy({
+        shelfLifeClass: 'fridge_short',
+        acquiredAt: acquired,
+        openedAt: new Date('2026-07-12'),
+        storageMovedAt: new Date('2026-07-05'),
+      });
+      expect(toIsoDate(openedAfter)).toBe('2026-07-19');
+      // Opened on the 5th, then moved on the 12th → the move wins (7 d → 19th).
+      const movedAfter = deriveEatBy({
+        shelfLifeClass: 'fridge_short',
+        acquiredAt: acquired,
+        openedAt: new Date('2026-07-05'),
+        storageMovedAt: new Date('2026-07-12'),
+      });
+      expect(toIsoDate(movedAfter)).toBe('2026-07-19');
+    });
+
+    it('re-anchors a prepared dish too — a move is a physical act, unlike opening', () => {
+      // A batch made on the 1st and thawed back on the 20th: unlike opening
+      // (which a prepared dish ignores), the move really does start a new clock.
+      const eatBy = deriveEatBy({
+        shelfLifeClass: 'prepared',
+        acquiredAt: acquired,
+        openedAt: null,
+        storageMovedAt: new Date('2026-07-20'),
+      });
+      expect(toIsoDate(eatBy)).toBe('2026-07-24');
+    });
+
+    it('still yields no eat-by when the destination class has no window', () => {
+      expect(
+        deriveEatBy({
+          shelfLifeClass: 'unknown',
+          acquiredAt: acquired,
+          openedAt: null,
+          storageMovedAt: new Date('2026-07-08'),
+        })
+      ).toBeNull();
+    });
   });
 });
 

@@ -557,8 +557,10 @@ describe('depletion matcher', () => {
     expect(first).not.toBeNull();
     // The whole point: the COUNT moved.
     expect(first!.units_remaining).toBe(8);
-    // …and the fraction was left alone (it means nothing on a counted item).
-    expect(first!.on_hand_fraction).toBe(1);
+    // …and the wire fraction FOLLOWED it, because a counted item derives the
+    // fraction from the count (§ count-vs-fraction) rather than carrying an
+    // independent stored one that would still read 1.0 with 8 of 9 left.
+    expect(first!.on_hand_fraction).toBeCloseTo(8 / 9, 10);
     // finished-unit semantics: back to sealed, on the unopened clock.
     expect(first!.state).toBe('stocked');
     expect(first!.opened_at).toBeNull();
@@ -1097,7 +1099,10 @@ describe('unit-count model (§ count-vs-fraction)', () => {
     const [item] = await pipeline.listInventory({});
     expect(item!.units_total).toBe(3);
     expect(item!.units_remaining).toBe(3);
-    expect(item!.on_hand_fraction).toBe(1); // present but unused for a counted item
+    expect(item!.on_hand_fraction).toBe(1); // derived from the count: 3 of 3
+    // Receipt text can't tell a can pack from a sausage pack ("3 CT" fits both),
+    // so seeding leaves the seal unstated — read as `individual`.
+    expect(item!.unit_seal).toBe('individual');
   });
 
   it('a plain package size (no count) stays fraction-modeled, unchanged', async () => {
@@ -1130,6 +1135,7 @@ describe('unit-count model (§ count-vs-fraction)', () => {
     expect(item!.units_total).toBeNull();
     expect(item!.units_remaining).toBeNull();
     expect(item!.on_hand_fraction).toBe(1);
+    expect(item!.unit_seal).toBeNull(); // no seal to describe on a divisible container
   });
 
   it("'finished-unit' decrements one sealed unit; only the opened unit carries the opened-clock; sealed remainder keeps unopened shelf-life", async () => {
@@ -1183,6 +1189,304 @@ describe('unit-count model (§ count-vs-fraction)', () => {
     const finished = await pipeline.applyEvent(item.ulid, 'finished', {});
     expect(finished!.state).toBe('finished');
     expect(finished!.units_remaining).toBe(0);
+  });
+
+  it('a counted item’s on_hand_fraction is DERIVED from the count on every read', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    const { item } = await pipeline.createItem({
+      raw_label: 'Link Sausage 4-count',
+      shelf_life_class: 'fridge_short',
+      acquired_at: '2026-07-01',
+      units_total: 4,
+      unit_seal: 'shared',
+    });
+    expect(item.on_hand_fraction).toBe(1);
+    const three = await pipeline.applyEvent(item.ulid, 'finished-unit', { at: '2026-07-02' });
+    expect(three!.units_remaining).toBe(3);
+    expect(three!.on_hand_fraction).toBe(0.75);
+    const two = await pipeline.applyEvent(item.ulid, 'finished-unit', { at: '2026-07-03' });
+    expect(two!.on_hand_fraction).toBe(0.5);
+    // …and the read path agrees with the write path.
+    expect((await pipeline.getItemView(item.ulid))!.on_hand_fraction).toBe(0.5);
+  });
+
+  it('rejects a unit_seal with no count — there is no seal to describe on a divisible item', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    await expect(
+      pipeline.createItem({ raw_label: 'Yogurt tub', shelf_life_class: 'fridge_short', unit_seal: 'shared' })
+    ).rejects.toThrow(ItemValidationError);
+  });
+
+  describe('counted within an OPEN container (unit_seal: shared)', () => {
+    // A 4-link vacuum pack: one seal over four units. Opening the container puts
+    // the whole remainder on the opened clock, and eating a link re-seals nothing.
+    const pack = async (pipeline: InventoryPipeline) =>
+      (
+        await pipeline.createItem({
+          raw_label: 'Link Sausage 4-count',
+          shelf_life_class: 'fridge_short', // unopened 14 / opened 7
+          acquired_at: '2026-07-01',
+          units_total: 4,
+          unit_seal: 'shared',
+        })
+      ).item;
+
+    it('keeps the count AND the opened clock — the choice the model used to force', async () => {
+      const store = new MemoryInventoryStore();
+      const pipeline = new InventoryPipeline(store, null, null, log);
+      const item = await pack(pipeline);
+
+      const opened = await pipeline.applyEvent(item.ulid, 'opened', { at: '2026-07-05' });
+      expect(opened!.state).toBe('open');
+      expect(opened!.eat_by).toBe('2026-07-12'); // opened window, 7 d from 07-05
+
+      const three = await pipeline.applyEvent(item.ulid, 'finished-unit', { at: '2026-07-06' });
+      // Both facts survive: the count moved, and the container is still open on
+      // the SAME clock (no fresh unopened window for an exposed remainder).
+      expect(three!.units_remaining).toBe(3);
+      expect(three!.state).toBe('open');
+      expect(three!.opened_at).toBe('2026-07-05');
+      expect(three!.eat_by).toBe('2026-07-12');
+
+      const two = await pipeline.applyEvent(item.ulid, 'finished-unit', { at: '2026-07-08' });
+      expect(two!.units_remaining).toBe(2);
+      expect(two!.state).toBe('open');
+      expect(two!.eat_by).toBe('2026-07-12'); // still the container's clock
+    });
+
+    it('implies the open when the first unit goes from a still-sealed pack', async () => {
+      const store = new MemoryInventoryStore();
+      const pipeline = new InventoryPipeline(store, null, null, log);
+      const item = await pack(pipeline);
+      expect(item.state).toBe('stocked');
+      expect(item.eat_by).toBe('2026-07-15'); // unopened window, 14 d
+
+      // You can't eat one link out of a sealed pack, so the depletion IS the open.
+      const three = await pipeline.applyEvent(item.ulid, 'finished-unit', { at: '2026-07-05' });
+      expect(three!.state).toBe('open');
+      expect(three!.opened_at).toBe('2026-07-05');
+      expect(three!.eat_by).toBe('2026-07-12'); // opened window from the event date
+    });
+
+    it('still goes terminal on the last unit, like any counted item', async () => {
+      const store = new MemoryInventoryStore();
+      const pipeline = new InventoryPipeline(store, null, null, log);
+      const item = await pack(pipeline);
+      for (const day of ['2026-07-05', '2026-07-06', '2026-07-07']) {
+        await pipeline.applyEvent(item.ulid, 'finished-unit', { at: day });
+      }
+      const last = await pipeline.applyEvent(item.ulid, 'finished-unit', { at: '2026-07-08' });
+      expect(last!.units_remaining).toBe(0);
+      expect(last!.state).toBe('finished');
+      expect(last!.closed_at).toBe('2026-07-08');
+      expect(last!.on_hand_fraction).toBe(0);
+    });
+
+    it('reconcile can reclassify the seal, and dropping the count drops the seal with it', async () => {
+      const store = new MemoryInventoryStore();
+      const pipeline = new InventoryPipeline(store, null, null, log);
+      const item = await pack(pipeline);
+
+      const individual = await pipeline.reconcileItem(item.ulid, { unit_seal: 'individual' });
+      expect(individual!.unit_seal).toBe('individual');
+      expect(individual!.notes).toContain('unit_seal shared→individual');
+
+      // Reverting to the fraction model leaves no seal behind to mean anything.
+      const uncounted = await pipeline.reconcileItem(item.ulid, { units_total: null, units_remaining: null });
+      expect(uncounted!.units_total).toBeNull();
+      expect(uncounted!.unit_seal).toBeNull();
+
+      // …and a seal can't be set without a count.
+      await expect(pipeline.reconcileItem(item.ulid, { unit_seal: 'shared' })).rejects.toThrow(
+        ReconcileValidationError
+      );
+    });
+
+    it('the three-way interaction: an opened shared pack MOVED between storages', async () => {
+      // Where all of storage moves, the open container, and the count meet.
+      const store = new MemoryInventoryStore();
+      const pipeline = new InventoryPipeline(store, null, null, log);
+      const item = await pack(pipeline);
+      await pipeline.applyEvent(item.ulid, 'opened', { at: '2026-07-05' });
+      await pipeline.applyEvent(item.ulid, 'finished-unit', { at: '2026-07-06' });
+
+      // Into the freezer on the 7th to stop the clock on the remaining links.
+      const frozen = await pipeline.applyEvent(item.ulid, 'moved', { to: 'frozen', at: '2026-07-07' });
+      expect(frozen!.units_remaining).toBe(3); // count survives
+      expect(frozen!.state).toBe('open'); // still an open container
+      expect(frozen!.opened_at).toBe('2026-07-05');
+      expect(frozen!.shelf_life_class).toBe('frozen');
+      // frozen's OPENED window (90 d) from the MOVE date, not from opened_at.
+      expect(frozen!.eat_by).toBe('2026-10-05');
+      expect(frozen!.on_hand_fraction).toBe(0.75);
+
+      // Back out to the fridge on the 20th: the fridge opened window restarts
+      // from the thaw, and the count is still 3.
+      const thawed = await pipeline.applyEvent(item.ulid, 'moved', { to: 'fridge_short', at: '2026-07-20' });
+      expect(thawed!.eat_by).toBe('2026-07-27'); // 7 d from the thaw
+      expect(thawed!.units_remaining).toBe(3);
+      expect(thawed!.state).toBe('open');
+
+      // Eating a link after the round trip keeps the thawed container's clock.
+      const two = await pipeline.applyEvent(item.ulid, 'finished-unit', { at: '2026-07-21' });
+      expect(two!.units_remaining).toBe(2);
+      expect(two!.state).toBe('open');
+      expect(two!.eat_by).toBe('2026-07-27');
+    });
+  });
+});
+
+describe('storage moves (§ Storage moves)', () => {
+  const frozenPack = async (pipeline: InventoryPipeline) =>
+    (
+      await pipeline.createItem({
+        raw_label: 'Vacuum-Sealed Cooked Sausage',
+        shelf_life_class: 'frozen', // unopened 180 / opened 90
+        acquired_at: '2026-07-01',
+      })
+    ).item;
+
+  it('re-anchors the clock from the move date rather than resuming the old one', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    const item = await frozenPack(pipeline);
+    expect(item.eat_by).toBe('2026-12-28'); // frozen unopened, 180 d
+
+    const thawed = await pipeline.applyEvent(item.ulid, 'moved', { to: 'fridge_short', at: '2026-07-09' });
+    expect(thawed!.shelf_life_class).toBe('fridge_short');
+    expect(thawed!.storage_moved_at).toBe('2026-07-09');
+    // 14 d from the THAW (07-23). Resuming from acquisition would say 07-15,
+    // which is the whole defect: the pack was safe in the freezer for 8 days.
+    expect(thawed!.eat_by).toBe('2026-07-23');
+    // State and opened_at untouched — moving a sealed pack does not open it.
+    expect(thawed!.state).toBe('stocked');
+    expect(thawed!.opened_at).toBeNull();
+    expect(thawed!.notes).toContain('moved frozen→fridge_short 2026-07-09');
+  });
+
+  it('works inverted — fridge→freezer parks the clock on the destination window', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    const { item } = await pipeline.createItem({
+      raw_label: 'Ground Turkey',
+      shelf_life_class: 'fridge_short',
+      acquired_at: '2026-07-01',
+    });
+    expect(item.eat_by).toBe('2026-07-15');
+    const parked = await pipeline.applyEvent(item.ulid, 'moved', { to: 'frozen', at: '2026-07-03' });
+    expect(parked!.eat_by).toBe('2026-12-30'); // frozen unopened, 180 d from the move
+    expect(parked!.state).toBe('stocked');
+  });
+
+  it('an already-open item keeps its open state and takes the destination OPENED window', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    const { item } = await pipeline.createItem({
+      raw_label: 'Soup Batch',
+      shelf_life_class: 'fridge_short',
+      acquired_at: '2026-07-01',
+    });
+    await pipeline.applyEvent(item.ulid, 'opened', { at: '2026-07-02' });
+    const moved = await pipeline.applyEvent(item.ulid, 'moved', { to: 'frozen', at: '2026-07-04' });
+    expect(moved!.state).toBe('open');
+    expect(moved!.opened_at).toBe('2026-07-02'); // not re-sealed by the move
+    expect(moved!.eat_by).toBe('2026-10-02'); // frozen OPENED window (90 d) from the move
+  });
+
+  it('takes the reported date at face value — the act’s date, not the intention’s', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    const item = await frozenPack(pipeline);
+    // Reported as having happened on the 9th, logged later: the anchor is the
+    // 9th. Intention and act routinely land on different days, and anchoring to
+    // the intention silently mis-sizes a real safety window.
+    const thawed = await pipeline.applyEvent(item.ulid, 'moved', { to: 'produce', at: '2026-07-09' });
+    expect(thawed!.storage_moved_at).toBe('2026-07-09');
+    expect(thawed!.eat_by).toBe('2026-07-16'); // produce unopened, 7 d from the 9th
+  });
+
+  it('repeated moves re-anchor to the latest and keep every line of history', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    const item = await frozenPack(pipeline);
+    await pipeline.applyEvent(item.ulid, 'moved', { to: 'fridge_short', at: '2026-07-05' });
+    const back = await pipeline.applyEvent(item.ulid, 'moved', { to: 'frozen', at: '2026-07-06' });
+    const again = await pipeline.applyEvent(back!.ulid, 'moved', { to: 'fridge_short', at: '2026-07-20' });
+    expect(again!.storage_moved_at).toBe('2026-07-20'); // only the current storage governs
+    expect(again!.eat_by).toBe('2026-08-03');
+    // …but the transition history survives in provenance.
+    expect(again!.notes).toContain('moved frozen→fridge_short 2026-07-05');
+    expect(again!.notes).toContain('moved fridge_short→frozen 2026-07-06');
+    expect(again!.notes).toContain('moved frozen→fridge_short 2026-07-20');
+  });
+
+  it('a move into the SAME class is not a no-op — it re-anchors', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    const { item } = await pipeline.createItem({
+      raw_label: 'Deli Turkey',
+      shelf_life_class: 'fridge_short',
+      acquired_at: '2026-07-01',
+    });
+    expect(item.eat_by).toBe('2026-07-15');
+    // "It entered the fridge today" — the class was right, the basis wasn't.
+    const moved = await pipeline.applyEvent(item.ulid, 'moved', { to: 'fridge_short', at: '2026-07-08' });
+    expect(moved!.eat_by).toBe('2026-07-22');
+  });
+
+  it("rejects a move with no destination, a move to 'unknown', and a `to` on any other verb", async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    const item = await frozenPack(pipeline);
+    await expect(pipeline.applyEvent(item.ulid, 'moved', {})).rejects.toThrow(ItemValidationError);
+    await expect(pipeline.applyEvent(item.ulid, 'moved', { to: 'unknown' })).rejects.toThrow(
+      ItemValidationError
+    );
+    // A `to` on a consumption verb would be silently ignored; refuse instead.
+    await expect(pipeline.applyEvent(item.ulid, 'opened', { to: 'frozen' })).rejects.toThrow(
+      ItemValidationError
+    );
+  });
+
+  it('rejects a move on a terminal item, like every other event', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    const item = await frozenPack(pipeline);
+    await pipeline.applyEvent(item.ulid, 'finished', { at: '2026-07-04' });
+    await expect(
+      pipeline.applyEvent(item.ulid, 'moved', { to: 'fridge_short', at: '2026-07-05' })
+    ).rejects.toThrow(InvalidTransitionError);
+  });
+
+  it('a frozen item keeps its eat_by and sorts below perishables rather than being suppressed', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    await pipeline.createItem({ raw_label: 'Frozen Pack', shelf_life_class: 'frozen', acquired_at: '2026-07-01' });
+    await pipeline.createItem({ raw_label: 'Bagged Greens', shelf_life_class: 'produce', acquired_at: '2026-07-01' });
+    const items = await pipeline.listInventory({});
+    // Eat-first is eat_by ASC nulls last, so 180 days already de-prioritizes the
+    // frozen item — without discarding the honest "it's been in there a while"
+    // signal that a null eat_by would throw away.
+    expect(items.map((i) => i.raw_label)).toEqual(['Bagged Greens', 'Frozen Pack']);
+    expect(items[1]!.eat_by).toBe('2026-12-28');
+  });
+
+  it('a `moved` that only changes storage never touches the count or the fraction', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    const { item } = await pipeline.createItem({
+      raw_label: 'Frozen Patties 6-count',
+      shelf_life_class: 'frozen',
+      acquired_at: '2026-07-01',
+      units_total: 6,
+    });
+    await pipeline.applyEvent(item.ulid, 'finished-unit', { at: '2026-07-02' });
+    const moved = await pipeline.applyEvent(item.ulid, 'moved', { to: 'fridge_short', at: '2026-07-03' });
+    expect(moved!.units_total).toBe(6);
+    expect(moved!.units_remaining).toBe(5);
+    expect(moved!.on_hand_fraction).toBeCloseTo(5 / 6, 10);
   });
 });
 
@@ -1676,6 +1980,45 @@ describe('consume from inventory (claude-assist#110 — one-tap known-macro log 
     expect(result!.item.on_hand_fraction).toBe(0);
   });
 
+  it('depletes a SHARED-seal counted item without re-sealing it (§ count-vs-fraction)', async () => {
+    // A tray of portions under one lid: consuming one leaves the tray open on
+    // the container's clock, not back at a sealed unopened window.
+    const { pipeline } = harness();
+    const { item: oats } = await pipeline.createItem({ raw_label: 'Rolled oats', shelf_life_class: 'pantry', acquired_at: '2026-07-01' });
+    const { derived } = await pipeline.convert({
+      sources: [{ item_ulid: oats.ulid }],
+      derived: {
+        name: 'Oat tray',
+        shelf_life_class: 'prepared',
+        units_total: 4,
+        unit_seal: 'shared',
+        recipe_ulid: RECIPE.ulid,
+      },
+      at: '2026-07-17',
+    });
+    expect(derived.unit_seal).toBe('shared');
+
+    const result = await pipeline.consume(derived.ulid, { ulid: ULID(64), quantity: 2, at: '2026-07-18' });
+    expect(result!.item.units_remaining).toBe(2);
+    expect(result!.item.state).toBe('open'); // the lid is off
+    expect(result!.item.opened_at).toBe('2026-07-18'); // implied by the first depletion
+    expect(result!.item.on_hand_fraction).toBe(0.5); // derived from the count
+    // Two units of a per-unit recipe, never a share of one.
+    expect(result!.entry.calories).toBe(2184);
+  });
+
+  it('rejects a derived unit_seal with no units_total', async () => {
+    const { pipeline } = harness();
+    const { item: oats } = await pipeline.createItem({ raw_label: 'Rolled oats', shelf_life_class: 'pantry', acquired_at: '2026-07-01' });
+    await expect(
+      pipeline.convert({
+        sources: [{ item_ulid: oats.ulid }],
+        derived: { name: 'Loose batch', shelf_life_class: 'prepared', unit_seal: 'shared' },
+        at: '2026-07-17',
+      })
+    ).rejects.toThrow(ConversionValidationError);
+  });
+
   it('consumes a fraction-modeled derived item: finishes it in one tap, macros scaled by on_hand_fraction', async () => {
     const { pipeline } = harness();
     const { item: quinoa } = await pipeline.createItem({ raw_label: 'Dry quinoa', shelf_life_class: 'pantry', acquired_at: '2026-07-01' });
@@ -1892,6 +2235,179 @@ describe('reconcile (§ Reconcile — corrections are observations, not events)'
     expect(res.item?.on_hand_fraction).toBe(0.75);
     expect(res.item?.opened_at).toBe('2026-07-19'); // untouched
     expect(res.item?.state).toBe('open');
+  });
+
+  describe('reaches every field an observation can settle', () => {
+    it('corrects the shelf-life class against the EXISTING anchor, and never re-anchors', async () => {
+      const store = new MemoryInventoryStore();
+      const pipeline = new InventoryPipeline(store, null, null, log);
+      const { item } = await pipeline.createItem({
+        raw_label: 'Bagged Greens',
+        shelf_life_class: 'fridge_long', // recorded wrong from the start
+        acquired_at: '2026-07-01',
+      });
+      expect(item.eat_by).toBe('2026-08-30'); // 60 d
+
+      const fixed = await pipeline.reconcileItem(item.ulid, { shelf_life_class: 'produce' });
+      expect(fixed!.shelf_life_class).toBe('produce');
+      // 7 d from ACQUISITION — "it was always produce", not "it became produce
+      // today". A storage move would have anchored at today instead.
+      expect(fixed!.eat_by).toBe('2026-07-08');
+      expect(fixed!.storage_moved_at).toBeNull();
+      expect(fixed!.notes).toContain('shelf_life_class fridge_long→produce');
+    });
+
+    it('a class correction leaves an existing storage-move anchor standing', async () => {
+      const store = new MemoryInventoryStore();
+      const pipeline = new InventoryPipeline(store, null, null, log);
+      const { item } = await pipeline.createItem({
+        raw_label: 'Vacuum Pack',
+        shelf_life_class: 'frozen',
+        acquired_at: '2026-07-01',
+      });
+      await pipeline.applyEvent(item.ulid, 'moved', { to: 'fridge_long', at: '2026-07-09' });
+      // The move happened; only which class it moved INTO was wrong.
+      const fixed = await pipeline.reconcileItem(item.ulid, { shelf_life_class: 'fridge_short' });
+      expect(fixed!.storage_moved_at).toBe('2026-07-09');
+      expect(fixed!.eat_by).toBe('2026-07-23'); // 14 d from the move, not from acquisition
+    });
+
+    it('clears and re-queues needs_info without a label scan', async () => {
+      const store = new MemoryInventoryStore();
+      const pipeline = new InventoryPipeline(store, null, null, log);
+      // A spice jar: no Nutrition Facts panel exists, so a rescan can never
+      // clear the flag — the owner simply knows what it is.
+      const { item } = await pipeline.createItem({ raw_label: 'UNLABELED JAR', needs_info: true });
+      expect(item.needs_info).toBe(true);
+
+      const known = await pipeline.reconcileItem(item.ulid, { needs_info: false });
+      expect(known!.needs_info).toBe(false);
+      expect(await pipeline.listQuestions()).toEqual([]);
+      expect(known!.notes).toContain('needs_info true→false');
+
+      const requeued = await pipeline.reconcileItem(item.ulid, { needs_info: true });
+      expect(requeued!.needs_info).toBe(true);
+      expect((await pipeline.listQuestions()).length).toBe(1);
+    });
+
+    it('relinks product_ulid, clearing needs_info and folding in the product’s day overrides', async () => {
+      const store = new MemoryInventoryStore();
+      const product = await store.insertProduct({
+        ulid: ULID(200),
+        name: 'Cultured Yogurt',
+        shelf_life_class: 'fridge_long',
+        aliases: [],
+        nutrition_per_100g: null,
+        ingredients: null,
+        package_size: null,
+        shelf_life_days_unopened: 30,
+        shelf_life_days_opened: 10,
+      });
+      const pipeline = new InventoryPipeline(store, null, null, log);
+      const { item } = await pipeline.createItem({ raw_label: 'UNKNOWN LINE', needs_info: true, acquired_at: '2026-07-01' });
+      expect(item.eat_by).toBeNull(); // no class yet, so honestly no clock
+
+      const linked = await pipeline.reconcileItem(item.ulid, { product_ulid: product.ulid });
+      expect(linked!.product_ulid).toBe(product.ulid);
+      expect(linked!.needs_info).toBe(false); // the identity question is answered
+      expect(linked!.shelf_life_class).toBe('fridge_long'); // adopted (the item had none)
+      expect(linked!.eat_by).toBe('2026-07-31'); // the PRODUCT's 30-day override, not the class default
+      expect(linked!.notes).toContain(`product_ulid null→${product.ulid}`);
+    });
+
+    it('never overwrites an item’s own class when linking a product, and can unlink', async () => {
+      const store = new MemoryInventoryStore();
+      const product = await store.insertProduct({
+        ulid: ULID(201),
+        name: 'Deli Turkey',
+        shelf_life_class: 'fridge_long',
+        aliases: [],
+        nutrition_per_100g: null,
+        ingredients: null,
+        package_size: null,
+        shelf_life_days_unopened: null,
+        shelf_life_days_opened: null,
+      });
+      const pipeline = new InventoryPipeline(store, null, null, log);
+      const { item } = await pipeline.createItem({
+        raw_label: 'TURKEY',
+        shelf_life_class: 'fridge_short',
+        acquired_at: '2026-07-01',
+      });
+      const linked = await pipeline.reconcileItem(item.ulid, { product_ulid: product.ulid });
+      expect(linked!.shelf_life_class).toBe('fridge_short'); // the item's own snapshot wins
+      expect(linked!.eat_by).toBe('2026-07-15');
+
+      const unlinked = await pipeline.reconcileItem(item.ulid, { product_ulid: null });
+      expect(unlinked!.product_ulid).toBeNull();
+      expect(unlinked!.needs_info).toBe(false); // unlinking is not a re-queue on its own
+    });
+
+    it('refuses an unknown product, and an archived one — naming the survivor when it was merged', async () => {
+      const store = new MemoryInventoryStore();
+      const loser = await store.insertProduct({
+        ulid: ULID(202),
+        name: 'Duplicate Yogurt',
+        shelf_life_class: 'fridge_long',
+        aliases: [],
+        nutrition_per_100g: null,
+        ingredients: null,
+        package_size: null,
+        shelf_life_days_unopened: null,
+        shelf_life_days_opened: null,
+      });
+      const survivorUlid = ULID(203);
+      await store.insertProduct({
+        ulid: survivorUlid,
+        name: 'Yogurt',
+        shelf_life_class: 'fridge_long',
+        aliases: [],
+        nutrition_per_100g: null,
+        ingredients: null,
+        package_size: null,
+        shelf_life_days_unopened: null,
+        shelf_life_days_opened: null,
+      });
+      await store.archiveProduct(loser.ulid, survivorUlid);
+
+      const pipeline = new InventoryPipeline(store, null, null, log);
+      const { item } = await pipeline.createItem({ raw_label: 'YOGURT', acquired_at: '2026-07-01' });
+      await expect(pipeline.reconcileItem(item.ulid, { product_ulid: ULID(204) })).rejects.toThrow(
+        ReconcileValidationError
+      );
+      await expect(
+        pipeline.reconcileItem(item.ulid, { product_ulid: loser.ulid })
+      ).rejects.toThrow(survivorUlid);
+    });
+
+    it('a needs_info item created WITH a class still gets a clock (§ Shelf-life classes)', async () => {
+      const store = new MemoryInventoryStore();
+      const pipeline = new InventoryPipeline(store, null, null, log);
+      // The observed failure: correctly-classed produce seeded with needs_info
+      // only because the BRAND was unconfirmed came back eat_by: null and sat
+      // invisible to eat-first. Not knowing what something is has nothing to do
+      // with how fast it rots — and an unidentified perishable is the one most
+      // worth a clock.
+      const { item } = await pipeline.createItem({
+        raw_label: 'BAGGED GREENS',
+        shelf_life_class: 'produce',
+        acquired_at: '2026-07-01',
+        needs_info: true,
+      });
+      expect(item.needs_info).toBe(true);
+      expect(item.eat_by).toBe('2026-07-08');
+      // …so it participates in eat-first ordering like anything else.
+      expect((await pipeline.listInventory({})).map((i) => i.eat_by)).toEqual(['2026-07-08']);
+      // It is still an open question, though — the two facts stay separate.
+      expect((await pipeline.listQuestions()).length).toBe(1);
+    });
+
+    it('an item with no class at all still has no clock — `unknown` is the honest null', async () => {
+      const store = new MemoryInventoryStore();
+      const pipeline = new InventoryPipeline(store, null, null, log);
+      const { item } = await pipeline.createItem({ raw_label: 'MYSTERY LINE', needs_info: true, acquired_at: '2026-07-01' });
+      expect(item.eat_by).toBeNull();
+    });
   });
 });
 
