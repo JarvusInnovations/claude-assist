@@ -145,6 +145,24 @@ export interface ProductRecord {
   package_size: string | null;
   shelf_life_days_unopened: number | null;
   shelf_life_days_opened: number | null;
+  /**
+   * The owner's assertion that EVERY panel field is ~0 at any realistic serving
+   * (§ Nutritionally negligible products): spices, dried herbs, salt, vinegar,
+   * black coffee, extracts. It clears `needs_nutrition` and makes the effective
+   * panel read as zeros rather than nulls — a US spice jar carries no Nutrition
+   * Facts panel at all, so no rescan can ever resolve the flag for it. Never
+   * inferred, never backfilled.
+   */
+  nutrition_negligible: boolean;
+  /**
+   * Retirement stamp (§ Product corrections) — null while live. An archived
+   * product leaves every listing and stops being a name-match candidate, but
+   * stays resolvable by ULID forever so items, lexicon lines, and batch lines
+   * that point at it never dangle.
+   */
+  archived_at: Date | null;
+  /** Set when this row was retired INTO a survivor by a merge; else null. */
+  merged_into: string | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -165,6 +183,44 @@ export interface ProductInput {
   package_size?: string | null;
   shelf_life_days_unopened?: number | null;
   shelf_life_days_opened?: number | null;
+  /** § Nutritionally negligible products — see `ProductRecord`. */
+  nutrition_negligible?: boolean;
+}
+
+/**
+ * A `PATCH /products/:ulid` body (§ Product corrections). Partial by
+ * definition: only the keys present change. Unlike every enrich path in the
+ * module, an explicit `null` CLEARS — an enrich merges a guess that may simply
+ * not have read a field, while a patch is the owner stating what is true.
+ * The two nutrition panels merge per-field (a supplied field sets or, when
+ * null, clears just that field; the whole panel clears only on
+ * `nutrition_per_100g: null`).
+ */
+export interface ProductPatchInput {
+  name?: string;
+  shelf_life_class?: ShelfLifeClass;
+  aliases?: string[];
+  nutrition_per_100g?: Partial<NutritionPer100g> | null;
+  serving_size_g?: number | null;
+  nutrition_per_serving?: Partial<NutritionPer100g> | null;
+  servings_per_container?: number | null;
+  unit_model_hint?: 'counted' | 'fraction' | null;
+  net_content_g?: number | null;
+  net_content_ml?: number | null;
+  ingredients?: string | null;
+  package_size?: string | null;
+  shelf_life_days_unopened?: number | null;
+  shelf_life_days_opened?: number | null;
+  nutrition_negligible?: boolean;
+}
+
+/** What `POST /products/:ulid/merge` reports (§ Product corrections). */
+export interface ProductMergeResult {
+  /** The survivor, enriched from the loser. */
+  product: ProductRecord;
+  /** The retired loser (`archived_at` stamped, `merged_into` set). */
+  merged: ProductRecord;
+  relinked: { items: number; lexicon_lines: number; batch_lines: number };
 }
 
 /** A row in kitchen.receipt_lexicon. `product_ulid` is null on a skip marker. */

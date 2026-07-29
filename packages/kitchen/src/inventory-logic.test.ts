@@ -164,19 +164,24 @@ describe('needs-nutrition signal (§ Nutrition panel)', () => {
     calories: 100, protein_g: 5, fat_g: 3, sat_fat_g: 1,
     carbs_g: 12, sugar_g: 4, added_sugar_g: 2, fiber_g: 2, sodium_mg: 80,
   };
+  /** A panel-bearing product fixture; `nutrition_negligible` off unless stated. */
+  const p = (panel: Record<string, number | null> | null, negligible = false) => ({
+    nutrition_per_100g: panel as never,
+    nutrition_negligible: negligible,
+  });
 
   it('flags a product with no panel or a partial panel; a full panel clears it', () => {
     expect(needsNutrition(null)).toBe(false); // no product = the needs_info case, not this one
-    expect(needsNutrition({ nutrition_per_100g: null })).toBe(true);
-    expect(needsNutrition({ nutrition_per_100g: { ...full, sodium_mg: null } })).toBe(true);
-    expect(needsNutrition({ nutrition_per_100g: { ...full } })).toBe(false);
+    expect(needsNutrition(p(null))).toBe(true);
+    expect(needsNutrition(p({ ...full, sodium_mg: null }))).toBe(true);
+    expect(needsNutrition(p({ ...full }))).toBe(false);
   });
 
   it('counts added_sugar_g among the fields a complete panel must carry', () => {
     // A panel seeded before added sugar was tracked is INCOMPLETE, and the
     // resolving action is the same as ever: rescan the label, which prints
     // "Includes Xg Added Sugars". A 0 there is complete; a null is not.
-    expect(needsNutrition({ nutrition_per_100g: { ...full, added_sugar_g: null } })).toBe(true);
-    expect(needsNutrition({ nutrition_per_100g: { ...full, added_sugar_g: 0 } })).toBe(false);
+    expect(needsNutrition(p({ ...full, added_sugar_g: null }))).toBe(true);
+    expect(needsNutrition(p({ ...full, added_sugar_g: 0 }))).toBe(false);
   });
 });

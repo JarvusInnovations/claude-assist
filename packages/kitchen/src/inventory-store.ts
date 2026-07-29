@@ -41,6 +41,8 @@ export interface NewProduct {
   package_size: string | null;
   shelf_life_days_unopened: number | null;
   shelf_life_days_opened: number | null;
+  /** § Nutritionally negligible products; defaults false when omitted. */
+  nutrition_negligible?: boolean;
 }
 
 export interface ProductPatch {
@@ -58,6 +60,14 @@ export interface ProductPatch {
   package_size?: string | null;
   shelf_life_days_unopened?: number | null;
   shelf_life_days_opened?: number | null;
+  nutrition_negligible?: boolean;
+}
+
+/** Per-table relink counts from a product merge (§ Product corrections). */
+export interface ProductRelinkCounts {
+  items: number;
+  lexicon_lines: number;
+  batch_lines: number;
 }
 
 export interface NewLexicon {
@@ -153,9 +163,34 @@ export interface ItemListFilter {
 export interface InventoryStore {
   // Products
   insertProduct(product: NewProduct): Promise<ProductRecord>;
+  /**
+   * By ULID — deliberately does NOT filter archived rows. Items, lexicon lines,
+   * and batch lines point at products by ULID and must keep resolving after a
+   * duplicate is retired (§ Product corrections).
+   */
   getProduct(ulid: string): Promise<ProductRecord | null>;
   updateProduct(ulid: string, patch: ProductPatch): Promise<ProductRecord | null>;
+  /** Live products only — archived rows are off every listing and match path. */
   listProducts(filter: { q?: string; limit?: number }): Promise<ProductRecord[]>;
+  /**
+   * Live products whose name normalizes (case-folded, whitespace-collapsed,
+   * trimmed) to `normalized` — the name key for the `POST /products` upsert and
+   * the rename-collision guard. Oldest first, so a caller reporting candidates
+   * lists them in creation order.
+   */
+  findLiveProductsByNormalizedName(normalized: string): Promise<ProductRecord[]>;
+  /**
+   * Stamp `archived_at` (and `merged_into` when the retirement was a merge).
+   * Idempotent — re-archiving keeps the original stamp. Null for an unknown
+   * ULID. Never deletes a row (§ Product corrections).
+   */
+  archiveProduct(ulid: string, mergedInto?: string | null): Promise<ProductRecord | null>;
+  /**
+   * Repoint every dependent reference from one product to another — inventory
+   * items, receipt-lexicon lines, and purchase batch lines — returning per-table
+   * counts. The relink half of a merge.
+   */
+  relinkProductReferences(fromUlid: string, toUlid: string): Promise<ProductRelinkCounts>;
   getProductsByUlids(ulids: string[]): Promise<Map<string, ProductRecord>>;
 
   // Lexicon
@@ -251,6 +286,9 @@ export function rowToProduct(row: Record<string, unknown>): ProductRecord {
     package_size: (row.package_size as string | null) ?? null,
     shelf_life_days_unopened: row.shelf_life_days_unopened == null ? null : Number(row.shelf_life_days_unopened),
     shelf_life_days_opened: row.shelf_life_days_opened == null ? null : Number(row.shelf_life_days_opened),
+    nutrition_negligible: Boolean(row.nutrition_negligible),
+    archived_at: toDateOrNull(row.archived_at),
+    merged_into: (row.merged_into as string | null) ?? null,
     created_at: toDate(row.created_at),
     updated_at: toDate(row.updated_at),
   };
@@ -351,7 +389,8 @@ export class PgInventoryStore implements InventoryStore {
         (ulid, name, shelf_life_class, aliases, nutrition_per_100g,
          serving_size_g, nutrition_per_serving, servings_per_container,
          unit_model_hint, net_content_g, net_content_ml, ingredients,
-         package_size, shelf_life_days_unopened, shelf_life_days_opened)
+         package_size, shelf_life_days_unopened, shelf_life_days_opened,
+         nutrition_negligible)
       VALUES (
         ${product.ulid}, ${product.name}, ${product.shelf_life_class},
         ${product.aliases}, ${product.nutrition_per_100g ? this.sql.json(product.nutrition_per_100g as never) : null},
@@ -360,7 +399,8 @@ export class PgInventoryStore implements InventoryStore {
         ${product.servings_per_container ?? null},
         ${product.unit_model_hint ?? null}, ${product.net_content_g ?? null},
         ${product.net_content_ml ?? null}, ${product.ingredients}, ${product.package_size},
-        ${product.shelf_life_days_unopened}, ${product.shelf_life_days_opened}
+        ${product.shelf_life_days_unopened}, ${product.shelf_life_days_opened},
+        ${product.nutrition_negligible ?? false}
       )
       RETURNING *
     `;
@@ -391,7 +431,8 @@ export class PgInventoryStore implements InventoryStore {
         ingredients = ${merged.ingredients},
         package_size = ${merged.package_size},
         shelf_life_days_unopened = ${merged.shelf_life_days_unopened},
-        shelf_life_days_opened = ${merged.shelf_life_days_opened}
+        shelf_life_days_opened = ${merged.shelf_life_days_opened},
+        nutrition_negligible = ${merged.nutrition_negligible}
       WHERE ulid = ${ulid}
       RETURNING *
     `;
@@ -403,12 +444,56 @@ export class PgInventoryStore implements InventoryStore {
     const rows = filter.q
       ? await this.sql`
           SELECT * FROM kitchen.products
-          WHERE name ILIKE ${'%' + filter.q + '%'}
-             OR EXISTS (SELECT 1 FROM unnest(aliases) a WHERE a ILIKE ${'%' + filter.q + '%'})
+          WHERE archived_at IS NULL
+            AND (name ILIKE ${'%' + filter.q + '%'}
+             OR EXISTS (SELECT 1 FROM unnest(aliases) a WHERE a ILIKE ${'%' + filter.q + '%'}))
           ORDER BY name ASC LIMIT ${limit}
         `
-      : await this.sql`SELECT * FROM kitchen.products ORDER BY name ASC LIMIT ${limit}`;
+      : await this.sql`
+          SELECT * FROM kitchen.products
+          WHERE archived_at IS NULL
+          ORDER BY name ASC LIMIT ${limit}
+        `;
     return rows.map(rowToProduct);
+  }
+
+  async findLiveProductsByNormalizedName(normalized: string): Promise<ProductRecord[]> {
+    const rows = await this.sql`
+      SELECT * FROM kitchen.products
+      WHERE archived_at IS NULL
+        AND lower(btrim(regexp_replace(name, '\\s+', ' ', 'g'))) = ${normalized}
+      ORDER BY created_at ASC
+    `;
+    return rows.map(rowToProduct);
+  }
+
+  async archiveProduct(ulid: string, mergedInto: string | null = null): Promise<ProductRecord | null> {
+    // COALESCE keeps the first retirement's stamp so a re-archive is idempotent
+    // rather than sliding the date forward on every replay.
+    const [row] = await this.sql`
+      UPDATE kitchen.products
+      SET archived_at = COALESCE(archived_at, NOW()),
+          merged_into = COALESCE(merged_into, ${mergedInto})
+      WHERE ulid = ${ulid}
+      RETURNING *
+    `;
+    return row ? rowToProduct(row) : null;
+  }
+
+  async relinkProductReferences(fromUlid: string, toUlid: string): Promise<ProductRelinkCounts> {
+    const items = await this.sql`
+      UPDATE kitchen.inventory_items SET product_ulid = ${toUlid}
+      WHERE product_ulid = ${fromUlid} RETURNING ulid
+    `;
+    const lexicon = await this.sql`
+      UPDATE kitchen.receipt_lexicon SET product_ulid = ${toUlid}
+      WHERE product_ulid = ${fromUlid} RETURNING ulid
+    `;
+    const lines = await this.sql`
+      UPDATE kitchen.purchase_batch_lines SET product_ulid = ${toUlid}
+      WHERE product_ulid = ${fromUlid} RETURNING ulid
+    `;
+    return { items: items.length, lexicon_lines: lexicon.length, batch_lines: lines.length };
   }
 
   async getProductsByUlids(ulids: string[]): Promise<Map<string, ProductRecord>> {
