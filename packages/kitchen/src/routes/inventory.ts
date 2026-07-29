@@ -8,6 +8,7 @@
  * Inventory:
  *   GET    /kitchen/inventory              - on-hand items, eat-by order
  *   GET    /kitchen/inventory/questions    - open needs-info questions
+ *   GET    /kitchen/inventory/waste        - costed toss log (waste + totals)
  *   GET    /kitchen/inventory/:ulid        - single item
  *   POST   /kitchen/inventory              - create an item (manual / seed)
  *   PATCH  /kitchen/inventory/:ulid        - reconcile: correct quantities/model/state (observation, not event)
@@ -21,6 +22,7 @@
  * Products & lexicon (agentic seed + reads):
  *   POST   /kitchen/products               - UPSERTS on an explicit ulid or the normalized name (201/200/409)
  *   GET    /kitchen/products               - live products (archived excluded)
+ *   GET    /kitchen/products/:ulid/prices  - per-product price history, unit-normalized
  *   PATCH  /kitchen/products/:ulid         - partial correction; null clears, panels merge per-field
  *   POST   /kitchen/products/:ulid/merge   - fold a duplicate into a survivor: relink dependents, archive the loser
  *   DELETE /kitchen/products/:ulid         - archives (soft; still resolvable by ULID)
@@ -211,6 +213,32 @@ export const registerInventoryRoutes: FastifyPluginAsync<InventoryRoutesConfig> 
       const limit = request.query.limit ? parseInt(request.query.limit, 10) : undefined;
       const questions = await inventory.listQuestions(limit);
       return { questions, count: questions.length };
+    }
+  );
+
+  // Static path registered before /inventory/:ulid (find-my-way prefers literals).
+  fastify.get<{ Querystring: { since?: string; until?: string; limit?: string } }>(
+    '/kitchen/inventory/waste',
+    {
+      schema: {
+        querystring: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            since: { type: 'string', pattern: ISO_DATE_PATTERN },
+            until: { type: 'string', pattern: ISO_DATE_PATTERN },
+            limit: { type: 'string', pattern: '^[0-9]+$' },
+          },
+        },
+      },
+    },
+    async (request) => {
+      const limit = request.query.limit ? parseInt(request.query.limit, 10) : undefined;
+      return inventory.wasteReport({
+        since: request.query.since,
+        until: request.query.until,
+        limit,
+      });
     }
   );
 
@@ -621,6 +649,31 @@ export const registerInventoryRoutes: FastifyPluginAsync<InventoryRoutesConfig> 
     }
   );
 
+  fastify.get<{ Params: { ulid: string }; Querystring: { store?: string; limit?: string } }>(
+    '/kitchen/products/:ulid/prices',
+    {
+      schema: {
+        querystring: {
+          type: 'object',
+          additionalProperties: false,
+          properties: { store: { type: 'string' }, limit: { type: 'string', pattern: '^[0-9]+$' } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const limit = request.query.limit ? parseInt(request.query.limit, 10) : undefined;
+      const history = await inventory.priceHistory(request.params.ulid, {
+        store: request.query.store,
+        limit,
+      });
+      if (!history) {
+        reply.status(404);
+        return { error: 'Product not found' };
+      }
+      return history;
+    }
+  );
+
   // ── Lexicon ───────────────────────────────────────────────────────────────────
 
   fastify.post<{ Body: Record<string, unknown> }>(
@@ -651,6 +704,9 @@ export const registerInventoryRoutes: FastifyPluginAsync<InventoryRoutesConfig> 
     }
   );
 };
+
+/** ISO date-only (`YYYY-MM-DD`), the form the waste read's window bounds take. */
+const ISO_DATE_PATTERN = '^\\d{4}-\\d{2}-\\d{2}$';
 
 const limitQuery = {
   type: 'object',

@@ -24,6 +24,7 @@ import type {
   UnitSeal,
 } from './inventory-types.js';
 import { deriveEatBy, normalizeLexiconLine } from './inventory-derive.js';
+import type { PriceLine } from './inventory-pricing.js';
 
 // ── Normalized insert payloads ───────────────────────────────────────────────
 
@@ -259,6 +260,19 @@ export interface InventoryStore {
   getItem(ulid: string): Promise<InventoryItemRecord | null>;
   listItems(filter: ItemListFilter): Promise<InventoryItemRecord[]>;
   listNeedsInfo(limit: number): Promise<InventoryItemRecord[]>;
+  /**
+   * Items carrying at least one `tossed …` notes line — the waste read's
+   * candidate set (§ Waste costing). Both terminal-`tossed` items and items
+   * kept alive by a partial toss qualify, since a partial toss is still waste.
+   *
+   * The gate is **structured state**, applied here in the query: an item in the
+   * `dismissed` state or carrying `merged_into` is excluded, because both mean
+   * the record's claim on reality was retracted (§ Item corrections — a merge
+   * retires its loser as `dismissed` precisely to retract a `tossed` that
+   * described food which does not exist). Ordered most-recently-touched first;
+   * callers parse the note dates and do the real windowing/ordering.
+   */
+  listTossedCandidates(limit: number): Promise<InventoryItemRecord[]>;
   updateItemState(ulid: string, update: ItemStateUpdate): Promise<InventoryItemRecord | null>;
   setItemFraction(ulid: string, fraction: number): Promise<InventoryItemRecord | null>;
   resolveNeedsInfo(ulid: string, resolution: ResolveNeedsInfo): Promise<InventoryItemRecord | null>;
@@ -306,6 +320,23 @@ export interface InventoryStore {
   // Batch lines
   insertLine(line: NewBatchLine): Promise<BatchLineRecord>;
   listLines(batchUlid: string): Promise<BatchLineRecord[]>;
+  /**
+   * Every recorded purchase line for one or more products, joined to its
+   * batch's `purchased_at`/`store`, newest purchase first — the raw material of
+   * § Price history and of § Waste costing's price attribution.
+   *
+   * Unpriced lines are INCLUDED (a `price_cents` of null is a real purchase
+   * whose price was unreadable, and dropping it would silently shorten a
+   * product's history); callers that need a price filter nulls themselves. Keys
+   * on `product_ulid`, which is exactly the column a product merge relinks — so
+   * a survivor's history is the union of both records' purchases with no
+   * history-specific relink step (§ Price history).
+   */
+  listProductPriceLines(filter: {
+    product_ulids: string[];
+    store?: string;
+    limit?: number;
+  }): Promise<PriceLine[]>;
 
   // Derivations (conversion provenance — § Conversions)
   insertDerivation(derivation: NewDerivation): Promise<InventoryDerivationRecord>;
@@ -497,6 +528,32 @@ export function rowToLine(row: Record<string, unknown>): BatchLineRecord {
     created_at: toDate(row.created_at),
   };
 }
+
+export function rowToPriceLine(row: Record<string, unknown>): PriceLine {
+  return {
+    line_ulid: row.line_ulid as string,
+    batch_ulid: row.batch_ulid as string,
+    product_ulid: (row.product_ulid as string | null) ?? null,
+    raw_text: row.raw_text as string,
+    quantity: row.quantity == null ? 1 : Number(row.quantity),
+    price_cents: row.price_cents == null ? null : Number(row.price_cents),
+    inventory_item_ulid: (row.inventory_item_ulid as string | null) ?? null,
+    purchased_at: toDate(row.purchased_at),
+    store: (row.store as string | null) ?? null,
+  };
+}
+
+/**
+ * POSIX-regex form of the `tossed <amount> …` notes line, for the waste read's
+ * candidate query — anchored to a line start so free text mentioning a toss is
+ * not mistaken for the ledger's own record. Must stay in step with
+ * `parseTossNotes` (inventory-pricing.ts), which does the real parsing; this is
+ * only the coarse "is there anything here" filter.
+ */
+export const TOSS_NOTE_SQL_PATTERN = '(^|\n)tossed [0-9]';
+
+/** JS mirror of TOSS_NOTE_SQL_PATTERN, for the memory store's same filter. */
+export const TOSS_NOTE_CANDIDATE_PATTERN = /(^|\n)tossed [0-9]/;
 
 export function rowToDerivation(row: Record<string, unknown>): InventoryDerivationRecord {
   return {
@@ -825,6 +882,18 @@ export class PgInventoryStore implements InventoryStore {
     return rows.map(rowToItem);
   }
 
+  async listTossedCandidates(limit: number): Promise<InventoryItemRecord[]> {
+    const rows = await this.sql`
+      SELECT * FROM kitchen.inventory_items
+      WHERE notes ~ ${TOSS_NOTE_SQL_PATTERN}
+        AND state <> 'dismissed'
+        AND merged_into IS NULL
+      ORDER BY updated_at DESC
+      LIMIT ${Math.min(limit, 500)}
+    `;
+    return rows.map(rowToItem);
+  }
+
   async updateItemState(ulid: string, update: ItemStateUpdate): Promise<InventoryItemRecord | null> {
     return this.updateItemStateWith(this.sql, ulid, update);
   }
@@ -1015,6 +1084,38 @@ export class PgInventoryStore implements InventoryStore {
       ORDER BY created_at ASC
     `;
     return rows.map(rowToLine);
+  }
+
+  async listProductPriceLines(filter: {
+    product_ulids: string[];
+    store?: string;
+    limit?: number;
+  }): Promise<PriceLine[]> {
+    const ulids = [...new Set(filter.product_ulids.filter(Boolean))];
+    if (ulids.length === 0) return [];
+    const limit = Math.min(filter.limit ?? 200, 1000);
+    const rows = filter.store
+      ? await this.sql`
+          SELECT l.ulid AS line_ulid, l.batch_ulid, l.product_ulid, l.raw_text,
+                 l.quantity, l.price_cents, l.inventory_item_ulid,
+                 b.purchased_at, b.store
+          FROM kitchen.purchase_batch_lines l
+          JOIN kitchen.purchase_batches b ON b.ulid = l.batch_ulid
+          WHERE l.product_ulid IN ${this.sql(ulids)} AND b.store = ${filter.store}
+          ORDER BY b.purchased_at DESC, l.created_at DESC
+          LIMIT ${limit}
+        `
+      : await this.sql`
+          SELECT l.ulid AS line_ulid, l.batch_ulid, l.product_ulid, l.raw_text,
+                 l.quantity, l.price_cents, l.inventory_item_ulid,
+                 b.purchased_at, b.store
+          FROM kitchen.purchase_batch_lines l
+          JOIN kitchen.purchase_batches b ON b.ulid = l.batch_ulid
+          WHERE l.product_ulid IN ${this.sql(ulids)}
+          ORDER BY b.purchased_at DESC, l.created_at DESC
+          LIMIT ${limit}
+        `;
+    return rows.map(rowToPriceLine);
   }
 
   async insertDerivation(derivation: NewDerivation): Promise<InventoryDerivationRecord> {

@@ -31,7 +31,12 @@ import type {
   ProductRelinkCounts,
   ResolveNeedsInfo,
 } from './inventory-store.js';
-import { applyItemStateUpdate, DEFAULT_ON_HAND_ITEM_STATES } from './inventory-store.js';
+import {
+  applyItemStateUpdate,
+  DEFAULT_ON_HAND_ITEM_STATES,
+  TOSS_NOTE_CANDIDATE_PATTERN,
+} from './inventory-store.js';
+import type { PriceLine } from './inventory-pricing.js';
 import { deriveEatBy, normalizeLexiconLine, normalizeProductName } from './inventory-derive.js';
 
 function nullsLastEatBy(a: InventoryItemRecord, b: InventoryItemRecord): number {
@@ -298,6 +303,20 @@ export class MemoryInventoryStore implements InventoryStore {
       .map((i) => structuredClone(i));
   }
 
+  async listTossedCandidates(limit: number): Promise<InventoryItemRecord[]> {
+    return [...this.items.values()]
+      .filter(
+        (i) =>
+          i.notes != null &&
+          TOSS_NOTE_CANDIDATE_PATTERN.test(i.notes) &&
+          i.state !== 'dismissed' &&
+          i.merged_into == null
+      )
+      .sort((a, b) => b.updated_at.getTime() - a.updated_at.getTime())
+      .slice(0, Math.min(limit, 500))
+      .map((i) => structuredClone(i));
+  }
+
   async updateItemState(ulid: string, update: ItemStateUpdate): Promise<InventoryItemRecord | null> {
     const i = this.items.get(ulid);
     if (!i) return null;
@@ -473,6 +492,42 @@ export class MemoryInventoryStore implements InventoryStore {
       .filter((l) => l.batch_ulid === batchUlid)
       .sort((a, b) => a.created_at.getTime() - b.created_at.getTime())
       .map((l) => structuredClone(l));
+  }
+
+  async listProductPriceLines(filter: {
+    product_ulids: string[];
+    store?: string;
+    limit?: number;
+  }): Promise<PriceLine[]> {
+    const wanted = new Set(filter.product_ulids.filter(Boolean));
+    if (wanted.size === 0) return [];
+    const limit = Math.min(filter.limit ?? 200, 1000);
+    const joined: { line: BatchLineRecord; batch: PurchaseBatchRecord }[] = [];
+    for (const line of this.lines.values()) {
+      if (!line.product_ulid || !wanted.has(line.product_ulid)) continue;
+      const batch = this.batches.get(line.batch_ulid);
+      if (!batch) continue;
+      if (filter.store !== undefined && batch.store !== filter.store) continue;
+      joined.push({ line, batch });
+    }
+    return joined
+      .sort(
+        (a, b) =>
+          b.batch.purchased_at.getTime() - a.batch.purchased_at.getTime() ||
+          b.line.created_at.getTime() - a.line.created_at.getTime()
+      )
+      .slice(0, limit)
+      .map(({ line, batch }) => ({
+        line_ulid: line.ulid,
+        batch_ulid: line.batch_ulid,
+        product_ulid: line.product_ulid,
+        raw_text: line.raw_text,
+        quantity: line.quantity,
+        price_cents: line.price_cents,
+        inventory_item_ulid: line.inventory_item_ulid,
+        purchased_at: new Date(batch.purchased_at),
+        store: batch.store,
+      }));
   }
 
   async insertDerivation(derivation: NewDerivation): Promise<InventoryDerivationRecord> {
