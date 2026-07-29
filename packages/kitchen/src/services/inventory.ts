@@ -87,7 +87,7 @@ import {
   type PriceLine,
 } from '../inventory-pricing.js';
 import { matchScore, parseRemark } from '../inventory-remark.js';
-import { generateUlid } from '../ulid.js';
+import { generateUlid, isValidUlid } from '../ulid.js';
 import type { ReceiptParser } from './receipt-parser.js';
 import type { LabelParser } from './label-parser.js';
 import { convertNetContent, derivePer100gFromServing } from './label-parser.js';
@@ -1202,6 +1202,47 @@ export class InventoryPipeline {
       throw new ConversionValidationError('convert requires derived.name');
     }
 
+    // Idempotent replay, checked BEFORE any validation runs against current
+    // state (§ Conversions § Retries). This ordering is load-bearing for the
+    // same reason it is in consume: the FIRST attempt may have driven a source
+    // terminal (fully spent), so a replay validated against today's state would
+    // 409 against its own side effect. A replay must succeed, having written
+    // nothing.
+    if (input.derived.ulid !== undefined) {
+      if (!isValidUlid(input.derived.ulid)) {
+        throw new ConversionValidationError(
+          `convert derived.ulid must be a ULID: ${input.derived.ulid}`
+        );
+      }
+      const existing = await this.store.getItem(input.derived.ulid);
+      if (existing) {
+        const derivation = (
+          await this.store.getDerivationsByDerivedItemUlids([existing.ulid])
+        ).get(existing.ulid);
+        const sourceUlids = (derivation?.sources ?? []).map((source) => source.item_ulid);
+        const sources: InventoryItemRecord[] = [];
+        for (const ulid of sourceUlids) {
+          const item = await this.store.getItem(ulid);
+          if (item) sources.push(item);
+        }
+        if (!derivation) {
+          // Every conversion output has a derivation row (that invariant is what
+          // makes it consume-eligible), so an existing item without one is not a
+          // replay of this conversion — the caller reused a ULID that already
+          // names some OTHER item. Say so rather than fabricating provenance.
+          throw new ConversionValidationError(
+            `convert derived.ulid ${existing.ulid} already identifies an item that is not a conversion output`
+          );
+        }
+        return {
+          sources: await this.viewsOf(sources),
+          derived: await this.viewOf(existing),
+          derivation,
+          created: false,
+        };
+      }
+    }
+
     // A convert output is a made (homemade) item, never a sealed store package.
     // Reject the package-durable classes up front — before any source is
     // decremented or item created — so a homemade dish can't be saddled with a
@@ -1256,13 +1297,14 @@ export class InventoryPipeline {
         'derived.unit_seal describes what a COUNTED batch\'s package seals — supply derived.units_total, or omit it'
       );
     }
-    const derivedUlid = generateUlid();
+    const derivedUlid = derived.ulid ?? generateUlid();
 
     // ONE atomic write for all three phases (§ Conversions § Atomicity).
     const {
       sources: sourceRecords,
       derived: derivedRecord,
       derivation,
+      created,
     } = await this.store.applyConversion({
       sources: sourceWrites,
       derived: {
@@ -1294,6 +1336,7 @@ export class InventoryPipeline {
       sources: await this.viewsOf(sourceRecords),
       derived: await this.viewOf(derivedRecord, { sources: provenance, recipe_ulid: derivation.recipe_ulid }),
       derivation,
+      created,
     };
   }
 

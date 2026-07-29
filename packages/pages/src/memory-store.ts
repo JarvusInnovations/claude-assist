@@ -16,6 +16,7 @@ import type {
   PublishResult,
 } from './types.js';
 import type { PagesStore } from './store.js';
+import type { WorksheetDefinition } from './worksheet.js';
 
 export class MemoryPagesStore implements PagesStore {
   private nextPageId = 1;
@@ -45,6 +46,7 @@ export class MemoryPagesStore implements PagesStore {
         id: this.nextVersionId++,
         pageId: page.id,
         html: input.html,
+        worksheet: input.worksheet ?? null,
         createdAt: now,
       };
       page.currentVersionId = version.id;
@@ -57,6 +59,7 @@ export class MemoryPagesStore implements PagesStore {
       id: this.nextVersionId++,
       pageId: existing.id,
       html: input.html,
+      worksheet: input.worksheet ?? null,
       createdAt: now,
     };
     this.versions.set(version.id, version);
@@ -78,12 +81,14 @@ export class MemoryPagesStore implements PagesStore {
     return page ? { ...page } : null;
   }
 
-  async getCurrent(slug: string): Promise<{ page: PageRecord; html: string } | null> {
+  async getCurrent(
+    slug: string
+  ): Promise<{ page: PageRecord; html: string; worksheet: WorksheetDefinition | null } | null> {
     const page = this.pages.get(slug);
     if (!page || page.currentVersionId === null) return null;
     const version = this.versions.get(page.currentVersionId);
     if (!version) return null;
-    return { page: { ...page }, html: version.html };
+    return { page: { ...page }, html: version.html, worksheet: version.worksheet };
   }
 
   async listActive(): Promise<PageRecord[]> {

@@ -510,7 +510,9 @@ export const registerInventoryRoutes: FastifyPluginAsync<InventoryRoutesConfig> 
     async (request, reply) => {
       try {
         const result = await inventory.convert(request.body);
-        reply.status(201);
+        // 200 on an idempotent replay of a caller-supplied derived.ulid —
+        // mirroring consume's created/replay codes.
+        reply.status(result.created ? 201 : 200);
         return result;
       } catch (err) {
         if (err instanceof InvalidTransitionError) {
@@ -825,6 +827,9 @@ const CONVERT_DERIVED_SCHEMA = {
   required: ['name'],
   additionalProperties: false,
   properties: {
+    // Optional client-supplied derived ULID = the conversion's idempotency key
+    // (§ Conversions § Retries). Omitted → server-minted, non-deduplicating.
+    ulid: { type: 'string', pattern: ULID_PATTERN.source },
     name: { type: 'string', minLength: 1, maxLength: 200 },
     shelf_life_class: { type: 'string', enum: [...SHELF_LIFE_CLASSES] },
     on_hand_fraction: { type: 'number', minimum: 0, maximum: 1 },

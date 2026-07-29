@@ -6,6 +6,8 @@
  * in `versions` but not surfaced through these types.
  */
 
+import type { WorksheetDefinition } from './worksheet.js';
+
 export interface PageRecord {
   id: number;
   slug: string;
@@ -21,6 +23,13 @@ export interface PageVersionRecord {
   id: number;
   pageId: number;
   html: string;
+  /**
+   * The worksheet definition this version was rendered from, or null for an
+   * ordinary HTML publish (§ The worksheet response pattern). It hangs off the
+   * VERSION because a submission validates against the definition currently
+   * served, and prior definitions are retained exactly like prior HTML.
+   */
+  worksheet: WorksheetDefinition | null;
   createdAt: Date;
 }
 
@@ -62,6 +71,12 @@ export interface PublishInput {
   html: string;
   /** Only applied on create, or when explicitly passed on a republish. */
   digestOptin?: boolean;
+  /**
+   * Set when `html` was RENDERED from a worksheet definition rather than
+   * authored (§ The worksheet response pattern). Stored on the version so a
+   * later submission can be validated + totalled against it.
+   */
+  worksheet?: WorksheetDefinition | null;
 }
 
 export interface NewResponseInput {

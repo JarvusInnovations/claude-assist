@@ -553,6 +553,24 @@ export class MemoryInventoryStore implements InventoryStore {
    * rethrowing. See inventory-store.ts § applyConversion for the rationale.
    */
   async applyConversion(write: ConversionWrite): Promise<ConversionWriteResult> {
+    // Idempotency check FIRST, mirroring PgInventoryStore.applyConversion: a
+    // caller-supplied derived ULID that already exists means this conversion
+    // already happened, so return it having written nothing (§ Conversions §
+    // Retries). A server-minted ULID never hits this.
+    const replayed = this.items.get(write.derived.ulid);
+    if (replayed) {
+      const derivation =
+        this.derivations.get(write.derived.ulid) ?? (await this.insertDerivation(write.derivation));
+      return {
+        sources: derivation.sources
+          .map((source) => this.items.get(source.item_ulid))
+          .filter((item): item is InventoryItemRecord => item !== undefined),
+        derived: replayed,
+        derivation,
+        created: false,
+      };
+    }
+
     // Snapshot every source BEFORE touching anything. Keyed by ulid, so a
     // source named twice in one conversion still rolls back to its ONE original
     // state rather than to the intermediate the first decrement produced.
@@ -586,7 +604,7 @@ export class MemoryInventoryStore implements InventoryStore {
       }
       const derivation = await this.insertDerivation(write.derivation);
 
-      return { sources, derived, derivation };
+      return { sources, derived, derivation, created: true };
     } catch (err) {
       // Roll every side back — a failure here must leave NOTHING applied.
       for (const [ulid, snapshot] of before) this.items.set(ulid, snapshot);

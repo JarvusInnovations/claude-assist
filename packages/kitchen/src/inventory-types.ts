@@ -707,6 +707,14 @@ export interface ConversionSourceInput {
 
 /** The new item a conversion creates. Exactly one of on_hand_fraction/units_total applies. */
 export interface ConversionDerivedInput {
+  /**
+   * Optional client-supplied ULID for the derived item — and, when supplied,
+   * the conversion's **idempotency key** (§ Conversions § Retries). Omit it and
+   * the ULID is minted server-side, which leaves the verb non-deduplicating on
+   * purpose ("I made another batch" is an ordinary repeated act). Supply it and
+   * a replay writes nothing: no source spent twice, no second derived item.
+   */
+  ulid?: string;
   name: string;
   shelf_life_class?: ShelfLifeClass;
   on_hand_fraction?: number;
@@ -737,6 +745,11 @@ export interface ConvertResult {
   sources: InventoryItemView[];
   derived: InventoryItemView;
   derivation: InventoryDerivationRecord;
+  /**
+   * False on an idempotent replay of a caller-supplied `derived.ulid` — the
+   * ledger was not touched again. Always true when the ULID is server-minted.
+   */
+  created: boolean;
 }
 
 // ── Consume from inventory (§ Consume from inventory) ───────────────────────

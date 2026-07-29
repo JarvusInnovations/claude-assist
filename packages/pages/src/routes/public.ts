@@ -22,7 +22,7 @@
 
 import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import type postgres from 'postgres';
-import { PgPagesStore } from '../store.js';
+import { PgPagesStore, type PagesStore } from '../store.js';
 import { PAGE_CSP } from '../csp.js';
 import { HELPER_SCRIPT } from '../helper-script.js';
 
@@ -32,9 +32,29 @@ declare module 'fastify' {
   }
 }
 
+/**
+ * Content types served here, each carrying an EXPLICIT `charset=utf-8`.
+ *
+ * Pages are stored and served as UTF-8 byte-for-byte, but a `text/*` response
+ * with no charset parameter leaves the encoding to the browser's locale
+ * default — which mangles every multibyte glyph (`→ ✓ × ≈ °F é —`). Authored
+ * pages could self-declare `<meta charset>`, but a page that forgets it renders
+ * garbled, and the module (not each caller) owns the default. This matters
+ * beyond cosmetics for worksheets: a corrupted degree sign in a cooking
+ * instruction is a real defect.
+ */
+export const PAGE_CONTENT_TYPE = 'text/html; charset=utf-8';
+export const HELPER_CONTENT_TYPE = 'application/javascript; charset=utf-8';
+const PLAIN_CONTENT_TYPE = 'text/plain; charset=utf-8';
+
 export interface PagesPublicRoutesConfig {
   /** Override for the base URL used to build absolute links on the index page. */
   baseUrl?: string;
+  /**
+   * Store override. Defaults to a `PgPagesStore` over `fastify.sql` — injected
+   * only by tests, which exercise the serving surface without Postgres.
+   */
+  store?: PagesStore;
 }
 
 function escapeHtml(value: string): string {
@@ -79,15 +99,15 @@ ${items || '      <li>No active pages.</li>'}
 
 export const registerPagesPublicRoutes: FastifyPluginAsync<PagesPublicRoutesConfig> = async (
   fastify: FastifyInstance,
-  _options
+  options
 ) => {
-  const store = new PgPagesStore(fastify.sql);
+  const store: PagesStore = options.store ?? new PgPagesStore(fastify.sql);
 
   // GET /pages - index of active pages, newest-first.
   fastify.get('/pages', async (_request, reply) => {
     const pages = await store.listActive();
     reply.header('Content-Security-Policy', PAGE_CSP);
-    reply.type('text/html');
+    reply.type(PAGE_CONTENT_TYPE);
     return renderIndex(pages.map((p) => ({ slug: p.slug, title: p.title, updatedAt: p.updatedAt })));
   });
 
@@ -95,21 +115,22 @@ export const registerPagesPublicRoutes: FastifyPluginAsync<PagesPublicRoutesConf
   // matches it ahead of the :slug route below.
   fastify.get('/pages/_helper.js', async (_request, reply) => {
     reply.header('Cache-Control', 'public, max-age=300');
-    reply.type('application/javascript');
+    reply.type(HELPER_CONTENT_TYPE);
     return HELPER_SCRIPT;
   });
 
-  // GET /pages/:slug - serve the current version's HTML, unmodified.
+  // GET /pages/:slug - serve the current version's HTML, unmodified (but with
+  // an explicit UTF-8 charset on the response — see PAGE_CONTENT_TYPE).
   fastify.get<{ Params: { slug: string } }>('/pages/:slug', async (request, reply) => {
     const { slug } = request.params;
     const current = await store.getCurrent(slug);
     if (!current) {
-      reply.status(404).type('text/plain');
+      reply.status(404).type(PLAIN_CONTENT_TYPE);
       return 'Page not found';
     }
 
     reply.header('Content-Security-Policy', PAGE_CSP);
-    reply.type('text/html');
+    reply.type(PAGE_CONTENT_TYPE);
     return current.html;
   });
 };

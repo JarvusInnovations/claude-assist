@@ -361,6 +361,10 @@ await fastify.register(
         disableMigrations: fastify.config.DISABLE_MIGRATIONS,
         pagesConfig: {
           baseUrl: fastify.config.PAGES_BASE_URL,
+          // Worksheet cook-mode seam: the sink decorated by the kitchen module
+          // (registered above). Absent → a cook-mode worksheet submission
+          // reports `unavailable` instead of pretending it was logged.
+          worksheetCookSink: api.kitchenCookMode,
         },
       });
     } else {
