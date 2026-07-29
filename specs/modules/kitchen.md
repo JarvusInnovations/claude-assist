@@ -1426,10 +1426,12 @@ All tables instance-agnostic empty schema, ULID keys, `kitchen` schema
   reflect them — the module does no allocation. Lines-sum vs `total_cents`
   disagreement is informational (tax/discounts make exact agreement rare) —
   never a parse failure. **Boundary:** kitchen records the printed facts;
-  spend analysis, budgets, and price-history reads are consumers (the
+  spend analysis, budgets, and period rollups are consumers (the
   personal-finance domain / agent judgment) — the module keeps no derived
   price tables. Because a product link exists per line via the lexicon,
-  per-product per-store price history is derivable at read time for free.
+  per-product per-store price history is derivable at read time for free, and
+  the module answers that derivation itself (§ Price history) — still with no
+  stored prices beyond the transcribed line.
 
   **The total as a self-check (re-read, never reconcile).** The parse prompt
   instructs the model to use the printed grand total as a soft checksum on
@@ -1548,7 +1550,11 @@ item's state alive (directional — it self-heals at the next event); the item
 only transitions to terminal `tossed` (with `closed_at`, fraction 0) when no
 fraction is supplied (full toss) or the remainder reaches zero. Every toss
 appends `tossed <amount> <date>` to the item's `notes` so waste amounts stay
-recoverable for telemetry. These semantics are shared verbatim by the explicit
+recoverable for telemetry — and on a **counted** item the sealed units
+discarded ride the same line, `tossed <amount> (<n>u) <date>`, because
+`on_hand_fraction` does not track a counted item's unit count and the fraction
+alone would charge a nearly-empty pack as a whole one (§ Waste costing).
+These semantics are shared verbatim by the explicit
 event endpoint and the free-text resolver. A full toss or whole-item `finished`
 on a counted item also zeroes `units_remaining` — the sealed remainder is gone
 too.
@@ -1855,6 +1861,13 @@ Inventory reads:
   Default: on-hand (`stocked`+`open`) ordered by `eat_by` ascending, nulls last
   (eat-first urgency). `state` filters to one state; `include_closed=true`
   includes finished/tossed.
+- `GET /inventory/waste?since&until&limit` → `{ waste: WasteRow[], count,
+  totals: { rows, cost_cents, cost_unknown_rows } }` — every recorded toss with
+  its cost attributed (§ Waste costing), newest toss first. `since`/`until` are
+  ISO dates bounding the toss date. `totals.cost_cents` sums only the rows whose
+  cost is known and `totals.cost_unknown_rows` counts the rest — a partial total
+  that says how partial it is. Items in the `dismissed` state or carrying
+  `merged_into` are excluded (their waste claim was retracted).
 - `GET /inventory/:ulid` → bare `InventoryItem` (404 if absent).
 - `GET /inventory/questions?limit` → `{ questions: Question[], count }` — open
   `needs_info` items rendered as one-time questions for the digest/chat,
@@ -2093,6 +2106,12 @@ Products & lexicon (agentic seed + reads):
   `Product`; `404` unknown.
 - `GET /products?q&limit` → `{ products: Product[], count }` (`q` = substring
   over name/aliases). Archived products are excluded.
+- `GET /products/:ulid/prices?store&limit` → `{ product_ulid, product_name,
+  points: PricePoint[], count }` — the product's recorded purchases, newest
+  first, each normalized to a comparable unit price (§ Price history). `404` on
+  an unknown ULID; an archived-but-known ULID resolves (history must survive
+  retirement), and a product whose lines were merged away reads as an empty
+  `points`.
 - `POST /lexicon` — JSON `{ store (required), line_text (required),
   product_ulid (required), package_size?, shelf_life_class? }` → `LexiconLine`
   (`201`); upserts on `(store, line_text)`.
@@ -2154,6 +2173,24 @@ Products & lexicon (agentic seed + reads):
   target for a label scan or dismissal; `item_ulids` are all items the grouped
   question covers; `count` is `item_ulids.length`. `question` renders the
   count when `count > 1` (e.g. `… ×2`).
+- **PricePoint**: `{ line_ulid, batch_ulid, purchased_at, store, raw_text,
+  quantity, price_cents, package_price_cents, unit_basis, unit_grams,
+  unit_millilitres, cents_per_100g, cents_per_100ml }` (§ Price history).
+  `package_price_cents` is `price_cents / quantity` (the per-physical-unit
+  price), null when the printed price was unreadable. `unit_basis` is
+  `'line' | 'lexicon' | 'product_net_content' | 'product_package_size' | null`
+  — which source supplied the normalizing size; null means none did, and then
+  both `cents_per_100*` are null. `unit_grams`/`unit_millilitres` are mutually
+  exclusive (weight and volume are never cross-converted).
+- **WasteRow**: `{ item_ulid, product_ulid, product_name, store, tossed_at,
+  amount_fraction, units, terminal, cost_cents, cost_basis, price_line_ulid,
+  priced_at }` (§ Waste costing). `amount_fraction` is the package fraction
+  discarded and `units` the sealed units discarded (null on a fraction-modeled
+  item); both null means the amount was unrecoverable. `terminal` is true when
+  the toss closed the item. `cost_cents` is null on an unknown cost — never `0`
+  — and `cost_basis` is `'batch_line' | 'product_price' | 'unknown'`.
+  `price_line_ulid`/`priced_at` name the batch line the cost came from (both
+  null when unknown).
 - **Label response**: `{ item: InventoryItem, product: Product, resolved_count }`.
 - **Dismiss response**: `{ item: InventoryItem, dismissed_count, non_inventory }`.
 - **Convert response**: `{ sources: InventoryItem[], derived: InventoryItem,
@@ -2602,6 +2639,151 @@ call also idempotency-checks inside its own transaction (`ON CONFLICT
 (ulid) DO NOTHING` on the entry insert), as a race-safety net for
 near-simultaneous replays.
 
+### Price history (per-product cost reads)
+
+Receipt intake already transcribes what every line cost (§ Prices) and links
+most lines to a product through the lexicon, so the module holds a per-product
+purchase history that nothing could ask a question of. `GET
+/products/:ulid/prices` is that question: **every recorded purchase of one
+product, dated, with the store it came from and a per-unit normalization**,
+newest purchase first.
+
+**A read-time derivation, never a stored table.** Every field of a price point
+is computed from rows that already exist — `purchase_batch_lines` joined to its
+`purchase_batches` (for `purchased_at` and `store`), the `receipt_lexicon` line
+for the package size that store prints, and the product's label-derived net
+content. Nothing is written on the read path and no price is copied anywhere,
+so a corrected receipt line or a re-scanned label immediately corrects every
+history that quotes it. The § Prices boundary stands as written for **spend
+analysis and budgeting** — those remain the personal-finance domain's business,
+and this module grows no dashboards, no period rollups, and no budget targets.
+What it does own is the *fact* read: which prices are on file for a product,
+because only the module knows how a line, a lexicon mapping, and a package size
+compose into a comparable unit price.
+
+**Every purchase is a point, priced or not.** A line whose `price_cents` was
+unreadable still lands as a point with `price_cents: null` and a null unit
+price — the purchase happened, and dropping it would silently shorten the
+history. A null price is never rendered as `0`.
+
+**Per-package price is the line price divided by the line's `quantity`.** A
+multi-quantity line records one extended price for N physical units, so a point
+carries both the printed `price_cents` and the derived
+`package_price_cents = price_cents / quantity`. This is the read-time division
+§ Prices reserves; it is still never stored.
+
+**Unit normalization — the divisor belongs to the POINT, not the product.** A
+12 oz bag and a 16 oz bag of the same product are not comparable at face value,
+and package sizes genuinely change between purchases and between stores, so the
+size used to normalize a point is resolved per point, most-specific first:
+
+1. **A measure printed in the line's own `raw_text`** ("1.42 LB @ 0.79/LB",
+   "OLV OL X-VRG 750ML") — the § Prices by-weight read, now blessed for every
+   line, not only weighed ones. It is the most specific because it describes
+   *that* purchase.
+2. **The `receipt_lexicon` line's `package_size`** for `(store, normalized
+   raw_text)` — the size the owner recorded for that store's line text.
+3. **The product's `net_content_g` / `net_content_ml`** — the label-derived
+   deterministic net content (§ Prices' divisor).
+4. **The product's `package_size`** string, parsed the same way a lexicon size
+   is.
+
+Whichever wins is reported on the point as `unit_basis` (`line` / `lexicon` /
+`product_net_content` / `product_package_size`) alongside the grams or
+millilitres it resolved to, so a caller can see *why* two points normalized
+differently rather than inferring it. **No size resolves → no normalized
+price**: `cents_per_100g` / `cents_per_100ml` stay null. Unit conversion is
+deterministic code (the same weight/volume tables the label scan's net-content
+conversion uses), never model arithmetic, and a count-stated size ("12 ct")
+resolves to neither grams nor millilitres — a count is not a mass.
+
+Weight and volume are **never** cross-converted (no assumed 1 g/ml), so a
+product bought sometimes by weight and sometimes by volume yields two
+non-comparable series rather than one wrong one. Points carry each basis on its
+own field; the caller compares like with like.
+
+**A merge unions the history, by construction.** `POST /products/:ulid/merge`
+relinks `purchase_batch_lines.product_ulid` onto the survivor (§ Product
+corrections), and this read keys on exactly that column — so the survivor's
+history is the union of both records' purchases the moment the merge lands, with
+no history-specific relink step to forget. The retired loser resolves by ULID
+forever and reads as empty (its lines moved), which is the honest answer.
+
+**`?store=` scopes to one store**, for the "is this cheaper across town"
+question; `?limit` caps the points returned (newest kept).
+
+### Waste costing
+
+A toss records what was thrown away (§ Inventory state machine) but never what
+it was worth, and "waste trends toward zero" is not a goal anyone can steer by
+count of incidents alone. `GET /inventory/waste` attaches the number: **every
+recorded toss, with the product, the amount, and what that amount cost**,
+newest first — derived, at read time, from the toss record and the price
+history above.
+
+**Which price applies, in order:**
+
+1. **The actual batch line the item came from.** An item created by receipt
+   intake carries `batch_ulid`; the line for its `(batch_ulid, product_ulid)`
+   is what was *actually paid for that package*, and it is what a toss costs
+   whenever it is knowable. Preferring it over any average is the same
+   transcribe-the-real-thing stance § Prices takes.
+2. **The nearest priced purchase of the same product** otherwise — the latest
+   priced line at or before the item's `acquired_at` (the price in force when
+   it entered the house), falling back to the earliest priced line after it
+   when the item predates every recorded price. This covers the manually-seeded
+   item, the item whose own line's price was unreadable, and the item acquired
+   before receipt scanning began.
+3. **Nothing.** No priced line for the product at all → the cost is
+   **unknown**.
+
+Every waste row reports `cost_basis` (`batch_line` / `product_price` /
+`unknown`) plus the `price_line_ulid` and `priced_at` it used, so the
+attribution is auditable per row rather than taken on faith.
+
+**Unknown cost is null, never zero.** A product with no priced purchase reads
+`cost_cents: null` and `cost_basis: 'unknown'`. Zero would state that throwing
+it away cost nothing, which is precisely the opposite of what the read exists
+to say, and it would silently deflate every total that summed it. Totals
+therefore report the **sum over rows with a known cost** alongside the count of
+rows whose cost is unknown — a partially-known total that says how partial it
+is, never a whole-looking total that quietly excludes rows.
+
+**Cost scales to the amount actually discarded**, never to the whole package:
+
+- **Fraction-modeled item** — `cost = package_price × tossed fraction`. A
+  partial toss of 0.25 costs a quarter of the package.
+- **Counted item** — `cost = per-sealed-unit price × units discarded`, where
+  the per-unit price is the package price divided by `units_total`. A toss that
+  discards 2 of a 12-pack costs two twelfths, not the pack.
+
+**Waste reads structured state, not free text, for whether a toss counts.** A
+row is excluded when the item is `dismissed` or carries `merged_into` —
+`dismissed` is the module's "this was never real stock" terminal, and an item
+merge retires its loser there precisely to retract a claim about food that does
+not exist (§ Item corrections). So the duplicate that was mistakenly `tossed`
+and then merged away contributes nothing: its state retraction *is* the
+retraction of its waste, with no second bookkeeping step. This is the whole
+reason the gate is a state check and not a note check.
+
+**The amount tossed is still read from the item's `notes`, and that is a known
+seam.** `on_hand_fraction` is zeroed by a full toss and decremented by a
+partial one, so the amount discarded survives only in the `tossed <amount>
+<date>` line the toss appends — the note is currently the module's only record
+of a waste *quantity*. Waste reads parse those lines and pair each with the
+structured state gate above; a `tossed` item with no parseable note reads as an
+**unknown amount** (and therefore unknown cost), never an assumed whole
+package. A counted item's toss additionally records the sealed units it
+discarded (`tossed <fraction> (<n>u) <date>`), because a counted item's
+`on_hand_fraction` does not track its unit count and the fraction alone would
+charge a full pack for a nearly-empty one. Recording tosses as structured rows
+(a waste event table, which would also make a resurrecting reconcile retract
+its waste the way a merge does) is the durable fix and deliberately out of
+scope here — this read is derivation-only over rows that already exist.
+
+**`?since` / `?until`** bound the window by toss date; `?limit` caps rows
+(newest kept).
+
 ### Model tiering (phase 2)
 
 - Receipt line extraction uses the **cheap** tier (`KITCHEN_RECEIPT_MODEL`,
@@ -2704,6 +2886,8 @@ and write the kitchen without hand-rolled `curl`.
       refused with a pointer to `dismiss` rather than an enum error. A
       retirement path that exists but cannot be found is, for an agent, a
       retirement path that does not exist.
+    - `waste [--since DATE] [--until DATE]` — the costed toss log
+      (§ Waste costing), including its honest unknown-cost rows.
   - `receipts` — list, `show <ulid>` (batch + line outcomes), `scan <photo…>`
     (multipart post; meta as a form field per the module's part-type rule).
   - `recipes` — list (merged view), `push` (agent-authored recipe JSON;
@@ -2711,7 +2895,8 @@ and write the kitchen without hand-rolled `curl`.
     corrections), `delete <ulid>` (archives — the retirement path, not a
     destroy), `promote <entry-ulid> --name`.
   - `products` / `lexicon` — list/search + seed-grade create (the agentic
-    seed path).
+    seed path), plus `products prices <ulid> [--store S]` — the per-product
+    price history with its per-point unit normalization (§ Price history).
 - **`assist-kitchen` skill** (`skills/assist-kitchen/`): hand-authored
   SKILL.md with generated command-reference regions (build-skill splice
   targets registered like the others; `check:skills` guards drift). The
