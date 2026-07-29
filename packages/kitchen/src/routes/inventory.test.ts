@@ -679,7 +679,7 @@ describe('product corrections routes', () => {
   });
 
   it('PATCH renames (identity is the ulid) but refuses a rename into a live twin', async () => {
-    const mangled = (await post({ name: 'KRKLND SGNTR OO' })).json();
+    const mangled = (await post({ name: 'OLV OL X-VRG 750ML' })).json();
     const other = (await post({ name: 'Olive Oil' })).json();
 
     const renamed = await patch(mangled.ulid, { name: 'Extra Virgin Olive Oil' });

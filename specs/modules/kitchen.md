@@ -733,6 +733,11 @@ called out below (a name-key hit **enriches** rather than replacing).
   field. `ulid` and `created_at` are preserved; `updated_at` bumps. An
   archived record is **not** resurrected by a replace: `409`, naming the
   survivor when it was merged away.
+
+  An explicit key also **bypasses the name checks below**, deliberately. The
+  escape hatch out of a name-key ambiguity is "pass the ulid of the one you
+  mean"; if that path re-checked the name it would be blocked by the very
+  collision it exists to resolve.
 - **Without `ulid`** — the **normalized name** is the key: case-folded,
   whitespace-collapsed, trimmed. Resolved against the live (non-archived)
   products:
@@ -777,12 +782,14 @@ doors — `PATCH`, or a `ulid` replace.
 - **`name` is patchable.** A product's identity is its `ulid`, not its name:
   items, lexicon lines, and batch lines all link by `product_ulid`, so a rename
   can't orphan anything, and receipt-derived names badly need correcting
-  (`"KRKLND SGNTR OO"` → `"Olive Oil"`). This is the opposite of a recipe,
+  (`"OLV OL X-VRG 750ML"` → `"Olive Oil"`). This is the opposite of a recipe,
   where the *name* is the tap target on the reselect strip. One guard: a rename
-  whose normalized form collides with another live product → `409`. Renaming
-  into a collision would manufacture exactly the duplicate the name-key upsert
-  and the merge path exist to remove; the error names the twin and points at
-  merge.
+  that **changes** the normalized name into another live product's → `409`.
+  Renaming into a collision would manufacture exactly the duplicate the
+  name-key upsert and the merge path exist to remove; the error names the twin
+  and points at merge. Restating the name a product already has is never a
+  collision with itself, so patching other fields alongside an unchanged `name`
+  always works.
 - Patchable fields are every stored fact: `name`, `shelf_life_class`,
   `aliases`, `nutrition_per_100g`, `nutrition_per_serving`, `serving_size_g`,
   `servings_per_container`, `net_content_g`, `net_content_ml`,
@@ -802,7 +809,9 @@ situation actually calls for. In one operation:
 1. **Enrich the survivor** from the loser under the same never-null-clobbering
    precedence a label enrich uses — the survivor's own values win, and the
    loser's facts fill what the survivor lacks. A merge must not lose the panel
-   that happens to live on the duplicate.
+   that happens to live on the duplicate. The loser's **name joins the
+   survivor's aliases**, so depletion and lexicon matching on the retired
+   spelling keeps working — that spelling is exactly what some receipt prints.
 2. **Relink every dependent** to the survivor: `inventory_items.product_ulid`,
    `receipt_lexicon.product_ulid`, `purchase_batch_lines.product_ulid`. The
    response reports the counts.
@@ -881,9 +890,12 @@ Nobody eats 100 g of paprika; someone cooking with that much is logging a
 *dish*, which is logged as an entry or a recipe carrying its own numbers, not
 by consuming a spice jar.
 
-**Never inferred, never backfilled.** Marking is a deliberate per-product act
-by the owner or an agent acting on an explicit instruction — no category
-heuristic sets it, and no migration backfills it. The stored
+**Never inferred, never backfilled — and never un-marked by an enrich.**
+Marking is a deliberate per-product act by the owner or an agent acting on an
+explicit instruction: no category heuristic sets it, no migration backfills it,
+and only an explicit `PATCH` (`nutrition_negligible: false`) clears it. An
+enrich carries no evidence *against* negligibility — a later receipt seed
+saying nothing about it is silence, not a retraction. The stored
 `nutrition_per_100g` is **not** rewritten to zeros either: the assertion stays
 one reversible boolean, zeros are derived at read time, and a real panel found
 later supersedes the marker without anyone having to tell asserted zeros from
