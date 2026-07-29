@@ -4,7 +4,7 @@ depends: [kitchen-module, convert-sourceless]
 specs:
   - specs/modules/kitchen.md
 issues: [156]
-pr:
+pr: 164
 ---
 
 # Plan: `convert` is atomic — a failed prep transform loses no food
