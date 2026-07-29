@@ -228,6 +228,14 @@ existing columns.
   `raw_text` (blessed there), and it will meet formats it does not know; the
   honest failure is a null `unit_basis`, never a guessed divisor. Worth
   revisiting only if that parse proves flaky across stores.
+- **Tracked here — the waste candidate fetch caps at 500 items.** No column holds
+  a toss date (a partial toss leaves `closed_at` null), so the date window can
+  only be applied after the notes are parsed, which means the candidate query
+  cannot push it into SQL — it takes the 500 most-recently-touched tossed items
+  and windows in code, the same shape `listQuestions` uses. On an instance with
+  more than 500 tossed items, a `since` far in the past can miss the oldest.
+  The structured waste-event table above is what makes a real SQL window
+  possible; until then this is the honest ceiling, not a silent one.
 - **None for aggregates, by design.** No min/max/trend summary, no period
   rollup, no budget target — those are the personal-finance domain's business
   (§ Prices' boundary). A dated, normalized series is what an agent needs to see
