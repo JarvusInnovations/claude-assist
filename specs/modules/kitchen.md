@@ -230,6 +230,9 @@ a caller that has resolved a meal to exact numbers needs a way to record the
 answer rather than resubmit its inputs for re-guessing. The directly-stated panel
 is that primitive; it neither depends on nor constrains the recipe model.
 
+Its first in-system caller is **§ Cook mode**, where an eaten prep worksheet's
+computed panel lands through exactly this shape.
+
 ## Principles
 
 **Local:**
@@ -2045,14 +2048,17 @@ Item mutation:
   fresh item's is) and a `kitchen.inventory_derivations` row linking it to its
   sources (empty when source-less). **Atomic** (ONE transaction — see
   § Conversions § Atomicity): all three write phases land or none do, so a failed
-  request leaves the ledger untouched. **Not idempotent** — the derived ULID is
-  server-minted, so a retry makes a second batch; that is the intended default
-  (§ Conversions § Atomicity).
+  request leaves the ledger untouched. **Not deduplicated by default** — the
+  derived ULID is server-minted, so a retry makes a second batch; a caller that
+  supplies `derived.ulid` (ULID) makes it the **idempotency key** and a replay
+  writes nothing (§ Conversions § Retries).
   Returns `{ sources: InventoryItem[], derived: InventoryItem, derivation:
-  InventoryDerivation }` (`201`). `400` `ConversionValidationError` —
-  missing `derived.name`, an unknown source ULID, or a non-integer
-  `amount` against a counted source; `409` `InvalidTransitionError` — a source
-  is already terminal (nothing left to spend).
+  InventoryDerivation, created }` — `201` when `created`, `200` on an idempotent
+  replay. `400` `ConversionValidationError` — missing `derived.name`, an unknown
+  source ULID, a non-integer `amount` against a counted source, a malformed
+  `derived.ulid`, or a `derived.ulid` naming an existing item that is not a
+  conversion output; `409` `InvalidTransitionError` — a source is already
+  terminal (nothing left to spend).
 - `POST /inventory/:ulid/consume` — **consume from inventory (one-tap
   known-macro log + deplete)**, see § Consume from inventory. `:ulid` is the
   ITEM. JSON `{ ulid (required — the consumption entry's client-generated
@@ -2523,17 +2529,40 @@ for a later source. A source named twice in one conversion has its second
 decrement planned against the state the first leaves behind, so two lines against
 one pack spend two lines' worth.
 
-**Retries are not deduplicated, by design.** A conversion has no client-supplied
-idempotency key, unlike `consume` (whose `ulid` is the entry's — § Consume from
-inventory § Idempotency): the derived item's ULID is minted server-side, so a
-retried `POST /inventory/convert` mints a *second* derived item and spends the
-sources again. That is deliberate and it is the correct default for this verb —
-"I made another batch" is an ordinary, repeated act, so two identical requests
-are far more likely to be two real batches than one double-sent one, and
-collapsing them would lose a batch. Atomicity is what makes each attempt whole;
-deduplicating attempts is a separate contract change (an optional caller-supplied
-derived ULID) and is deliberately not part of it. A caller that did double-send
-corrects it with `inventory dismiss` / `merge` (§ Item corrections).
+**Retries are not deduplicated by default — but a caller may opt in.** The
+derived item's ULID is minted server-side unless the caller supplies
+`derived.ulid`, and that default is the correct one for this verb: "I made another
+batch" is an ordinary, repeated act, so two identical requests are far more likely
+to be two real batches than one double-sent one, and collapsing them would lose a
+batch. A caller that did double-send corrects it with `inventory dismiss` /
+`merge` (§ Item corrections).
+
+A caller that **knows** a request is a retry rather than a second batch supplies
+`derived.ulid`, and it becomes the conversion's **idempotency key** — the same
+role `ulid` plays for `consume` (§ Consume from inventory § Idempotency).
+A replay then writes **nothing**: no source spent again, no second derived item,
+no second derivation. It returns the existing derived item + provenance with
+`created: false` (`200` rather than `201`). (Amended 2026-07-29: this was
+previously stated as a deliberate non-feature; § Cook mode is the caller that
+needs it, because a worksheet resubmitted over a flaky mobile network is
+unambiguously one batch.)
+
+Two properties make that safe:
+
+- **The replay check runs BEFORE any validation against current state.** This
+  ordering is load-bearing for exactly the reason it is in `consume`: the first
+  attempt may already have driven a source terminal (fully spent), so a replay
+  validated against today's state would `409` against its own side effect. A
+  replay must succeed, having written nothing.
+- **The check is repeated inside the transaction**, so near-simultaneous replays
+  serialize there rather than racing to spend the sources twice. A server-minted
+  ULID never hits it.
+
+A supplied `derived.ulid` that names an existing item with **no** derivation row
+is a `400`, not a replay: every conversion output has provenance (that invariant
+is what makes it consume-eligible), so such an item is some *other* item and the
+caller reused a ULID. Fabricating provenance to paper over that would silently
+mint a wrong macro channel.
 
 Examples: 12 raw eggs (counted) → 6 hard-boiled eggs (`sources: [{item_ulid,
 amount: 6}]`, `derived: {units_total: 6, shelf_life_class: 'fridge_short'}`) —
@@ -2783,6 +2812,87 @@ scope here — this read is derivation-only over rows that already exist.
 
 **`?since` / `?until`** bound the window by toss date; `?limit` caps rows
 (newest kept).
+## Cook mode — a submitted prep worksheet IS the log
+
+The pages module can publish a **worksheet**: weighable components with per-100g
+references, whose actual quantities the cook states, yielding a computed panel
+(`specs/modules/pages.md` § The worksheet response pattern). Cook mode is this
+module's sink for those submissions — the seam that makes **submitting the sheet
+the log**, rather than a queue entry an agent later has to notice and transcribe.
+
+That wait is what cook mode removes, and it is not a hypothetical cost: a real
+prep sheet was never submitted, no agent ran, and the meal existed nowhere until
+it was reconstructed from memory days later. Logging must beat not-logging
+(`specs/diet-journal.md` § Principles), and a loop that depends on a *second*
+actor showing up is a loop that sometimes doesn't close.
+
+**Cook mode invents no contracts.** Each disposition lands on an endpoint that
+already exists, unchanged:
+
+| disposition | maps to | what the ledger gets |
+| --- | --- | --- |
+| `eaten` | `POST /entries` with a `macros` panel (§ Directly-stated panel entries) | one born-`manual`, terminal entry; **no estimator** |
+| `packed` | `POST /inventory/convert` (§ Conversions) | sources decremented, one derived item created with its `recipe_ulid`; **no journal entry** |
+
+**Packing is a conversion; eating is an entry.** This is the load-bearing rule,
+not an implementation detail. A packed batch is *stock* that will be eaten later,
+possibly not as planned — pre-logging it as consumption makes the journal lie the
+moment plans change. The batch becomes a journal fact at eat time, via
+`POST /inventory/:ulid/consume` (§ Consume from inventory), at whatever share is
+actually eaten then. Attaching `recipe_ulid` on the convert is what keeps that
+one-tap path available (§ Consume from inventory § Eligibility).
+
+**The panel is stated, never re-guessed.** An eaten worksheet has already computed
+its numbers from weighed quantities against per-100g references — they are exact
+by construction. The directly-stated shape stores them verbatim as a born-`manual`
+terminal entry and enqueues **no** estimation, so there is nothing that could
+later land and clobber what the cook watched add up on screen (§ Directly-stated
+panel entries — the birth-race hole this shape exists to close).
+
+**Totals are validated against the real panel, and an unknown field is an error.**
+The worksheet's field keys are arbitrary strings by design (the pages module owns
+no nutrition vocabulary), so checking them is this module's job — and it rejects a
+key that is not one of the nine panel fields (§ Nutrition panel) rather than
+dropping it. A silently-ignored field would log a meal whose numbers quietly
+disagree with the displayed totals, which is precisely the defect being removed.
+A `null` total is **unknown** and is simply left unstated (never `0`); a stated
+`0` is a real zero and is stored.
+
+**Idempotency: one key, one meaning.** The submission's `submission_key` (a ULID)
+becomes the identity of whichever write the disposition maps to — the entry's
+ULID when eaten, the derived item's ULID when packed. Both writes are idempotent
+on it (`POST /entries` already was; `convert` gained the opt-in
+`derived.ulid` key for exactly this caller — § Conversions § Retries). A
+resubmission over a flaky mobile network therefore cannot double-log or
+double-decrement, and reports `created: false`.
+
+**Exactly one atomic write per submission — no straddling.** Cook mode
+deliberately does **not** compose two domain writes, so there is no
+"entry landed, decrement failed" half-state to reconcile. In particular an
+`eaten` submission does **not** decrement inventory: depletion for an eaten meal
+already happens through the existing depletion matcher
+(§ Depletion matcher, best-effort by design), and for a prepped item through
+`consume` at eat time. A `packed` submission's several writes are one
+transaction already (§ Conversions § Atomicity). What the caller sees when a
+write fails, and what the ledger holds, is stated in
+`specs/modules/pages.md` § Cook mode § Order of writes.
+
+**Measured weights on a packed batch are provenance, not macros.** The derived
+item carries the measured quantities in its `notes`, and the pages response row
+retains the full computed record; but its *consume-time* macros still come from
+the linked recipe's own quantities, because `derived_from.recipe_ulid` is the only
+macro-inheritance channel (§ Consume from inventory § Eligibility). A batch
+weighed materially off-recipe therefore logs the recipe's numbers when eaten, not
+the batch's. Carrying per-batch measured macros would need either a per-batch
+recipe or item-level macros — a real change to the item model, deliberately not
+made here.
+
+**The seam.** The module decorates `fastify.kitchenCookMode` (a
+`{ cook(request) → { kind, ulid, created } }` surface); the **server** injects it
+as the pages module's `worksheetCookSink`. Same pattern as
+§ Cross-module seams — the packages never import each other, and with the kitchen
+module absent a cook-mode submission reports `unavailable` instead of pretending
+it logged.
 
 ### Model tiering (phase 2)
 
@@ -2958,3 +3068,12 @@ and write the kitchen without hand-rolled `curl`.
   reads as truth — which is why the reconcile surface reaches every field
   observation can settle, and why a storage move is its own event rather than a
   clever `opened_at`.
+- **Packing is a conversion; eating is an entry.** Preparing food creates *stock*
+  — it belongs in inventory with its own clock and provenance, not in the
+  journal. Consumption is recorded when it is consumed, at the share actually
+  eaten. Pre-logging a batch at prep time makes the journal lie the moment plans
+  change (the batch gets shared, frozen, split across days, or tossed), and it
+  lies in the direction nothing flags: the day already looks accounted for. Every
+  surface that records prep — the `convert` verb, cook mode, the app's tabs —
+  holds this line, so "did I log this?" has exactly one answer per act.
+
