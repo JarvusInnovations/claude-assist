@@ -927,7 +927,8 @@ All tables instance-agnostic empty schema, ULID keys, `kitchen` schema
   unit): `ulid`, `name`, `shelf_life_class` (enum, see below), `aliases`
   (text[] — alternate names for depletion/lexicon matching),
   `nutrition_per_100g` (JSONB `{calories, protein_g, fat_g, sat_fat_g, carbs_g,
-  sodium_mg, fiber_g, sugar_g}`, any field null = unknown; nullable),
+  sodium_mg, fiber_g, sugar_g, added_sugar_g}`, any field null = unknown;
+  nullable),
   `ingredients` (text — the full ingredients list as printed on the panel, e.g.
   `"Cultured pasteurized milk, salt, enzymes"`; nullable; migration
   `006-kitchen-product-ingredients.sql`), `package_size` (text, e.g. `"16 oz"`;
@@ -1532,8 +1533,8 @@ Products & lexicon (agentic seed + reads):
 - **Product**: `{ ulid, name, shelf_life_class, aliases, nutrition_per_100g,
   ingredients, package_size, shelf_life_days_unopened, shelf_life_days_opened,
   created_at, updated_at }`. `nutrition_per_100g` (nullable) is `{ calories,
-  protein_g, fat_g, sat_fat_g, carbs_g, sodium_mg, fiber_g, sugar_g }` (any
-  field null = unknown); `ingredients` is the printed ingredients list (nullable
+  protein_g, fat_g, sat_fat_g, carbs_g, sodium_mg, fiber_g, sugar_g,
+  added_sugar_g }` (any field null = unknown); `ingredients` is the printed ingredients list (nullable
   text).
 - **LexiconLine**: `{ ulid, store, line_text, product_ulid, package_size,
   shelf_life_class, non_inventory, created_at, updated_at }`. `product_ulid` is
