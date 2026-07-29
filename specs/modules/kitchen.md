@@ -1559,7 +1559,7 @@ A shelf-life class is a claim about **where an item lives**, and food moves. The
 derivation above assumes it never does: an item acquired frozen and later thawed
 would resume a fridge clock as though it had never been frozen, and one recorded
 as a fridge item that was actually in the freezer ages on paper while sitting
-safe. Both directions mislead, in opposite directions, and one of them is
+safe. The two errors mislead in opposite directions, and one of them is
 dangerous:
 
 - **Recorded as a fridge class, actually frozen** — over-reports urgency. It nags
@@ -1586,9 +1586,9 @@ item moved **into**. It:
   survives in provenance the way `tossed …` and `reconciled …` do.
 
 Freezer→fridge (starting a clock) is the motivating direction; fridge→freezer
-(pausing one) is the same mechanism inverted and works identically — the class's
-window changes and the anchor becomes today, which is exactly "the clock you were
-on is void; here is the new one."
+(pausing one) is the same mechanism inverted and works identically — the window
+changes with the class and the anchor becomes the move, which is exactly "the
+clock you were on is void; here is the new one."
 
 **A move is legal from `stocked` or `open` and rejected on a terminal item**
 (`409`), like every other event. Repeated moves simply re-anchor again; only the
