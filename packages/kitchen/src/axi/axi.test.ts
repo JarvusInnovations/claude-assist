@@ -12,7 +12,7 @@ import {
   buildDismissBody,
   INVENTORY_HELP,
 } from "./commands/inventory.js";
-import { buildProductWriteBody } from "./commands/products.js";
+import { buildProductWriteBody, PRODUCTS_HELP } from "./commands/products.js";
 import { ensureExplicitOffset } from "./commands/weigh-ins.js";
 
 describe("resolveServer", () => {
@@ -431,6 +431,17 @@ describe("product write body (§ Product corrections)", () => {
     expect(buildProductWriteBody({})).toEqual({});
   });
 
+  it("--force-negligible implies --negligible and carries the override", () => {
+    // The only reason to reach for the override is to make the assertion the
+    // sodium guard just refused, so it must not need both flags to work.
+    expect(buildProductWriteBody({ "force-negligible": true })).toEqual({
+      nutrition_negligible: true,
+      nutrition_negligible_override: true,
+    });
+    // And it is never sent unasked — the guard has to be reachable.
+    expect(buildProductWriteBody({ negligible: true }).nutrition_negligible_override).toBeUndefined();
+  });
+
   it("validates the enums it forwards rather than letting the server guess", () => {
     expect(() => buildProductWriteBody({ "shelf-life": "cupboard" })).toThrow(AxiError);
     expect(() => buildProductWriteBody({ "unit-model": "sealed" })).toThrow(AxiError);
@@ -502,5 +513,20 @@ describe("command reference covers every product write door", () => {
       expect(text).toContain(usage);
     }
     expect(text).toContain("--negligible");
+  });
+
+  it("warns off salt where the marker is documented, and names the way through", () => {
+    // Prose in the spec protects a careful reader; these two surfaces are where
+    // an agent about to mark a spice rack is actually looking. The reference
+    // (spliced into SKILL.md) carries the one-line warning; the subcommand help
+    // carries the reasoning.
+    const reference = commandReferenceText();
+    expect(reference).toContain("garlic powder qualifies; garlic salt does not");
+    expect(reference).toContain("--force-negligible");
+
+    expect(PRODUCTS_HELP).toContain("SALT IS NOT NEGLIGIBLE");
+    expect(PRODUCTS_HELP).toContain("Garlic powder qualifies; garlic salt does not");
+    expect(PRODUCTS_HELP).toContain("38,700 mg");
+    expect(PRODUCTS_HELP).toContain("--force-negligible");
   });
 });

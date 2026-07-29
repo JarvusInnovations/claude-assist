@@ -869,4 +869,97 @@ describe('product corrections routes', () => {
     expect(reseeded.json().nutrition_negligible).toBe(true);
     expect((await patch(spice.ulid, { nutrition_negligible: false })).json().nutrition_negligible).toBe(false);
   });
+
+  // ── The sodium guard (§ Sodium is the exception that breaks the marker) ──
+
+  it('refuses the marker on a salt product at every write door, and permits garlic powder', async () => {
+    // The discriminating pair, end to end: adjacent on a shelf, identical to a
+    // name filter, opposite answers.
+    const powder = await post({ name: 'Garlic Powder', nutrition_negligible: true });
+    expect(powder.statusCode).toBe(201);
+    expect(powder.json().nutrition_negligible).toBe(true);
+
+    // Door 1: create by name.
+    const created = await post({ name: 'Garlic Salt', nutrition_negligible: true });
+    expect(created.statusCode).toBe(400);
+    expect(created.json().error).toContain('sodium');
+    expect(created.json().error).toContain('nutrition_negligible_override');
+    // Refused, not silently un-marked — and nothing was written.
+    expect((await fastify.inject({ method: 'GET', url: '/kitchen/products?q=Garlic Salt' })).json().count).toBe(0);
+
+    // Door 2: create-or-replace on an explicit ulid.
+    const ulid = generateUlid();
+    expect((await post({ ulid, name: 'Table Salt', nutrition_negligible: true })).statusCode).toBe(400);
+
+    // Door 3: PATCH onto an existing record.
+    const salt = (await post({ name: 'Kosher Salt' })).json();
+    expect(salt.nutrition_negligible).toBe(false);
+    const marked = await patch(salt.ulid, { nutrition_negligible: true });
+    expect(marked.statusCode).toBe(400);
+    expect((await fastify.inject({ method: 'GET', url: `/kitchen/products?q=Kosher Salt` })).json().products[0].nutrition_negligible).toBe(false);
+
+    // Door 4: a name-key enrich that states the marker.
+    expect((await post({ name: 'Kosher Salt', nutrition_negligible: true })).statusCode).toBe(400);
+  });
+
+  it('honours the override — the judgement stays the owner\'s', async () => {
+    const flakes = await post({
+      name: 'Flaked Finishing Salt',
+      nutrition_negligible: true,
+      nutrition_negligible_override: true,
+    });
+    expect(flakes.statusCode).toBe(201);
+    expect(flakes.json().nutrition_negligible).toBe(true);
+    // The override is an instruction about the write, never a stored fact.
+    expect(flakes.json().nutrition_negligible_override).toBeUndefined();
+
+    const rub = (await post({ name: 'Steak Rub', ingredients: 'Salt, garlic, pepper' })).json();
+    expect((await patch(rub.ulid, { nutrition_negligible: true })).statusCode).toBe(400);
+    const forced = await patch(rub.ulid, { nutrition_negligible: true, nutrition_negligible_override: true });
+    expect(forced.statusCode).toBe(200);
+    expect(forced.json().nutrition_negligible).toBe(true);
+  });
+
+  it('refuses on the ingredients list and on a stated sodium, not just the name', async () => {
+    // A blend whose name says nothing — the case a name filter cannot see.
+    const blend = await post({
+      name: 'Poultry Seasoning',
+      ingredients: 'Salt, dehydrated garlic, thyme, sage',
+      nutrition_negligible: true,
+    });
+    expect(blend.statusCode).toBe(400);
+    expect(blend.json().error).toContain('ingredients');
+
+    const stated = await post({
+      name: 'Mystery Seasoning',
+      nutrition_per_100g: { sodium_mg: 24_000 },
+      nutrition_negligible: true,
+    });
+    expect(stated.statusCode).toBe(400);
+    expect(stated.json().error).toContain('24000 mg sodium per 100 g');
+  });
+
+  it('never blocks a write that makes no negligible assertion', async () => {
+    // The availability property: silence is not an assertion, so the machine
+    // paths (receipt seeds, label enriches) are never refused by this guard.
+    const salt = await post({ name: 'Sea Salt', shelf_life_class: 'pantry' });
+    expect(salt.statusCode).toBe(201);
+    expect((await post({ name: 'Sea Salt', package_size: '16 oz' })).statusCode).toBe(200);
+    expect((await patch(salt.json().ulid, { package_size: '26 oz' })).statusCode).toBe(200);
+    expect((await patch(salt.json().ulid, { nutrition_negligible: false })).statusCode).toBe(200);
+  });
+
+  it('refuses a rename that walks a marked product into a salt name', async () => {
+    const powder = (await post({ name: 'Garlic Powder', nutrition_negligible: true })).json();
+    const renamed = await patch(powder.ulid, { name: 'Garlic Salt' });
+    expect(renamed.statusCode).toBe(400);
+    // Unmark first, or override — both remain open.
+    expect((await patch(powder.ulid, { name: 'Garlic Salt', nutrition_negligible: false })).statusCode).toBe(200);
+  });
+
+  it('rejects a patch body that states only the override', async () => {
+    const p = (await post({ name: 'Ground Nutmeg' })).json();
+    const empty = await patch(p.ulid, { nutrition_negligible_override: true });
+    expect(empty.statusCode).toBe(400);
+  });
 });
