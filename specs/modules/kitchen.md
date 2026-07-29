@@ -51,7 +51,7 @@ of the entry actually counts, without touching the per-field macro estimate.
 
 **Base vs effective — the wire rule.** The entry's stored nutrition fields
 (the panel — see § Nutrition panel: `calories`, `protein_g`, `fat_g`,
-`sat_fat_g`, `carbs_g`, `sugar_g`, `fiber_g`, `sodium_mg`) are the
+`sat_fat_g`, `carbs_g`, `sugar_g`, `added_sugar_g`, `fiber_g`, `sodium_mg`) are the
 **base**: the amount as estimated, recipe-computed, or manually overridden. The
 entry wire shape (POST / GET / list responses) carries those base fields
 **exactly as stored, unscaled**, alongside `portion_multiplier`. **Every consumer
@@ -102,6 +102,14 @@ was added, and whether the added part crossed its line — without implying tota
 sugar has a threshold. Two side-by-side bars would double the visual weight and
 reintroduce the false-alarm reading this change exists to remove.
 
+The rule governs the *figure*, not the pixels, so a text surface obeys it the
+same way: the CLI day view renders the pair as **one** value —
+`62.4 total, added 1.2 / 36 max (34.8 left)` — the total stated bare and the
+`logged / target` verdict attached only to the added portion. It never emits a
+second, peer sugar line; that is the text equivalent of the two bars. A day whose
+added portion is unknown reads `added unknown`, never `added 0`. (A tabular
+multi-day rollup is not a bar and carries both as plain columns, neither judged.)
+
 ### Filling `added_sugar_g`
 
 - **Labeled packaged foods** — US Nutrition Facts panels have carried "Includes Xg
@@ -121,9 +129,10 @@ reintroduce the false-alarm reading this change exists to remove.
 **Every source fills the whole panel it can.** The panel is only useful if it's
 complete regardless of *how* a meal was logged:
 
-- **Model-estimated** entries (photo / note) — the estimator returns all eight
-  fields; its prompt and output schema enumerate the full panel (so `sugar_g` and
-  `fiber_g` are estimated alongside the rest, not left null).
+- **Model-estimated** entries (photo / note) — the estimator returns all nine
+  fields; its prompt and output schema enumerate the full panel (so `sugar_g`,
+  `added_sugar_g`, and `fiber_g` are estimated alongside the rest, not left
+  null), with the attribution rules of § Filling `added_sugar_g`.
 - **Recipe / component-computed** entries (a reselect recipe, a `--recipe` log,
   and the derived-item macros § Consume from inventory reads) — computed from the
   recipe's per-ingredient `per_100g` reference, which carries the **full panel**
@@ -143,9 +152,11 @@ complete regardless of *how* a meal was logged:
   estimator runs and no recipe is resolved — the numbers **are** the answer.
   Source `manual`, terminal from birth (see § Directly-stated panel entries).
 
-The daily rollup sums the full panel. The eight fields are the canonical set the
+The daily rollup sums the full panel. The nine fields are the canonical set the
 whole module (storage, estimator, recipes, rollup, patch-override keys, the
-meal-template contract's `per_100g`, and the client displays) agrees on.
+meal-template contract's `per_100g`, and the client displays) agrees on — one
+list in code (`NUTRITION_FIELD_KEYS`), which every panel iteration derives from
+rather than re-enumerating.
 
 Consequences of this choice:
 
@@ -184,7 +195,7 @@ third is not, and its absence forces a two-step (`POST` → model estimate →
 **mutually exclusive** with `recipe_ulid`, component quantities, and
 `reselect_of` (`400` if combined with any). When present:
 
-- The eight panel fields are stored **as the base**, verbatim — no field is
+- The nine panel fields are stored **as the base**, verbatim — no field is
   re-derived, defaulted, or rounded. Unstated fields are `null` (unknown), never
   `0`, exactly as everywhere else in the panel.
 - The entry is born `source: 'manual'`, `status: 'estimated'` (terminal) — the
@@ -462,11 +473,20 @@ is an owner/agent-judgment loop, like `KITCHEN_TDEE_BASE`).
 
 **Config.** `KITCHEN_DAILY_TARGETS` — a JSON object mapping panel field names
 (§ Nutrition panel: `calories`, `protein_g`, `fat_g`, `sat_fat_g`, `carbs_g`,
-`sugar_g`, `fiber_g`, `sodium_mg`) each to exactly **one** of `{"max": N}` (a
-cap — stay under) or `{"min": N}` (a floor — reach it). Any subset of fields
+`added_sugar_g`, `fiber_g`, `sodium_mg`) each to exactly **one** of `{"max": N}`
+(a cap — stay under) or `{"min": N}` (a floor — reach it). Any subset of fields
 may be configured; an unconfigured field simply has no line. A malformed
 value — unknown field, both bounds, non-positive N — fails loudly at boot,
 never silently drops (a half-parsed budget is worse than none).
+
+**`sugar_g` is the one panel field that is deliberately NOT targetable**
+(§ `added_sugar_g` vs `sugar_g`) — total sugar is served and displayed, but a
+config naming it is **refused at boot**, with an error saying the ceiling belongs
+to `added_sugar_g`. Silently ignoring the retired key would leave an instance
+believing it still has a sugar line; the generic unknown-field message would tell
+it the field doesn't exist, which is wrong. The added-sugar ceiling is instance
+config like every other line (36 g/day is the AHA's stated limit for men, 25 g
+for women) — the module suggests nothing and defaults nothing.
 
 **Exposure.** The daily rollup (`GET /kitchen/summary`) gains `targets`: the
 parsed config, verbatim. Absent config ⇒ the block is **omitted entirely,
@@ -1915,7 +1935,7 @@ and write the kitchen without hand-rolled `curl`.
     edit like the multiplier: never re-queues estimation, never changes
     source), `resolve`-style close-outs are NOT here (entries have no such
     state); `delete <ulid>`.
-    - **`log` and `patch` expose the SAME eight macro flags** — the full panel
+    - **`log` and `patch` expose the SAME nine macro flags** — the full panel
       (§ Nutrition panel), one flag per field, documented identically on both.
       A field that can be logged but not corrected has no correction path at
       all: `delete` + re-`log` mints a new ULID and destroys the entry's
