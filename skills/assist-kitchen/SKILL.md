@@ -85,6 +85,16 @@ in doubt, read the spec.
   self-heals at the next event). The item only goes terminal `tossed` when `--fraction` is
   omitted (full toss) or the remainder hits zero. Contrast `opened` (where `--fraction` is
   the absolute *remaining* fraction) and `finished` (always terminal, zeroed).
+- **Never retire a record with `finished` or `tossed` just to get it out of the way.** Those
+  are claims about food: `finished` says it was eaten, `tossed` says it was wasted and feeds
+  waste telemetry someone will later act on. For a record that was never real stock — a
+  phantom, a mis-scan, a housewares line — use `inventory dismiss <ulid>`, the one terminal
+  that claims neither. If **two records describe one physical package**, use `inventory merge
+  <dupe> --into <survivor>` instead: dismiss retires a row but relinks nothing, so the
+  duplicate's consumption entries, receipt line, and conversions would be stranded. Pick the
+  survivor by whose clock is honest (usually the earlier `acquired_at`) — merge fills only
+  its *empty* fields and never sums quantities. If you have already closed something wrongly,
+  `inventory recount <ulid> --state stocked` resurrects it first.
 - **Fixing a recipe? Push it again under the same name — never push a variant.** `recipes
   push` **upserts**: the key is the normalized name (case- and spacing-insensitive), or
   `--ulid` for one specific record, and the output says whether it created or replaced.
@@ -195,7 +205,10 @@ in doubt, read the spec.
 - `scripts/kitchen-axi inventory list [--state S] [--closed] [--limit N]` — on-hand items in eat-first (eat_by ascending) order; --state filters, --closed includes finished/tossed
 - `scripts/kitchen-axi inventory show <ulid>` — one inventory item with derived eat_by / days-until / age
 - `scripts/kitchen-axi inventory add [--raw-label T] [--product-ulid U] [--store S] [--acquired-at DATE] [--fraction F] [--units-total N] [--state S] [--needs-info] [--shelf-life C] [--notes T] [--ulid U]` — create an item directly (manual/verbal purchase or seed); --units-total makes it a counted item (sealed multipack) instead of fraction-modeled; idempotent when --ulid supplied
-- `scripts/kitchen-axi inventory event <ulid> <opened|finished|finished-unit|tossed> [--fraction F] [--at DATE]` — explicit state change; for tossed, --fraction is the AMOUNT TOSSED (partial toss decrements + stays alive, terminal only at zero remainder or when omitted); finished-unit is a counted item's integer one-unit decrement
+- `scripts/kitchen-axi inventory event <ulid> <opened|finished|finished-unit|tossed> [--fraction F] [--at DATE]` — explicit state change; for tossed, --fraction is the AMOUNT TOSSED (partial toss decrements + stays alive, terminal only at zero remainder or when omitted); finished-unit is a counted item's integer one-unit decrement. These four are CONSUMPTION/WASTE verbs only — the fifth state, dismissed, has its own verb ('inventory dismiss') and is what retires a record that was never real
+- `scripts/kitchen-axi inventory recount <ulid> [--fraction F] [--units-remaining N] [--units-total N] [--uncounted] [--state stocked|open] [--opened-at DATE] [--notes T]` — RECONCILE the ledger to observed reality ("it's actually 75% full", "really 2 of 3 cans", "never opened") — a correction, NOT a consumption event; never invents a clock, re-derives eat_by, can reclassify the unit model, and --state can resurrect a mis-closed item
+- `scripts/kitchen-axi inventory dismiss <ulid> [--non-inventory]` — RETIRE a record that was never real stock — a phantom item, or a non-grocery receipt line (housewares). The ONLY terminal that claims neither consumption nor waste, so it never pollutes either telemetry: never close a phantom with 'event finished' (a consumption that didn't happen) or 'event tossed' (waste that didn't happen). --non-inventory also dismisses same-line siblings and teaches future receipts to skip the line. 409 if the item is already terminal
+- `scripts/kitchen-axi inventory merge <ulid> --into <ulid>` — fold a DUPLICATE item (two records, ONE physical package) into a survivor: fills only the survivor's EMPTY identity fields (this is the one way to move product_ulid onto an item), relinks its entries/receipt line/conversions, then retires it as dismissed. Quantities are never summed and the survivor keeps its OWN clock — use this, not dismiss, whenever either record has history
 - `scripts/kitchen-axi inventory remark "<free text>" [--at DATE]` — free-text event resolver — matches a remark to an item and infers opened/finished/tossed; prints matched/unmatched honestly (unmatched is normal, not an error)
 - `scripts/kitchen-axi inventory questions [--limit N]` — open needs-info items as one-time questions
 - `scripts/kitchen-axi inventory convert [--from <ulid>[:amount]…] --to '<derived spec json>' [--at DATE]` — prep transform: create a NEW derived item with its own clock + provenance, optionally decrementing source item(s) (count or fraction); --from is OPTIONAL — with none it is a source-less "I made this" that decrements nothing. Pass --to recipe_ulid to make the item one-tap consume-eligible. THIS is how prepped food reaches the consume shelf — never plain 'inventory add'

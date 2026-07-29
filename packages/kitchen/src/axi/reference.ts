@@ -116,7 +116,19 @@ export const COMMAND_GROUPS: CommandGroup[] = [
       },
       {
         usage: "inventory event <ulid> <opened|finished|finished-unit|tossed> [--fraction F] [--at DATE]",
-        summary: "explicit state change; for tossed, --fraction is the AMOUNT TOSSED (partial toss decrements + stays alive, terminal only at zero remainder or when omitted); finished-unit is a counted item's integer one-unit decrement",
+        summary: "explicit state change; for tossed, --fraction is the AMOUNT TOSSED (partial toss decrements + stays alive, terminal only at zero remainder or when omitted); finished-unit is a counted item's integer one-unit decrement. These four are CONSUMPTION/WASTE verbs only — the fifth state, dismissed, has its own verb ('inventory dismiss') and is what retires a record that was never real",
+      },
+      {
+        usage: "inventory recount <ulid> [--fraction F] [--units-remaining N] [--units-total N] [--uncounted] [--state stocked|open] [--opened-at DATE] [--notes T]",
+        summary: "RECONCILE the ledger to observed reality (\"it's actually 75% full\", \"really 2 of 3 cans\", \"never opened\") — a correction, NOT a consumption event; never invents a clock, re-derives eat_by, can reclassify the unit model, and --state can resurrect a mis-closed item",
+      },
+      {
+        usage: "inventory dismiss <ulid> [--non-inventory]",
+        summary: "RETIRE a record that was never real stock — a phantom item, or a non-grocery receipt line (housewares). The ONLY terminal that claims neither consumption nor waste, so it never pollutes either telemetry: never close a phantom with 'event finished' (a consumption that didn't happen) or 'event tossed' (waste that didn't happen). --non-inventory also dismisses same-line siblings and teaches future receipts to skip the line. 409 if the item is already terminal",
+      },
+      {
+        usage: "inventory merge <ulid> --into <ulid>",
+        summary: "fold a DUPLICATE item (two records, ONE physical package) into a survivor: fills only the survivor's EMPTY identity fields (this is the one way to move product_ulid onto an item), relinks its entries/receipt line/conversions, then retires it as dismissed. Quantities are never summed and the survivor keeps its OWN clock — use this, not dismiss, whenever either record has history",
       },
       { usage: 'inventory remark "<free text>" [--at DATE]', summary: "free-text event resolver — matches a remark to an item and infers opened/finished/tossed; prints matched/unmatched honestly (unmatched is normal, not an error)" },
       { usage: "inventory questions [--limit N]", summary: "open needs-info items as one-time questions" },

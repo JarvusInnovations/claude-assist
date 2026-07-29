@@ -6,7 +6,12 @@ import { sumEffective, effectiveMacro, targetLine, nestedSugarLine } from "./for
 import { commandReferenceText, COMMAND_GROUPS, MACRO_PANEL_FLAGS, MACRO_PANEL_FLAG_NAMES } from "./reference.js";
 import { spliceGeneratedRegions, commandReferenceMarkdown } from "./skill.js";
 import { buildLogEntryFields, buildPatchBody } from "./commands/entries.js";
-import { assertConvertShelfLifeClass } from "./commands/inventory.js";
+import {
+  assertConvertShelfLifeClass,
+  assertEventType,
+  buildDismissBody,
+  INVENTORY_HELP,
+} from "./commands/inventory.js";
 import { buildProductWriteBody } from "./commands/products.js";
 import { ensureExplicitOffset } from "./commands/weigh-ins.js";
 
@@ -430,6 +435,61 @@ describe("product write body (§ Product corrections)", () => {
     expect(() => buildProductWriteBody({ "shelf-life": "cupboard" })).toThrow(AxiError);
     expect(() => buildProductWriteBody({ "unit-model": "sealed" })).toThrow(AxiError);
     expect(buildProductWriteBody({ "unit-model": "counted" })).toEqual({ unit_model_hint: "counted" });
+  });
+});
+
+describe("inventory retirement + merge are reachable and discoverable", () => {
+  it("documents dismiss, merge, and recount in the generated reference", () => {
+    // The whole defect this closes: `dismiss` shipped server-side but appeared
+    // in neither the CLI's command list nor the event enum, so the only
+    // retirement an agent could FIND was `event finished` — a consumption that
+    // never happened. A verb absent from the reference is a verb agents fall
+    // back from.
+    const text = commandReferenceText();
+    for (const usage of ["inventory dismiss <ulid>", "inventory merge <ulid> --into <ulid>", "inventory recount <ulid>"]) {
+      expect(text).toContain(usage);
+    }
+  });
+
+  it("enumerates every reachable state, and the verb for each, in the inventory help", () => {
+    for (const state of ["stocked", "open", "finished", "tossed", "dismissed"]) {
+      expect(INVENTORY_HELP).toContain(state);
+    }
+    // Not just the names — how each is reached, including the way back out.
+    expect(INVENTORY_HELP).toContain("inventory dismiss <ulid>");
+    expect(INVENTORY_HELP).toContain("recount --state stocked|open");
+  });
+
+  it("redirects `event … dismissed` to the real verb instead of refusing flatly", () => {
+    expect(() => assertEventType("dismissed", "01ABC")).toThrow(AxiError);
+    try {
+      assertEventType("dismissed", "01ABC");
+      throw new Error("should have thrown");
+    } catch (err) {
+      const suggestions = (err as AxiError).suggestions.join(" ");
+      expect(suggestions).toContain("inventory dismiss 01ABC");
+      expect(suggestions).toContain("--non-inventory");
+    }
+    // A genuinely unknown type still names the enum — and still points at the
+    // fifth state's verb, so the enum is never a dead end.
+    try {
+      assertEventType("archived");
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect((err as AxiError).message).toContain("finished-unit");
+      expect((err as AxiError).message).toContain("inventory dismiss");
+    }
+    for (const ok of ["opened", "finished", "finished-unit", "tossed"]) {
+      expect(() => assertEventType(ok)).not.toThrow();
+    }
+  });
+
+  it("sends non_inventory only when asked (a one-off phantom must not teach the parser a rule)", () => {
+    expect(buildDismissBody({})).toEqual({});
+    expect(buildDismissBody({ "non-inventory": true })).toEqual({ non_inventory: true });
+    // `--at` goes through the same bare-date coercion every other verb uses
+    // (local noon, never midnight UTC — which would land on the wrong day).
+    expect(String(buildDismissBody({ at: "2026-07-19" }).at)).toStartWith("2026-07-19T12:00:00");
   });
 });
 
