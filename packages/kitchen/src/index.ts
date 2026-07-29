@@ -16,6 +16,7 @@ import {
   createPlugin,
   type PluginOptions,
   type Scheduler,
+  type WorksheetCookSink,
 } from '@jarvus/claude-assist-core';
 import { PgEntryStore, PgExpenditureStore, PgRecipeStore, PgStravaOAuthStore, PgWeighInStore } from './store.js';
 import { KitchenEstimator } from './services/estimator.js';
@@ -40,6 +41,7 @@ import {
   stravaSyncCron,
 } from './services/strava-sync.js';
 import { registerInventoryRoutes } from './routes/inventory.js';
+import { KitchenCookMode } from './services/cook-mode.js';
 import type { EventResolution } from './inventory-types.js';
 import type { RecipeRecord } from './types.js';
 
@@ -58,6 +60,14 @@ export interface KitchenRecipesSurface {
   listAll(): Promise<RecipeRecord[]>;
 }
 
+/**
+ * The kitchen module's cook-mode surface (§ Cook mode): a worksheet submission
+ * lands as a directly-stated entry (eaten) or a conversion (packed). The server
+ * injects this into the pages module's config as its `worksheetCookSink`, so the
+ * two packages never import each other. Structurally a `WorksheetCookSink`.
+ */
+export type KitchenCookModeSurface = WorksheetCookSink;
+
 // Module augmentation for fastify decorators
 declare module 'fastify' {
   interface FastifyInstance {
@@ -75,6 +85,11 @@ declare module 'fastify' {
      * module's stock-aware suggestion provider (no cross-package import).
      */
     kitchenRecipes?: KitchenRecipesSurface;
+    /**
+     * Worksheet cook-mode sink, present only when the kitchen module is loaded.
+     * The server reads this to configure the pages module's cook-mode seam.
+     */
+    kitchenCookMode?: KitchenCookModeSurface;
   }
 }
 
@@ -217,6 +232,14 @@ export default createPlugin('kitchen', async (fastify: FastifyInstance, options:
   fastify.decorate('kitchenRecipes', {
     listAll: () => pipeline.listAllRecipes(),
   } satisfies KitchenRecipesSurface);
+
+  // Cook-mode seam (§ Cook mode): submitting a prep worksheet IS the log. Lands
+  // on the existing contracts — a directly-stated entry when eaten, a
+  // conversion when packed — keyed on the submission's ULID for idempotency.
+  fastify.decorate(
+    'kitchenCookMode',
+    new KitchenCookMode({ entries: pipeline, inventory }) satisfies KitchenCookModeSurface
+  );
 
   if (!config.disableEstimation) {
     fastify.scheduler.register({
