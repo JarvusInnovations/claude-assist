@@ -4,7 +4,7 @@ depends: [product-corrections]
 specs:
   - specs/modules/kitchen.md
 issues: [162]
-pr:
+pr: 163
 ---
 
 # Plan: Item corrections — reach `dismiss` from the CLI, and merge duplicate items
