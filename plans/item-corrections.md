@@ -250,6 +250,17 @@ implementation does not re-litigate them.
   path to catch a mistake it cannot actually identify. The moment the duplicate
   becomes detectable is the label *resolve*, which is a different feature — filed
   as a follow-up rather than half-built here.
+- **The Postgres relink was validated against a real Postgres, not only its memory
+  mirror.** The unit suite exercises `MemoryInventoryStore`, so the four pg
+  statements — and especially the JSONB `sources[].item_ulid` rewrite and the
+  `derived_item_ulid` UNIQUE guard — had no test coverage of the SQL itself. Applied
+  all 18 kitchen migrations to a throwaway container, re-applied `018` to confirm
+  idempotency (`ADD COLUMN IF NOT EXISTS` + the `DO $$` CHECK block both no-op), and
+  ran each relink statement over real rows: entry moved, batch line moved,
+  derivation moved, `sources[0].item_ulid` rewritten in place with order preserved,
+  loser `dismissed` with `merged_into` set, and a second loser's derivation
+  correctly refusing to move once the survivor had one. An empty `sources` array
+  survives the rewrite as `[]` rather than NULL (the `COALESCE` in the aggregate).
 - Verified before opening the PR: `bun run test` exit 0, every workspace package
   `0 fail` (kitchen 463 pass); `bun run build` exit 0 (14/14); `bun run
   type-check:axi` clean; `bun run check:skills` reports all four bundles and
