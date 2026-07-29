@@ -48,6 +48,7 @@ import type {
 } from '../inventory-types.js';
 import { CONVERT_SHELF_LIFE_CLASSES, PACKAGE_DURABLE_SHELF_LIFE_CLASSES } from '../inventory-types.js';
 import type {
+  ConversionSourceWrite,
   InventoryStore,
   ItemIdentityPatch,
   ItemStateUpdate,
@@ -55,6 +56,7 @@ import type {
   NewProduct,
   ProductPatch,
 } from '../inventory-store.js';
+import { applyItemStateUpdate } from '../inventory-store.js';
 import {
   deriveEatBy,
   normalizeLexiconLine,
@@ -971,6 +973,13 @@ export class InventoryPipeline {
    *
    * Throws (plain Error, → 400 at the route) when a source is unknown, already
    * terminal, or supplied a non-integer amount against a counted item.
+   *
+   * **Atomic** (§ Conversions § Atomicity): validation and decrement PLANNING
+   * run first and write nothing, then every write — each source's decrement, the
+   * derived item's insert, the derivation's insert — is applied as one unit by
+   * `store.applyConversion`. A failure at any point leaves the ledger exactly as
+   * it was; in particular there is no window in which the sources are spent and
+   * the derived item was never created.
    */
   async convert(input: ConvertInput): Promise<ConvertResult> {
     if (!input.derived?.name?.trim()) {
@@ -993,16 +1002,27 @@ export class InventoryPipeline {
 
     // `sources` is optional: a source-less conversion registers a prepared
     // item ("I made this") with empty provenance, decrementing nothing.
-    const sourceRecords: InventoryItemRecord[] = [];
+    //
+    // This loop only VALIDATES and PLANS — nothing is written until
+    // `store.applyConversion` below, so a rejected source (unknown, terminal,
+    // bad amount) can't leave an earlier source already spent.
+    const sourceWrites: ConversionSourceWrite[] = [];
     const provenance: DerivationSource[] = [];
+    // A source may legitimately appear twice in one conversion (spend two units
+    // of the same pack into two provenance lines). Each plan must see the
+    // PROJECTED state its predecessors leave behind, exactly as the old
+    // write-as-you-go loop's re-read did, so the second occurrence decrements
+    // the remainder rather than recomputing from the original quantity.
+    const projected = new Map<string, InventoryItemRecord>();
     for (const src of input.sources ?? []) {
-      const item = await this.store.getItem(src.item_ulid);
+      const item = projected.get(src.item_ulid) ?? (await this.store.getItem(src.item_ulid));
       if (!item) throw new ConversionValidationError(`convert source item not found: ${src.item_ulid}`);
       if (isTerminal(item.state)) {
         throw new InvalidTransitionError(item.state, 'finished'); // a terminal item has nothing left to spend
       }
-      const { updated, consumed, kind } = await this.applyConversionDecrement(item, src.amount, at);
-      sourceRecords.push(updated);
+      const { update, consumed, kind } = this.planConversionDecrement(item, src.amount, at);
+      sourceWrites.push({ item_ulid: item.ulid, update });
+      projected.set(item.ulid, applyItemStateUpdate(item, update));
       provenance.push({ item_ulid: item.ulid, amount: consumed, amount_kind: kind });
     }
 
@@ -1015,28 +1035,37 @@ export class InventoryPipeline {
     const cls: ShelfLifeClass = derived.shelf_life_class ?? 'prepared';
     const eatBy = deriveEatBy({ shelfLifeClass: cls, acquiredAt, openedAt: null });
     const unitsTotal = derived.units_total ?? null;
-    const { record: derivedRecord } = await this.store.insertItemIfAbsent({
-      ulid: generateUlid(),
-      product_ulid: null,
-      raw_label: derived.name.trim(),
-      store: derived.store ?? null,
-      batch_ulid: null,
-      state: 'stocked',
-      on_hand_fraction: unitsTotal != null ? 1 : (derived.on_hand_fraction ?? 1),
-      units_total: unitsTotal,
-      units_remaining: unitsTotal,
-      needs_info: false,
-      acquired_at: acquiredAt,
-      eat_by: eatBy,
-      shelf_life_class: cls,
-      notes: derived.notes ?? null,
-    });
+    const derivedUlid = generateUlid();
 
-    const derivation = await this.store.insertDerivation({
-      ulid: generateUlid(),
-      derived_item_ulid: derivedRecord.ulid,
-      sources: provenance,
-      recipe_ulid: derived.recipe_ulid ?? null,
+    // ONE atomic write for all three phases (§ Conversions § Atomicity).
+    const {
+      sources: sourceRecords,
+      derived: derivedRecord,
+      derivation,
+    } = await this.store.applyConversion({
+      sources: sourceWrites,
+      derived: {
+        ulid: derivedUlid,
+        product_ulid: null,
+        raw_label: derived.name.trim(),
+        store: derived.store ?? null,
+        batch_ulid: null,
+        state: 'stocked',
+        on_hand_fraction: unitsTotal != null ? 1 : (derived.on_hand_fraction ?? 1),
+        units_total: unitsTotal,
+        units_remaining: unitsTotal,
+        needs_info: false,
+        acquired_at: acquiredAt,
+        eat_by: eatBy,
+        shelf_life_class: cls,
+        notes: derived.notes ?? null,
+      },
+      derivation: {
+        ulid: generateUlid(),
+        derived_item_ulid: derivedUlid,
+        sources: provenance,
+        recipe_ulid: derived.recipe_ulid ?? null,
+      },
     });
 
     return {
@@ -1047,22 +1076,27 @@ export class InventoryPipeline {
   }
 
   /**
-   * Decrement one conversion source by `amount`, interpreted per the source's
-   * OWN on-hand model: a counted item (units_total/units_remaining both set)
-   * takes a whole-unit integer count; a fraction-modeled item takes a fraction
-   * (0..1). Omitted `amount` fully consumes the source (all remaining units, or
-   * the whole remaining fraction). Reaching zero goes terminal `finished`
-   * (mirrors `finished-unit`/full-toss); otherwise the item stays alive with
-   * the decremented quantity, state/opened_at/eat_by unchanged — spending SOME
-   * of a source doesn't touch which unit (if any) is currently open. Returns
-   * the updated record plus the normalized amount/kind actually recorded, for
-   * the derivation's provenance.
+   * Plan (do NOT apply) one conversion source's decrement by `amount`,
+   * interpreted per the source's OWN on-hand model: a counted item
+   * (units_total/units_remaining both set) takes a whole-unit integer count; a
+   * fraction-modeled item takes a fraction (0..1). Omitted `amount` fully
+   * consumes the source (all remaining units, or the whole remaining fraction).
+   * Reaching zero goes terminal `finished` (mirrors `finished-unit`/full-toss);
+   * otherwise the item stays alive with the decremented quantity,
+   * state/opened_at/eat_by unchanged — spending SOME of a source doesn't touch
+   * which unit (if any) is currently open. Returns the update to apply plus the
+   * normalized amount/kind actually recorded, for the derivation's provenance.
+   *
+   * Pure and synchronous by design: the whole point is that the amount validation
+   * (a non-integer count against a counted source) happens with nothing yet
+   * written, so `convert` can hand every planned write to `applyConversion` at
+   * once (§ Conversions § Atomicity).
    */
-  private async applyConversionDecrement(
+  private planConversionDecrement(
     item: InventoryItemRecord,
     amount: number | undefined,
     at: Date
-  ): Promise<{ updated: InventoryItemRecord; consumed: number; kind: 'fraction' | 'count' }> {
+  ): { update: ItemStateUpdate; consumed: number; kind: 'fraction' | 'count' } {
     if (item.units_total != null && item.units_remaining != null) {
       const consume = amount === undefined ? item.units_remaining : amount;
       if (!Number.isInteger(consume) || consume < 1) {
@@ -1071,25 +1105,20 @@ export class InventoryPipeline {
         );
       }
       const remaining = Math.max(0, item.units_remaining - consume);
-      const updated =
+      const update: ItemStateUpdate =
         remaining === 0
-          ? await this.store.updateItemState(item.ulid, {
-              state: 'finished',
-              closed_at: at,
-              on_hand_fraction: 0,
-              units_remaining: 0,
-            })
-          : await this.store.updateItemState(item.ulid, { state: item.state, units_remaining: remaining });
-      return { updated: updated!, consumed: Math.min(consume, item.units_remaining), kind: 'count' };
+          ? { state: 'finished', closed_at: at, on_hand_fraction: 0, units_remaining: 0 }
+          : { state: item.state, units_remaining: remaining };
+      return { update, consumed: Math.min(consume, item.units_remaining), kind: 'count' };
     }
 
     const consume = clampFraction(amount === undefined ? item.on_hand_fraction : amount);
     const remaining = clampFraction(item.on_hand_fraction - consume);
-    const updated =
+    const update: ItemStateUpdate =
       remaining <= 0
-        ? await this.store.updateItemState(item.ulid, { state: 'finished', closed_at: at, on_hand_fraction: 0 })
-        : await this.store.updateItemState(item.ulid, { state: item.state, on_hand_fraction: remaining });
-    return { updated: updated!, consumed: consume, kind: 'fraction' };
+        ? { state: 'finished', closed_at: at, on_hand_fraction: 0 }
+        : { state: item.state, on_hand_fraction: remaining };
+    return { update, consumed: consume, kind: 'fraction' };
   }
 
   // ── Consume from inventory (one-tap known-macro log + deplete) ──────────────

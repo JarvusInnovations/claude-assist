@@ -145,6 +145,32 @@ export interface NewDerivation {
   recipe_ulid: string | null;
 }
 
+/** One conversion source's pre-computed decrement, applied inside `applyConversion`. */
+export interface ConversionSourceWrite {
+  item_ulid: string;
+  update: ItemStateUpdate;
+}
+
+/**
+ * The complete set of writes one conversion performs (§ Conversions §
+ * Atomicity). The service decides WHAT each write is — how much comes off each
+ * source, the derived item's clock, the provenance list — and hands the whole
+ * set here so the store can apply it as one unit. Sources are applied in the
+ * order given, matching the order the service validated and planned them in.
+ */
+export interface ConversionWrite {
+  sources: ConversionSourceWrite[];
+  derived: NewItem;
+  derivation: NewDerivation;
+}
+
+export interface ConversionWriteResult {
+  /** The decremented sources, in the order they were supplied. */
+  sources: InventoryItemRecord[];
+  derived: InventoryItemRecord;
+  derivation: InventoryDerivationRecord;
+}
+
 export interface ResolveNeedsInfo {
   product_ulid: string;
   shelf_life_class: ShelfLifeClass | null;
@@ -271,6 +297,26 @@ export interface InventoryStore {
   // Derivations (conversion provenance — § Conversions)
   insertDerivation(derivation: NewDerivation): Promise<InventoryDerivationRecord>;
   getDerivationsByDerivedItemUlids(ulids: string[]): Promise<Map<string, InventoryDerivationRecord>>;
+
+  /**
+   * Apply one conversion's every write as ONE atomic unit (§ Conversions §
+   * Atomicity): each source's decrement, the derived item's insert, and the
+   * derivation's insert. A failure at any point leaves NONE of them applied —
+   * never sources spent with no derived item (food deleted from the ledger in
+   * the direction nothing downstream flags), never a derived item with no
+   * provenance (which would break cost attribution and cross-transform
+   * eat-first reasoning).
+   *
+   * Deliberately ONE store method rather than the service composing
+   * `updateItemState` × N + `insertItemIfAbsent` + `insertDerivation`, for the
+   * same reason `ConsumeStore.consume` exists (services/consume-store.ts): a
+   * transaction cannot be composed out of separate store calls. Unlike
+   * `consume`, every table a conversion touches (`kitchen.inventory_items`,
+   * `kitchen.inventory_derivations`) is owned by THIS store, so no store seam
+   * is crossed and the transaction needs no second interface — the memory
+   * implementation is the same mirror of this one every other method has.
+   */
+  applyConversion(write: ConversionWrite): Promise<ConversionWriteResult>;
 }
 
 // ── Helpers (shared with memory store via export) ─────────────────────────────
@@ -370,6 +416,34 @@ export function rowToItem(row: Record<string, unknown>): InventoryItemRecord {
     merged_into: (row.merged_into as string | null) ?? null,
     created_at: toDate(row.created_at),
     updated_at: toDate(row.updated_at),
+  };
+}
+
+/**
+ * The reference definition of what an `ItemStateUpdate` does to an item record:
+ * `state` always lands, every other field is a present-means-replace patch.
+ * `MemoryInventoryStore.updateItemState` merges through this directly, and the
+ * conversion planner uses it to PROJECT a source's post-decrement state without
+ * writing it (`InventoryPipeline.convert` has to plan a second decrement against
+ * the first one's result). `PgInventoryStore`'s UPDATE necessarily restates the
+ * same merge in SQL, column for column — keep the two in step.
+ * Pure: returns a new record, mutates nothing.
+ */
+export function applyItemStateUpdate(
+  current: InventoryItemRecord,
+  update: ItemStateUpdate
+): InventoryItemRecord {
+  return {
+    ...current,
+    state: update.state,
+    opened_at: update.opened_at !== undefined ? update.opened_at : current.opened_at,
+    closed_at: update.closed_at !== undefined ? update.closed_at : current.closed_at,
+    on_hand_fraction: update.on_hand_fraction !== undefined ? update.on_hand_fraction : current.on_hand_fraction,
+    units_remaining: update.units_remaining !== undefined ? update.units_remaining : current.units_remaining,
+    units_total: update.units_total !== undefined ? update.units_total : current.units_total,
+    eat_by: update.eat_by !== undefined ? update.eat_by : current.eat_by,
+    notes: update.notes !== undefined ? update.notes : current.notes,
+    updated_at: new Date(),
   };
 }
 
@@ -624,8 +698,16 @@ export class PgInventoryStore implements InventoryStore {
     return rows.map(rowToLexicon);
   }
 
-  async insertItemIfAbsent(item: NewItem): Promise<{ record: InventoryItemRecord; created: boolean }> {
-    const inserted = await this.sql`
+  // The item/derivation writes a conversion needs are parameterized on their
+  // `sql` handle rather than reaching for `this.sql`, so `applyConversion` can
+  // re-issue the SAME statements against a transaction handle instead of
+  // duplicating them (the drift `PgConsumeStore`'s inline copies risk).
+
+  private async insertItemIfAbsentWith(
+    sql: postgres.Sql,
+    item: NewItem
+  ): Promise<{ record: InventoryItemRecord; created: boolean }> {
+    const inserted = await sql`
       INSERT INTO kitchen.inventory_items
         (ulid, product_ulid, raw_label, store, batch_ulid, state, on_hand_fraction,
          units_total, units_remaining, needs_info, acquired_at, eat_by, shelf_life_class, notes)
@@ -638,14 +720,60 @@ export class PgInventoryStore implements InventoryStore {
       RETURNING *
     `;
     if (inserted.length > 0) return { record: rowToItem(inserted[0]!), created: true };
-    const existing = await this.getItem(item.ulid);
+    const existing = await this.getItemWith(sql, item.ulid);
     if (!existing) throw new Error(`Inventory item ${item.ulid} conflicted on insert but is not readable`);
     return { record: existing, created: false };
   }
 
-  async getItem(ulid: string): Promise<InventoryItemRecord | null> {
-    const [row] = await this.sql`SELECT * FROM kitchen.inventory_items WHERE ulid = ${ulid}`;
+  private async getItemWith(sql: postgres.Sql, ulid: string): Promise<InventoryItemRecord | null> {
+    const [row] = await sql`SELECT * FROM kitchen.inventory_items WHERE ulid = ${ulid}`;
     return row ? rowToItem(row) : null;
+  }
+
+  private async updateItemStateWith(
+    sql: postgres.Sql,
+    ulid: string,
+    update: ItemStateUpdate
+  ): Promise<InventoryItemRecord | null> {
+    const current = await this.getItemWith(sql, ulid);
+    if (!current) return null;
+    const [row] = await sql`
+      UPDATE kitchen.inventory_items SET
+        state = ${update.state},
+        opened_at = ${update.opened_at !== undefined ? update.opened_at : current.opened_at},
+        closed_at = ${update.closed_at !== undefined ? update.closed_at : current.closed_at},
+        on_hand_fraction = ${update.on_hand_fraction ?? current.on_hand_fraction},
+        units_remaining = ${update.units_remaining !== undefined ? update.units_remaining : current.units_remaining},
+        units_total = ${update.units_total !== undefined ? update.units_total : current.units_total},
+        eat_by = ${update.eat_by !== undefined ? update.eat_by : current.eat_by},
+        notes = ${update.notes !== undefined ? update.notes : current.notes}
+      WHERE ulid = ${ulid}
+      RETURNING *
+    `;
+    return row ? rowToItem(row) : null;
+  }
+
+  private async insertDerivationWith(
+    sql: postgres.Sql,
+    derivation: NewDerivation
+  ): Promise<InventoryDerivationRecord> {
+    const [row] = await sql`
+      INSERT INTO kitchen.inventory_derivations (ulid, derived_item_ulid, sources, recipe_ulid)
+      VALUES (
+        ${derivation.ulid}, ${derivation.derived_item_ulid}, ${sql.json(derivation.sources as never)},
+        ${derivation.recipe_ulid}
+      )
+      RETURNING *
+    `;
+    return rowToDerivation(row!);
+  }
+
+  async insertItemIfAbsent(item: NewItem): Promise<{ record: InventoryItemRecord; created: boolean }> {
+    return this.insertItemIfAbsentWith(this.sql, item);
+  }
+
+  async getItem(ulid: string): Promise<InventoryItemRecord | null> {
+    return this.getItemWith(this.sql, ulid);
   }
 
   async listItems(filter: ItemListFilter): Promise<InventoryItemRecord[]> {
@@ -671,22 +799,7 @@ export class PgInventoryStore implements InventoryStore {
   }
 
   async updateItemState(ulid: string, update: ItemStateUpdate): Promise<InventoryItemRecord | null> {
-    const current = await this.getItem(ulid);
-    if (!current) return null;
-    const [row] = await this.sql`
-      UPDATE kitchen.inventory_items SET
-        state = ${update.state},
-        opened_at = ${update.opened_at !== undefined ? update.opened_at : current.opened_at},
-        closed_at = ${update.closed_at !== undefined ? update.closed_at : current.closed_at},
-        on_hand_fraction = ${update.on_hand_fraction ?? current.on_hand_fraction},
-        units_remaining = ${update.units_remaining !== undefined ? update.units_remaining : current.units_remaining},
-        units_total = ${update.units_total !== undefined ? update.units_total : current.units_total},
-        eat_by = ${update.eat_by !== undefined ? update.eat_by : current.eat_by},
-        notes = ${update.notes !== undefined ? update.notes : current.notes}
-      WHERE ulid = ${ulid}
-      RETURNING *
-    `;
-    return row ? rowToItem(row) : null;
+    return this.updateItemStateWith(this.sql, ulid, update);
   }
 
   async setItemFraction(ulid: string, fraction: number): Promise<InventoryItemRecord | null> {
@@ -878,15 +991,34 @@ export class PgInventoryStore implements InventoryStore {
   }
 
   async insertDerivation(derivation: NewDerivation): Promise<InventoryDerivationRecord> {
-    const [row] = await this.sql`
-      INSERT INTO kitchen.inventory_derivations (ulid, derived_item_ulid, sources, recipe_ulid)
-      VALUES (
-        ${derivation.ulid}, ${derivation.derived_item_ulid}, ${this.sql.json(derivation.sources as never)},
-        ${derivation.recipe_ulid}
-      )
-      RETURNING *
-    `;
-    return rowToDerivation(row!);
+    return this.insertDerivationWith(this.sql, derivation);
+  }
+
+  async applyConversion(write: ConversionWrite): Promise<ConversionWriteResult> {
+    return this.sql.begin(async (rawTx) => {
+      // postgres.js's TransactionSql type drops the tagged-template call
+      // signature (a TS/Omit limitation) even though it's present at runtime —
+      // same cast services/consume-store.ts and packages/pages/src/store.ts use
+      // for their own `sql.begin` transactions.
+      const tx = rawTx as unknown as postgres.Sql;
+
+      const sources: InventoryItemRecord[] = [];
+      for (const source of write.sources) {
+        const updated = await this.updateItemStateWith(tx, source.item_ulid, source.update);
+        if (!updated) {
+          // Validated as present before the transaction opened, so this is a
+          // concurrent delete — abort and roll every sibling decrement back
+          // rather than proceed with a source that isn't there.
+          throw new Error(`applyConversion: source item ${source.item_ulid} not found mid-transaction`);
+        }
+        sources.push(updated);
+      }
+
+      const { record: derived } = await this.insertItemIfAbsentWith(tx, write.derived);
+      const derivation = await this.insertDerivationWith(tx, write.derivation);
+
+      return { sources, derived, derivation };
+    });
   }
 
   async getDerivationsByDerivedItemUlids(ulids: string[]): Promise<Map<string, InventoryDerivationRecord>> {

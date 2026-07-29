@@ -1702,7 +1702,11 @@ Item mutation:
   any source terminates it `finished`, mirroring `finished-unit`/full-toss) and
   creates ONE new `stocked` item with its own `eat_by` (derived the same way a
   fresh item's is) and a `kitchen.inventory_derivations` row linking it to its
-  sources (empty when source-less).
+  sources (empty when source-less). **Atomic** (ONE transaction — see
+  § Conversions § Atomicity): all three write phases land or none do, so a failed
+  request leaves the ledger untouched. **Not idempotent** — the derived ULID is
+  server-minted, so a retry makes a second batch; that is the intended default
+  (§ Conversions § Atomicity).
   Returns `{ sources: InventoryItem[], derived: InventoryItem, derivation:
   InventoryDerivation }` (`201`). `400` `ConversionValidationError` —
   missing `derived.name`, an unknown source ULID, or a non-integer
@@ -2107,6 +2111,52 @@ provenance explains why) and (b) back the on-demand macro inheritance
 freshly-made overnight-oats jar sitting at whatever eat-by its own shelf-life
 class earns it, right alongside everything else.
 
+**Atomicity is a hard requirement.** A conversion's every write — each source's
+decrement, the derived item's insert, the derivation's insert — is ONE atomic
+operation: a failure at any point leaves the ledger **exactly as it was**. Never
+sources spent with no derived item, never a derived item with no provenance, and
+never a partially-decremented source set. Enforced by a single store-level
+method (`InventoryStore.applyConversion`) that wraps all three phases in one
+Postgres transaction (`sql.begin`), the same requirement and the same mechanism
+§ Consume from inventory § Atomicity states for `consume`.
+
+Why this is the load-bearing guarantee here and not a nicety: a prep transform is
+precisely where several tracked inputs are spent at once, and a mid-sequence
+failure fails in the direction where the ledger claims **less** stock than
+reality. Under-reporting is the direction nothing downstream flags — eat-first
+simply stops offering food that is really still in the fridge — so it surfaces
+much later as unexplained drift rather than as an error anyone can trace. The
+second case (a derived item with no derivation row) is quieter but corrupting: it
+breaks cost attribution and, because `derived_from.recipe_ulid` is the only
+macro-inheritance channel (§ Consume from inventory § Eligibility), it silently
+makes a prepared item consume-ineligible.
+
+Unlike `consume`, a conversion crosses no store seam — every table it touches
+(`kitchen.inventory_items`, `kitchen.inventory_derivations`) is owned by
+`InventoryStore` — so this needs no second store interface; the memory
+implementation is the same mirror of the pg one every other store method has.
+
+**Validation precedes the write phase.** The made-food-only shelf-life-class
+guard, each source's existence, the terminal-source check, and the counted-source
+integer-`amount` check all run — and each source's decrement is *planned* —
+before any write is issued. A rejected request therefore never opens a
+transaction, and no source is spent on a conversion that was going to be refused
+for a later source. A source named twice in one conversion has its second
+decrement planned against the state the first leaves behind, so two lines against
+one pack spend two lines' worth.
+
+**Retries are not deduplicated, by design.** A conversion has no client-supplied
+idempotency key, unlike `consume` (whose `ulid` is the entry's — § Consume from
+inventory § Idempotency): the derived item's ULID is minted server-side, so a
+retried `POST /inventory/convert` mints a *second* derived item and spends the
+sources again. That is deliberate and it is the correct default for this verb —
+"I made another batch" is an ordinary, repeated act, so two identical requests
+are far more likely to be two real batches than one double-sent one, and
+collapsing them would lose a batch. Atomicity is what makes each attempt whole;
+deduplicating attempts is a separate contract change (an optional caller-supplied
+derived ULID) and is deliberately not part of it. A caller that did double-send
+corrects it with `inventory dismiss` / `merge` (§ Item corrections).
+
 Examples: 12 raw eggs (counted) → 6 hard-boiled eggs (`sources: [{item_ulid,
 amount: 6}]`, `derived: {units_total: 6, shelf_life_class: 'fridge_short'}`) —
 the egg carton keeps 6 remaining, sealed and unopened-clocked; 1 divisible bag
@@ -2188,13 +2238,14 @@ leaves NEITHER applied — never a logged-but-not-depleted entry, never a
 depleted item with no matching entry. This is enforced by a single store-level
 method (`ConsumeStore.consume`, `packages/kitchen/src/services/consume-store.ts`)
 that wraps both writes in one Postgres transaction (`sql.begin`) rather than
-composing two separate store calls at the service layer — the gap `convert`
-still has (three separate, non-transactional writes: each source's decrement,
-the derived item's insert, and the derivation's insert), flagged in its own
-review and deliberately NOT repeated here. `kitchen.entries` and
+composing two separate store calls at the service layer. **Every multi-write
+inventory event in this module holds the same guarantee by the same mechanism** —
+see § Conversions § Atomicity for `convert`'s (`InventoryStore.applyConversion`),
+which had exactly this gap until it was closed. `kitchen.entries` and
 `kitchen.inventory_items` are each owned by their own store interface for
 testability everywhere else in the module; this is the one path that
-deliberately crosses that boundary, and it exists only for this requirement.
+deliberately crosses that boundary, and it exists only for this requirement
+(`convert` needs no such crossing — every table it writes is `InventoryStore`'s).
 
 **Idempotency.** `ulid` in the request body is the consumption entry's
 client-generated ULID — the idempotency key, mirroring entry-ingest ULID

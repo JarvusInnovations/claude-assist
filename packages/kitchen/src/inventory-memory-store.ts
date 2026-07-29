@@ -15,6 +15,8 @@ import type {
   PurchaseBatchRecord,
 } from './inventory-types.js';
 import type {
+  ConversionWrite,
+  ConversionWriteResult,
   InventoryStore,
   ItemIdentityPatch,
   ItemListFilter,
@@ -29,7 +31,7 @@ import type {
   ProductRelinkCounts,
   ResolveNeedsInfo,
 } from './inventory-store.js';
-import { DEFAULT_ON_HAND_ITEM_STATES } from './inventory-store.js';
+import { applyItemStateUpdate, DEFAULT_ON_HAND_ITEM_STATES } from './inventory-store.js';
 import { deriveEatBy, normalizeLexiconLine, normalizeProductName } from './inventory-derive.js';
 
 function nullsLastEatBy(a: InventoryItemRecord, b: InventoryItemRecord): number {
@@ -39,6 +41,20 @@ function nullsLastEatBy(a: InventoryItemRecord, b: InventoryItemRecord): number 
   return a.acquired_at.getTime() - b.acquired_at.getTime();
 }
 
+/**
+ * Test-only fault injection for `applyConversion`. Each hook fires between two
+ * of the three write phases, INSIDE the try/catch that rolls every applied side
+ * back — so a test can prove atomicity by forcing a mid-operation failure with
+ * otherwise-valid input. Never set in production wiring. (Same role as
+ * `MemoryConsumeStoreTestHooks.beforeItemWrite`.)
+ */
+export interface MemoryInventoryStoreTestHooks {
+  /** After every source decrement lands, before the derived item is inserted. */
+  beforeDerivedInsert?: () => void;
+  /** After the derived item is inserted, before the derivation is. */
+  beforeDerivationInsert?: () => void;
+}
+
 export class MemoryInventoryStore implements InventoryStore {
   readonly products = new Map<string, ProductRecord>();
   readonly lexicon = new Map<string, LexiconRecord>(); // key: `${store}\x00${line_text}`
@@ -46,6 +62,8 @@ export class MemoryInventoryStore implements InventoryStore {
   readonly batches = new Map<string, PurchaseBatchRecord>();
   readonly lines = new Map<string, BatchLineRecord>();
   readonly derivations = new Map<string, InventoryDerivationRecord>(); // key: derived_item_ulid
+
+  constructor(private hooks: MemoryInventoryStoreTestHooks = {}) {}
 
   private lexKey(store: string, lineText: string): string {
     return `${store}\x00${lineText}`;
@@ -281,15 +299,10 @@ export class MemoryInventoryStore implements InventoryStore {
   async updateItemState(ulid: string, update: ItemStateUpdate): Promise<InventoryItemRecord | null> {
     const i = this.items.get(ulid);
     if (!i) return null;
-    i.state = update.state;
-    if (update.opened_at !== undefined) i.opened_at = update.opened_at;
-    if (update.closed_at !== undefined) i.closed_at = update.closed_at;
-    if (update.on_hand_fraction !== undefined) i.on_hand_fraction = update.on_hand_fraction;
-    if (update.units_remaining !== undefined) i.units_remaining = update.units_remaining;
-    if (update.units_total !== undefined) i.units_total = update.units_total;
-    if (update.eat_by !== undefined) i.eat_by = update.eat_by;
-    if (update.notes !== undefined) i.notes = update.notes;
-    i.updated_at = new Date();
+    // Merge through the shared helper (the same one PgInventoryStore's UPDATE
+    // and the conversion planner's projection use), then write it back in place
+    // so the stored object's identity survives.
+    Object.assign(i, applyItemStateUpdate(i, update));
     return structuredClone(i);
   }
 
@@ -473,5 +486,57 @@ export class MemoryInventoryStore implements InventoryStore {
       if (d) map.set(ulid, structuredClone(d));
     }
     return map;
+  }
+
+  /**
+   * Mirrors PgInventoryStore.applyConversion's semantics — all three write
+   * phases land or none do — without a real transaction: each write is applied
+   * through the ordinary store method, and any error before the last one has
+   * landed restores every touched map entry to its pre-call snapshot before
+   * rethrowing. See inventory-store.ts § applyConversion for the rationale.
+   */
+  async applyConversion(write: ConversionWrite): Promise<ConversionWriteResult> {
+    // Snapshot every source BEFORE touching anything. Keyed by ulid, so a
+    // source named twice in one conversion still rolls back to its ONE original
+    // state rather than to the intermediate the first decrement produced.
+    const before = new Map<string, InventoryItemRecord>();
+    for (const source of write.sources) {
+      const current = this.items.get(source.item_ulid);
+      if (!current) throw new Error(`applyConversion: source item ${source.item_ulid} not found`);
+      if (!before.has(source.item_ulid)) before.set(source.item_ulid, structuredClone(current));
+    }
+    const derivedExisted = this.items.has(write.derived.ulid);
+    const derivationBefore = this.derivations.get(write.derivation.derived_item_ulid);
+
+    try {
+      const sources: InventoryItemRecord[] = [];
+      for (const source of write.sources) {
+        const updated = await this.updateItemState(source.item_ulid, source.update);
+        if (!updated) throw new Error(`applyConversion: source item ${source.item_ulid} not found`);
+        sources.push(updated);
+      }
+
+      this.hooks.beforeDerivedInsert?.();
+      const { record: derived } = await this.insertItemIfAbsent(write.derived);
+
+      this.hooks.beforeDerivationInsert?.();
+      if (this.derivations.has(write.derivation.derived_item_ulid)) {
+        // Pg enforces this with a UNIQUE on derived_item_ulid; the mirror has to
+        // fail the same way rather than silently overwriting the provenance.
+        throw new Error(
+          `applyConversion: derivation for derived item ${write.derivation.derived_item_ulid} already exists`
+        );
+      }
+      const derivation = await this.insertDerivation(write.derivation);
+
+      return { sources, derived, derivation };
+    } catch (err) {
+      // Roll every side back — a failure here must leave NOTHING applied.
+      for (const [ulid, snapshot] of before) this.items.set(ulid, snapshot);
+      if (!derivedExisted) this.items.delete(write.derived.ulid);
+      if (derivationBefore) this.derivations.set(write.derivation.derived_item_ulid, derivationBefore);
+      else this.derivations.delete(write.derivation.derived_item_ulid);
+      throw err;
+    }
   }
 }

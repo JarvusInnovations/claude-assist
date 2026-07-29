@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import type { FastifyBaseLogger } from 'fastify';
 import { MemoryInventoryStore } from '../inventory-memory-store.js';
+import type { MemoryInventoryStoreTestHooks } from '../inventory-memory-store.js';
 import { MemoryEntryStore } from '../memory-store.js';
 import { MemoryConsumeStore } from './consume-memory-store.js';
 import {
@@ -1354,6 +1355,194 @@ describe('conversions (prep transforms — § Conversions)', () => {
       });
       expect(result.derived.shelf_life_class).toBe('prepared');
       expect(result.derived.eat_by).toBe('2026-07-14'); // 4 days from make date
+    });
+  });
+
+  // § Conversions § Atomicity. A prep transform is exactly where several tracked
+  // inputs are spent at once, and a mid-sequence failure fails in the direction
+  // where the ledger claims LESS stock than reality — nothing downstream flags
+  // it, so it resurfaces later as unexplained drift. Store-level coverage of the
+  // rollback itself is in inventory-store.test.ts; these prove the pipeline runs
+  // through it and that a rejected request never opens a transaction.
+  describe('atomicity (§ Conversions § Atomicity)', () => {
+    async function multiSourcePipeline(hooks: MemoryInventoryStoreTestHooks = {}) {
+      const store = new MemoryInventoryStore(hooks);
+      const pipeline = new InventoryPipeline(store, null, null, log);
+      const { item: eggs } = await pipeline.createItem({
+        raw_label: 'Egg dozen', shelf_life_class: 'fridge_long', acquired_at: '2026-07-01', units_total: 12,
+      });
+      const { item: yogurt } = await pipeline.createItem({
+        raw_label: 'Yogurt tub', shelf_life_class: 'fridge_short', acquired_at: '2026-07-08',
+      });
+      const { item: oats } = await pipeline.createItem({
+        raw_label: 'Rolled oats', shelf_life_class: 'pantry', acquired_at: '2026-06-01',
+      });
+      return { store, pipeline, eggs, yogurt, oats };
+    }
+
+    const threeSources = (eggs: string, yogurt: string, oats: string) => ({
+      sources: [
+        { item_ulid: eggs, amount: 6 },
+        { item_ulid: yogurt }, // omitted → fully consumed, goes terminal
+        { item_ulid: oats, amount: 0.25 },
+      ],
+      derived: { name: 'Sunday batch', units_total: 4 },
+      at: '2026-07-12',
+    });
+
+    it('a failure creating the derived item rolls back EVERY source, not just the last', async () => {
+      const { store, pipeline, eggs, yogurt, oats } = await multiSourcePipeline({
+        beforeDerivedInsert: () => {
+          throw new Error('derived insert failed');
+        },
+      });
+
+      await expect(pipeline.convert(threeSources(eggs.ulid, yogurt.ulid, oats.ulid))).rejects.toThrow(
+        'derived insert failed'
+      );
+
+      // Every input is exactly where it was — including the first-planned source,
+      // the one a partial undo would leave spent.
+      const eggsAfter = await pipeline.getItemView(eggs.ulid);
+      expect(eggsAfter!.units_remaining).toBe(12);
+      expect(eggsAfter!.state).toBe('stocked');
+      const yogurtAfter = await pipeline.getItemView(yogurt.ulid);
+      expect(yogurtAfter!.state).toBe('stocked'); // NOT finished
+      expect(yogurtAfter!.on_hand_fraction).toBe(1);
+      expect(yogurtAfter!.closed_at).toBeNull();
+      const oatsAfter = await pipeline.getItemView(oats.ulid);
+      expect(oatsAfter!.on_hand_fraction).toBe(1);
+
+      // And the output never appeared.
+      const onHand = await pipeline.listInventory({});
+      expect(onHand.some((i) => i.raw_label === 'Sunday batch')).toBe(false);
+      expect(onHand).toHaveLength(3);
+      expect(store.derivations.size).toBe(0);
+    });
+
+    it('a failure recording provenance leaves the derived item invisible, sources unspent', async () => {
+      const { store, pipeline, eggs, yogurt, oats } = await multiSourcePipeline({
+        beforeDerivationInsert: () => {
+          throw new Error('derivation insert failed');
+        },
+      });
+
+      await expect(pipeline.convert(threeSources(eggs.ulid, yogurt.ulid, oats.ulid))).rejects.toThrow(
+        'derivation insert failed'
+      );
+
+      // A derived item with no provenance is not consume-eligible and has no cost
+      // attribution, so it must not survive the failure either.
+      const onHand = await pipeline.listInventory({});
+      expect(onHand.some((i) => i.raw_label === 'Sunday batch')).toBe(false);
+      expect(onHand).toHaveLength(3);
+      expect(store.derivations.size).toBe(0);
+      expect((await pipeline.getItemView(eggs.ulid))!.units_remaining).toBe(12);
+      expect((await pipeline.getItemView(yogurt.ulid))!.state).toBe('stocked');
+    });
+
+    it('a rejected request never reaches the write phase (validation runs before it)', async () => {
+      // The hooks fire INSIDE the atomic write, so tripping one would prove the
+      // write phase opened. A request rejected in validation must never get there.
+      const { pipeline, eggs, yogurt } = await multiSourcePipeline({
+        beforeDerivedInsert: () => {
+          throw new Error('the write phase must not have been reached');
+        },
+      });
+
+      // A terminal source, an unknown source, a bad amount, a missing name, and a
+      // package-durable class each reject without opening the write.
+      await pipeline.applyEvent(yogurt.ulid, 'finished', {});
+      for (const bad of [
+        { sources: [{ item_ulid: eggs.ulid, amount: 6 }, { item_ulid: yogurt.ulid }], derived: { name: 'X' } },
+        { sources: [{ item_ulid: eggs.ulid }, { item_ulid: '01JMISSINGMISSINGMISSING0' }], derived: { name: 'X' } },
+        { sources: [{ item_ulid: eggs.ulid, amount: 2.5 }], derived: { name: 'X' } },
+        { sources: [{ item_ulid: eggs.ulid, amount: 1 }], derived: { name: '  ' } },
+        { sources: [{ item_ulid: eggs.ulid, amount: 1 }], derived: { name: 'X', shelf_life_class: 'pantry' as const } },
+      ]) {
+        const attempt = pipeline.convert({ ...bad, at: '2026-07-12' });
+        await expect(attempt).rejects.toThrow();
+        await expect(attempt).rejects.not.toThrow('the write phase must not have been reached');
+      }
+
+      // Nothing was spent by any of the five rejections.
+      expect((await pipeline.getItemView(eggs.ulid))!.units_remaining).toBe(12);
+    });
+
+    it('a successful multi-source convert is unchanged — every source spent, derived item stocked, provenance complete', async () => {
+      const { store, pipeline, eggs, yogurt, oats } = await multiSourcePipeline();
+
+      const result = await pipeline.convert(threeSources(eggs.ulid, yogurt.ulid, oats.ulid));
+
+      expect(result.sources.map((s) => s.ulid)).toEqual([eggs.ulid, yogurt.ulid, oats.ulid]);
+      expect(result.sources[0]!.units_remaining).toBe(6);
+      expect(result.sources[0]!.state).toBe('stocked');
+      expect(result.sources[1]!.state).toBe('finished'); // omitted amount fully consumed it
+      expect(result.sources[1]!.on_hand_fraction).toBe(0);
+      expect(result.sources[2]!.on_hand_fraction).toBeCloseTo(0.75, 5);
+      expect(result.sources[2]!.state).toBe('stocked');
+
+      expect(result.derived.raw_label).toBe('Sunday batch');
+      expect(result.derived.state).toBe('stocked');
+      expect(result.derived.units_total).toBe(4);
+      expect(result.derived.shelf_life_class).toBe('prepared');
+      expect(result.derived.eat_by).toBe('2026-07-16'); // prepared, 4 d from the make date
+      expect(result.derived.derived_from?.sources).toEqual([
+        { item_ulid: eggs.ulid, amount: 6, amount_kind: 'count' },
+        { item_ulid: yogurt.ulid, amount: 1, amount_kind: 'fraction' },
+        { item_ulid: oats.ulid, amount: 0.25, amount_kind: 'fraction' },
+      ]);
+      expect(result.derivation.derived_item_ulid).toBe(result.derived.ulid);
+
+      // Persisted, not just returned: the derived item joins eat-first stock and
+      // its provenance re-reads.
+      const onHand = await pipeline.listInventory({});
+      expect(onHand.some((i) => i.ulid === result.derived.ulid)).toBe(true);
+      expect(store.derivations.get(result.derived.ulid)!.sources).toHaveLength(3);
+      const reread = await pipeline.getItemView(result.derived.ulid);
+      expect(reread!.derived_from?.sources).toHaveLength(3);
+    });
+
+    it('one source spent twice in a single convert decrements twice, not once', async () => {
+      // The planner projects each decrement forward, so the second line sees the
+      // remainder the first left — the same result the old write-as-you-go loop's
+      // re-read produced.
+      const { pipeline, eggs } = await multiSourcePipeline();
+
+      const result = await pipeline.convert({
+        sources: [
+          { item_ulid: eggs.ulid, amount: 4 },
+          { item_ulid: eggs.ulid, amount: 3 },
+        ],
+        derived: { name: 'Two-line batch' },
+        at: '2026-07-12',
+      });
+
+      expect((await pipeline.getItemView(eggs.ulid))!.units_remaining).toBe(5); // 12 - 4 - 3
+      expect(result.derived.derived_from?.sources).toEqual([
+        { item_ulid: eggs.ulid, amount: 4, amount_kind: 'count' },
+        { item_ulid: eggs.ulid, amount: 3, amount_kind: 'count' },
+      ]);
+    });
+
+    it('a source driven terminal by an earlier line in the SAME convert is rejected, spending nothing', async () => {
+      const { pipeline, eggs } = await multiSourcePipeline();
+
+      await expect(
+        pipeline.convert({
+          sources: [
+            { item_ulid: eggs.ulid, amount: 12 }, // spends the whole pack → finished
+            { item_ulid: eggs.ulid, amount: 1 }, // nothing left to spend
+          ],
+          derived: { name: 'Over-spent batch' },
+          at: '2026-07-12',
+        })
+      ).rejects.toThrow(InvalidTransitionError);
+
+      // The first line's decrement was planned, never written.
+      const after = await pipeline.getItemView(eggs.ulid);
+      expect(after!.units_remaining).toBe(12);
+      expect(after!.state).toBe('stocked');
     });
   });
 });
