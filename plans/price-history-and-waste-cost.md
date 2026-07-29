@@ -3,6 +3,7 @@ status: done
 depends: [kitchen-module, product-corrections, item-corrections]
 specs:
   - specs/modules/kitchen.md
+pr: 166
 ---
 
 # Plan: Price history reads + waste costing
@@ -75,9 +76,9 @@ existing columns.
   `PricePoint`), `parseTossNotes` (notes → toss records), and `wasteCost`
   (a toss record + a resolved price → `{cost_cents, cost_basis}`). Everything
   testable without a store, which is where the interesting cases live.
-- **Store** — one new read: `listPriceLines({ product_ulids, store?, limit? })`
-  → flat `ProductPriceLine[]` (line fields joined to the batch's
-  `purchased_at`/`store`), newest first; and `listTossedCandidates({ limit })`
+- **Store** — two new reads: `listProductPriceLines({ product_ulids, store?,
+  limit? })` → flat `PriceLine[]` (line fields joined to the batch's
+  `purchased_at`/`store`), newest first; and `listTossedCandidates(limit)`
   → items whose notes carry a toss line, excluding `dismissed` and
   `merged_into` rows in SQL. Memory store mirrors both.
 - **Service** — `InventoryPipeline.priceHistory(productUlid, opts)` and
