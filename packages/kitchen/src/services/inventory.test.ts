@@ -1254,6 +1254,45 @@ describe('consume from inventory (claude-assist#110 — one-tap known-macro log 
     expect(entries.records.get(ULID(60))?.inventory_item_ulid).toBe(derived.ulid);
   });
 
+  it('carries added_sugar_g onto the consumed entry, scaled and null-aware', async () => {
+    // Consume-from-inventory is a full-panel write path too (§ Nutrition panel —
+    // every source fills the whole panel it can), so the ninth field has to
+    // survive the recipe computation AND the share scaling.
+    const SWEET_RECIPE: RecipeRecord = {
+      ...RECIPE,
+      ulid: ULID(51),
+      name: 'Sweetened oat jar',
+      components: [
+        // Plain oats ASSERT zero added sugar; the topping carries a real number.
+        { label: 'oats', default_qty_g: 100, per_100g: { calories: 380, protein_g: 13, sat_fat_g: 1.2, sugar_g: 2, added_sugar_g: 0 } },
+        { label: 'topping', default_qty_g: 100, per_100g: { calories: 300, protein_g: 1, sat_fat_g: 0.5, sugar_g: 40, added_sugar_g: 30 } },
+      ],
+    };
+    const { pipeline } = harness([SWEET_RECIPE]);
+    const { item: oats } = await pipeline.createItem({ raw_label: 'Rolled oats', shelf_life_class: 'pantry', acquired_at: '2026-07-01' });
+    const { derived } = await pipeline.convert({
+      sources: [{ item_ulid: oats.ulid }],
+      derived: { name: 'Sweetened oat jar', shelf_life_class: 'prepared', units_total: 2, recipe_ulid: SWEET_RECIPE.ulid },
+      at: '2026-07-17',
+    });
+
+    const result = await pipeline.consume(derived.ulid, { ulid: ULID(69) });
+    expect(result!.entry.sugar_g).toBe(42);
+    expect(result!.entry.added_sugar_g).toBe(30);
+
+    // And a recipe that knows nothing about added sugar leaves it unknown on the
+    // consumed entry rather than logging a clean 0.
+    const { pipeline: plain } = harness();
+    const { item: plainOats } = await plain.createItem({ raw_label: 'Rolled oats', shelf_life_class: 'pantry', acquired_at: '2026-07-01' });
+    const { derived: plainJar } = await plain.convert({
+      sources: [{ item_ulid: plainOats.ulid }],
+      derived: { name: 'Overnight oats jar', shelf_life_class: 'prepared', units_total: 1, recipe_ulid: RECIPE.ulid },
+      at: '2026-07-17',
+    });
+    const plainResult = await plain.consume(plainJar.ulid, { ulid: ULID(70) });
+    expect(plainResult!.entry.added_sugar_g).toBeNull();
+  });
+
   it('the third and final unit consumed finishes the item (units_remaining reaches 0)', async () => {
     const { pipeline } = harness();
     const { item: oats } = await pipeline.createItem({ raw_label: 'Rolled oats', shelf_life_class: 'pantry', acquired_at: '2026-07-01' });

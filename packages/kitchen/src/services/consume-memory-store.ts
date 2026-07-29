@@ -66,6 +66,7 @@ export class MemoryConsumeStore implements ConsumeStore {
       sat_fat_g: entry.nutrition.sat_fat_g,
       carbs_g: entry.nutrition.carbs_g,
       sugar_g: entry.nutrition.sugar_g,
+      added_sugar_g: entry.nutrition.added_sugar_g,
       fiber_g: entry.nutrition.fiber_g,
       sodium_mg: entry.nutrition.sodium_mg,
       confidence: entry.nutrition.confidence,

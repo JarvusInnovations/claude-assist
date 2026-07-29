@@ -45,6 +45,11 @@
       "minimum": 0,
       "description": "Flat single-item total sugar (grams, natural + added), paired with calories."
     },
+    "added_sugar_g": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Flat single-item added sugar (grams) — the share of sugar_g added in processing or preparation, per WHO free sugars (added sugar plus honey, syrups, and fruit juice; whole fruit and plain dairy never contribute). Optional full-panel extension: an unprocessed whole-food record states 0, since an absent field means unknown and drops the day's total."
+    },
     "fiber_g": {
       "type": "number",
       "minimum": 0,
@@ -105,6 +110,11 @@
                 "type": "number",
                 "minimum": 0,
                 "description": "Total sugar (grams) per 100g of this ingredient. Optional full-panel extension."
+              },
+              "added_sugar_g": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Added sugar (grams) per 100g of this ingredient — the share of sugar_g added in processing or preparation. Optional full-panel extension; an unprocessed whole-food ingredient states 0 rather than omitting the field, since an absent field contributes 'unknown' to the recipe total, never zero."
               },
               "fiber_g": {
                 "type": "number",

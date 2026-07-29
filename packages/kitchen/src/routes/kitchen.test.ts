@@ -27,6 +27,7 @@ function mkModelEstimate(over: Partial<ModelEstimate> = {}): ModelEstimate {
     sat_fat_g: 4,
     carbs_g: 20,
     sugar_g: 6,
+    added_sugar_g: 1,
     fiber_g: 4,
     sodium_mg: 700,
     confidence: 0.55,
@@ -310,6 +311,7 @@ describe('kitchen routes', () => {
           sat_fat_g: 3,
           carbs_g: 12,
           sugar_g: null,
+          added_sugar_g: null,
           fiber_g: null,
           sodium_mg: 400,
           confidence: 0.5,
@@ -422,6 +424,7 @@ describe('kitchen routes', () => {
       sat_fat_g: 7,
       carbs_g: 58,
       sugar_g: 12,
+      added_sugar_g: 4,
       fiber_g: 9,
       sodium_mg: 880,
     };
@@ -450,6 +453,7 @@ describe('kitchen routes', () => {
       expect(json.sat_fat_g).toBe(7);
       expect(json.carbs_g).toBe(58);
       expect(json.sugar_g).toBe(12);
+      expect(json.added_sugar_g).toBe(4);
       expect(json.fiber_g).toBe(9);
       expect(json.sodium_mg).toBe(880);
       expect(json.confidence).toBeNull();
@@ -605,6 +609,27 @@ describe('kitchen routes', () => {
       const json = response.json();
       expect(json.source).toBe('manual');
       expect(json.calories).toBe(500);
+    });
+
+    it('accepts an added_sugar_g override on the wire and returns it on the row', async () => {
+      // The route schema is additionalProperties:false, so this is the test that
+      // the ninth field is actually patchable end-to-end rather than 400-ing —
+      // the correction path for an entry whose added sugar was left unknown.
+      const ulid = generateUlid();
+      const seedPipeline = new KitchenPipeline(entries, recipes, estimator, fastify.log);
+      const { estimation } = await seedPipeline.ingest({ ulid, note: 'whole fruit' }, []);
+      await estimation;
+
+      const response = await fastify.inject({
+        method: 'PATCH',
+        url: `/kitchen/entries/${ulid}`,
+        payload: { added_sugar_g: 0 },
+      });
+      expect(response.statusCode).toBe(200);
+      const json = response.json();
+      expect(json.added_sugar_g).toBe(0);
+      expect(json.source).toBe('manual');
+      expect(json.ulid).toBe(ulid);
     });
 
     it('returns 409 when a note/label edit would re-queue a manual entry', async () => {
@@ -1055,6 +1080,7 @@ describe('kitchen routes', () => {
           sat_fat_g: 3,
           carbs_g: 13,
           sugar_g: null,
+          added_sugar_g: null,
           fiber_g: null,
           sodium_mg: 105,
           confidence: 0.5,

@@ -553,6 +553,7 @@ const NUTRITION_SCHEMA = {
     sodium_mg: { type: ['number', 'null'], minimum: 0 },
     fiber_g: { type: ['number', 'null'], minimum: 0 },
     sugar_g: { type: ['number', 'null'], minimum: 0 },
+    added_sugar_g: { type: ['number', 'null'], minimum: 0 },
   },
 } as const;
 

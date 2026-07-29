@@ -162,7 +162,7 @@ describe('remark parsing', () => {
 describe('needs-nutrition signal (§ Nutrition panel)', () => {
   const full = {
     calories: 100, protein_g: 5, fat_g: 3, sat_fat_g: 1,
-    carbs_g: 12, sugar_g: 4, fiber_g: 2, sodium_mg: 80,
+    carbs_g: 12, sugar_g: 4, added_sugar_g: 2, fiber_g: 2, sodium_mg: 80,
   };
 
   it('flags a product with no panel or a partial panel; a full panel clears it', () => {
@@ -170,5 +170,13 @@ describe('needs-nutrition signal (§ Nutrition panel)', () => {
     expect(needsNutrition({ nutrition_per_100g: null })).toBe(true);
     expect(needsNutrition({ nutrition_per_100g: { ...full, sodium_mg: null } })).toBe(true);
     expect(needsNutrition({ nutrition_per_100g: { ...full } })).toBe(false);
+  });
+
+  it('counts added_sugar_g among the fields a complete panel must carry', () => {
+    // A panel seeded before added sugar was tracked is INCOMPLETE, and the
+    // resolving action is the same as ever: rescan the label, which prints
+    // "Includes Xg Added Sugars". A 0 there is complete; a null is not.
+    expect(needsNutrition({ nutrition_per_100g: { ...full, added_sugar_g: null } })).toBe(true);
+    expect(needsNutrition({ nutrition_per_100g: { ...full, added_sugar_g: 0 } })).toBe(false);
   });
 });

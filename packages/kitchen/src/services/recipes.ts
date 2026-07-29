@@ -5,7 +5,8 @@
  * the recipe's own `default_qty_g` when the entry didn't specify one.
  */
 
-import type { ComponentQuantity, NutritionFields, RecipeRecord } from '../types.js';
+import { NUTRITION_FIELD_KEYS } from '../types.js';
+import type { ComponentQuantity, NutritionFields, RecipeComponentMacros, RecipeRecord } from '../types.js';
 
 /**
  * Round to one decimal place. Exported so other deterministic macro math
@@ -16,21 +17,16 @@ export function round1(n: number): number {
   return Math.round(n * 10) / 10;
 }
 
-/** The panel keys a recipe component's per_100g reference can carry (§ Nutrition panel). */
-const COMPONENT_PANEL_KEYS = [
-  'calories',
-  'protein_g',
-  'fat_g',
-  'sat_fat_g',
-  'carbs_g',
-  'sugar_g',
-  'fiber_g',
-  'sodium_mg',
-] as const;
+/**
+ * The panel keys a recipe component's per_100g reference can carry
+ * (§ Nutrition panel) — the canonical list, not a second copy of it, so a new
+ * panel field is summed here the moment it exists.
+ */
+const COMPONENT_PANEL_KEYS: readonly (keyof RecipeComponentMacros)[] = NUTRITION_FIELD_KEYS;
 
 /**
  * Sum per-component nutrition scaled by (quantity_g / 100) against each
- * component's per_100g reference, across the FULL eight-field panel
+ * component's per_100g reference, across the FULL nine-field panel
  * (§ Nutrition panel — the completeness rule). Per-field null semantics: a
  * component that omits a field contributes "unknown" to that field, and the
  * field's total is null only when NO component carried it — never coerced to
@@ -50,6 +46,7 @@ export function computeRecipeMacros(
       sat_fat_g: null,
       carbs_g: null,
       sugar_g: null,
+      added_sugar_g: null,
       fiber_g: null,
       sodium_mg: null,
       confidence: 1,
@@ -59,7 +56,7 @@ export function computeRecipeMacros(
 
   const qtyByLabel = new Map((quantities ?? []).map((q) => [q.label, q.quantity_g]));
 
-  const totals = new Map<(typeof COMPONENT_PANEL_KEYS)[number], number>();
+  const totals = new Map<keyof RecipeComponentMacros, number>();
   for (const component of recipe.components) {
     const qtyG = qtyByLabel.get(component.label) ?? component.default_qty_g;
     const factor = qtyG / 100;
@@ -70,7 +67,7 @@ export function computeRecipeMacros(
     }
   }
 
-  const field = (key: (typeof COMPONENT_PANEL_KEYS)[number]): number | null => {
+  const field = (key: keyof RecipeComponentMacros): number | null => {
     const sum = totals.get(key);
     return sum === undefined ? null : round1(sum);
   };
@@ -82,6 +79,9 @@ export function computeRecipeMacros(
     sat_fat_g: field('sat_fat_g'),
     carbs_g: field('carbs_g'),
     sugar_g: field('sugar_g'),
+    // A component that omits added sugar leaves the recipe's total unknown for
+    // it — never 0 (§ Filling `added_sugar_g`: whole foods must ASSERT zero).
+    added_sugar_g: field('added_sugar_g'),
     fiber_g: field('fiber_g'),
     sodium_mg: field('sodium_mg'),
     // Deterministic — a kitchen-scale user's numbers are exact by construction.

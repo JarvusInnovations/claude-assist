@@ -98,13 +98,13 @@ function toView(
   };
 }
 
-/** The eight-field nutrition panel (§ Nutrition panel), for day-grouped totals. */
+/** The nine-field nutrition panel (§ Nutrition panel), for day-grouped totals. */
 const PANEL_KEYS = NUTRITION_FIELD_KEYS;
 
 /**
  * One owner-local day's pre-computed rollup (§ Timezone & local-day bucketing —
  * the AXI §4 aggregate that spares an agent hand-summing entries): the
- * effective eight-field panel + calories, and the net line when a TDEE base is
+ * effective nine-field panel + calories, and the net line when a TDEE base is
  * configured. Panel sums are null-aware — a field is null only when NO entry
  * that day carried it (absent ≠ zero, § Nutrition panel).
  */
@@ -116,6 +116,7 @@ interface DayRollup {
   sat_fat_g: number | null;
   carbs_g: number | null;
   sugar_g: number | null;
+  added_sugar_g: number | null;
   fiber_g: number | null;
   sodium_mg: number | null;
   entry_count: number;

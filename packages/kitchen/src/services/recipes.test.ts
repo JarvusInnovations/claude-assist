@@ -97,3 +97,76 @@ describe('computeRecipeMacros — full panel (§ Nutrition panel)', () => {
     expect(result.sodium_mg).toBeNull();
   });
 });
+
+describe('computeRecipeMacros — added_sugar_g null-vs-zero summing', () => {
+  it('sums an asserted 0 alongside a real contribution; unknown stays unknown', () => {
+    const recipe = mkRecipe({
+      components: [
+        // A whole-food component ASSERTS zero added sugar — it contributes a
+        // real 0 to the total rather than making the field unknown.
+        {
+          label: 'plain oats',
+          default_qty_g: 100,
+          per_100g: {
+            calories: 375, protein_g: 13, sat_fat_g: 1.2,
+            sugar_g: 2, added_sugar_g: 0,
+          },
+        },
+        // A sweetened component carries a real number.
+        {
+          label: 'sweetened topping',
+          default_qty_g: 50,
+          per_100g: {
+            calories: 300, protein_g: 1, sat_fat_g: 0.5,
+            sugar_g: 40, added_sugar_g: 30,
+          },
+        },
+      ],
+    });
+    const result = computeRecipeMacros(recipe);
+    expect(result.sugar_g).toBeCloseTo(2 + 40 * 0.5, 1);
+    expect(result.added_sugar_g).toBe(15); // 0 + round1(30 × 0.5)
+  });
+
+  it('a component omitting added sugar contributes UNKNOWN, not zero', () => {
+    const recipe = mkRecipe({
+      components: [
+        {
+          label: 'sweetened topping',
+          default_qty_g: 100,
+          per_100g: { calories: 300, protein_g: 1, sat_fat_g: 0.5, sugar_g: 40, added_sugar_g: 30 },
+        },
+        // Omits added sugar entirely: unknown for this component. The total is
+        // still the known contribution — never inflated to include a guessed 0
+        // and never nulled out by the omission.
+        { label: 'mystery mix', default_qty_g: 100, per_100g: { calories: 200, protein_g: 5, sat_fat_g: 1, sugar_g: 10 } },
+      ],
+    });
+    const result = computeRecipeMacros(recipe);
+    expect(result.sugar_g).toBe(50);
+    expect(result.added_sugar_g).toBe(30);
+  });
+
+  it('is null when NO component carried it — the whole field is unknown', () => {
+    const recipe = mkRecipe({
+      components: [
+        { label: 'a', default_qty_g: 100, per_100g: { calories: 100, protein_g: 5, sat_fat_g: 1, sugar_g: 5 } },
+        { label: 'b', default_qty_g: 100, per_100g: { calories: 120, protein_g: 6, sat_fat_g: 2, sugar_g: 6 } },
+      ],
+    });
+    const result = computeRecipeMacros(recipe);
+    expect(result.sugar_g).toBe(11);
+    expect(result.added_sugar_g).toBeNull();
+    expect(result.added_sugar_g).not.toBe(0);
+  });
+
+  it('an all-whole-food recipe totals a genuine 0, not null', () => {
+    const recipe = mkRecipe({
+      components: [
+        { label: 'chicken', default_qty_g: 150, per_100g: { calories: 165, protein_g: 31, sat_fat_g: 1, sugar_g: 0, added_sugar_g: 0 } },
+        { label: 'broccoli', default_qty_g: 200, per_100g: { calories: 35, protein_g: 2.4, sat_fat_g: 0, sugar_g: 1.7, added_sugar_g: 0 } },
+      ],
+    });
+    expect(computeRecipeMacros(recipe).added_sugar_g).toBe(0);
+  });
+});

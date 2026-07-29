@@ -39,6 +39,7 @@ function entryWrite(overrides: Partial<ConsumeEntryWrite> = {}): ConsumeEntryWri
       sat_fat_g: 4,
       carbs_g: null,
       sugar_g: null,
+      added_sugar_g: null,
       fiber_g: null,
       sodium_mg: null,
       confidence: 1,

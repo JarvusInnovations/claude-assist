@@ -37,6 +37,7 @@ function mkModelEstimate(over: Partial<ModelEstimate> = {}): ModelEstimate {
     sat_fat_g: 4,
     carbs_g: 20,
     sugar_g: 6,
+    added_sugar_g: 1,
     fiber_g: 4,
     sodium_mg: 700,
     confidence: 0.55,
@@ -833,6 +834,7 @@ describe('reselect_of clone — deterministic recent re-log (no model call)', ()
     sat_fat_g: 3,
     carbs_g: 30,
     sugar_g: 9,
+    added_sugar_g: 4,
     fiber_g: 5,
     sodium_mg: 120,
     confidence: 0.6,
@@ -1000,6 +1002,7 @@ describe('directly-stated panel — born-manual, terminal, no estimation enqueue
     sat_fat_g: 7,
     carbs_g: 58,
     sugar_g: 12,
+    added_sugar_g: 4,
     fiber_g: 9,
     sodium_mg: 880,
   };
@@ -1032,6 +1035,7 @@ describe('directly-stated panel — born-manual, terminal, no estimation enqueue
     expect(record.sat_fat_g).toBe(7);
     expect(record.carbs_g).toBe(58);
     expect(record.sugar_g).toBe(12);
+    expect(record.added_sugar_g).toBe(4);
     expect(record.fiber_g).toBe(9);
     expect(record.sodium_mg).toBe(880);
     // A stated panel is exact — nothing to be confident about, no estimate basis.
@@ -1057,7 +1061,7 @@ describe('directly-stated panel — born-manual, terminal, no estimation enqueue
     const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), new RefusingEstimator(), log);
 
     const ulid = generateUlid();
-    // Only two of the eight fields are stated.
+    // Only two of the nine fields are stated.
     const { record } = await pipeline.ingest(
       { ulid, macros: { calories: 200, protein_g: 15 } },
       []
@@ -1069,6 +1073,7 @@ describe('directly-stated panel — born-manual, terminal, no estimation enqueue
     expect(record.sat_fat_g).toBeNull();
     expect(record.carbs_g).toBeNull();
     expect(record.sugar_g).toBeNull();
+    expect(record.added_sugar_g).toBeNull();
     expect(record.fiber_g).toBeNull();
     expect(record.sodium_mg).toBeNull();
     // Explicitly NOT zero.
@@ -1294,5 +1299,161 @@ describe('recipe corrections (§ Recipe corrections — upsert + archive)', () =
     expect(second.recipe.updated_at.getTime()).toBeGreaterThan(first.recipe.updated_at.getTime());
     expect(second.recipe.components).toHaveLength(1);
     expect(await recipes.list({})).toHaveLength(1);
+  });
+});
+
+describe('added_sugar_g — the ninth panel field (§ added_sugar_g vs sugar_g)', () => {
+  // null vs 0 IS the correctness story for this field, in both directions: a
+  // whole food that says `null` instead of `0` silently deletes part of a day's
+  // added-sugar total, and a processed food that says `0` instead of `null`
+  // fabricates a clean day. Both are asserted here, on every write path.
+
+  it('a whole-food entry asserting 0 stores 0 — a real zero, not a coerced one', async () => {
+    const entries = new MemoryEntryStore();
+    const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), new RefusingEstimator(), log);
+
+    // Plain fruit: 19 g of sugar, all intrinsic. Added sugar is ZERO by
+    // definition, and stating it is what keeps the day's total honest.
+    const ulid = generateUlid();
+    const { record } = await pipeline.ingest(
+      { ulid, macros: { calories: 95, sugar_g: 19, added_sugar_g: 0 }, label: 'whole fruit' },
+      []
+    );
+
+    expect(record.sugar_g).toBe(19);
+    expect(record.added_sugar_g).toBe(0);
+    expect(record.added_sugar_g).not.toBeNull();
+  });
+
+  it('a processed entry that states nothing stores null — never a fabricated 0', async () => {
+    const entries = new MemoryEntryStore();
+    const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), new RefusingEstimator(), log);
+
+    const ulid = generateUlid();
+    const { record } = await pipeline.ingest({ ulid, macros: { calories: 240, sugar_g: 22 } }, []);
+
+    expect(record.sugar_g).toBe(22);
+    expect(record.added_sugar_g).toBeNull();
+    expect(record.added_sugar_g).not.toBe(0);
+  });
+
+  it('a model estimate carries the field through, 0 as 0 and null as null', async () => {
+    // Two entries, one estimator script each — the zero-asserting whole food and
+    // the genuinely-unreadable case must land differently in the row.
+    const zeroEntries = new MemoryEntryStore();
+    const zeroPipeline = new KitchenPipeline(
+      zeroEntries,
+      new MemoryRecipeStore(),
+      new ScriptedEstimator([mkModelEstimate({ sugar_g: 12, added_sugar_g: 0 })]),
+      log
+    );
+    const zeroUlid = generateUlid();
+    await zeroPipeline.ingest({ ulid: zeroUlid, note: 'plain yogurt with berries' }, []);
+    await zeroPipeline.settle();
+    const zeroRecord = (await zeroEntries.get(zeroUlid))!;
+    expect(zeroRecord.status).toBe('estimated');
+    expect(zeroRecord.source).toBe('model');
+    expect(zeroRecord.sugar_g).toBe(12);
+    expect(zeroRecord.added_sugar_g).toBe(0);
+
+    const nullEntries = new MemoryEntryStore();
+    const nullPipeline = new KitchenPipeline(
+      nullEntries,
+      new MemoryRecipeStore(),
+      new ScriptedEstimator([mkModelEstimate({ sugar_g: 30, added_sugar_g: null })]),
+      log
+    );
+    const nullUlid = generateUlid();
+    await nullPipeline.ingest({ ulid: nullUlid, note: 'unidentifiable packaged thing' }, []);
+    await nullPipeline.settle();
+    const nullRecord = (await nullEntries.get(nullUlid))!;
+    expect(nullRecord.sugar_g).toBe(30);
+    expect(nullRecord.added_sugar_g).toBeNull();
+  });
+
+  it('the note-derived portion modifier scales it with the rest of the panel', async () => {
+    const entries = new MemoryEntryStore();
+    const pipeline = new KitchenPipeline(
+      entries,
+      new MemoryRecipeStore(),
+      new ScriptedEstimator([mkModelEstimate({ sugar_g: 20, added_sugar_g: 8 })]),
+      log
+    );
+    const ulid = generateUlid();
+    await pipeline.ingest({ ulid, note: 'half of the pastry' }, []);
+    await pipeline.settle();
+
+    const record = (await entries.get(ulid))!;
+    expect(record.sugar_g).toBe(10);
+    expect(record.added_sugar_g).toBe(4);
+  });
+
+  it('a reselect clone inherits it verbatim, including an asserted 0', async () => {
+    const entries = new MemoryEntryStore();
+    const pipeline = new KitchenPipeline(
+      entries,
+      new MemoryRecipeStore(),
+      new ScriptedEstimator([mkModelEstimate({ sugar_g: 19, added_sugar_g: 0 })]),
+      log
+    );
+    const sourceUlid = generateUlid();
+    await pipeline.ingest({ ulid: sourceUlid, note: 'whole fruit' }, []);
+    await pipeline.settle();
+
+    const cloneUlid = generateUlid();
+    const { record } = await pipeline.ingest({ ulid: cloneUlid, reselect_of: sourceUlid }, []);
+
+    expect(record.source).toBe('reselect');
+    expect(record.sugar_g).toBe(19);
+    // The clone must not degrade an asserted zero into unknown.
+    expect(record.added_sugar_g).toBe(0);
+  });
+
+  it('PATCH --added-sugar corrects an existing entry in place — same ULID, no re-log', async () => {
+    const entries = new MemoryEntryStore();
+    const pipeline = new KitchenPipeline(
+      entries,
+      new MemoryRecipeStore(),
+      // The model left added sugar unknown on what is actually a whole food.
+      new ScriptedEstimator([mkModelEstimate({ calories: 95, sugar_g: 19, added_sugar_g: null })]),
+      log
+    );
+    const ulid = generateUlid();
+    await pipeline.ingest({ ulid, note: 'whole fruit' }, []);
+    await pipeline.settle();
+    const before = (await entries.get(ulid))!;
+    expect(before.added_sugar_g).toBeNull();
+
+    const patched = (await pipeline.patch(ulid, { added_sugar_g: 0 }))!;
+
+    // Corrected in place: identity survives, so nothing referencing the entry
+    // dangles (delete + re-log would mint a new ULID).
+    expect(patched.ulid).toBe(ulid);
+    expect(patched.added_sugar_g).toBe(0);
+    // The override is terminal, and it touched ONLY the field named.
+    expect(patched.source).toBe('manual');
+    expect(patched.status).toBe('estimated');
+    expect(patched.calories).toBe(95);
+    expect(patched.sugar_g).toBe(19);
+    expect(patched.fiber_g).toBe(before.fiber_g);
+    expect(patched.sodium_mg).toBe(before.sodium_mg);
+    expect((await entries.list({})).length).toBe(1);
+  });
+
+  it('a manual override of another field leaves an asserted 0 intact', async () => {
+    const entries = new MemoryEntryStore();
+    const pipeline = new KitchenPipeline(
+      entries,
+      new MemoryRecipeStore(),
+      new ScriptedEstimator([mkModelEstimate({ added_sugar_g: 0 })]),
+      log
+    );
+    const ulid = generateUlid();
+    await pipeline.ingest({ ulid, note: 'plain yogurt' }, []);
+    await pipeline.settle();
+
+    const patched = (await pipeline.patch(ulid, { calories: 150 }))!;
+    expect(patched.calories).toBe(150);
+    expect(patched.added_sugar_g).toBe(0);
   });
 });

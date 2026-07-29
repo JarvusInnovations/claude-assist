@@ -184,6 +184,7 @@ export class MemoryEntryStore implements EntryStore {
           sat_fat_g: r.sat_fat_g,
           carbs_g: r.carbs_g,
           sugar_g: r.sugar_g,
+          added_sugar_g: r.added_sugar_g,
           fiber_g: r.fiber_g,
           sodium_mg: r.sodium_mg,
           last_logged_at: r.logged_at,
