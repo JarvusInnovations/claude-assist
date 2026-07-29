@@ -592,6 +592,9 @@ describe("storage moves + the open-container seal are reachable from the CLI", (
     expect(STORAGE_MOVE_SHELF_LIFE_CLASSES).not.toContain("unknown");
     expect(STORAGE_MOVE_SHELF_LIFE_CLASSES).toContain("prepared");
     expect(UNIT_SEALS).toEqual(["individual", "shared"]);
+  });
+});
+
 describe("price + waste reads are discoverable, and say what null cost means", () => {
   it("documents both read verbs in the reference and the group help", () => {
     const text = commandReferenceText();
