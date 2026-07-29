@@ -26,7 +26,9 @@ through the module's APIs (never as committed seed content).
   (`model` | `reselect` | `manual`), a **portion multiplier** (post-hoc rescale
   of the base — see § Portion multiplier), the note-derived portion modifier
   (applied once at estimation time, baked into the base), optional recipe
-  reference with per-component quantities, optional inventory-item links (phase 2).
+  reference with per-component quantities, optional inventory-item links (phase 2),
+  and the estimator's non-food exclusion report (`excluded_lines`, null when
+  nothing was excluded — § Billing artifacts are not ingredients).
 - **Recipes** — named loggable templates: name, optional per-ingredient
   components (label, default quantity, per-100g macros), source
   (`sheet` | `pushed` | `promoted`), created/updated stamps, and an
@@ -69,6 +71,16 @@ An entry's nutrition is a **nine-field panel**: `calories`, `protein_g`,
 missing value must not read as "zero of it"). `added_sugar_g` and `sodium_mg` are
 ceilings the owner overshoots and feels; `fiber_g` is a floor the owner has to aim
 at — the three the daily view surfaces beyond calories/protein.
+
+**Asserting zero is a claim about all nine fields.** Two mechanisms in this module
+assert `0` where a `null` would otherwise erase a day's field: § Filling
+`added_sugar_g` (whole foods are `0` by definition) and the product-level
+`nutrition_negligible` marker (§ Nutritionally negligible products). Both are only
+sound where the number really is ~0, and the field that breaks the second one is
+`sodium_mg` — salt is ~0 on the other eight and ~38,700 mg/100 g on that one, so
+"seasonings qualify" sweeps in the biggest sodium line in the kitchen. Garlic
+powder qualifies; garlic salt does not. Read § Sodium is the exception that breaks
+the marker before marking anything.
 
 ### `added_sugar_g` vs `sugar_g` — two quantities, one target
 
@@ -767,7 +779,9 @@ doors — `PATCH`, or a `ulid` replace.
 **`PATCH /products/:ulid` is the correction door.** Partial by definition:
 
 - Only the keys present in the body change; every other field is untouched.
-  At least one key is required (`400` on an empty body).
+  At least one key that *changes something* is required (`400` otherwise — a body
+  carrying only `nutrition_negligible_override`, which is an instruction rather
+  than a fact, states no change).
 - An explicit `null` **clears** a nullable field. This is where `PATCH` differs
   from every enrich path in the module: enrichment must never null-clobber
   because its input is a *guess* about a field it may simply not have read,
@@ -842,8 +856,10 @@ a misread receipt line that never existed). An archived product:
 ### Nutritionally negligible products
 
 `nutrition_negligible` (bool, default false) is an owner-set assertion that
-**every panel field is ~0 at any realistic serving of this product**. Spices,
-dried herbs, salt, vinegar, black coffee, extracts, most seasonings.
+**every panel field is ~0 at any realistic serving of this product — including
+`sodium_mg`**. Spices, dried herbs, vinegar, black coffee, extracts, and the
+seasonings that are only seasoning. **Not salt**, and not anything salt-forward;
+see § Sodium is the exception that breaks the marker below.
 
 It exists because the `needs_nutrition` flag is otherwise unclearable for a
 whole category. A US spice jar carries **no Nutrition Facts panel at all** —
@@ -889,6 +905,69 @@ calories a day — against a `null` that erases a whole field of a whole day.
 Nobody eats 100 g of paprika; someone cooking with that much is logging a
 *dish*, which is logged as an entry or a recipe carrying its own numbers, not
 by consuming a spice jar.
+
+#### Sodium is the exception that breaks the marker
+
+The rule is "~0 in **every** field, sodium included" — not "~0 in calories and
+macros". The distinction is not pedantry; it is the whole difference between a
+marker whose error is bounded and one whose error is the dominant term.
+
+**Salt is the counterexample.** Table salt is ~0 on eight of the nine panel
+fields and roughly **38,700 mg of sodium per 100 g** on the ninth. One gram is
+~390 mg — about 17% of a 2,300 mg daily ceiling; a teaspoon is essentially the
+whole ceiling in one spoon. A salt product marked negligible would assert **zero
+sodium** while being the single largest sodium contributor in the kitchen, and it
+would do it against a field the daily view surfaces as a **tracked ceiling**. That
+inverts the justification above: the marker is affordable because a product
+qualifies only if realistic use is a teaspoon or two, so the worst-case drift is
+single-digit calories a day. For salt the drift is not bounded by the category —
+it *is* the category.
+
+**What makes it dangerous is that the qualifying intuition is true.** "It's a
+seasoning, you use a pinch" is a correct statement about salt, and the conclusion
+drawn from it is still wrong. A careful reader reasoning their way through the
+general rule arrives at the wrong answer, which is why this is stated as its own
+exception rather than left to follow from "every field".
+
+**The discriminating pair: garlic powder qualifies, garlic salt does not.**
+~60 mg/100 g against ~26,000. They sit adjacent on a shelf, read identically to a
+name filter, and differ by a factor of 400 on the one field that matters. The
+same shape covers celery salt, onion salt, seasoned salt, bouillon powder, MSG,
+the sodium leavening agents (baking soda ~27,400 mg/100 g, baking powder
+~10,000), soy and fish sauce, and **most commercial blends that list salt first**
+— a blend whose *name* says nothing about salt is the case no name filter can
+see.
+
+**A guard enforces this, because prose protects a careful reader and nobody
+else.** The write doors refuse a `nutrition_negligible` assertion on evidence of
+salt, in descending order of evidence strength: a **known `sodium_mg`** over a
+per-100 g ceiling (2,000 mg — well above every real spice, well below everything
+salt-bearing); an **ingredients list** naming salt or sodium chloride; or the
+**name and aliases** matching a salt-forward pattern, with salt *negations*
+(`salt-free`, `no salt added`, a potassium-chloride salt substitute) explicitly
+exempt. No tier grants permission — a low stated sodium does not excuse a
+salt-shaped name, since a product carrying a readable panel never needed the
+marker at all.
+
+- **The guard fires only when a request asserts the marker.** Silence is not an
+  assertion, so a receipt seed or a label enrich landing on a marked product is
+  never blocked by this; the machine paths stay clear. A `PATCH` that **renames**
+  a still-marked product also asserts — "garlic powder" → "garlic salt" is a new
+  claim about a different food wearing an old record's marker.
+- **There is an override, because this is a judgement.**
+  `nutrition_negligible_override: true` on the `POST`/`PATCH` body (CLI:
+  `--force-negligible`, which implies `--negligible`) applies the marker as
+  asked. It is a request-level instruction, never a stored fact. The case it
+  exists for is real — flaked finishing salt used a few crystals at a time — and
+  the asymmetry justifies the shape: a false positive costs one extra flag, while
+  a false negative is a wrong number on a tracked ceiling that nothing downstream
+  flags.
+- **Refusal is a `400` naming the evidence and the override.** Never a silent
+  un-marking: a write that cannot do what was asked says so (§ Principles).
+
+A consequence worth stating: a product marked before this guard existed keeps its
+marker until someone re-states it, and the refusal at that moment is exactly how
+a pre-existing mismark surfaces.
 
 **Never inferred, never backfilled — and never un-marked by an enrich.**
 Marking is a deliberate per-product act by the owner or an agent acting on an
@@ -1107,6 +1186,52 @@ the planning conversation happens after takeover.
   (`specs/diet-journal.md` § Capture paths): the lazy shot with the label in
   frame is the *most* accurate technique, not the least.
 
+### Billing artifacts are not ingredients
+
+The rule above makes printed text authoritative, and the text a delivery order or
+a store receipt prints is not only food. **Delivery fee, service fee, small order
+fee, bag fee, priority fee, sales tax, tip, bottle deposit, promo/coupon/loyalty
+credit, rounding, refund, balance** — these appear in the same list as the items,
+in the same shape, with a price attached. Read as food they invent calories out of
+a service charge.
+
+**The rule: such a line is not food and is excluded rather than estimated.** It
+lives in the estimation prompt and in the output contract, not only in the prose
+here, because the failure is a plausible-looking number rather than an error.
+
+Three things it must get right:
+
+- **A fee line and an unidentifiable *food* line are different answers.** "MISC
+  GROCERY", a store's generic department code, an abbreviation nobody can expand —
+  that is food the reader could not identify, and it stays in the estimate with
+  lower confidence. A delivery fee is definitely not food. Collapsing the two into
+  one "skip it" bucket would silently delete real eating, so the rule is
+  asymmetric on purpose: **when unsure which a line is, treat it as food.** Same
+  direction the receipt parser's § Conservative non-food skip already resolves in
+  (ambiguity resolves toward inventory), for the same reason — a wrongly dropped
+  food line is invisible, a wrongly kept one is a question.
+- **Exclusions are reported, not silently vanished.** The estimator returns
+  `excluded: [{text, kind}]` — the line as printed plus one of
+  `fee|tax|tip|deposit|discount|adjustment|other` — and the entry stores it
+  (`excluded_lines`, null when nothing was excluded, on the same write as the
+  numbers it explains). An exclusion is a *judgement about the source text*, and a
+  judgement nobody can see is one nobody can correct. It is also the only way the
+  opposite error becomes visible: a real food line reported as a `fee` is a bug
+  you can read off the entry, where a silent drop just makes the meal smaller for
+  no stated reason.
+- **A signed money line is still not food, and never becomes negative
+  nutrition.** A discount, a deposit return, and a refund are negative amounts;
+  no food has negative calories or negative sodium. So the panel parse **rejects a
+  negative as unknown** rather than storing it — the structural backstop under the
+  prompt rule. This matters more than the arithmetic suggests: a credit line
+  subtracting from a day's total reads as *better* eating, which is the one
+  direction an owner never questions.
+
+Out of scope here: the receipt parser's own line handling. It already skips tax,
+totals, and payment lines outright and flags the obvious non-groceries
+(§ Conservative non-food skip); this rule governs the **estimator**, which reasons
+over receipt and order text from a different door.
+
 ## Integration seams
 
 - **Ambient remarks**: the capture module's classifier gains a `kitchen_event`
@@ -1177,10 +1302,11 @@ All tables instance-agnostic empty schema, ULID keys, `kitchen` schema
 
   **Correction & retirement** (migration `017-kitchen-product-corrections.sql`):
   `nutrition_negligible` (bool, not null, default false — the owner-set
-  ~0-at-any-realistic-serving assertion), `archived_at` (timestamptz, null =
-  live) and `merged_into` (ULID, nullable — set when the row was retired *into*
-  a survivor). See § Product corrections for the upsert / patch / merge /
-  archive semantics these carry.
+  ~0-at-any-realistic-serving-including-sodium assertion, guarded against salt
+  per § Sodium is the exception that breaks the marker), `archived_at`
+  (timestamptz, null = live) and `merged_into` (ULID, nullable — set when the row
+  was retired *into* a survivor). See § Product corrections for the upsert /
+  patch / merge / archive semantics these carry.
 
   **The needs-nutrition signal**: an inventory item whose *linked product*
   carries no `nutrition_per_100g`, or a panel with any of the nine fields
@@ -1742,14 +1868,20 @@ Products & lexicon (agentic seed + reads):
   aliases?, nutrition_per_100g?, nutrition_per_serving?, serving_size_g?,
   servings_per_container?, net_content_g?, net_content_ml?, unit_model_hint?,
   ingredients?, package_size?, shelf_life_days_unopened?,
-  shelf_life_days_opened?, nutrition_negligible? }` → bare `Product`.
+  shelf_life_days_opened?, nutrition_negligible?,
+  nutrition_negligible_override? }` → bare `Product`.
   **Upserts** (§ Product corrections): `201` create, `200`
   replace-on-`ulid`/enrich-on-name, `409` on an ambiguous name key or an
-  archived target.
+  archived target. `400` when `nutrition_negligible` is asserted on a
+  salt-bearing product without `nutrition_negligible_override` (§ Sodium is the
+  exception that breaks the marker); the override is a request-level
+  instruction, never stored.
 - `PATCH /products/:ulid` — JSON, ≥ 1 key, same field set minus `ulid`
   (§ Product corrections). Partial: only supplied keys change; explicit `null`
   clears; the two panels merge per-field. → bare `Product`; `404` unknown;
-  `409` on a rename collision with a live product.
+  `409` on a rename collision with a live product; `400` on a refused negligible
+  assertion (including a rename that walks a still-marked product into a
+  salt-shaped name) — § Sodium is the exception that breaks the marker.
 - `POST /products/:ulid/merge` — JSON `{ into (ULID, required) }` → `{ product,
   merged, relinked: { items, lexicon_lines, batch_lines } }` where `product` is
   the survivor and `merged` the retired loser. `400` self-merge, `404` unknown
@@ -1802,7 +1934,8 @@ Products & lexicon (agentic seed + reads):
   fiber_g, sugar_g, added_sugar_g }` (any field null = unknown);
   `nutrition_per_serving` is the same shape as printed per label serving;
   `ingredients` is the printed ingredients list (nullable text).
-  `nutrition_negligible` is the ~0-at-any-realistic-serving assertion;
+  `nutrition_negligible` is the ~0-at-any-realistic-serving assertion (every
+  field, sodium included — § Sodium is the exception that breaks the marker);
   `archived_at`/`merged_into` are the retirement stamps (both null while live)
   — § Product corrections.
 - **LexiconLine**: `{ ulid, store, line_text, product_ulid, package_size,
