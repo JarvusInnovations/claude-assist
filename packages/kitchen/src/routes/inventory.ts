@@ -12,7 +12,7 @@
  *   POST   /kitchen/inventory              - create an item (manual / seed)
  *   PATCH  /kitchen/inventory/:ulid        - reconcile: correct quantities/model/state (observation, not event)
  *   POST   /kitchen/inventory/events       - free-text event resolver
- *   POST   /kitchen/inventory/:ulid/events - explicit opened|finished|finished-unit|tossed
+ *   POST   /kitchen/inventory/:ulid/events - explicit opened|finished|finished-unit|tossed|moved
  *   POST   /kitchen/inventory/:ulid/label  - multipart: label photo(s) → resolve needs-info
  *   POST   /kitchen/inventory/:ulid/dismiss - retire a record that was never real stock
  *   POST   /kitchen/inventory/:ulid/merge  - fold a duplicate item into a survivor
@@ -52,9 +52,11 @@ import {
   INVENTORY_EVENT_TYPES,
   INVENTORY_STATES,
   SHELF_LIFE_CLASSES,
+  STORAGE_MOVE_SHELF_LIFE_CLASSES,
+  UNIT_SEALS,
   type ConsumeInput,
   type ConvertInput,
-  type InventoryEventType,
+  type InventoryEventInput,
   type InventoryPhotoPart,
   type InventoryState,
   type ReconcileInput,
@@ -232,9 +234,13 @@ export const registerInventoryRoutes: FastifyPluginAsync<InventoryRoutesConfig> 
         reply.status(400);
         return { error: 'ulid must be a valid ULID' };
       }
-      const { item, created } = await inventory.createItem(body as never);
-      reply.status(created ? 201 : 200);
-      return item;
+      try {
+        const { item, created } = await inventory.createItem(body as never);
+        reply.status(created ? 201 : 200);
+        return item;
+      } catch (err) {
+        return itemErrorReply(err, reply);
+      }
     }
   );
 
@@ -252,8 +258,17 @@ export const registerInventoryRoutes: FastifyPluginAsync<InventoryRoutesConfig> 
             on_hand_fraction: { type: 'number', exclusiveMinimum: 0, maximum: 1 },
             units_total: { type: ['integer', 'null'], minimum: 1 },
             units_remaining: { type: ['integer', 'null'], minimum: 1 },
+            unit_seal: { type: 'string', enum: [...UNIT_SEALS] },
             state: { type: 'string', enum: ['stocked', 'open'] },
             opened_at: { type: ['string', 'null'] },
+            // § Reconcile — the fields a correction actually needs. A verb
+            // documented as reconciling the ledger to reality that cannot reach
+            // a wrong class, a wrong question flag, or a wrong product link is
+            // only half a verb. `eat_by` stays absent on purpose: it is derived,
+            // and an override would make the class stop meaning anything.
+            shelf_life_class: { type: 'string', enum: [...SHELF_LIFE_CLASSES] },
+            needs_info: { type: 'boolean' },
+            product_ulid: { type: ['string', 'null'], pattern: ULID_PATTERN.source },
             notes: { type: 'string', maxLength: 2000 },
           },
         },
@@ -301,7 +316,7 @@ export const registerInventoryRoutes: FastifyPluginAsync<InventoryRoutesConfig> 
 
   // ── Explicit item event ───────────────────────────────────────────────────────
 
-  fastify.post<{ Params: { ulid: string }; Body: { type: InventoryEventType; fraction?: number; at?: string } }>(
+  fastify.post<{ Params: { ulid: string }; Body: InventoryEventInput }>(
     '/kitchen/inventory/:ulid/events',
     {
       schema: {
@@ -312,6 +327,10 @@ export const registerInventoryRoutes: FastifyPluginAsync<InventoryRoutesConfig> 
           properties: {
             type: { type: 'string', enum: [...INVENTORY_EVENT_TYPES] },
             fraction: { type: 'number', minimum: 0, maximum: 1 },
+            // `moved` only (§ Storage moves): the class the item moved INTO.
+            // `unknown` is excluded at the schema — a move states where the item
+            // now lives, and `unknown` is not a place.
+            to: { type: 'string', enum: [...STORAGE_MOVE_SHELF_LIFE_CLASSES] },
             at: { type: 'string' },
           },
         },
@@ -321,6 +340,7 @@ export const registerInventoryRoutes: FastifyPluginAsync<InventoryRoutesConfig> 
       try {
         const item = await inventory.applyEvent(request.params.ulid, request.body.type, {
           fraction: request.body.fraction,
+          to: request.body.to,
           at: request.body.at,
         });
         if (!item) {
@@ -337,7 +357,9 @@ export const registerInventoryRoutes: FastifyPluginAsync<InventoryRoutesConfig> 
           reply.status(400);
           return { error: err.message };
         }
-        throw err;
+        // A `moved` with no destination class, or a `to` on any other event type
+        // (§ Storage moves) — malformed request, not an illegal transition.
+        return itemErrorReply(err, reply);
       }
     }
   );
@@ -655,8 +677,10 @@ function productErrorReply(err: unknown, reply: FastifyReply): { error: string }
 }
 
 /**
- * Map an item-merge failure to its status (§ Item corrections), mirroring
- * `productErrorReply`: a malformed request is `400`, an unhonorable one `409`.
+ * Map an item-write failure to its status, mirroring `productErrorReply`: a
+ * malformed request is `400`, an unhonorable one `409`. Shared by every item
+ * write that can raise them — create, the event surface, and merge — so no door
+ * can quietly answer with a different code.
  */
 function itemErrorReply(err: unknown, reply: FastifyReply): { error: string } {
   if (err instanceof ItemValidationError) {
@@ -707,6 +731,7 @@ const ITEM_BODY_SCHEMA = {
     acquired_at: { type: 'string' },
     on_hand_fraction: { type: 'number', minimum: 0, maximum: 1 },
     units_total: { type: 'integer', minimum: 1 },
+    unit_seal: { type: 'string', enum: [...UNIT_SEALS] },
     state: { type: 'string', enum: [...INVENTORY_STATES] },
     needs_info: { type: 'boolean' },
     shelf_life_class: { type: 'string', enum: [...SHELF_LIFE_CLASSES] },
@@ -748,6 +773,7 @@ const CONVERT_DERIVED_SCHEMA = {
     shelf_life_class: { type: 'string', enum: [...SHELF_LIFE_CLASSES] },
     on_hand_fraction: { type: 'number', minimum: 0, maximum: 1 },
     units_total: { type: 'integer', minimum: 1 },
+    unit_seal: { type: 'string', enum: [...UNIT_SEALS] },
     store: { type: 'string', maxLength: 200 },
     notes: { type: 'string', maxLength: 2000 },
     acquired_at: { type: 'string' },

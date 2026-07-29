@@ -128,6 +128,9 @@ export class PgConsumeStore implements ConsumeStore {
           on_hand_fraction = ${itemUpdate.on_hand_fraction ?? (current.on_hand_fraction as number)},
           units_remaining = ${itemUpdate.units_remaining !== undefined ? itemUpdate.units_remaining : (current.units_remaining as number | null)},
           eat_by = ${itemUpdate.eat_by !== undefined ? itemUpdate.eat_by : (current.eat_by as Date | null)}
+          -- A consume only ever depletes: it never sets shelf_life_class,
+          -- storage_moved_at, unit_seal, needs_info, or product_ulid, so those
+          -- columns are deliberately absent here rather than restated as no-ops.
         WHERE ulid = ${itemUlid}
         RETURNING *
       `;

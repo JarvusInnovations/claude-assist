@@ -46,7 +46,11 @@ import type {
   ReconcileInput,
   ShelfLifeClass,
 } from '../inventory-types.js';
-import { CONVERT_SHELF_LIFE_CLASSES, PACKAGE_DURABLE_SHELF_LIFE_CLASSES } from '../inventory-types.js';
+import {
+  CONVERT_SHELF_LIFE_CLASSES,
+  PACKAGE_DURABLE_SHELF_LIFE_CLASSES,
+  STORAGE_MOVE_SHELF_LIFE_CLASSES,
+} from '../inventory-types.js';
 import type { NegligibleCandidate } from '../negligible-guard.js';
 import { checkNegligible, negligibleRefusalMessage } from '../negligible-guard.js';
 import type {
@@ -66,6 +70,7 @@ import {
   parsePackageCount,
   toItemView,
   toIsoDate,
+  unitSealOf,
 } from '../inventory-derive.js';
 import { InvalidTransitionError, isTerminal, transitionInventory } from '../inventory-state.js';
 import { matchScore, parseRemark } from '../inventory-remark.js';
@@ -703,12 +708,23 @@ export class InventoryPipeline {
 
   // ── Item events ───────────────────────────────────────────────────────────
 
-  /** Explicit state change on an item (opened | finished | tossed), optional fraction. */
+  /**
+   * Explicit event on an item (opened | finished | finished-unit | tossed |
+   * moved). `fraction` means something different per type; `to` belongs to
+   * `moved` alone (the destination shelf-life class) and is required there.
+   */
   async applyEvent(
     itemUlid: string,
     type: InventoryEventType,
-    opts: { fraction?: number; at?: string } = {}
+    opts: { fraction?: number; to?: ShelfLifeClass; at?: string } = {}
   ): Promise<InventoryItemView | null> {
+    // Validate the type/field pairing before the item lookup, so a `to` on the
+    // wrong verb is a clean 400 rather than a silently ignored field.
+    if (opts.to !== undefined && type !== 'moved') {
+      throw new ItemValidationError(
+        `to applies to the 'moved' event only (a storage move's destination class) — '${type}' does not take it`
+      );
+    }
     const item = await this.store.getItem(itemUlid);
     if (!item) return null;
     const updated = await this.applyEventToRecord(item, type, opts);
@@ -725,20 +741,21 @@ export class InventoryPipeline {
    *   `notes` (`tossed <amount> <date>`) so waste telemetry stays possible.
    * - `finished`: always terminal and zeroing (on_hand_fraction AND, when the
    *   item is counted, units_remaining — a whole-item finish means none left).
-   * - `finished-unit`: counted items only (§ count-vs-fraction principle) — an
-   *   integer decrement of ONE sealed unit. Reaching zero remaining goes
-   *   terminal `finished`, same as a whole-item finish; otherwise the item
-   *   reverts to `stocked` with a fresh unopened-window eat_by — the unit that
-   *   was just finished carried the opened clock, but the sealed remainder was
-   *   never itself opened, so the next-to-open unit starts its own clock from
-   *   `acquired_at`, not from the just-finished unit's `opened_at`.
+   * - `finished-unit`: counted items only (§ count-vs-fraction) — an integer
+   *   decrement of ONE unit. Reaching zero remaining goes terminal `finished`,
+   *   same as a whole-item finish; otherwise the outcome depends on what the
+   *   package seals (see the branch below).
+   * - `moved`: a storage move (§ Storage moves) — re-anchors the clock onto the
+   *   destination class from the move date, and touches nothing else.
    */
   private async applyEventToRecord(
     item: InventoryItemRecord,
     type: InventoryEventType,
-    opts: { fraction?: number; at?: string }
+    opts: { fraction?: number; to?: ShelfLifeClass; at?: string }
   ): Promise<InventoryItemRecord | null> {
     const at = parseDate(opts.at);
+
+    if (type === 'moved') return this.applyStorageMove(item, opts.to, at);
 
     if (type === 'finished-unit') {
       if (item.units_total == null || item.units_remaining == null) {
@@ -754,12 +771,9 @@ export class InventoryPipeline {
           units_remaining: 0,
         });
       }
-      const eatBy = await this.eatByFromTruth(item, null);
       return this.store.updateItemState(item.ulid, {
-        state: 'stocked',
-        opened_at: null,
-        eat_by: eatBy,
         units_remaining: remaining,
+        ...(await this.unitDepletionClock(item, at)),
       });
     }
 
@@ -820,10 +834,93 @@ export class InventoryPipeline {
   }
 
   /**
+   * A **storage move** (§ Storage moves): the item physically changed where it
+   * lives, so its clock restarts from the move rather than resuming the one it
+   * was on. Sets the destination class, stamps `storage_moved_at` (which the
+   * derivation then takes as the anchor), re-derives `eat_by`, and appends a
+   * `moved <from>→<to> <date>` audit line.
+   *
+   * What it deliberately does NOT touch: `state` and `opened_at`. Moving a sealed
+   * pack between appliances doesn't open it, and moving an open one doesn't
+   * re-seal it — so the window CHOICE (opened vs unopened) is preserved while its
+   * anchor moves. `acquired_at` is untouchable, as everywhere else.
+   *
+   * `at` is the date of the ACT, not of the intention (§ Storage moves): a thaw
+   * reported as yesterday anchors to yesterday even if the decision was made two
+   * days before, because intention and act routinely land on different days and
+   * anchoring to the intention silently mis-sizes a real safety window.
+   */
+  private async applyStorageMove(
+    item: InventoryItemRecord,
+    to: ShelfLifeClass | undefined,
+    at: Date
+  ): Promise<InventoryItemRecord | null> {
+    if (!to) {
+      throw new ItemValidationError(
+        `a storage move needs the class it moved INTO — pass to: one of ${STORAGE_MOVE_SHELF_LIFE_CLASSES.join(', ')}`
+      );
+    }
+    if (to === 'unknown') {
+      throw new ItemValidationError(
+        "a storage move states where the item now lives, and 'unknown' is not a place — reconcile shelf_life_class instead when the class genuinely isn't known"
+      );
+    }
+    // Legality only (terminal-rejecting); the concrete state is preserved.
+    const nextState = transitionInventory(item.state, 'moved');
+
+    const moved: InventoryItemRecord = { ...item, shelf_life_class: to, storage_moved_at: at };
+    const eatBy = await this.eatByFromTruth(moved, moved.opened_at);
+    const moveNote = `moved ${item.shelf_life_class ?? 'unknown'}→${to} ${toIsoDate(at)}`;
+
+    return this.store.updateItemState(item.ulid, {
+      state: nextState,
+      shelf_life_class: to,
+      storage_moved_at: at,
+      eat_by: eatBy,
+      notes: item.notes ? `${item.notes}\n${moveNote}` : moveNote,
+    });
+  }
+
+  /**
+   * The clock half of depleting ONE-or-more whole units from a counted item that
+   * still has units left — shared by `finished-unit` and `consume`'s counted
+   * branch so the two can't drift. Which outcome applies is decided entirely by
+   * what the package seals (§ count-vs-fraction):
+   *
+   * - **`individual`** — each unit had its own seal, so the item reverts to
+   *   `stocked` with `opened_at` cleared and a fresh UNOPENED-window clock: the
+   *   unit just consumed carried the opened clock, but the next-to-open one was
+   *   never itself opened.
+   * - **`shared`** — one seal over all the units, so the container is open and
+   *   every remaining unit has been exposed since it was opened. The item stays
+   *   `open` on its existing `opened_at` and opened-window clock; only the count
+   *   moves. If it was still `stocked`, the depletion IMPLIES the open (you can't
+   *   eat one link out of a sealed pack), so `opened_at` is stamped at the event's
+   *   date and the opened-window clock derived — leaving it `stocked` would report
+   *   an unopened-window safety margin for something physically open, which is the
+   *   under-reporting direction the module refuses.
+   */
+  private async unitDepletionClock(
+    item: InventoryItemRecord,
+    at: Date
+  ): Promise<{ state: InventoryState; opened_at?: Date | null; eat_by: Date | null }> {
+    if (unitSealOf(item) === 'shared') {
+      const openedAt = item.opened_at ?? at;
+      return {
+        state: 'open',
+        opened_at: openedAt,
+        eat_by: await this.eatByFromTruth({ ...item, opened_at: openedAt }, openedAt),
+      };
+    }
+    return { state: 'stocked', opened_at: null, eat_by: await this.eatByFromTruth(item, null) };
+  }
+
+  /**
    * Derive eat_by from the item's true state, folding in the linked product's
-   * precise day-window overrides (label-derived) when one exists. Every path
-   * that re-derives a clock (opened, finished-unit revert, reconcile) goes
-   * through here so overrides are never silently dropped.
+   * precise day-window overrides (label-derived) when one exists, and the item's
+   * storage-move anchor when it has one (§ Storage moves). Every path that
+   * re-derives a clock (opened, storage move, unit depletion, reconcile) goes
+   * through here so neither the overrides nor the anchor is silently dropped.
    */
   private async eatByFromTruth(item: InventoryItemRecord, openedAt: Date | null): Promise<Date | null> {
     const product = item.product_ulid ? await this.store.getProduct(item.product_ulid) : null;
@@ -831,6 +928,7 @@ export class InventoryPipeline {
       shelfLifeClass: item.shelf_life_class,
       acquiredAt: item.acquired_at,
       openedAt,
+      storageMovedAt: item.storage_moved_at,
       daysUnopenedOverride: product?.shelf_life_days_unopened ?? null,
       daysOpenedOverride: product?.shelf_life_days_opened ?? null,
     });
@@ -840,14 +938,24 @@ export class InventoryPipeline {
 
   /**
    * Bring an item's ledger into line with observed reality: on-hand fraction,
-   * unit counts, unit model (fraction ↔ counted), and state — WITHOUT firing
-   * consumption-event semantics. A reconcile never advances or resets a clock:
-   * `opened_at` changes only when explicitly supplied, or is cleared when the
-   * corrected state is `stocked` (stocked MEANS sealed). `eat_by` always
-   * re-derives from the corrected truth (product overrides included). An
+   * unit counts, unit model (fraction ↔ counted), what the package seals, state,
+   * shelf-life class, the open-question flag, and the product link — WITHOUT
+   * firing consumption-event semantics. A reconcile never advances or resets a
+   * clock: `opened_at` changes only when explicitly supplied, or is cleared when
+   * the corrected state is `stocked` (stocked MEANS sealed). `eat_by` always
+   * re-derives from the corrected truth (product overrides and the existing
+   * storage-move anchor included) and is never settable. An
    * explicit non-terminal `state` may resurrect a mis-closed item
    * (`closed_at` clears). Every reconcile appends a `reconciled <date>: …`
    * line to `notes` so corrections stay auditable as corrections.
+   *
+   * **A `shelf_life_class` correction is not a storage move.** It says "this was
+   * always a fridge item; I recorded the wrong class," so it re-derives against
+   * the item's EXISTING anchor and never stamps `storage_moved_at`. "It entered
+   * the fridge on the 8th" is a `moved` event (§ Storage moves). Substituting
+   * either for the other writes a fiction that reads as truth — one under-reports
+   * urgency by however long the item sat in its previous storage, the other
+   * fabricates a transition that never happened.
    */
   async reconcileItem(itemUlid: string, input: ReconcileInput): Promise<InventoryItemView | null> {
     const item = await this.store.getItem(itemUlid);
@@ -857,8 +965,12 @@ export class InventoryPipeline {
       input.on_hand_fraction !== undefined ||
       input.units_total !== undefined ||
       input.units_remaining !== undefined ||
+      input.unit_seal !== undefined ||
       input.state !== undefined ||
       input.opened_at !== undefined ||
+      input.shelf_life_class !== undefined ||
+      input.needs_info !== undefined ||
+      input.product_ulid !== undefined ||
       input.notes !== undefined;
     if (!hasAny) throw new ReconcileValidationError('reconcile needs at least one field');
 
@@ -903,16 +1015,76 @@ export class InventoryPipeline {
       }
     }
 
-    // ── On-hand fraction: fraction-modeled items only ──
+    // ── Unit seal: what a COUNTED package seals; meaningless on a fraction item,
+    //    and dropped when the item reverts to the fraction model. ──
+    let unitSeal = item.unit_seal;
+    if (unitsTotal == null) {
+      if (input.unit_seal !== undefined) {
+        throw new ReconcileValidationError(
+          'unit_seal describes what a COUNTED package seals — supply units_total in the same correction, or omit it'
+        );
+      }
+      unitSeal = null;
+    } else if (input.unit_seal !== undefined) {
+      unitSeal = input.unit_seal;
+    }
+
+    // ── On-hand fraction: fraction-modeled items only. For a counted item the
+    //    fraction is DERIVED from the count (§ count-vs-fraction), so there is no
+    //    stored fact to correct — the caller wants units_remaining. ──
     let fraction = item.on_hand_fraction;
     if (input.on_hand_fraction !== undefined) {
       if (unitsTotal != null) {
-        throw new ReconcileValidationError('on_hand_fraction applies to fraction-modeled items — recount a counted item via units_remaining');
+        throw new ReconcileValidationError('on_hand_fraction applies to fraction-modeled items — a counted item derives it from the count, so recount via units_remaining');
       }
       if (!(input.on_hand_fraction > 0 && input.on_hand_fraction <= 1)) {
         throw new ReconcileValidationError("on_hand_fraction must be in (0, 1] — zero on hand is a 'finished'/'tossed' event, not a correction");
       }
       fraction = input.on_hand_fraction;
+    }
+
+    // ── Identity: the product link, and the class snapshot it can seed. A
+    //    relink must land on a LIVE product — pointing an item at a retired
+    //    identity is the silent version of losing it. ──
+    let productUlid = item.product_ulid;
+    let linkedProduct: ProductRecord | null = null;
+    if (input.product_ulid !== undefined) {
+      if (input.product_ulid === null) {
+        productUlid = null;
+      } else {
+        linkedProduct = await this.store.getProduct(input.product_ulid);
+        if (!linkedProduct) {
+          throw new ReconcileValidationError(`product_ulid ${input.product_ulid} does not exist`);
+        }
+        if (linkedProduct.archived_at) {
+          throw new ReconcileValidationError(
+            linkedProduct.merged_into
+              ? `product ${input.product_ulid} was retired into ${linkedProduct.merged_into} — relink to the survivor instead`
+              : `product ${input.product_ulid} is archived — relink to a live product instead`
+          );
+        }
+        productUlid = input.product_ulid;
+      }
+    }
+
+    // ── Shelf-life class: a CORRECTION, never a move. It changes which window
+    //    applies; it never touches storage_moved_at, so the existing anchor
+    //    stands. A newly-linked product seeds the class only when the item
+    //    carries none of its own (an item's class is its own snapshot). ──
+    let shelfLifeClass = item.shelf_life_class;
+    if (input.shelf_life_class !== undefined) {
+      shelfLifeClass = input.shelf_life_class;
+    } else if (linkedProduct && shelfLifeClass == null) {
+      shelfLifeClass = linkedProduct.shelf_life_class;
+    }
+
+    // ── needs_info: explicit wins; otherwise establishing a product link
+    //    resolves the identity question by construction. ──
+    let needsInfo = item.needs_info;
+    if (input.needs_info !== undefined) {
+      needsInfo = input.needs_info;
+    } else if (input.product_ulid) {
+      needsInfo = false;
     }
 
     // ── Clock: never inferred. Explicit opened_at wins; a corrected `stocked`
@@ -931,7 +1103,13 @@ export class InventoryPipeline {
       throw new ReconcileValidationError("state 'open' needs an opened_at — supply one (or it must already exist)");
     }
 
-    const eatBy = await this.eatByFromTruth({ ...item, opened_at: openedAt }, openedAt);
+    // The corrected truth, re-derived through the one clock helper — which folds
+    // in the NEW product's day-window overrides and keeps the item's existing
+    // storage-move anchor (a correction never re-anchors).
+    const eatBy = await this.eatByFromTruth(
+      { ...item, opened_at: openedAt, product_ulid: productUlid, shelf_life_class: shelfLifeClass },
+      openedAt
+    );
 
     const changes: string[] = [];
     if (state !== item.state) changes.push(`state ${item.state}→${state}`);
@@ -940,10 +1118,18 @@ export class InventoryPipeline {
     } else if (unitsRemaining !== item.units_remaining) {
       changes.push(`units ${item.units_remaining}→${unitsRemaining}`);
     }
+    if (unitSeal !== item.unit_seal) changes.push(`unit_seal ${item.unit_seal ?? 'null'}→${unitSeal ?? 'null'}`);
     if (fraction !== item.on_hand_fraction) changes.push(`fraction ${item.on_hand_fraction}→${fraction}`);
     if (toIsoDate(openedAt) !== toIsoDate(item.opened_at)) {
       changes.push(`opened_at ${toIsoDate(item.opened_at) ?? 'null'}→${toIsoDate(openedAt) ?? 'null'}`);
     }
+    if (shelfLifeClass !== item.shelf_life_class) {
+      changes.push(`shelf_life_class ${item.shelf_life_class ?? 'null'}→${shelfLifeClass ?? 'null'}`);
+    }
+    if (productUlid !== item.product_ulid) {
+      changes.push(`product_ulid ${item.product_ulid ?? 'null'}→${productUlid ?? 'null'}`);
+    }
+    if (needsInfo !== item.needs_info) changes.push(`needs_info ${item.needs_info}→${needsInfo}`);
     const summary = `reconciled ${toIsoDate(new Date())}: ${changes.length ? changes.join(', ') : 'no-op'}${input.notes ? ` — ${input.notes}` : ''}`;
 
     const updated = await this.store.updateItemState(item.ulid, {
@@ -954,6 +1140,10 @@ export class InventoryPipeline {
       on_hand_fraction: fraction,
       units_total: unitsTotal,
       units_remaining: unitsRemaining,
+      unit_seal: unitSeal,
+      shelf_life_class: shelfLifeClass,
+      needs_info: needsInfo,
+      product_ulid: productUlid,
       eat_by: eatBy,
       notes: item.notes ? `${item.notes}\n${summary}` : summary,
     });
@@ -1037,6 +1227,11 @@ export class InventoryPipeline {
     const cls: ShelfLifeClass = derived.shelf_life_class ?? 'prepared';
     const eatBy = deriveEatBy({ shelfLifeClass: cls, acquiredAt, openedAt: null });
     const unitsTotal = derived.units_total ?? null;
+    if (derived.unit_seal !== undefined && unitsTotal == null) {
+      throw new ConversionValidationError(
+        'derived.unit_seal describes what a COUNTED batch\'s package seals — supply derived.units_total, or omit it'
+      );
+    }
     const derivedUlid = generateUlid();
 
     // ONE atomic write for all three phases (§ Conversions § Atomicity).
@@ -1056,6 +1251,7 @@ export class InventoryPipeline {
         on_hand_fraction: unitsTotal != null ? 1 : (derived.on_hand_fraction ?? 1),
         units_total: unitsTotal,
         units_remaining: unitsTotal,
+        unit_seal: unitsTotal != null ? (derived.unit_seal ?? null) : null,
         needs_info: false,
         acquired_at: acquiredAt,
         eat_by: eatBy,
@@ -1217,10 +1413,9 @@ export class InventoryPipeline {
         remaining === 0
           ? { state: 'finished', closed_at: at, on_hand_fraction: 0, units_remaining: 0 }
           : {
-              state: 'stocked',
-              opened_at: null,
-              eat_by: await this.eatByFromTruth(item, null),
               units_remaining: remaining,
+              // Seal-dependent, via the same helper `finished-unit` uses.
+              ...(await this.unitDepletionClock(item, at)),
             };
     } else {
       // Fraction item: finished semantics — a consume always fully finishes it.
@@ -1604,18 +1799,28 @@ export class InventoryPipeline {
       productCls = cls ?? product?.shelf_life_class ?? null;
     }
     const needsInfo = input.needs_info ?? (!input.product_ulid && !cls);
-    const eatBy = needsInfo
-      ? null
-      : deriveEatBy({
-          shelfLifeClass: productCls,
-          acquiredAt,
-          openedAt: null,
-          daysUnopenedOverride: product?.shelf_life_days_unopened,
-          daysOpenedOverride: product?.shelf_life_days_opened,
-        });
-    // Sealed-unit count model: an explicit units_total makes this a counted
-    // item (units_remaining starts full); omitted stays fraction-modeled.
+    // A clock is derived whenever the CLASS is known — `needs_info` is orthogonal
+    // (§ Shelf-life classes). "Nobody has established what this is" and "this
+    // doesn't rot" are unrelated facts, and an unidentified fresh item is
+    // precisely the one most worth a clock. A genuinely unknown class already
+    // yields a null window, which is the honest way to have no clock; gating on
+    // the flag as well left correctly-classed produce invisible to eat-first
+    // because its BRAND was unconfirmed.
+    const eatBy = deriveEatBy({
+      shelfLifeClass: productCls,
+      acquiredAt,
+      openedAt: null,
+      daysUnopenedOverride: product?.shelf_life_days_unopened,
+      daysOpenedOverride: product?.shelf_life_days_opened,
+    });
+    // Unit count model: an explicit units_total makes this a counted item
+    // (units_remaining starts full); omitted stays fraction-modeled.
     const unitsTotal = input.units_total ?? null;
+    if (input.unit_seal !== undefined && unitsTotal == null) {
+      throw new ItemValidationError(
+        'unit_seal describes what a COUNTED package seals — supply units_total, or omit it for a fraction-modeled item'
+      );
+    }
     const newItem: NewItem = {
       ulid: input.ulid ?? generateUlid(),
       product_ulid: input.product_ulid ?? null,
@@ -1626,6 +1831,7 @@ export class InventoryPipeline {
       on_hand_fraction: input.on_hand_fraction ?? 1,
       units_total: unitsTotal,
       units_remaining: unitsTotal,
+      unit_seal: unitsTotal != null ? (input.unit_seal ?? null) : null,
       needs_info: needsInfo,
       acquired_at: acquiredAt,
       eat_by: eatBy,

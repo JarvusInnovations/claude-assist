@@ -14,6 +14,7 @@ import type {
   NutritionPer100g,
   ProductRecord,
   ShelfLifeClass,
+  UnitSeal,
 } from './inventory-types.js';
 import { NUTRITION_FIELD_KEYS, normalizeRecipeName } from './types.js';
 
@@ -49,33 +50,55 @@ export interface EatByInputs {
   shelfLifeClass: ShelfLifeClass | null;
   acquiredAt: Date;
   openedAt: Date | null;
+  /**
+   * Date of the most recent recorded storage move (§ Storage moves). When later
+   * than the window's natural start, it becomes the anchor — a move restarts the
+   * clock from the move rather than resuming the one the item was on.
+   */
+  storageMovedAt?: Date | null;
   /** Product-level precise overrides (label-derived); win over the class default. */
   daysUnopenedOverride?: number | null;
   daysOpenedOverride?: number | null;
 }
 
 /**
- * Derive eat_by from shelf-life class + acquired/opened dates. Opened items
- * measure from opened_at with the opened window; unopened from acquired_at
- * with the unopened window. A `prepared` dish is the exception — it always
- * measures from acquired_at (the make date), because opening a homemade dish
- * doesn't grant it a fresh window. Null window (unknown class, or missing
- * override with an unknown class) → null eat_by.
+ * Derive eat_by as **anchor + window** (§ Shelf-life classes).
+ *
+ * The WINDOW is the class's `opened` one iff the item is opened, else its
+ * `unopened` one. A `prepared` dish is the exception on that choice — it always
+ * takes the unopened branch, because opening a homemade dish doesn't grant it a
+ * fresh window (its two windows are equal for exactly this reason).
+ *
+ * The ANCHOR is the LATEST of the dates that legitimately start that window:
+ * `opened_at` when opened (else `acquired_at`), and `storageMovedAt` when a
+ * storage move has been recorded. Taking the max rather than adding a fourth
+ * branch is what makes move-then-open and open-then-move both come out right with
+ * no ordering rule to remember — and it re-anchors a `prepared` item too, which is
+ * correct: a move is a physical intervention on the whole item (a batch of soup
+ * put in the freezer really does get a new clock), where opening is not.
+ *
+ * Null window (unknown class, or a null override on an unknown class) → null
+ * eat_by: the item simply carries no urgency until the class is known.
  */
 export function deriveEatBy(inputs: EatByInputs): Date | null {
   const cls = inputs.shelfLifeClass ?? 'unknown';
   const window = SHELF_LIFE_WINDOWS[cls] ?? SHELF_LIFE_WINDOWS.unknown;
 
-  // Prepared dishes age from the make date; every other class resets to the
-  // opened window once the seal is broken.
-  if (inputs.openedAt && cls !== 'prepared') {
-    const days = inputs.daysOpenedOverride ?? window.opened;
-    if (days === null || days === undefined) return null;
-    return addDays(inputs.openedAt, days);
-  }
-  const days = inputs.daysUnopenedOverride ?? window.unopened;
+  const opened = Boolean(inputs.openedAt) && cls !== 'prepared';
+  const days = opened
+    ? (inputs.daysOpenedOverride ?? window.opened)
+    : (inputs.daysUnopenedOverride ?? window.unopened);
   if (days === null || days === undefined) return null;
-  return addDays(inputs.acquiredAt, days);
+
+  const base = opened ? inputs.openedAt! : inputs.acquiredAt;
+  const anchor = latestDate(base, inputs.storageMovedAt ?? null);
+  return addDays(anchor, days);
+}
+
+/** The later of two dates (the second optional) — the eat-by anchor rule. */
+function latestDate(base: Date, other: Date | null): Date {
+  if (!other) return base;
+  return other.getTime() > base.getTime() ? other : base;
 }
 
 /**
@@ -189,6 +212,43 @@ export function normalizeProductName(name: string): string {
   return normalizeRecipeName(name);
 }
 
+/** Whether an item uses the unit-count model (both count columns set). */
+export function isCounted(
+  record: Pick<InventoryItemRecord, 'units_total' | 'units_remaining'>
+): boolean {
+  return record.units_total != null && record.units_remaining != null;
+}
+
+/**
+ * An item's effective `unit_seal` (§ count-vs-fraction). The ONE place the
+ * `null → 'individual'` default is decided, so it can't drift between the event
+ * path, the consume path, and the wire view. Null on a fraction-modeled item,
+ * where the notion doesn't apply.
+ */
+export function unitSealOf(
+  record: Pick<InventoryItemRecord, 'units_total' | 'units_remaining' | 'unit_seal'>
+): UnitSeal | null {
+  if (!isCounted(record)) return null;
+  return record.unit_seal ?? 'individual';
+}
+
+/**
+ * How much of an item is on hand, 0..1 (§ count-vs-fraction). For a counted item
+ * this is DERIVED from the count — the count is the single source of truth, and
+ * carrying an independent stored fraction alongside it gave two answers to one
+ * question with the stale one winning on the wire (a pack with 1 of 4 units left
+ * reporting `1.0`). Zero units yields `0`, which is exactly what a terminal close
+ * writes to the stored column, so the two models agree at the boundary.
+ */
+export function onHandFractionOf(
+  record: Pick<InventoryItemRecord, 'units_total' | 'units_remaining' | 'on_hand_fraction'>
+): number {
+  if (record.units_total != null && record.units_remaining != null && record.units_total > 0) {
+    return record.units_remaining / record.units_total;
+  }
+  return record.on_hand_fraction;
+}
+
 /**
  * Project a stored item (+ optional joined product) into the wire view,
  * computing days_until_eat_by / age_days relative to `now`.
@@ -208,14 +268,16 @@ export function toItemView(
     store: record.store,
     batch_ulid: record.batch_ulid,
     state: record.state,
-    on_hand_fraction: record.on_hand_fraction,
+    on_hand_fraction: onHandFractionOf(record),
     units_total: record.units_total,
     units_remaining: record.units_remaining,
+    unit_seal: unitSealOf(record),
     needs_info: record.needs_info,
     needs_nutrition: record.product_ulid ? needsNutrition(product) : false,
     acquired_at: toIsoDate(record.acquired_at)!,
     opened_at: toIsoDate(record.opened_at),
     closed_at: toIsoDate(record.closed_at),
+    storage_moved_at: toIsoDate(record.storage_moved_at),
     eat_by: toIsoDate(record.eat_by),
     shelf_life_class: record.shelf_life_class,
     days_until_eat_by: dayDiff(today, record.eat_by),

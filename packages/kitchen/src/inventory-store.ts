@@ -21,6 +21,7 @@ import type {
   ProductRecord,
   PurchaseBatchRecord,
   ShelfLifeClass,
+  UnitSeal,
 } from './inventory-types.js';
 import { deriveEatBy, normalizeLexiconLine } from './inventory-derive.js';
 
@@ -107,9 +108,11 @@ export interface NewItem {
   batch_ulid: string | null;
   state: InventoryState;
   on_hand_fraction: number;
-  /** Sealed-unit count model (both null = fraction-modeled). See InventoryItemRecord. */
+  /** Unit count model (both null = fraction-modeled). See InventoryItemRecord. */
   units_total?: number | null;
   units_remaining?: number | null;
+  /** What the counted package seals; null = `individual` (§ count-vs-fraction). */
+  unit_seal?: UnitSeal | null;
   needs_info: boolean;
   acquired_at: Date;
   eat_by: Date | null;
@@ -132,6 +135,16 @@ export interface ItemStateUpdate {
    * item counted, null reverts it to the fraction model. Events never set it.
    */
   units_total?: number | null;
+  /** Reconcile only: what the counted package seals; null clears it with the count. */
+  unit_seal?: UnitSeal | null;
+  /** Set by a `moved` event (§ Storage moves) and by a class correction on reconcile. */
+  shelf_life_class?: ShelfLifeClass | null;
+  /** Stamped by a `moved` event — the item's new clock anchor (§ Storage moves). */
+  storage_moved_at?: Date | null;
+  /** Reconcile only: re-queue or clear the open-question flag (§ Reconcile). */
+  needs_info?: boolean;
+  /** Reconcile only: relink to a different live product, or null to unlink. */
+  product_ulid?: string | null;
   eat_by?: Date | null;
   /** Replacement notes value (e.g. with a waste line appended); omitted = unchanged. */
   notes?: string;
@@ -406,10 +419,12 @@ export function rowToItem(row: Record<string, unknown>): InventoryItemRecord {
     on_hand_fraction: parseNumeric(row.on_hand_fraction) ?? 0,
     units_total: row.units_total == null ? null : Number(row.units_total),
     units_remaining: row.units_remaining == null ? null : Number(row.units_remaining),
+    unit_seal: (row.unit_seal as UnitSeal | null) ?? null,
     needs_info: Boolean(row.needs_info),
     acquired_at: toDate(row.acquired_at),
     opened_at: toDateOrNull(row.opened_at),
     closed_at: toDateOrNull(row.closed_at),
+    storage_moved_at: toDateOrNull(row.storage_moved_at),
     eat_by: toDateOrNull(row.eat_by),
     shelf_life_class: (row.shelf_life_class as ShelfLifeClass | null) ?? null,
     notes: (row.notes as string | null) ?? null,
@@ -438,9 +453,14 @@ export function applyItemStateUpdate(
     state: update.state,
     opened_at: update.opened_at !== undefined ? update.opened_at : current.opened_at,
     closed_at: update.closed_at !== undefined ? update.closed_at : current.closed_at,
+    storage_moved_at: update.storage_moved_at !== undefined ? update.storage_moved_at : current.storage_moved_at,
     on_hand_fraction: update.on_hand_fraction !== undefined ? update.on_hand_fraction : current.on_hand_fraction,
     units_remaining: update.units_remaining !== undefined ? update.units_remaining : current.units_remaining,
     units_total: update.units_total !== undefined ? update.units_total : current.units_total,
+    unit_seal: update.unit_seal !== undefined ? update.unit_seal : current.unit_seal,
+    shelf_life_class: update.shelf_life_class !== undefined ? update.shelf_life_class : current.shelf_life_class,
+    needs_info: update.needs_info !== undefined ? update.needs_info : current.needs_info,
+    product_ulid: update.product_ulid !== undefined ? update.product_ulid : current.product_ulid,
     eat_by: update.eat_by !== undefined ? update.eat_by : current.eat_by,
     notes: update.notes !== undefined ? update.notes : current.notes,
     updated_at: new Date(),
@@ -710,10 +730,12 @@ export class PgInventoryStore implements InventoryStore {
     const inserted = await sql`
       INSERT INTO kitchen.inventory_items
         (ulid, product_ulid, raw_label, store, batch_ulid, state, on_hand_fraction,
-         units_total, units_remaining, needs_info, acquired_at, eat_by, shelf_life_class, notes)
+         units_total, units_remaining, unit_seal, needs_info, acquired_at, eat_by,
+         shelf_life_class, notes)
       VALUES (
         ${item.ulid}, ${item.product_ulid}, ${item.raw_label}, ${item.store}, ${item.batch_ulid},
         ${item.state}, ${item.on_hand_fraction}, ${item.units_total ?? null}, ${item.units_remaining ?? null},
+        ${item.unit_seal ?? null},
         ${item.needs_info}, ${item.acquired_at}, ${item.eat_by}, ${item.shelf_life_class}, ${item.notes}
       )
       ON CONFLICT (ulid) DO NOTHING
@@ -742,9 +764,14 @@ export class PgInventoryStore implements InventoryStore {
         state = ${update.state},
         opened_at = ${update.opened_at !== undefined ? update.opened_at : current.opened_at},
         closed_at = ${update.closed_at !== undefined ? update.closed_at : current.closed_at},
+        storage_moved_at = ${update.storage_moved_at !== undefined ? update.storage_moved_at : current.storage_moved_at},
         on_hand_fraction = ${update.on_hand_fraction ?? current.on_hand_fraction},
         units_remaining = ${update.units_remaining !== undefined ? update.units_remaining : current.units_remaining},
         units_total = ${update.units_total !== undefined ? update.units_total : current.units_total},
+        unit_seal = ${update.unit_seal !== undefined ? update.unit_seal : current.unit_seal},
+        shelf_life_class = ${update.shelf_life_class !== undefined ? update.shelf_life_class : current.shelf_life_class},
+        needs_info = ${update.needs_info !== undefined ? update.needs_info : current.needs_info},
+        product_ulid = ${update.product_ulid !== undefined ? update.product_ulid : current.product_ulid},
         eat_by = ${update.eat_by !== undefined ? update.eat_by : current.eat_by},
         notes = ${update.notes !== undefined ? update.notes : current.notes}
       WHERE ulid = ${ulid}
