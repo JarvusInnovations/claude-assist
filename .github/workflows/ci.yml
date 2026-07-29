@@ -77,9 +77,18 @@ jobs:
       - name: Check skill bundles & SKILL.md are up to date
         run: bun run check:skills
 
+      # `bun run test` (the root script → `bun run --filter '*' test`), NOT a bare
+      # `bun test`. Each package's own test script runs with that package as cwd,
+      # which is what lets a package-level `bunfig.toml` apply — `packages/kitchen`
+      # uses one to preload a TZ pin for its date/timezone assertions. A bare
+      # `bun test` from the repo root walks the whole tree in one process, never
+      # reads any package bunfig, and so fails those assertions on every run.
+      #
+      # And no `continue-on-error`. It was here masking exactly that failure, which
+      # made this step decorative: the job reported success with 32 failing
+      # assertions, so a real regression would also have gone green.
       - name: Run tests
-        run: bun test
-        continue-on-error: true
+        run: bun run test
 
   docker:
     name: Docker Build
