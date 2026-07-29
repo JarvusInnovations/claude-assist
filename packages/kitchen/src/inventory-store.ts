@@ -183,6 +183,13 @@ export interface ConversionWriteResult {
   sources: InventoryItemRecord[];
   derived: InventoryItemRecord;
   derivation: InventoryDerivationRecord;
+  /**
+   * False when `derived.ulid` already existed — an idempotent replay of a
+   * caller-supplied derived ULID. NOTHING was written: no source decremented,
+   * no item inserted, no derivation added. Always true for a server-minted
+   * ULID, which cannot collide (§ Conversions § Retries).
+   */
+  created: boolean;
 }
 
 export interface ResolveNeedsInfo {
@@ -1130,6 +1137,23 @@ export class PgInventoryStore implements InventoryStore {
       // for their own `sql.begin` transactions.
       const tx = rawTx as unknown as postgres.Sql;
 
+      // Idempotency check FIRST, inside the transaction (§ Conversions §
+      // Retries). A caller-supplied derived ULID that already exists means this
+      // conversion already happened: return it having written nothing, so a
+      // replay cannot spend the sources a second time. This is the race-safety
+      // net behind the service-level pre-check — near-simultaneous replays
+      // serialize here. A server-minted ULID never hits it.
+      const replay = await this.getItemWith(tx, write.derived.ulid);
+      if (replay) {
+        const derivation = await this.getDerivationByDerivedItemUlidWith(tx, write.derived.ulid);
+        return {
+          sources: await this.getItemsWith(tx, (derivation?.sources ?? []).map((s) => s.item_ulid)),
+          derived: replay,
+          derivation: derivation ?? (await this.insertDerivationWith(tx, write.derivation)),
+          created: false,
+        };
+      }
+
       const sources: InventoryItemRecord[] = [];
       for (const source of write.sources) {
         const updated = await this.updateItemStateWith(tx, source.item_ulid, source.update);
@@ -1145,8 +1169,32 @@ export class PgInventoryStore implements InventoryStore {
       const { record: derived } = await this.insertItemIfAbsentWith(tx, write.derived);
       const derivation = await this.insertDerivationWith(tx, write.derivation);
 
-      return { sources, derived, derivation };
+      return { sources, derived, derivation, created: true };
     });
+  }
+
+  /** One derivation by its derived item, readable inside a transaction. */
+  private async getDerivationByDerivedItemUlidWith(
+    sql: postgres.Sql,
+    derivedItemUlid: string
+  ): Promise<InventoryDerivationRecord | null> {
+    const [row] = await sql`
+      SELECT * FROM kitchen.inventory_derivations WHERE derived_item_ulid = ${derivedItemUlid}
+    `;
+    return row ? rowToDerivation(row) : null;
+  }
+
+  /** Items by ULID, in the order given, skipping any that no longer exist. */
+  private async getItemsWith(
+    sql: postgres.Sql,
+    ulids: string[]
+  ): Promise<InventoryItemRecord[]> {
+    const out: InventoryItemRecord[] = [];
+    for (const ulid of ulids) {
+      const item = await this.getItemWith(sql, ulid);
+      if (item) out.push(item);
+    }
+    return out;
   }
 
   async getDerivationsByDerivedItemUlids(ulids: string[]): Promise<Map<string, InventoryDerivationRecord>> {

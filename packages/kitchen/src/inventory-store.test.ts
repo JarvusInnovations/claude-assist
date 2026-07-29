@@ -123,6 +123,40 @@ describe('MemoryInventoryStore.applyConversion — atomic prep-transform write',
     expect(store.derivations.get(DERIVED)!.ulid).toBe(DERIVATION);
   });
 
+  it('is idempotent on a caller-supplied derived ULID: a replay writes NOTHING', async () => {
+    // The idempotency contract cook mode rides on (§ Conversions § Retries).
+    // The dangerous replay is exactly this one: the first attempt already drove
+    // SOURCE_B terminal, so a replay that re-validated against current state
+    // would 409 against its own side effect — and one that re-applied the write
+    // would spend SOURCE_A twice.
+    const store = new MemoryInventoryStore();
+    await seedTwoSources(store);
+
+    const first = await store.applyConversion(twoSourceWrite());
+    expect(first.created).toBe(true);
+
+    const replay = await store.applyConversion(twoSourceWrite());
+
+    expect(replay.created).toBe(false);
+    expect(replay.derived.ulid).toBe(DERIVED);
+    expect(replay.derivation.ulid).toBe(DERIVATION);
+    // Sources unchanged by the replay — A still has the 2 units the FIRST
+    // conversion left it, not 0.
+    expect(store.items.get(SOURCE_A)!.units_remaining).toBe(2);
+    expect(store.items.get(SOURCE_B)!.state).toBe('finished');
+    expect(store.items.size).toBe(3); // two sources + one derived item, not two
+    expect(store.derivations.size).toBe(1);
+    // The replay still reports the provenance sources, resolved to their
+    // current state, so a caller can render the same confirmation.
+    expect(replay.sources.map((s) => s.ulid)).toEqual([SOURCE_A, SOURCE_B]);
+  });
+
+  it('reports created: true for the ordinary server-minted-ULID conversion', async () => {
+    const store = new MemoryInventoryStore();
+    await seedTwoSources(store);
+    expect((await store.applyConversion(twoSourceWrite())).created).toBe(true);
+  });
+
   it('PROVES atomicity: a failure before the derived insert leaves the sources UNSPENT', async () => {
     const store = new MemoryInventoryStore({
       beforeDerivedInsert: () => {
@@ -180,7 +214,7 @@ describe('MemoryInventoryStore.applyConversion — atomic prep-transform write',
     expect(await store.listItems({})).toHaveLength(2);
   });
 
-  it('rolls back when the derivation insert itself fails (the pg UNIQUE derived_item_ulid mirror)', async () => {
+  it('rolls back when the derivation insert itself collides (the pg UNIQUE derived_item_ulid mirror)', async () => {
     const store = new MemoryInventoryStore();
     const { a } = await seedTwoSources(store);
 
@@ -189,14 +223,21 @@ describe('MemoryInventoryStore.applyConversion — atomic prep-transform write',
     const afterFirst = structuredClone(store.items.get(SOURCE_A)!);
     const derivationAfterFirst = structuredClone(store.derivations.get(DERIVED)!);
 
-    // A replay reuses the derived ULID: `insertItemIfAbsent` no-ops, then the
-    // derivation insert collides — exactly the pg constraint's shape.
-    await expect(store.applyConversion(twoSourceWrite())).rejects.toThrow(/derivation for derived item/);
+    // A SECOND conversion mints a fresh derived item but points its derivation
+    // row at the already-provenanced one — exactly the pg constraint's shape.
+    // (A conversion reusing the derived ULID outright is an idempotent replay,
+    // covered above; this is the genuine constraint violation.)
+    const colliding = twoSourceWrite();
+    const second = ULID(9);
+    colliding.derived = { ...derivedItem(), ulid: second };
 
-    // The replay's decrements are undone (A is not spent twice), and the FIRST
-    // conversion's derived item and provenance both survive intact.
+    await expect(store.applyConversion(colliding)).rejects.toThrow(/derivation for derived item/);
+
+    // The second attempt's decrements are undone (A is not spent twice), no
+    // orphan item is left behind, and the FIRST conversion survives intact.
     expect(store.items.get(SOURCE_A)).toEqual(afterFirst);
     expect(store.items.get(SOURCE_A)!.units_remaining).not.toBe(a.units_remaining);
+    expect(store.items.has(second)).toBe(false);
     expect(store.items.has(DERIVED)).toBe(true);
     expect(store.derivations.get(DERIVED)).toEqual(derivationAfterFirst);
   });
