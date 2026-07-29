@@ -710,6 +710,200 @@ stamp, not a row deletion:
   derivation can point at is archived rather than deleted. Provenance outlives
   usefulness.
 
+## Product corrections — upsert, patch, merge, archive
+
+A product accretes facts over its life: a receipt seeds a bare name, a label
+scan adds a panel, the owner fixes a mangled store abbreviation. Creation is
+therefore never the last write, and a create-only surface is a broken one — the
+`needs_nutrition` flag on any product born without a panel is unclearable, and
+posting the product again to enrich it mints a duplicate instead.
+
+The identity rules mirror § Recipe corrections, with one deliberate divergence
+called out below (a name-key hit **enriches** rather than replacing).
+
+**`POST /products` upserts.** The request may carry an optional `ulid`:
+
+- **With `ulid`** — create-or-replace that exact record, idempotent on the key
+  (the same client-supplied-ULID convention `POST /inventory` and
+  `POST /recipes` use). A replace **states the whole record**: every field the
+  body omits reverts to its default (`null`, `unknown` for
+  `shelf_life_class`, `[]` for `aliases`, `false` for
+  `nutrition_negligible`) — an explicit key plus a full body is an explicit
+  claim about the record's whole content, and it is the only way to *clear* a
+  field. `ulid` and `created_at` are preserved; `updated_at` bumps. An
+  archived record is **not** resurrected by a replace: `409`, naming the
+  survivor when it was merged away.
+- **Without `ulid`** — the **normalized name** is the key: case-folded,
+  whitespace-collapsed, trimmed. Resolved against the live (non-archived)
+  products:
+  - No match → create (`201`).
+  - Exactly one match → **enrich it in place** (`200`), same ULID.
+  - More than one match (duplicates that predate this rule) → `409` naming
+    every candidate. The upsert refuses to guess which duplicate is canonical;
+    the error states both ways forward — pass `ulid`, or merge the duplicates.
+- The response is the bare `Product` row either way; the status distinguishes
+  create (`201`) from replace/enrich (`200`).
+
+**A name-key hit enriches; it does not replace.** This is the divergence from
+`POST /recipes`, and it follows from what the two records *are*. A recipe is
+its name plus its components — a caller pushing one states the whole thing, so
+overwriting is exactly right. A product is a many-field accretion built by
+several independent writers, and the label pipeline already merges onto it
+per-field, never null-clobbering (§ POST /inventory/:ulid/label). If a name-key
+POST replaced, a receipt seed carrying `{name, shelf_life_class}` would silently
+erase a scanned nutrition panel — a write that destroys data it never mentioned.
+So the name key uses the same precedence the label enrich uses: supplied
+non-null fields win, omitted or null fields keep the existing value,
+`nutrition_per_100g` / `nutrition_per_serving` merge **per-field**, `aliases`
+union-merge, and `shelf_life_class` only overrides when the incoming class is
+not `unknown`. Clearing a field is reachable only through the two explicit
+doors — `PATCH`, or a `ulid` replace.
+
+**`PATCH /products/:ulid` is the correction door.** Partial by definition:
+
+- Only the keys present in the body change; every other field is untouched.
+  At least one key is required (`400` on an empty body).
+- An explicit `null` **clears** a nullable field. This is where `PATCH` differs
+  from every enrich path in the module: enrichment must never null-clobber
+  because its input is a *guess* about a field it may simply not have read,
+  while a `PATCH` body is the owner stating what is true. `null` there means
+  "there is no value", not "I didn't look".
+- `nutrition_per_100g` / `nutrition_per_serving` merge **per-field**: a body of
+  `{"nutrition_per_100g": {"sodium_mg": 120}}` fills sodium and leaves the
+  other eight alone; `{"sodium_mg": null}` clears just sodium;
+  `{"nutrition_per_100g": null}` clears the whole panel. Filling one missing
+  field is the overwhelmingly common correction, and it must not require
+  restating eight numbers the caller would have to re-read to avoid destroying.
+- **`name` is patchable.** A product's identity is its `ulid`, not its name:
+  items, lexicon lines, and batch lines all link by `product_ulid`, so a rename
+  can't orphan anything, and receipt-derived names badly need correcting
+  (`"KRKLND SGNTR OO"` → `"Olive Oil"`). This is the opposite of a recipe,
+  where the *name* is the tap target on the reselect strip. One guard: a rename
+  whose normalized form collides with another live product → `409`. Renaming
+  into a collision would manufacture exactly the duplicate the name-key upsert
+  and the merge path exist to remove; the error names the twin and points at
+  merge.
+- Patchable fields are every stored fact: `name`, `shelf_life_class`,
+  `aliases`, `nutrition_per_100g`, `nutrition_per_serving`, `serving_size_g`,
+  `servings_per_container`, `net_content_g`, `net_content_ml`,
+  `unit_model_hint`, `ingredients`, `package_size`,
+  `shelf_life_days_unopened`, `shelf_life_days_opened`,
+  `nutrition_negligible`. Unknown ULID → `404`. Returns the bare updated
+  `Product`.
+
+**`POST /products/:ulid/merge` folds a duplicate into a survivor** — body
+`{ into: <survivor ulid> }`. Duplicates already exist in the wild (the
+create-only `POST` minted one on every re-seed), and a plain delete is the
+wrong tool for them: the losing record is what an inventory item, a lexicon
+line, and a receipt batch line already point at, so deleting it orphans live
+records and loses the mapping work the lexicon represents. A merge is what the
+situation actually calls for. In one operation:
+
+1. **Enrich the survivor** from the loser under the same never-null-clobbering
+   precedence a label enrich uses — the survivor's own values win, and the
+   loser's facts fill what the survivor lacks. A merge must not lose the panel
+   that happens to live on the duplicate.
+2. **Relink every dependent** to the survivor: `inventory_items.product_ulid`,
+   `receipt_lexicon.product_ulid`, `purchase_batch_lines.product_ulid`. The
+   response reports the counts.
+3. **Retire the loser** — `archived_at` stamped and `merged_into` set to the
+   survivor.
+
+Rules: `into` must differ from `:ulid` (`400`); either ULID unknown → `404`;
+`into` already archived → `409` (merging into a retired record would bury the
+data twice over, and following a merge chain invites cycles — the error names
+its `merged_into` so the caller retargets). **Idempotent**: re-merging an
+already-merged loser into the same survivor succeeds with zero relinks.
+Merging it into a *different* survivor → `409` naming where it went.
+
+**`DELETE /products/:ulid` archives — it never destroys.** Same stamp, no
+`merged_into`, for the retire-with-nothing-to-merge case (a product seeded from
+a misread receipt line that never existed). An archived product:
+
+- Leaves `GET /products` and every live listing, and stops being a candidate
+  for the name-key upsert or a name match — so it can never be re-seeded into
+  or matched against again.
+- Stays **resolvable by ULID forever**. An item still linked to it keeps
+  rendering `product_name`, its shelf-life overrides still derive, and a
+  lexicon line still resolves. Retiring a record must never break history.
+- **Idempotent**; unknown ULID → `404`. There is deliberately **no hard
+  delete** — the same "state, not delete" idiom as § Recipe corrections and the
+  inventory terminals.
+
+### Nutritionally negligible products
+
+`nutrition_negligible` (bool, default false) is an owner-set assertion that
+**every panel field is ~0 at any realistic serving of this product**. Spices,
+dried herbs, salt, vinegar, black coffee, extracts, most seasonings.
+
+It exists because the `needs_nutrition` flag is otherwise unclearable for a
+whole category. A US spice jar carries **no Nutrition Facts panel at all** —
+FDA exempts foods containing insignificant amounts of every nutrient — so
+"scan the label" is not an available answer, and neither is § Absent line = 0,
+which needs a panel to read absences from. A normal spice rack therefore
+accrues permanently-flagged items, and a flag that can never be cleared trains
+the reader to ignore it, at which point it stops working for the items that
+*are* actionable. Widening the panel makes it worse: every added field
+retroactively flags every pre-existing product.
+
+**Effects, both of them:**
+
+1. **`needs_nutrition` is false** for any item whose linked product is marked,
+   regardless of panel completeness — at the item view (`GET /inventory`, the
+   CLI list, the app) and everywhere the signal is read. The flag means "a
+   number is missing that could be found", and for a marked product that is not
+   true.
+2. **The product's effective panel reads as all zeros.** The marker is an
+   assertion about the numbers, not merely a request to stop asking. A caller
+   resolving a marked product's nutrition (building a recipe component from it,
+   costing a serving) gets `0` for every field it doesn't otherwise know —
+   never `null`. This is load-bearing, not a nicety: under the module's
+   per-field null semantics a single unknown contribution makes a whole day's
+   field read *unknown* (§ Nutrition panel — "a field is null in the total only
+   when no component carried it"). A pinch of paprika whose sodium is `null`
+   costs the day its entire sodium figure. Asserting zero is the same move
+   § Filling `added_sugar_g` already requires of whole foods, which state `0`
+   **by definition, not `null`**.
+
+**The marker asserts a realistic-serving approximation, with no quantity
+threshold — deliberately.** 100 g of paprika is genuinely ~282 kcal, so the
+zeros are wrong at that quantity. Accepted anyway, for three reasons. *First,
+there is nothing to condition on*: the flag is a property of the **product**,
+read at points that hold no quantity, so a threshold rule would have no
+argument at the moment it needed one. *Second, a context-dependent flag is
+worse than a bounded-error one*: two reads of the same product would disagree
+about whether it has nutrition, which is precisely the "indistinguishable
+records" failure the rest of this section exists to remove. *Third, the error
+is bounded by the category and by the alternative.* A product qualifies only if
+realistic use is a teaspoon or two, so the worst-case drift is single-digit
+calories a day — against a `null` that erases a whole field of a whole day.
+Nobody eats 100 g of paprika; someone cooking with that much is logging a
+*dish*, which is logged as an entry or a recipe carrying its own numbers, not
+by consuming a spice jar.
+
+**Never inferred, never backfilled.** Marking is a deliberate per-product act
+by the owner or an agent acting on an explicit instruction — no category
+heuristic sets it, and no migration backfills it. The stored
+`nutrition_per_100g` is **not** rewritten to zeros either: the assertion stays
+one reversible boolean, zeros are derived at read time, and a real panel found
+later supersedes the marker without anyone having to tell asserted zeros from
+scanned ones.
+
+### Principles (local)
+
+- **A write that cannot do what was asked says so.** It never discards the
+  intent and reports success. The create-only `POST /products` accepted an
+  existing `ulid`, stripped it, minted a new record, and answered `201` — a
+  duplicate reported as a create, indistinguishable from the enrichment the
+  caller asked for. An unhonorable request is a `4xx`; silently doing something
+  adjacent is the worst outcome available, because nothing downstream can tell
+  it from success.
+- **A flag nobody can clear is worse than no flag.** Any "needs attention"
+  signal must have a reachable resolving action for every case it fires on. When
+  a category has none, the signal gets an honest way to be satisfied rather
+  than being left to fire forever — an unclearable alarm trains the reader to
+  ignore the clearable ones too.
+
 ## Meal-bank sheet consumption
 
 The module reads a meal-bank gitsheet owned by the instance's own repo:
@@ -969,13 +1163,23 @@ All tables instance-agnostic empty schema, ULID keys, `kitchen` schema
   display string it always was. `servings_per_container × serving_size_g`
   remains a directional fallback when no net content was legible.
 
+  **Correction & retirement** (migration `017-kitchen-product-corrections.sql`):
+  `nutrition_negligible` (bool, not null, default false — the owner-set
+  ~0-at-any-realistic-serving assertion), `archived_at` (timestamptz, null =
+  live) and `merged_into` (ULID, nullable — set when the row was retired *into*
+  a survivor). See § Product corrections for the upsert / patch / merge /
+  archive semantics these carry.
+
   **The needs-nutrition signal**: an inventory item whose *linked product*
   carries no `nutrition_per_100g`, or a panel with any of the nine fields
   null, is flagged `needs_nutrition: true` on every item view (`GET
   /inventory`, CLI list, the app) — a label rescan is the resolving action.
   Distinct from `needs_info` (a scanned line with NO product match); an
   unlinked item is never double-badged. This is the loop that keeps
-  recipe/consume macros from going null in the first place.
+  recipe/consume macros from going null in the first place. A product marked
+  `nutrition_negligible` is **exempt**: the flag stays false however incomplete
+  its panel is, because for that category no rescan can ever clear it
+  (§ Nutritionally negligible products).
 
   **Absent line = 0 (so the flag is clearable).** A legible panel that
   simply does not print a nutrient line means ZERO of it, not unknown — US
@@ -1270,7 +1474,8 @@ phase 1. Photos are memory-only for the request, never persisted (phase-1 rule).
 not assume one convention): single-resource creates/mutations return the
 **bare** row (`POST /receipts` → `PurchaseBatch`; `POST /inventory`,
 `PATCH /inventory/:ulid`, and
-`POST /inventory/:ulid/events` → `InventoryItem`; `POST /products` → `Product`;
+`POST /inventory/:ulid/events` → `InventoryItem`; `POST /products`,
+`PATCH /products/:ulid`, and `DELETE /products/:ulid` → `Product`;
 `POST /lexicon` → `LexiconLine`); list reads return a named plural + `count`
 (`{ batches, count }`, `{ items, count }`, `{ questions, count }`,
 `{ products, count }`, `{ lines, count }`); compound reads/results return named
@@ -1494,11 +1699,27 @@ Item mutation:
 
 Products & lexicon (agentic seed + reads):
 
-- `POST /products` — JSON `{ name (required), shelf_life_class?, aliases?,
-  nutrition_per_100g?, ingredients?, package_size?, shelf_life_days_unopened?,
-  shelf_life_days_opened? }` → `Product` (`201`).
+- `POST /products` — JSON `{ ulid? (ULID), name (required), shelf_life_class?,
+  aliases?, nutrition_per_100g?, nutrition_per_serving?, serving_size_g?,
+  servings_per_container?, net_content_g?, net_content_ml?, unit_model_hint?,
+  ingredients?, package_size?, shelf_life_days_unopened?,
+  shelf_life_days_opened?, nutrition_negligible? }` → bare `Product`.
+  **Upserts** (§ Product corrections): `201` create, `200`
+  replace-on-`ulid`/enrich-on-name, `409` on an ambiguous name key or an
+  archived target.
+- `PATCH /products/:ulid` — JSON, ≥ 1 key, same field set minus `ulid`
+  (§ Product corrections). Partial: only supplied keys change; explicit `null`
+  clears; the two panels merge per-field. → bare `Product`; `404` unknown;
+  `409` on a rename collision with a live product.
+- `POST /products/:ulid/merge` — JSON `{ into (ULID, required) }` → `{ product,
+  merged, relinked: { items, lexicon_lines, batch_lines } }` where `product` is
+  the survivor and `merged` the retired loser. `400` self-merge, `404` unknown
+  either side, `409` archived survivor or an already-merged loser pointed
+  elsewhere.
+- `DELETE /products/:ulid` — archives (never destroys); idempotent → bare
+  `Product`; `404` unknown.
 - `GET /products?q&limit` → `{ products: Product[], count }` (`q` = substring
-  over name/aliases).
+  over name/aliases). Archived products are excluded.
 - `POST /lexicon` — JSON `{ store (required), line_text (required),
   product_ulid (required), package_size?, shelf_life_class? }` → `LexiconLine`
   (`201`); upserts on `(store, line_text)`.
@@ -1531,11 +1752,17 @@ Products & lexicon (agentic seed + reads):
   `amount` in that source's own unit. `recipe_ulid` is nullable (provenance
   only).
 - **Product**: `{ ulid, name, shelf_life_class, aliases, nutrition_per_100g,
-  ingredients, package_size, shelf_life_days_unopened, shelf_life_days_opened,
-  created_at, updated_at }`. `nutrition_per_100g` (nullable) is `{ calories,
-  protein_g, fat_g, sat_fat_g, carbs_g, sodium_mg, fiber_g, sugar_g,
-  added_sugar_g }` (any field null = unknown); `ingredients` is the printed ingredients list (nullable
-  text).
+  serving_size_g, nutrition_per_serving, servings_per_container,
+  unit_model_hint, net_content_g, net_content_ml, ingredients, package_size,
+  shelf_life_days_unopened, shelf_life_days_opened, nutrition_negligible,
+  archived_at, merged_into, created_at, updated_at }`. `nutrition_per_100g`
+  (nullable) is `{ calories, protein_g, fat_g, sat_fat_g, carbs_g, sodium_mg,
+  fiber_g, sugar_g, added_sugar_g }` (any field null = unknown);
+  `nutrition_per_serving` is the same shape as printed per label serving;
+  `ingredients` is the printed ingredients list (nullable text).
+  `nutrition_negligible` is the ~0-at-any-realistic-serving assertion;
+  `archived_at`/`merged_into` are the retirement stamps (both null while live)
+  — § Product corrections.
 - **LexiconLine**: `{ ulid, store, line_text, product_ulid, package_size,
   shelf_life_class, non_inventory, created_at, updated_at }`. `product_ulid` is
   null on a non-inventory skip marker (`non_inventory: true`).
