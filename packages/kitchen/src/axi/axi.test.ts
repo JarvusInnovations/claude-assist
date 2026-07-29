@@ -7,6 +7,7 @@ import { commandReferenceText, COMMAND_GROUPS, MACRO_PANEL_FLAGS, MACRO_PANEL_FL
 import { spliceGeneratedRegions, commandReferenceMarkdown } from "./skill.js";
 import { buildLogEntryFields, buildPatchBody } from "./commands/entries.js";
 import { assertConvertShelfLifeClass } from "./commands/inventory.js";
+import { buildProductWriteBody } from "./commands/products.js";
 import { ensureExplicitOffset } from "./commands/weigh-ins.js";
 
 describe("resolveServer", () => {
@@ -402,5 +403,44 @@ describe("convert made-food shelf-life guard (CLI)", () => {
       expect(() => assertConvertShelfLifeClass(okClass)).not.toThrow();
     }
     expect(() => assertConvertShelfLifeClass(undefined)).not.toThrow();
+  });
+});
+
+describe("product write body (§ Product corrections)", () => {
+  it("sends ONLY the supplied flags, so `products update` is genuinely partial", () => {
+    // The whole point of the PATCH door: an absent flag must not reach the wire
+    // as null, or every correction would clobber the fields it didn't mention.
+    const body = buildProductWriteBody({ nutrition: '{"sodium_mg": 120}' });
+    expect(Object.keys(body)).toEqual(["nutrition_per_100g"]);
+    expect(body.nutrition_per_100g).toEqual({ sodium_mg: 120 });
+  });
+
+  it("treats an empty-string flag as an explicit clear (null on the wire)", () => {
+    const body = buildProductWriteBody({ "package-size": "", ingredients: "", nutrition: "" });
+    expect(body).toEqual({ package_size: null, ingredients: null, nutrition_per_100g: null });
+  });
+
+  it("maps --negligible / --no-negligible to the boolean either way", () => {
+    expect(buildProductWriteBody({ negligible: true })).toEqual({ nutrition_negligible: true });
+    expect(buildProductWriteBody({ "no-negligible": true })).toEqual({ nutrition_negligible: false });
+    expect(buildProductWriteBody({})).toEqual({});
+  });
+
+  it("validates the enums it forwards rather than letting the server guess", () => {
+    expect(() => buildProductWriteBody({ "shelf-life": "cupboard" })).toThrow(AxiError);
+    expect(() => buildProductWriteBody({ "unit-model": "sealed" })).toThrow(AxiError);
+    expect(buildProductWriteBody({ "unit-model": "counted" })).toEqual({ unit_model_hint: "counted" });
+  });
+});
+
+describe("command reference covers every product write door", () => {
+  it("documents update, merge, and archive alongside add", () => {
+    // A verb the CLI accepts but the reference omits is a verb agents fall back
+    // from — the delete-and-re-add reflex the upsert exists to remove.
+    const text = commandReferenceText();
+    for (const usage of ["products add", "products update", "products merge", "products archive"]) {
+      expect(text).toContain(usage);
+    }
+    expect(text).toContain("--negligible");
   });
 });
