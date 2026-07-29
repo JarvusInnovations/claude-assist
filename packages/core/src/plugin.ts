@@ -526,6 +526,72 @@ export interface GooglePluginConfig {
 }
 
 /**
+ * A worksheet's `cook_mode` disposition — what submitting it WRITES.
+ *
+ * The distinction is doctrine, not a flag: **packing is a conversion, eating is
+ * an entry.** Packing food creates stock that will be eaten later, possibly
+ * differently than planned; pre-logging it as consumption makes the journal lie
+ * the moment plans change. See specs/modules/kitchen.md § Cook mode.
+ */
+export type WorksheetCookDisposition = 'eaten' | 'packed';
+
+/**
+ * What the pages module hands its cook sink on a worksheet submission —
+ * deliberately domain-type-free (plain strings and numbers), so the pages
+ * package never imports the kitchen package. `totals` keys are the worksheet's
+ * declared field keys; validating them against a real nutrition panel is the
+ * SINK's job, because that is where the domain lives.
+ */
+export interface WorksheetCookRequest {
+  /**
+   * The client-supplied idempotency key — the submitted worksheet's
+   * `submission_key`, a ULID. The sink must treat it as the identity of the
+   * write it performs (the entry's ULID when eaten, the derived item's when
+   * packed) so a resubmission cannot double-write.
+   */
+  ulid: string;
+  disposition: WorksheetCookDisposition;
+  /** Names the resulting entry / derived item. */
+  label: string;
+  /** Server-computed totals: field key → value, null when unknown. */
+  totals: Record<string, number | null>;
+  /** What was weighed, for the provenance note. */
+  components: { label: string; quantity: number }[];
+  /** Quantity unit the components are stated in (e.g. `g`). */
+  unit: string;
+  /** Event time (ISO); the sink defaults to now. */
+  at?: string;
+  /** The submitter's free-text remark, if any. */
+  note?: string;
+  /** `packed` only — describes the derived item and what it was made from. */
+  packed?: {
+    units?: number;
+    shelf_life_class?: string;
+    recipe_ulid?: string;
+    sources?: { item_ulid: string; amount?: number }[];
+  };
+}
+
+export interface WorksheetCookOutcome {
+  /** `entry` = a journal entry (eaten); `item` = prepped stock (packed). */
+  kind: 'entry' | 'item';
+  /** The ULID of the written row — equal to the request's `ulid`. */
+  ulid: string;
+  /** False on an idempotent replay: nothing was written a second time. */
+  created: boolean;
+}
+
+/**
+ * The cook-mode seam. Composed by the server from a domain module's decorated
+ * surface and injected here; the pages module calls it and knows nothing else
+ * about it. Absent → a cook-mode worksheet submission reports `unavailable`
+ * rather than silently landing in the queue as if it had been logged.
+ */
+export interface WorksheetCookSink {
+  cook(request: WorksheetCookRequest): Promise<WorksheetCookOutcome>;
+}
+
+/**
  * Configuration for the pages plugin (publish + collect interactive HTML pages).
  */
 export interface PagesPluginConfig {
@@ -534,6 +600,12 @@ export interface PagesPluginConfig {
    * (default: derived from the request's forwarded-proto/host headers).
    */
   baseUrl?: string;
+  /**
+   * Sink for worksheet cook-mode submissions (§ Cook mode). Injected by the
+   * server from the kitchen module's decorated surface, so the two packages
+   * never import each other.
+   */
+  worksheetCookSink?: WorksheetCookSink;
 }
 
 export interface ModulePlugin {

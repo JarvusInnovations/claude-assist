@@ -38,17 +38,40 @@ export default createPlugin('pages', async (fastify: FastifyInstance, options: P
 
   const store = new PgPagesStore(fastify.sql);
 
-  await fastify.register(registerPagesApiRoutes, { store, baseUrl: config.baseUrl });
+  await fastify.register(registerPagesApiRoutes, {
+    store,
+    baseUrl: config.baseUrl,
+    // Cook-mode seam (§ Cook mode): composed by the server from the kitchen
+    // module's decorated surface. Absent → cook-mode submissions 503 rather
+    // than landing in the queue as if they had been logged.
+    worksheetCookSink: config.worksheetCookSink,
+  });
 
-  fastify.log.info('Pages module loaded (publish/collect API)');
+  fastify.log.info(
+    { cookMode: config.worksheetCookSink ? 'wired' : 'unavailable' },
+    'Pages module loaded (publish/collect API)'
+  );
 });
 
 // Re-exports for the server app + tests.
-export { registerPagesPublicRoutes, type PagesPublicRoutesConfig } from './routes/public.js';
-export { registerPagesApiRoutes, formatResponseNotifyBody, type PagesApiRoutesConfig } from './routes/api.js';
+export {
+  registerPagesPublicRoutes,
+  PAGE_CONTENT_TYPE,
+  HELPER_CONTENT_TYPE,
+  type PagesPublicRoutesConfig,
+} from './routes/public.js';
+export {
+  registerPagesApiRoutes,
+  formatResponseNotifyBody,
+  cookModeProcessedBy,
+  type PagesApiRoutesConfig,
+  type CookModeReport,
+  type CookModeStatus,
+} from './routes/api.js';
 export { PgPagesStore, type PagesStore } from './store.js';
 export { MemoryPagesStore } from './memory-store.js';
 export { HELPER_SCRIPT } from './helper-script.js';
 export { PAGE_CSP } from './csp.js';
+export * from './worksheet.js';
 export { resolveBaseUrl, pageUrl } from './url.js';
 export * from './types.js';

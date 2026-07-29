@@ -23,6 +23,7 @@ import type {
   PublishInput,
   PublishResult,
 } from './types.js';
+import type { WorksheetDefinition } from './worksheet.js';
 
 export interface PagesStore {
   /** Create a page + its first version, or add a new version to an existing slug. */
@@ -30,8 +31,13 @@ export interface PagesStore {
 
   getPage(slug: string): Promise<PageRecord | null>;
 
-  /** The page + its current version's HTML, or null if the slug is unknown. */
-  getCurrent(slug: string): Promise<{ page: PageRecord; html: string } | null>;
+  /**
+   * The page + its current version's HTML and worksheet definition (null when
+   * the version was published as plain HTML), or null if the slug is unknown.
+   */
+  getCurrent(
+    slug: string
+  ): Promise<{ page: PageRecord; html: string; worksheet: WorksheetDefinition | null } | null>;
 
   /** Active (non-archived) pages, newest-first by last publish. */
   listActive(): Promise<PageRecord[]>;
@@ -95,6 +101,7 @@ interface VersionRow {
   id: number;
   page_id: number;
   html: string;
+  worksheet: unknown;
   created_at: Date;
 }
 
@@ -143,6 +150,7 @@ function rowToVersion(row: VersionRow): PageVersionRecord {
     id: row.id,
     pageId: row.page_id,
     html: row.html,
+    worksheet: parseJsonField<WorksheetDefinition>(row.worksheet as WorksheetDefinition | string | null),
     createdAt: row.created_at,
   };
 }
@@ -181,8 +189,8 @@ export class PgPagesStore implements PagesStore {
           RETURNING *
         `;
         const [versionRow] = await tx<VersionRow[]>`
-          INSERT INTO pages.versions (page_id, html)
-          VALUES (${pageRow!.id}, ${input.html})
+          INSERT INTO pages.versions (page_id, html, worksheet)
+          VALUES (${pageRow!.id}, ${input.html}, ${input.worksheet ? JSON.stringify(input.worksheet) : null})
           RETURNING *
         `;
         const [updated] = await tx<PageRow[]>`
@@ -194,8 +202,8 @@ export class PgPagesStore implements PagesStore {
       }
 
       const [versionRow] = await tx<VersionRow[]>`
-        INSERT INTO pages.versions (page_id, html)
-        VALUES (${existing.id}, ${input.html})
+        INSERT INTO pages.versions (page_id, html, worksheet)
+        VALUES (${existing.id}, ${input.html}, ${input.worksheet ? JSON.stringify(input.worksheet) : null})
         RETURNING *
       `;
       const [updated] = await tx<PageRow[]>`
@@ -219,15 +227,21 @@ export class PgPagesStore implements PagesStore {
     return row ? rowToPage(row) : null;
   }
 
-  async getCurrent(slug: string): Promise<{ page: PageRecord; html: string } | null> {
-    const [row] = await this.sql<(PageRow & { html: string | null })[]>`
-      SELECT p.*, v.html
+  async getCurrent(
+    slug: string
+  ): Promise<{ page: PageRecord; html: string; worksheet: WorksheetDefinition | null } | null> {
+    const [row] = await this.sql<(PageRow & { html: string | null; worksheet: unknown })[]>`
+      SELECT p.*, v.html, v.worksheet
       FROM pages.pages p
       LEFT JOIN pages.versions v ON v.id = p.current_version_id
       WHERE p.slug = ${slug}
     `;
     if (!row || row.html === null) return null;
-    return { page: rowToPage(row), html: row.html };
+    return {
+      page: rowToPage(row),
+      html: row.html,
+      worksheet: parseJsonField<WorksheetDefinition>(row.worksheet as WorksheetDefinition | string | null),
+    };
   }
 
   async listActive(): Promise<PageRecord[]> {
