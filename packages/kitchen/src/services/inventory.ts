@@ -29,6 +29,7 @@ import type {
   InventoryPhotoPart,
   InventoryQuestion,
   InventoryState,
+  ItemMergeResult,
   LabelResolution,
   LexiconInput,
   LexiconRecord,
@@ -46,7 +47,14 @@ import type {
   ShelfLifeClass,
 } from '../inventory-types.js';
 import { CONVERT_SHELF_LIFE_CLASSES, PACKAGE_DURABLE_SHELF_LIFE_CLASSES } from '../inventory-types.js';
-import type { InventoryStore, ItemStateUpdate, NewItem, NewProduct, ProductPatch } from '../inventory-store.js';
+import type {
+  InventoryStore,
+  ItemIdentityPatch,
+  ItemStateUpdate,
+  NewItem,
+  NewProduct,
+  ProductPatch,
+} from '../inventory-store.js';
 import {
   deriveEatBy,
   normalizeLexiconLine,
@@ -116,6 +124,30 @@ export class ProductConflictError extends Error {
   }
 }
 
+/**
+ * Thrown on a malformed item merge (a self-merge) — a 400 at the route
+ * (specs/modules/kitchen.md § Item corrections).
+ */
+export class ItemValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ItemValidationError';
+  }
+}
+
+/**
+ * Thrown when an item merge cannot be honored as asked — a survivor that was
+ * itself merged away, or a loser already merged into someone else. A `409` at
+ * the route; the message always names where the record went so the caller can
+ * retarget in one step (following a merge chain here would invite a cycle).
+ */
+export class ItemConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ItemConflictError';
+  }
+}
+
 /** Thrown on an invalid reconcile (§ Reconcile — contradictory or ineligible correction) — a 400 at the route. */
 export class ReconcileValidationError extends Error {
   constructor(message: string) {
@@ -170,6 +202,15 @@ export interface InventoryPipelineConfig {
    */
   linkEntry?: (entryUlid: string, itemUlid: string) => Promise<void>;
   /**
+   * Move every consumption entry that depleted one item onto another, returning
+   * how many moved — the entries half of an item merge (§ Item corrections).
+   * Injected for the same reason `linkEntry` is: `kitchen.entries` belongs to the
+   * phase-1 `EntryStore`, and the inventory pipeline stays entry-store-agnostic.
+   * Absent, a merge reports `entries: 0` rather than claiming a move it did not
+   * make.
+   */
+  relinkEntries?: (fromItemUlid: string, toItemUlid: string) => Promise<number>;
+  /**
    * Atomic cross-table writer for `consume()` (claude-assist#110): inserts
    * the consumption entry and depletes the item in ONE transaction. Required
    * for `consume()` to succeed — absent, `consume()` throws
@@ -213,6 +254,7 @@ export class InventoryPipeline {
 
   private depletionStep: number;
   private linkEntry?: (entryUlid: string, itemUlid: string) => Promise<void>;
+  private relinkEntries?: (fromItemUlid: string, toItemUlid: string) => Promise<number>;
   private consumeStore?: ConsumeStore;
   private resolveRecipe?: (recipeUlid: string) => Promise<RecipeRecord | null>;
   private inflight = new Set<Promise<unknown>>();
@@ -226,6 +268,7 @@ export class InventoryPipeline {
   ) {
     this.depletionStep = config.depletionStep ?? 0.34;
     this.linkEntry = config.linkEntry;
+    this.relinkEntries = config.relinkEntries;
     this.consumeStore = config.consumeStore;
     this.resolveRecipe = config.resolveRecipe;
   }
@@ -1416,6 +1459,105 @@ export class InventoryPipeline {
       item: await this.viewOf(primary ?? item),
       dismissed_count: dismissedCount,
       non_inventory: nonInventory,
+    };
+  }
+
+  /**
+   * `POST /inventory/:ulid/merge` — fold a duplicate item into a survivor
+   * (§ Item corrections). Dismissal alone is the wrong tool for a duplicate: the
+   * losing row is what a consumption entry, a receipt line, and a conversion
+   * already point at, so retiring it without moving them strands history against
+   * a record that is no longer stock.
+   *
+   * Four steps, in this order:
+   *
+   * 1. **Fill the survivor's gaps** — only the five identity fields, only where
+   *    the survivor's own value is null. This is the only door that can move
+   *    `product_ulid` onto an item at all, which is what makes merge the
+   *    correction for a `needs_info` row whose identity was established on the
+   *    other record.
+   * 2. **Resolve the survivor** when the fill identified it: `needs_info` clears
+   *    and `eat_by` re-derives from the SURVIVOR's own clock — never the
+   *    loser's, since a duplicate minted a day late reads as a day fresher than
+   *    the food is, and that misreport is the whole defect.
+   * 3. **Relink every dependent** (entries via the injected hook; batch lines and
+   *    both derivation links in the store).
+   * 4. **Retire the loser** as `dismissed` with `merged_into`.
+   *
+   * Quantities are never summed — the merge asserts these two rows are ONE
+   * physical package, so adding them would manufacture the very over-reporting
+   * the duplicate caused. A wrong count is a separate observation (`recount`).
+   *
+   * Idempotent: a replay into the same survivor relinks nothing and keeps the
+   * first retirement stamp. Null when either ULID is unknown.
+   */
+  async mergeItems(loserUlid: string, survivorUlid: string): Promise<ItemMergeResult | null> {
+    if (loserUlid === survivorUlid) {
+      throw new ItemValidationError('into must differ from the item being merged');
+    }
+    const loser = await this.store.getItem(loserUlid);
+    const survivor = await this.store.getItem(survivorUlid);
+    if (!loser || !survivor) return null;
+
+    if (survivor.merged_into) {
+      throw new ItemConflictError(
+        `Merge target ${survivor.ulid} was itself merged into ${survivor.merged_into} — merging into a retired record would bury the data twice. Retarget the survivor.`
+      );
+    }
+    if (loser.merged_into && loser.merged_into !== survivorUlid) {
+      throw new ItemConflictError(
+        `Item ${loser.ulid} was already merged into ${loser.merged_into}, not ${survivorUlid}.`
+      );
+    }
+
+    // 1. Gap fill — never overwrite a value the survivor already has.
+    const fill: ItemIdentityPatch = {};
+    if (survivor.product_ulid === null && loser.product_ulid !== null) fill.product_ulid = loser.product_ulid;
+    if (survivor.raw_label === null && loser.raw_label !== null) fill.raw_label = loser.raw_label;
+    if (survivor.store === null && loser.store !== null) fill.store = loser.store;
+    if (survivor.batch_ulid === null && loser.batch_ulid !== null) fill.batch_ulid = loser.batch_ulid;
+    if (survivor.shelf_life_class === null && loser.shelf_life_class !== null) {
+      fill.shelf_life_class = loser.shelf_life_class;
+    }
+    let merged =
+      Object.keys(fill).length > 0
+        ? (await this.store.updateItemIdentity(survivorUlid, fill)) ?? survivor
+        : survivor;
+
+    // 2. A gained product identity resolves the survivor, on ITS OWN clock.
+    if (fill.product_ulid && merged.needs_info) {
+      const product = await this.store.getProduct(fill.product_ulid);
+      const cls = merged.shelf_life_class ?? product?.shelf_life_class ?? 'unknown';
+      const eatBy = deriveEatBy({
+        shelfLifeClass: cls,
+        acquiredAt: merged.acquired_at,
+        openedAt: merged.opened_at,
+        daysUnopenedOverride: product?.shelf_life_days_unopened,
+        daysOpenedOverride: product?.shelf_life_days_opened,
+      });
+      merged =
+        (await this.store.resolveNeedsInfo(survivorUlid, {
+          product_ulid: fill.product_ulid,
+          shelf_life_class: cls,
+          eat_by: eatBy,
+        })) ?? merged;
+    }
+
+    // 3. Relink. Entries cross a store seam (see `relinkEntries`), so an
+    //    unwired pipeline reports 0 rather than claiming a move it didn't make.
+    const counts = await this.store.relinkItemReferences(loserUlid, survivorUlid);
+    let entries = 0;
+    if (this.relinkEntries) {
+      entries = await this.relinkEntries(loserUlid, survivorUlid);
+    }
+
+    // 4. Retire.
+    const retired = await this.store.retireMergedItem(loserUlid, survivorUlid, new Date());
+
+    return {
+      item: await this.viewOf(merged),
+      merged: await this.viewOf(retired ?? loser),
+      relinked: { entries, ...counts },
     };
   }
 

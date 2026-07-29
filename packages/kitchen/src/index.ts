@@ -139,6 +139,8 @@ export default createPlugin('kitchen', async (fastify: FastifyInstance, options:
 
   const inventory = new InventoryPipeline(inventoryStore, receiptParser, labelParser, fastify.log, {
     linkEntry: (entryUlid, itemUlid) => entryStore.linkInventoryItem(entryUlid, itemUlid),
+    // The entries half of an item merge (§ Item corrections) — same store seam.
+    relinkEntries: (fromItemUlid, toItemUlid) => entryStore.relinkInventoryItem(fromItemUlid, toItemUlid),
     // Atomic entry+deplete write for consume() (claude-assist#110) — see
     // services/consume-store.ts for why this crosses into kitchen.entries.
     consumeStore: new PgConsumeStore(fastify.sql),

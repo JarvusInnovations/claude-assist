@@ -27,6 +27,11 @@ export const INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json
        [--uncounted] [--state stocked|open] [--opened-at DATE] [--notes T]
                                              RECONCILE the ledger to observed reality —
                                              a correction, NOT a consumption event
+  dismiss <ulid> [--non-inventory]          RETIRE a record that was never real
+                                             stock (phantom item, non-grocery
+                                             receipt line) — no consumption, no waste
+  merge <ulid> --into <ulid>                fold a DUPLICATE item into a survivor:
+                                             relink its dependents, then retire it
   remark "<free text>" [--at DATE]          free-text event resolver (honest match)
   questions [--limit N]                     open needs-info items as questions
   convert [--from <ulid>[:amount]…] --to '<json>' [--at DATE]
@@ -34,7 +39,27 @@ export const INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json
   consume <item-ulid> [--quantity N] [--at DATE] [--ulid ENTRY_ULID]
                                              one-tap: log + deplete a known-macro item, ONE atomic step
 
-  states: stocked, open, finished, tossed. For 'event … tossed', --fraction is
+  EVERY STATE AN ITEM CAN REACH, and the verb that reaches it:
+
+    stocked    'add' (or 'convert' for a made item) creates one; also where a
+               counted item lands after 'event … finished-unit' leaves units,
+               and where 'recount --state stocked' puts a mis-opened item
+    open       'event <ulid> opened'
+    finished   'event <ulid> finished' (whole item) or 'event … finished-unit'
+               on the LAST unit of a counted item. Terminal. Means CONSUMED —
+               never use it to get a record out of the way
+    tossed     'event <ulid> tossed' (full toss, or a partial that reaches
+               zero). Terminal. Means WASTED — it feeds waste telemetry, so
+               never use it for food that never existed
+    dismissed  'inventory dismiss <ulid>' — its OWN verb, not an event type
+               (different body, different response). Terminal, and the only
+               terminal that claims neither consumption nor waste: the honest
+               retirement for a record that was never real stock. Also where an
+               item merge puts the loser
+  resurrection 'recount --state stocked|open' reopens a mis-closed item (the
+               only way back out of a terminal state)
+
+  For 'event … tossed', --fraction is
   the AMOUNT TOSSED — a partial toss decrements on_hand_fraction and keeps the
   item alive (self-heals at the next event); it goes terminal only at zero
   remainder or when --fraction is omitted (full toss). 'opened' --fraction is
@@ -77,7 +102,8 @@ export const INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json
   eat_by re-derived from the true state + product overrides. --units-total N
   (with optional --units-remaining) reclassifies a fraction item as a COUNTED
   multipack; --uncounted reverts a counted item to the fraction model.
-  --state can also resurrect a mis-finished/mis-tossed item. Do NOT fix the
+  --state can also resurrect a mis-finished/mis-tossed item — including one
+  closed by mistake before 'dismiss' was reached for. Do NOT fix the
   ledger by re-firing 'event … opened --fraction' — that stamps a bogus
   opened clock. Never pre-log planned consumption (e.g. a batch-day run that
   hasn't happened); log events when they actually happen and recount when
@@ -94,7 +120,34 @@ export const INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json
   tap, so --quantity must be omitted or 1 there. --ulid supplies the
   consumption entry's ULID explicitly (idempotency key for a retry); omitted,
   the CLI generates one. Replaying the same --ulid is a safe no-op: no
-  duplicate entry, no double-deplete.`;
+  duplicate entry, no double-deplete.
+
+  'dismiss' is how a record LEAVES inventory without a claim about food.
+  Reach for it whenever the record should never have been stock: a phantom
+  seeded twice, a housewares line on a grocery receipt, a mis-scanned line.
+  It stamps closed_at, leaves on_hand_fraction alone, and appends no waste
+  note, so it enters neither consumption nor waste rollups. --non-inventory
+  makes the decision durable for a recurring RECEIPT LINE: it also dismisses
+  every same-line sibling still open and writes a skip marker so future
+  receipts from that store skip the line. Omit it for a one-off record. 409
+  if the item is already terminal — resurrect it with 'recount --state
+  stocked' first, then dismiss.
+
+  'merge' is for TWO RECORDS, ONE PHYSICAL PACKAGE. Prefer it over dismiss
+  whenever either side has history: dismiss retires a row but relinks
+  nothing, so a consumption entry that depleted the loser, the receipt line
+  that created it, and any conversion that spent it are left pointing at a
+  record that is no longer stock. Merge fills ONLY the survivor's EMPTY
+  identity fields from the loser (product_ulid, store, raw_label,
+  batch_ulid, shelf_life_class — the survivor's own values always win), which
+  is the ONLY way to attach a product to an existing item; relinks every
+  dependent and reports the counts; then retires the loser as dismissed with
+  merged_into set. Quantities are NEVER summed and the survivor keeps its own
+  clock — merging is not "add these together", it is "these were always one
+  thing". Pick the survivor by whose clock is honest (usually the earlier
+  acquired_at), not by which one has the product. A replay into the same
+  survivor is a safe no-op; re-pointing an already-merged item elsewhere is a
+  409 naming where it went.`;
 
 const ITEM_ROW_SCHEMA: FieldDef[] = [
   field("ulid"),
@@ -130,6 +183,7 @@ const ITEM_DETAIL_SCHEMA: FieldDef[] = [
   field("age_days"),
   field("shelf_life_class", "shelf_life"),
   field("notes"),
+  field("merged_into"),
 ];
 
 const QUESTION_SCHEMA: FieldDef[] = [
@@ -157,6 +211,10 @@ export async function inventoryCommand(args: string[]): Promise<string> {
       return itemEvent(rest);
     case "recount":
       return recountItem(rest);
+    case "dismiss":
+      return dismissItem(rest);
+    case "merge":
+      return mergeItem(rest);
     case "remark":
       return remark(rest);
     case "questions":
@@ -217,13 +275,52 @@ async function addItem(args: string[]): Promise<string> {
   return renderDetail("item", item, ITEM_DETAIL_SCHEMA);
 }
 
+/**
+ * Guard an `event` type client-side, and — the load-bearing half — REDIRECT the
+ * fifth state rather than refusing it flatly. `dismissed` is a real state
+ * reached by a real verb, just not through this endpoint; an agent that reads a
+ * bare enum error concludes it is not a state at all and settles for
+ * `finished`, which claims a consumption that never happened AND makes the item
+ * terminal so the correct verb then 409s. A verb that exists but cannot be found
+ * is, for an agent, a verb that does not exist.
+ */
+export function assertEventType(type: string, ulid = "<ulid>"): void {
+  if (type === "dismissed" || type === "dismiss") {
+    throw new AxiError(
+      "dismissed is a state, but not an event type — it has its own verb",
+      "VALIDATION_ERROR",
+      [
+        `Run \`${cliInvocation()} inventory dismiss ${ulid}\` (add --non-inventory for a recurring non-grocery receipt line)`,
+        "Never use `event finished`/`event tossed` to retire a record that was never real stock — those claim a consumption or waste that did not happen",
+      ]
+    );
+  }
+  if (!EVENT_TYPES.includes(type)) {
+    throw new AxiError(
+      `event type must be one of: ${EVENT_TYPES.join(", ")} (to RETIRE a record that was never real stock, use \`inventory dismiss\`)`,
+      "VALIDATION_ERROR",
+      [INVENTORY_HELP]
+    );
+  }
+}
+
+/**
+ * Build the `dismiss` request body. `--non-inventory` is sent ONLY when asked:
+ * it is what makes the dismissal durable for a recurring receipt LINE (fan-out
+ * plus a skip marker), which is the wrong thing to do to a one-off phantom.
+ */
+export function buildDismissBody(flags: Record<string, string | boolean | undefined>): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  if (flags["non-inventory"]) body.non_inventory = true;
+  if (typeof flags.at === "string") body.at = validateDate(flags.at, "--at", INVENTORY_HELP);
+  return body;
+}
+
 async function itemEvent(args: string[]): Promise<string> {
   const { positionals, flags } = parseArgs(args, ["json"], ["fraction", "at"]);
   const ulid = requirePositional(positionals, 0, "item ulid", INVENTORY_HELP);
   const type = requirePositional(positionals, 1, "event type", INVENTORY_HELP);
-  if (!EVENT_TYPES.includes(type)) {
-    throw new AxiError(`event type must be one of: ${EVENT_TYPES.join(", ")}`, "VALIDATION_ERROR", [INVENTORY_HELP]);
-  }
+  assertEventType(type, ulid);
   const body: Record<string, unknown> = { type };
   if (typeof flags.fraction === "string") body.fraction = parseNumberFlag(flags.fraction, "fraction", INVENTORY_HELP, { min: 0, max: 1 });
   if (typeof flags.at === "string") body.at = validateDate(flags.at, "--at", INVENTORY_HELP);
@@ -259,6 +356,66 @@ async function recountItem(args: string[]): Promise<string> {
   const item = await api.patch(`/api/kitchen/inventory/${encodeURIComponent(ulid)}`, body);
   if (flags.json) return rawJson(item);
   return renderDetail("item", item, ITEM_DETAIL_SCHEMA);
+}
+
+/**
+ * `inventory dismiss` — its own subcommand rather than a member of the `event`
+ * enum, matching the endpoint it wraps (`POST /inventory/:ulid/dismiss`): it
+ * carries a flag the event body has no room for and answers with a compound
+ * `{ item, dismissed_count, non_inventory }` rather than the bare item `event`
+ * renders. Folding it in would make one verb's output shape depend on its
+ * argument.
+ */
+async function dismissItem(args: string[]): Promise<string> {
+  const { positionals, flags } = parseArgs(args, ["json", "non-inventory"], ["at"]);
+  const ulid = requirePositional(positionals, 0, "item ulid", INVENTORY_HELP);
+  const body = buildDismissBody(flags);
+
+  const result = await api.post(`/api/kitchen/inventory/${encodeURIComponent(ulid)}/dismiss`, body);
+  if (flags.json) return rawJson(result);
+
+  const cli = cliInvocation();
+  return renderOutput([
+    renderObject({
+      dismissed_count: result?.dismissed_count ?? null,
+      non_inventory: result?.non_inventory ?? false,
+    }),
+    renderDetail("item", result?.item, ITEM_DETAIL_SCHEMA),
+    renderHelp([
+      "Retired without claiming consumption or waste — neither rollup counts it",
+      result?.non_inventory
+        ? "Same-line siblings were dismissed too, and future receipts from that store will skip the line"
+        : `If another record covers the same physical package, prefer \`${cli} inventory merge <dupe> --into <survivor>\` so its entries and receipt line move instead of being stranded`,
+    ]),
+  ]);
+}
+
+async function mergeItem(args: string[]): Promise<string> {
+  const { positionals, flags } = parseArgs(args, ["json"], ["into"]);
+  const ulid = requirePositional(positionals, 0, "item ulid (the duplicate to retire)", INVENTORY_HELP);
+  const into = typeof flags.into === "string" ? flags.into : undefined;
+  if (!into) {
+    throw new AxiError("inventory merge needs --into <survivor ulid>", "VALIDATION_ERROR", [INVENTORY_HELP]);
+  }
+
+  const result = await api.post(`/api/kitchen/inventory/${encodeURIComponent(ulid)}/merge`, { into });
+  if (flags.json) return rawJson(result);
+
+  const relinked = result?.relinked ?? {};
+  return renderOutput([
+    renderObject({
+      retired: result?.merged?.ulid,
+      entries_relinked: relinked.entries ?? 0,
+      batch_lines_relinked: relinked.batch_lines ?? 0,
+      derivations_relinked: relinked.derivations ?? 0,
+      derivation_sources_relinked: relinked.derivation_sources ?? 0,
+    }),
+    renderDetail("survivor", result?.item, ITEM_DETAIL_SCHEMA),
+    renderHelp([
+      "The duplicate is dismissed, not deleted — off every on-hand listing, still resolvable by ulid, with merged_into pointing here",
+      "Quantities were NOT summed (one physical package): if the survivor's on-hand count is also wrong, that is a separate `inventory recount`",
+    ]),
+  ]);
 }
 
 async function remark(args: string[]): Promise<string> {

@@ -14,6 +14,8 @@
  *   POST   /kitchen/inventory/events       - free-text event resolver
  *   POST   /kitchen/inventory/:ulid/events - explicit opened|finished|finished-unit|tossed
  *   POST   /kitchen/inventory/:ulid/label  - multipart: label photo(s) → resolve needs-info
+ *   POST   /kitchen/inventory/:ulid/dismiss - retire a record that was never real stock
+ *   POST   /kitchen/inventory/:ulid/merge  - fold a duplicate item into a survivor
  *   POST   /kitchen/inventory/convert      - prep transform: decrement source(s), create a derived item
  *   POST   /kitchen/inventory/:ulid/consume - one-tap known-macro log + deplete, ONE atomic operation
  * Products & lexicon (agentic seed + reads):
@@ -37,6 +39,8 @@ import {
   ConsumeNotConfiguredError,
   ConsumeValidationError,
   ConversionValidationError,
+  ItemConflictError,
+  ItemValidationError,
   LabelParserUnavailableError,
   NotCountedItemError,
   ProductConflictError,
@@ -424,6 +428,30 @@ export const registerInventoryRoutes: FastifyPluginAsync<InventoryRoutesConfig> 
     }
   );
 
+  // ── Item merge (fold a duplicate into a survivor) ─────────────────────────────
+
+  // POST /kitchen/inventory/:ulid/merge - § Item corrections. `dismiss` retires a
+  // row but relinks nothing, so for a duplicate with history on both sides it
+  // strands a consumption entry, a receipt line, and a conversion against a
+  // record that is no longer stock. Merge fills the survivor's null identity
+  // fields, relinks every dependent, then retires the loser as `dismissed`.
+  fastify.post<{ Params: { ulid: string }; Body: { into: string } }>(
+    '/kitchen/inventory/:ulid/merge',
+    { schema: { body: ITEM_MERGE_SCHEMA } },
+    async (request, reply) => {
+      try {
+        const result = await inventory.mergeItems(request.params.ulid, request.body.into);
+        if (!result) {
+          reply.status(404);
+          return { error: 'Inventory item not found (either the item being merged or the `into` survivor)' };
+        }
+        return result;
+      } catch (err) {
+        return itemErrorReply(err, reply);
+      }
+    }
+  );
+
   // ── Conversions (prep transforms) ─────────────────────────────────────────────
 
   fastify.post<{ Body: ConvertInput }>(
@@ -625,6 +653,29 @@ function productErrorReply(err: unknown, reply: FastifyReply): { error: string }
   }
   throw err;
 }
+
+/**
+ * Map an item-merge failure to its status (§ Item corrections), mirroring
+ * `productErrorReply`: a malformed request is `400`, an unhonorable one `409`.
+ */
+function itemErrorReply(err: unknown, reply: FastifyReply): { error: string } {
+  if (err instanceof ItemValidationError) {
+    reply.status(400);
+    return { error: err.message };
+  }
+  if (err instanceof ItemConflictError) {
+    reply.status(409);
+    return { error: err.message };
+  }
+  throw err;
+}
+
+const ITEM_MERGE_SCHEMA = {
+  type: 'object',
+  required: ['into'],
+  additionalProperties: false,
+  properties: { into: { type: 'string', pattern: ULID_PATTERN.source } },
+} as const;
 
 const NUTRITION_SCHEMA = {
   // Nullable: on a product write, `null` clears the whole panel (a patch clears

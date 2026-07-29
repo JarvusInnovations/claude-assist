@@ -1242,7 +1242,9 @@ All tables instance-agnostic empty schema, ULID keys, `kitchen` schema
   (bool), `acquired_at` (date), `opened_at` (date, nullable), `closed_at` (date,
   nullable — finished/tossed/dismissed date), `eat_by` (date, nullable — **derived**,
   materialized for ordering; recomputed on open), `shelf_life_class` (enum
-  snapshot, nullable), `notes` (nullable), `created_at`, `updated_at`.
+  snapshot, nullable), `notes` (nullable), `merged_into` (ULID, nullable —
+  migration `018-kitchen-item-merge.sql`; set when the row was retired *into* a
+  surviving item, see § Item corrections), `created_at`, `updated_at`.
 - **`kitchen.inventory_derivations`** — one row per derived (prepared) item,
   written by a `convert` event (migration
   `007-kitchen-inventory-units-and-derivations.sql`, see § Conversions):
@@ -1378,9 +1380,13 @@ transition table.
 state (see § Non-inventory dismissal). It is deliberately **not** a food-waste
 outcome: unlike `tossed`, dismissing stamps `closed_at` but appends **no**
 `tossed …` note and leaves `on_hand_fraction` untouched, so a dismissed soup mug
-never enters waste/tossed telemetry. A new terminal state (rather than a
-`DELETE`) is chosen because it mirrors the existing `finished`/`tossed` terminal
-idiom exactly — the row is retained for provenance (its batch line still points
+never enters waste/tossed telemetry. It is reached by its own verb
+(`POST /inventory/:ulid/dismiss`), never through the event endpoint — the two
+carry different bodies and different response shapes — and it is the terminal an
+item **merge** retires its loser into (§ Item corrections). A new terminal state
+(rather than a `DELETE`) is chosen because it mirrors the existing
+`finished`/`tossed` terminal idiom exactly — the row is retained for provenance
+(its batch line still points
 at it, a receipt replay stays idempotent), it drops out of the default on-hand
 list and the questions queue by the same state-filter mechanics the other
 terminals use, and it needs no orphan-cleanup of the referencing batch line.
@@ -1661,6 +1667,23 @@ Item mutation:
   future receipts are unaffected. Returns
   `{ item: InventoryItem, dismissed_count, non_inventory }`, where
   `dismissed_count` is the total items dismissed (≥ 1).
+
+  Dismissal is also the retirement path for a **phantom** item — a record that
+  was never real stock (§ Item corrections). Nothing about the endpoint is
+  receipt-specific: `non_inventory` is what makes a dismissal durable for a
+  recurring *receipt line*, and it is simply omitted when retiring a one-off
+  record.
+- `POST /inventory/:ulid/merge` — fold a duplicate item into a survivor
+  (§ Item corrections). JSON `{ into (ULID, required) }`, where `:ulid` is the
+  loser. Fills only the survivor's **null** identity fields from the loser
+  (`product_ulid`, `store`, `raw_label`, `batch_ulid`, `shelf_life_class`),
+  re-deriving `eat_by` off the survivor's own clock when the fill resolved a
+  `needs_info` survivor; **never** sums quantities; relinks every dependent; then
+  retires the loser as `dismissed` with `merged_into` set. Returns
+  `{ item: InventoryItem, merged: InventoryItem, relinked: { entries,
+  batch_lines, derivations, derivation_sources } }`. `400` self-merge; `404`
+  either ULID unknown; `409` a survivor that was itself merged away, or a loser
+  already merged elsewhere. Idempotent on a replay into the same survivor.
 - `POST /inventory/convert` — **conversion (prep transform)** event, see
   § Conversions. JSON `{ sources?: [{ item_ulid, amount? }], derived: { name,
   shelf_life_class?, on_hand_fraction?, units_total?, store?, notes?,
@@ -1749,8 +1772,11 @@ Products & lexicon (agentic seed + reads):
 - **InventoryItem**: `{ ulid, product_ulid, product_name, raw_label, store,
   batch_ulid, state, on_hand_fraction, units_total, units_remaining,
   needs_info, acquired_at, opened_at, closed_at, eat_by, shelf_life_class,
-  days_until_eat_by, age_days, notes, derived_from, created_at, updated_at }`.
+  days_until_eat_by, age_days, notes, merged_into, derived_from, created_at,
+  updated_at }`.
   `product_name` is the joined product name (falls back to `raw_label`);
+  `merged_into` is null except on a row retired into a surviving item
+  (§ Item corrections);
   `days_until_eat_by`/`age_days` are derived integers (null when
   undeterminable). `units_total`/`units_remaining` are both null for a
   fraction-modeled item (§ count-vs-fraction). `derived_from` is null unless
@@ -1921,6 +1947,82 @@ food waste:
   future receipt from that store (recording it `skipped` on the batch line, never
   silently dropping it). This is the mirror image of a label scan: a label maps
   the line to a product; a non-inventory dismissal maps it to "not inventory".
+
+### Item corrections — merge a duplicate, retire a phantom
+
+Items are the records most likely to be wrong, because they are created fastest
+and from the least information: a receipt line nobody has identified yet, a
+one-tap manual seed, a scan target minted before anything is known about what
+was scanned. Three correction affordances cover the ways they go wrong, and they
+are deliberately distinct:
+
+- **§ Reconcile** (`PATCH /inventory/:ulid`) — the record is real but its
+  numbers/state drifted.
+- **Dismissal** (`POST /inventory/:ulid/dismiss`, § Non-inventory dismissal) —
+  the record should never have been stock at all. This is the correct retirement
+  for a **phantom** item as much as for a housewares line: it is the only
+  terminal that claims neither consumption nor waste, so a record that was never
+  real leaves the ledger without fabricating either. Retiring a phantom with
+  `finished` (a consumption that never happened) or `tossed` (waste that never
+  happened) pollutes exactly the telemetry someone will later act on.
+- **Merge** (`POST /inventory/:ulid/merge`) — **two records, one physical
+  package**. Dismissal alone is not enough here: the loser carries links
+  (a consumption entry that depleted it, the receipt line that created it, a
+  conversion that spent it), and retiring it without moving them strands
+  history against a record that is no longer stock.
+
+**`POST /inventory/:ulid/merge` folds a duplicate item into a survivor** — body
+`{ into: <survivor ulid> }`, where `:ulid` is the loser. In one operation:
+
+1. **Fill the survivor's gaps from the loser**, never null-clobbering: only
+   `product_ulid`, `store`, `raw_label`, `batch_ulid`, and `shelf_life_class`
+   participate, and only where the survivor's own value is null. The survivor's
+   own values always win. This is what makes merge the correction path for a
+   `needs_info` item whose identity was established on the *other* record —
+   `product_ulid` is not reachable through `PATCH` (§ Reconcile is about
+   quantities and state), so merge is the only door that moves it.
+2. **Resolve the survivor when the fill identified it.** If the fill set
+   `product_ulid` on a `needs_info` survivor, `needs_info` clears and `eat_by`
+   re-derives — from the **survivor's own** `acquired_at`/`opened_at` and the
+   linked product's day-window overrides, exactly as the label fan-out does for
+   siblings. The clock is a property of the physical package, and the survivor is
+   the record the caller chose to keep; a merge must never import the loser's
+   clock, which is the very artifact that made the duplicate misreport
+   (a phantom minted a day late reads as a day fresher than the food is).
+3. **Quantities are never summed.** A merge asserts the two rows are *one*
+   package, so adding `on_hand_fraction` or `units_remaining` would manufacture
+   stock that does not exist — the same over-reporting the duplicate caused.
+   The survivor keeps its own on-hand model untouched; if that count is also
+   wrong, a `recount` fixes it, and that is a separate observation.
+4. **Relink every dependent** onto the survivor, with per-table counts in the
+   response: `entries.inventory_item_ulid` (consumption entries that depleted
+   the loser), `purchase_batch_lines.inventory_item_ulid` (the receipt line that
+   created it), `inventory_derivations.sources[].item_ulid` (conversions that
+   spent it as an input), and `inventory_derivations.derived_item_ulid` — the
+   last **only when the survivor has no derivation of its own**, since that link
+   is 1:1 by construction; a survivor that already carries provenance keeps it
+   and the loser's stays with the loser (reported as `0`).
+5. **Retire the loser** — terminal `dismissed`, `closed_at` stamped, and
+   `merged_into` set to the survivor. `dismissed` is used from *any* prior
+   state, including an already-terminal one: the merge is the assertion that this
+   row was never independent stock, so whatever terminal it currently carries is
+   a claim about food that does not exist. In particular this **retracts** a
+   `finished` that was only ever a workaround for a missing retirement path.
+
+Rules: `into` must differ from `:ulid` (`400`); either ULID unknown → `404`;
+`into` pointing at an item that was itself merged away → `409` naming its
+`merged_into` (following a chain invites a cycle — the caller retargets);
+the loser already merged into a *different* survivor → `409` naming where it
+went. **Idempotent**: re-merging an already-merged loser into the same survivor
+succeeds with zero relinks and no second retirement stamp. Returns
+`{ item, merged, relinked: { entries, batch_lines, derivations,
+derivation_sources } }` where `item` is the survivor's view and `merged` the
+retired loser's.
+
+**No hard delete, here as everywhere else in the module.** The loser's row
+survives every retirement path: its batch line still points at it until relinked,
+a receipt replay must stay idempotent, and `merged_into` is how a reader later
+learns where the record went.
 
 ### Conversions
 
@@ -2190,7 +2292,22 @@ and write the kitchen without hand-rolled `curl`.
     § Conversions), `consume <item-ulid> [--quantity N] [--at DATE]
     [--ulid ENTRY_ULID]` (the one-tap known-macro log + deplete — see
     § Consume from inventory; the agentic path until the app's consume shelf
-    ships).
+    ships), `recount <ulid>` (§ Reconcile), `dismiss <ulid>
+    [--non-inventory]` (retire a record that was never real stock —
+    § Non-inventory dismissal), `merge <ulid> --into <ulid>` (fold a duplicate
+    item into a survivor — § Item corrections).
+    - **Every state an item can reach is reachable and enumerated from the
+      CLI's own help.** The `event` verb covers four transitions and
+      `dismissed` is not one of them (it has its own endpoint, its own body,
+      and its own response shape), so an agent reading only the event enum
+      concludes `dismissed` is not a state at all — and reaches instead for
+      `finished`, which *misrepresents* (it claims a consumption) and makes the
+      item terminal so the correct verb then `409`s. `inventory --help`
+      therefore enumerates all five states with the verb that reaches each,
+      including resurrection via `recount --state`, and `event … dismissed` is
+      refused with a pointer to `dismiss` rather than an enum error. A
+      retirement path that exists but cannot be found is, for an agent, a
+      retirement path that does not exist.
   - `receipts` — list, `show <ulid>` (batch + line outcomes), `scan <photo…>`
     (multipart post; meta as a form field per the module's part-type rule).
   - `recipes` — list (merged view), `push` (agent-authored recipe JSON;

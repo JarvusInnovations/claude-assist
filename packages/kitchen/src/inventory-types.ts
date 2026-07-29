@@ -271,6 +271,13 @@ export interface InventoryItemRecord {
   eat_by: Date | null;
   shelf_life_class: ShelfLifeClass | null;
   notes: string | null;
+  /**
+   * Set when this row was retired INTO a surviving item by a merge
+   * (§ Item corrections) — the forward pointer a straggler reference follows,
+   * and how a replayed merge tells "already done" (idempotent) from "merged
+   * somewhere else" (a 409). Null on every live row.
+   */
+  merged_into: string | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -319,6 +326,8 @@ export interface InventoryItemView {
   days_until_eat_by: number | null;
   age_days: number | null;
   notes: string | null;
+  /** Survivor this row was merged into (§ Item corrections); null on a live row. */
+  merged_into: string | null;
   /** Derived-from provenance (§ Conversions) — null unless created by `convert`. */
   derived_from: DerivedFromView | null;
   created_at: string;
@@ -450,6 +459,34 @@ export interface DismissResolution {
   dismissed_count: number;
   /** Whether a non-inventory skip marker was written (and siblings fanned out). */
   non_inventory: boolean;
+}
+
+/**
+ * Per-table relink counts from an item merge (§ Item corrections). Every one is
+ * a real dependent of `kitchen.inventory_items`:
+ *
+ * - `entries` — `kitchen.entries.inventory_item_ulid`, the consumption entries
+ *   the depletion matcher (or a `consume` tap) attributed to the loser.
+ * - `batch_lines` — `kitchen.purchase_batch_lines.inventory_item_ulid`, the
+ *   receipt line whose representative unit the loser was.
+ * - `derivations` — `kitchen.inventory_derivations.derived_item_ulid`, the
+ *   conversion that MADE the loser. 1:1 by construction, so it moves only when
+ *   the survivor has no provenance of its own; otherwise `0`.
+ * - `derivation_sources` — conversions that SPENT the loser as an input, i.e.
+ *   `inventory_derivations.sources[].item_ulid` rewritten in place.
+ */
+export interface ItemRelinkCounts {
+  entries: number;
+  batch_lines: number;
+  derivations: number;
+  derivation_sources: number;
+}
+
+/** Result of an item merge: the survivor, the retired loser, and what moved. */
+export interface ItemMergeResult {
+  item: InventoryItemView;
+  merged: InventoryItemView;
+  relinked: ItemRelinkCounts;
 }
 
 /** One uploaded photo part, held in memory only for the request. */

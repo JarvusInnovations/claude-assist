@@ -643,7 +643,19 @@ var COMMAND_GROUPS = [
       },
       {
         usage: "inventory event <ulid> <opened|finished|finished-unit|tossed> [--fraction F] [--at DATE]",
-        summary: "explicit state change; for tossed, --fraction is the AMOUNT TOSSED (partial toss decrements + stays alive, terminal only at zero remainder or when omitted); finished-unit is a counted item's integer one-unit decrement"
+        summary: "explicit state change; for tossed, --fraction is the AMOUNT TOSSED (partial toss decrements + stays alive, terminal only at zero remainder or when omitted); finished-unit is a counted item's integer one-unit decrement. These four are CONSUMPTION/WASTE verbs only \u2014 the fifth state, dismissed, has its own verb ('inventory dismiss') and is what retires a record that was never real"
+      },
+      {
+        usage: "inventory recount <ulid> [--fraction F] [--units-remaining N] [--units-total N] [--uncounted] [--state stocked|open] [--opened-at DATE] [--notes T]",
+        summary: `RECONCILE the ledger to observed reality ("it's actually 75% full", "really 2 of 3 cans", "never opened") \u2014 a correction, NOT a consumption event; never invents a clock, re-derives eat_by, can reclassify the unit model, and --state can resurrect a mis-closed item`
+      },
+      {
+        usage: "inventory dismiss <ulid> [--non-inventory]",
+        summary: "RETIRE a record that was never real stock \u2014 a phantom item, or a non-grocery receipt line (housewares). The ONLY terminal that claims neither consumption nor waste, so it never pollutes either telemetry: never close a phantom with 'event finished' (a consumption that didn't happen) or 'event tossed' (waste that didn't happen). --non-inventory also dismisses same-line siblings and teaches future receipts to skip the line. 409 if the item is already terminal"
+      },
+      {
+        usage: "inventory merge <ulid> --into <ulid>",
+        summary: "fold a DUPLICATE item (two records, ONE physical package) into a survivor: fills only the survivor's EMPTY identity fields (this is the one way to move product_ulid onto an item), relinks its entries/receipt line/conversions, then retires it as dismissed. Quantities are never summed and the survivor keeps its OWN clock \u2014 use this, not dismiss, whenever either record has history"
       },
       { usage: 'inventory remark "<free text>" [--at DATE]', summary: "free-text event resolver \u2014 matches a remark to an item and infers opened/finished/tossed; prints matched/unmatched honestly (unmatched is normal, not an error)" },
       { usage: "inventory questions [--limit N]", summary: "open needs-info items as one-time questions" },
@@ -1603,6 +1615,11 @@ var INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json]
        [--uncounted] [--state stocked|open] [--opened-at DATE] [--notes T]
                                              RECONCILE the ledger to observed reality \u2014
                                              a correction, NOT a consumption event
+  dismiss <ulid> [--non-inventory]          RETIRE a record that was never real
+                                             stock (phantom item, non-grocery
+                                             receipt line) \u2014 no consumption, no waste
+  merge <ulid> --into <ulid>                fold a DUPLICATE item into a survivor:
+                                             relink its dependents, then retire it
   remark "<free text>" [--at DATE]          free-text event resolver (honest match)
   questions [--limit N]                     open needs-info items as questions
   convert [--from <ulid>[:amount]\u2026] --to '<json>' [--at DATE]
@@ -1610,7 +1627,27 @@ var INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json]
   consume <item-ulid> [--quantity N] [--at DATE] [--ulid ENTRY_ULID]
                                              one-tap: log + deplete a known-macro item, ONE atomic step
 
-  states: stocked, open, finished, tossed. For 'event \u2026 tossed', --fraction is
+  EVERY STATE AN ITEM CAN REACH, and the verb that reaches it:
+
+    stocked    'add' (or 'convert' for a made item) creates one; also where a
+               counted item lands after 'event \u2026 finished-unit' leaves units,
+               and where 'recount --state stocked' puts a mis-opened item
+    open       'event <ulid> opened'
+    finished   'event <ulid> finished' (whole item) or 'event \u2026 finished-unit'
+               on the LAST unit of a counted item. Terminal. Means CONSUMED \u2014
+               never use it to get a record out of the way
+    tossed     'event <ulid> tossed' (full toss, or a partial that reaches
+               zero). Terminal. Means WASTED \u2014 it feeds waste telemetry, so
+               never use it for food that never existed
+    dismissed  'inventory dismiss <ulid>' \u2014 its OWN verb, not an event type
+               (different body, different response). Terminal, and the only
+               terminal that claims neither consumption nor waste: the honest
+               retirement for a record that was never real stock. Also where an
+               item merge puts the loser
+  resurrection 'recount --state stocked|open' reopens a mis-closed item (the
+               only way back out of a terminal state)
+
+  For 'event \u2026 tossed', --fraction is
   the AMOUNT TOSSED \u2014 a partial toss decrements on_hand_fraction and keeps the
   item alive (self-heals at the next event); it goes terminal only at zero
   remainder or when --fraction is omitted (full toss). 'opened' --fraction is
@@ -1653,7 +1690,8 @@ var INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json]
   eat_by re-derived from the true state + product overrides. --units-total N
   (with optional --units-remaining) reclassifies a fraction item as a COUNTED
   multipack; --uncounted reverts a counted item to the fraction model.
-  --state can also resurrect a mis-finished/mis-tossed item. Do NOT fix the
+  --state can also resurrect a mis-finished/mis-tossed item \u2014 including one
+  closed by mistake before 'dismiss' was reached for. Do NOT fix the
   ledger by re-firing 'event \u2026 opened --fraction' \u2014 that stamps a bogus
   opened clock. Never pre-log planned consumption (e.g. a batch-day run that
   hasn't happened); log events when they actually happen and recount when
@@ -1670,7 +1708,34 @@ var INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json]
   tap, so --quantity must be omitted or 1 there. --ulid supplies the
   consumption entry's ULID explicitly (idempotency key for a retry); omitted,
   the CLI generates one. Replaying the same --ulid is a safe no-op: no
-  duplicate entry, no double-deplete.`;
+  duplicate entry, no double-deplete.
+
+  'dismiss' is how a record LEAVES inventory without a claim about food.
+  Reach for it whenever the record should never have been stock: a phantom
+  seeded twice, a housewares line on a grocery receipt, a mis-scanned line.
+  It stamps closed_at, leaves on_hand_fraction alone, and appends no waste
+  note, so it enters neither consumption nor waste rollups. --non-inventory
+  makes the decision durable for a recurring RECEIPT LINE: it also dismisses
+  every same-line sibling still open and writes a skip marker so future
+  receipts from that store skip the line. Omit it for a one-off record. 409
+  if the item is already terminal \u2014 resurrect it with 'recount --state
+  stocked' first, then dismiss.
+
+  'merge' is for TWO RECORDS, ONE PHYSICAL PACKAGE. Prefer it over dismiss
+  whenever either side has history: dismiss retires a row but relinks
+  nothing, so a consumption entry that depleted the loser, the receipt line
+  that created it, and any conversion that spent it are left pointing at a
+  record that is no longer stock. Merge fills ONLY the survivor's EMPTY
+  identity fields from the loser (product_ulid, store, raw_label,
+  batch_ulid, shelf_life_class \u2014 the survivor's own values always win), which
+  is the ONLY way to attach a product to an existing item; relinks every
+  dependent and reports the counts; then retires the loser as dismissed with
+  merged_into set. Quantities are NEVER summed and the survivor keeps its own
+  clock \u2014 merging is not "add these together", it is "these were always one
+  thing". Pick the survivor by whose clock is honest (usually the earlier
+  acquired_at), not by which one has the product. A replay into the same
+  survivor is a safe no-op; re-pointing an already-merged item elsewhere is a
+  409 naming where it went.`;
 var ITEM_ROW_SCHEMA = [
   field("ulid"),
   field("product_name", "name"),
@@ -1703,7 +1768,8 @@ var ITEM_DETAIL_SCHEMA = [
   field("days_until_eat_by", "days_left"),
   field("age_days"),
   field("shelf_life_class", "shelf_life"),
-  field("notes")
+  field("notes"),
+  field("merged_into")
 ];
 var QUESTION_SCHEMA = [
   field("item_ulid", "ulid"),
@@ -1728,6 +1794,10 @@ async function inventoryCommand(args) {
       return itemEvent(rest);
     case "recount":
       return recountItem(rest);
+    case "dismiss":
+      return dismissItem(rest);
+    case "merge":
+      return mergeItem(rest);
     case "remark":
       return remark(rest);
     case "questions":
@@ -1782,13 +1852,36 @@ async function addItem(args) {
   if (flags.json) return rawJson(item);
   return renderDetail("item", item, ITEM_DETAIL_SCHEMA);
 }
+function assertEventType(type, ulid = "<ulid>") {
+  if (type === "dismissed" || type === "dismiss") {
+    throw new AxiError(
+      "dismissed is a state, but not an event type \u2014 it has its own verb",
+      "VALIDATION_ERROR",
+      [
+        `Run \`${cliInvocation()} inventory dismiss ${ulid}\` (add --non-inventory for a recurring non-grocery receipt line)`,
+        "Never use `event finished`/`event tossed` to retire a record that was never real stock \u2014 those claim a consumption or waste that did not happen"
+      ]
+    );
+  }
+  if (!EVENT_TYPES.includes(type)) {
+    throw new AxiError(
+      `event type must be one of: ${EVENT_TYPES.join(", ")} (to RETIRE a record that was never real stock, use \`inventory dismiss\`)`,
+      "VALIDATION_ERROR",
+      [INVENTORY_HELP]
+    );
+  }
+}
+function buildDismissBody(flags) {
+  const body = {};
+  if (flags["non-inventory"]) body.non_inventory = true;
+  if (typeof flags.at === "string") body.at = validateDate(flags.at, "--at", INVENTORY_HELP);
+  return body;
+}
 async function itemEvent(args) {
   const { positionals, flags } = parseArgs(args, ["json"], ["fraction", "at"]);
   const ulid = requirePositional(positionals, 0, "item ulid", INVENTORY_HELP);
   const type = requirePositional(positionals, 1, "event type", INVENTORY_HELP);
-  if (!EVENT_TYPES.includes(type)) {
-    throw new AxiError(`event type must be one of: ${EVENT_TYPES.join(", ")}`, "VALIDATION_ERROR", [INVENTORY_HELP]);
-  }
+  assertEventType(type, ulid);
   const body = { type };
   if (typeof flags.fraction === "string") body.fraction = parseNumberFlag(flags.fraction, "fraction", INVENTORY_HELP, { min: 0, max: 1 });
   if (typeof flags.at === "string") body.at = validateDate(flags.at, "--at", INVENTORY_HELP);
@@ -1821,6 +1914,50 @@ async function recountItem(args) {
   const item = await api.patch(`/api/kitchen/inventory/${encodeURIComponent(ulid)}`, body);
   if (flags.json) return rawJson(item);
   return renderDetail("item", item, ITEM_DETAIL_SCHEMA);
+}
+async function dismissItem(args) {
+  const { positionals, flags } = parseArgs(args, ["json", "non-inventory"], ["at"]);
+  const ulid = requirePositional(positionals, 0, "item ulid", INVENTORY_HELP);
+  const body = buildDismissBody(flags);
+  const result = await api.post(`/api/kitchen/inventory/${encodeURIComponent(ulid)}/dismiss`, body);
+  if (flags.json) return rawJson(result);
+  const cli = cliInvocation();
+  return renderOutput2([
+    renderObject({
+      dismissed_count: result?.dismissed_count ?? null,
+      non_inventory: result?.non_inventory ?? false
+    }),
+    renderDetail("item", result?.item, ITEM_DETAIL_SCHEMA),
+    renderHelp([
+      "Retired without claiming consumption or waste \u2014 neither rollup counts it",
+      result?.non_inventory ? "Same-line siblings were dismissed too, and future receipts from that store will skip the line" : `If another record covers the same physical package, prefer \`${cli} inventory merge <dupe> --into <survivor>\` so its entries and receipt line move instead of being stranded`
+    ])
+  ]);
+}
+async function mergeItem(args) {
+  const { positionals, flags } = parseArgs(args, ["json"], ["into"]);
+  const ulid = requirePositional(positionals, 0, "item ulid (the duplicate to retire)", INVENTORY_HELP);
+  const into = typeof flags.into === "string" ? flags.into : void 0;
+  if (!into) {
+    throw new AxiError("inventory merge needs --into <survivor ulid>", "VALIDATION_ERROR", [INVENTORY_HELP]);
+  }
+  const result = await api.post(`/api/kitchen/inventory/${encodeURIComponent(ulid)}/merge`, { into });
+  if (flags.json) return rawJson(result);
+  const relinked = result?.relinked ?? {};
+  return renderOutput2([
+    renderObject({
+      retired: result?.merged?.ulid,
+      entries_relinked: relinked.entries ?? 0,
+      batch_lines_relinked: relinked.batch_lines ?? 0,
+      derivations_relinked: relinked.derivations ?? 0,
+      derivation_sources_relinked: relinked.derivation_sources ?? 0
+    }),
+    renderDetail("survivor", result?.item, ITEM_DETAIL_SCHEMA),
+    renderHelp([
+      "The duplicate is dismissed, not deleted \u2014 off every on-hand listing, still resolvable by ulid, with merged_into pointing here",
+      "Quantities were NOT summed (one physical package): if the survivor's on-hand count is also wrong, that is a separate `inventory recount`"
+    ])
+  ]);
 }
 async function remark(args) {
   const { positionals, flags } = parseArgs(args, ["json"], ["at"]);
@@ -2627,7 +2764,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "64c2291" : "dev";
+var VERSION = true ? "53f5af3" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)

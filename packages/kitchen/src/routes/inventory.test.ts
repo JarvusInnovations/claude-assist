@@ -228,6 +228,63 @@ describe('inventory routes', () => {
     expect(missing.statusCode).toBe(404);
   });
 
+  it('POST /kitchen/inventory/:ulid/merge folds a duplicate into a survivor and reports the relinks', async () => {
+    const product = await pipeline.upsertProduct({ name: 'Grape Tomatoes', shelf_life_class: 'produce' });
+    // The survivor is the honest record (earlier clock) but has no identity yet;
+    // the loser is the phantom the scan created a day later, carrying the product.
+    const { item: survivor } = await pipeline.createItem({
+      raw_label: 'GRAPE TOMATO PINT', store: 'Example Grocer', acquired_at: '2026-07-18', needs_info: true,
+    });
+    const { item: loser } = await pipeline.createItem({
+      product_ulid: product.product.ulid, acquired_at: '2026-07-19',
+    });
+
+    const res = await fastify.inject({
+      method: 'POST',
+      url: `/kitchen/inventory/${loser.ulid}/merge`,
+      payload: { into: survivor.ulid },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.merged.ulid).toBe(loser.ulid);
+    expect(body.merged.state).toBe('dismissed');
+    expect(body.merged.merged_into).toBe(survivor.ulid);
+    // The survivor gained the identity and resolved on ITS OWN clock (7/18 + 7d
+    // produce window), not the loser's day-later one.
+    expect(body.item.ulid).toBe(survivor.ulid);
+    expect(body.item.product_ulid).toBe(product.product.ulid);
+    expect(body.item.needs_info).toBe(false);
+    expect(body.item.eat_by).toBe('2026-07-25');
+    expect(body.relinked).toEqual({ entries: 0, batch_lines: 0, derivations: 0, derivation_sources: 0 });
+  });
+
+  it('POST /kitchen/inventory/:ulid/merge: 400 self-merge, 404 unknown, 409 already merged elsewhere', async () => {
+    const { item: a } = await pipeline.createItem({ raw_label: 'A', acquired_at: '2026-07-18' });
+    const { item: b } = await pipeline.createItem({ raw_label: 'B', acquired_at: '2026-07-18' });
+    const { item: c } = await pipeline.createItem({ raw_label: 'C', acquired_at: '2026-07-18' });
+
+    const self = await fastify.inject({ method: 'POST', url: `/kitchen/inventory/${a.ulid}/merge`, payload: { into: a.ulid } });
+    expect(self.statusCode).toBe(400);
+
+    const unknown = await fastify.inject({ method: 'POST', url: `/kitchen/inventory/${a.ulid}/merge`, payload: { into: generateUlid() } });
+    expect(unknown.statusCode).toBe(404);
+
+    const first = await fastify.inject({ method: 'POST', url: `/kitchen/inventory/${a.ulid}/merge`, payload: { into: b.ulid } });
+    expect(first.statusCode).toBe(200);
+
+    // A replay into the SAME survivor is idempotent; a different one is a 409
+    // naming where the record actually went.
+    const replay = await fastify.inject({ method: 'POST', url: `/kitchen/inventory/${a.ulid}/merge`, payload: { into: b.ulid } });
+    expect(replay.statusCode).toBe(200);
+    const elsewhere = await fastify.inject({ method: 'POST', url: `/kitchen/inventory/${a.ulid}/merge`, payload: { into: c.ulid } });
+    expect(elsewhere.statusCode).toBe(409);
+    expect(elsewhere.json().error).toContain(b.ulid);
+
+    // Merging INTO a record that was itself merged away is refused too.
+    const intoRetired = await fastify.inject({ method: 'POST', url: `/kitchen/inventory/${c.ulid}/merge`, payload: { into: a.ulid } });
+    expect(intoRetired.statusCode).toBe(409);
+  });
+
   it('POST /kitchen/inventory/:ulid/label carries ALL photos[] parts to the parser as one product', async () => {
     // A dedicated app with a capturing label parser (the shared one has none).
     const app = Fastify({ logger: false });
