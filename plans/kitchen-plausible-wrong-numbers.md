@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 depends: [kitchen-module, product-corrections, added-sugar-panel]
 specs:
   - specs/modules/kitchen.md
@@ -171,30 +171,30 @@ the one direction an owner never questions.
 
 ## Validation
 
-- [ ] `bun run test`, `bun run build`, `bun run type-check:axi`,
+- [x] `bun run test`, `bun run build`, `bun run type-check:axi`,
       `bun run check:skills` all green.
-- [ ] The guard refuses a salt-shaped product at all four write doors (name
+- [x] The guard refuses a salt-shaped product at all four write doors (name
       create, `ulid` replace, name-key enrich, `PATCH`) and writes nothing.
-- [ ] It permits garlic powder — the discriminating pair passes both ways.
-- [ ] It permits every salt *negation* (`salt-free`, `no salt added`, salt
+- [x] It permits garlic powder — the discriminating pair passes both ways.
+- [x] It permits every salt *negation* (`salt-free`, `no salt added`, salt
       substitute, `unsalted`) and every real spice in the sample set.
-- [ ] It refuses on the ingredients list alone (a blend whose name says nothing)
+- [x] It refuses on the ingredients list alone (a blend whose name says nothing)
       and on a stated `sodium_mg` alone.
-- [ ] The override applies the marker as asked, on both `POST` and `PATCH`, and is
+- [x] The override applies the marker as asked, on both `POST` and `PATCH`, and is
       never stored.
-- [ ] A write that makes no negligible assertion is never refused (the machine
+- [x] A write that makes no negligible assertion is never refused (the machine
       paths stay clear).
-- [ ] A rename that walks a still-marked product into a salt name is refused; the
+- [x] A rename that walks a still-marked product into a salt name is refused; the
       same rename with an unmark in the body succeeds.
-- [ ] The estimator prompt carries the non-food rule, the money-line list, the
+- [x] The estimator prompt carries the non-food rule, the money-line list, the
       unknown-food distinction, and the exclusion report shape.
-- [ ] Reported exclusions land on the entry; an estimate with none stores null.
-- [ ] A genuinely-unknown *food* line stays food — the rule is asymmetric and the
+- [x] Reported exclusions land on the entry; an estimate with none stores null.
+- [x] A genuinely-unknown *food* line stays food — the rule is asymmetric and the
       prompt says so.
-- [ ] A negative money line never becomes negative nutrition: negative panel
+- [x] A negative money line never becomes negative nutrition: negative panel
       values parse as unknown, `0` still means zero.
-- [ ] The exclusion report is not scaled by the portion multiplier.
-- [ ] Migration 019 is additive and nullable; no data migration runs.
+- [x] The exclusion report is not scaled by the portion multiplier.
+- [x] Migration 019 is additive and nullable; no data migration runs.
 
 ## Risks / unknowns
 
@@ -221,3 +221,52 @@ the one direction an owner never questions.
   clear them. Both are defensible (the report describes one estimation attempt,
   and a re-estimate overwrites it) but the field is not a general-purpose
   provenance channel and should not be read as one.
+
+## Notes
+
+- **The issue proposed the guard as three options, cheapest first; all three
+  landed, because they cover disjoint cases rather than the same case at
+  different prices.** The name filter is the only tier that fires on a bare spice
+  jar, which is the case the marker exists for. A known `sodium_mg` almost never
+  exists there (no panel to read is *why* the marker exists) but is free and
+  exact when it does. The ingredients list is the only tier that sees a blend
+  whose name says nothing — "poultry seasoning" listing salt first, which is the
+  issue's own "most commercial blends that list salt first" case and the one a
+  name filter structurally cannot catch. Picking one would have left a hole.
+- **The issue's framing of the override as `--force` for "anything whose
+  ingredients string contains salt" was narrower than what shipped.** The override
+  is per-request and applies to all three tiers, because the judgement it protects
+  ("this jar of flaked salt is a garnish") is a claim about *use*, not about which
+  tier happened to detect the salt.
+- **`--force-negligible` implies `--negligible`.** Requiring both would only add a
+  way to get it half-right; the sole reason to reach for the override is to make
+  the assertion just refused.
+- **A patch body carrying only the override is now a `400`.** The override is an
+  instruction rather than a fact, so it satisfies the body schema's
+  `minProperties: 1` while changing nothing — the spec's "at least one key" rule
+  had to become "at least one key that changes something" to stay true.
+- **The estimator's parse is now an exported `parseEstimateResponse`.** It was a
+  private method, which meant pinning the output contract in tests would have
+  required constructing an `Anthropic` client. Worth knowing for the next contract
+  change.
+- **`mealbank.test.ts` is flaky in this environment, independent of this
+  branch.** Its fixture hooks shell out to the `gitsheets` CLI under a 5,000 ms
+  `beforeEach`/`beforeAll` budget, and a cold first invocation can exceed it.
+  Reproduced on a clean `origin/main` worktree; passes on every warm run. Not
+  caused by, and not addressed by, this plan.
+
+## Follow-ups
+
+- **A read surface for marked-and-salt-shaped products.** The guard is prospective
+  only: a product marked before it existed keeps its marker until a write
+  re-states it. A `products list` filter (or a one-off report) running
+  `checkNegligible` over already-marked products would flush out any grandfathered
+  mismark without a data migration.
+- **No cross-check that excluded lines sum to a plausible non-food share.** The
+  receipt parser has a self-check against the printed total; the estimator's
+  exclusion report has no equivalent, so a model that files a food line as a `fee`
+  is caught only by someone reading the entry.
+- **`excluded_lines` is written by the model path only.** A reselect clone does not
+  inherit it and a manual override does not clear it. Defensible (the report
+  describes one estimation attempt) but worth revisiting if the field ever gets
+  read as general provenance.
