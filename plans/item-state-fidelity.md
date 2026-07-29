@@ -124,7 +124,7 @@ re-litigate them.
 
 ## Approach
 
-- **Migration `019-kitchen-storage-moves-and-unit-seal.sql`** — additive `ADD
+- **Migration `020-kitchen-storage-moves-and-unit-seal.sql`** — additive `ADD
   COLUMN IF NOT EXISTS storage_moved_at DATE` and `unit_seal TEXT`, with the
   `unit_seal` value `CHECK` in a `DO $$ … EXCEPTION WHEN duplicate_object` block
   (the `017`/`018` idiom — a constraint can't ride `ADD COLUMN IF NOT EXISTS`

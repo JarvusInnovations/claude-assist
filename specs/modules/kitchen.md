@@ -1366,14 +1366,14 @@ All tables instance-agnostic empty schema, ULID keys, `kitchen` schema
   item is fraction-modeled, unchanged; both set together, never one without the
   other, `0 <= units_remaining <= units_total`), `unit_seal`
   (`'individual' | 'shared'`, nullable — migration
-  `019-kitchen-storage-moves-and-unit-seal.sql`; **what the package seals**:
+  `020-kitchen-storage-moves-and-unit-seal.sql`; **what the package seals**:
   each unit separately, or one container over all of them. Null on a
   fraction-modeled item (the notion doesn't apply) and read as `individual` on
   a counted one, so existing rows keep their original behavior — see
   § count-vs-fraction), `needs_info`
   (bool), `acquired_at` (date), `opened_at` (date, nullable), `closed_at` (date,
   nullable — finished/tossed/dismissed date), `storage_moved_at` (date, nullable
-  — migration `019-kitchen-storage-moves-and-unit-seal.sql`; the date of the most
+  — migration `020-kitchen-storage-moves-and-unit-seal.sql`; the date of the most
   recent recorded storage move, and from then on the item's clock anchor —
   § Storage moves), `eat_by` (date, nullable — **derived**,
   materialized for ordering; recomputed on open, on a storage move, and on
