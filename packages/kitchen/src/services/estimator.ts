@@ -47,11 +47,18 @@ You estimate the nutrition of a single home-logged meal or snack for a personal 
 <instructions>
 1. Look at any photos and read the owner's note (if present). Identify what was eaten and a reasonable portion size.
 2. Printed text in a photo — an order sticker, a packaging label, a menu board, or a nutrition panel in frame — is AUTHORITATIVE over your own visual read: trust it for identity, size, and ingredients ahead of guessing from appearance alone. Raise your confidence when the text corroborates what you see; a lazy shot with the label in frame is the most accurate case, not the least.
-3. Estimate total calories and the nutrition panel (protein_g, fat_g, sat_fat_g, carbs_g, sugar_g, fiber_g, sodium_mg) for the portion you can see/read — not a "standard serving" from a database, your own best visual/textual judgement (informed by any printed text per the rule above). sugar_g is TOTAL sugar (natural + added); fiber_g is dietary fiber.
-4. Give a short display label (under 60 chars) — e.g. "Grilled chicken salad", "Two slices pepperoni pizza".
-5. State your portion basis in one short phrase (e.g. "one dinner plate, ~350g", "12oz based on the note").
-6. State confidence 0.0-1.0. Lower confidence for ambiguous photos, no photos (note-only), or unusual foods.
-7. If there is truly nothing to go on (no photo, no note, or unreadable), still return your best guess with low confidence — never refuse. A rough number beats no number.
+3. Estimate total calories and the nutrition panel (protein_g, fat_g, sat_fat_g, carbs_g, sugar_g, added_sugar_g, fiber_g, sodium_mg) for the portion you can see/read — not a "standard serving" from a database, your own best visual/textual judgement (informed by any printed text per the rule above). sugar_g is TOTAL sugar (intrinsic + added); fiber_g is dietary fiber.
+4. added_sugar_g is the part of sugar_g added in processing or preparation — the WHO "free sugars" concept: added sugar plus honey, syrups, and FRUIT JUICE. Rules, in priority order:
+   - A nutrition panel in frame is AUTHORITATIVE: US labels print "Includes Xg Added Sugars" — transcribe it.
+   - Unprocessed whole foods are 0, BY DEFINITION, NOT null: fruit, vegetables, plain dairy (milk, plain yogurt, cheese), eggs, meat, fish, plain grains, plain legumes, nuts, plain coffee and tea. Lactose in milk and fructose in whole fruit are intrinsic — they belong in sugar_g only. State added_sugar_g: 0 for these; a null here silently deletes the day's added-sugar total.
+   - Restaurant and prepared dishes are a genuine ESTIMATE reasoned from the visible sweeteners: glazes, sauces, dressings, marinades, ketchup/BBQ, breads and baked goods, sweetened drinks, flavored yogurt, granola, syrup. A reasoned number beats null; lower your overall confidence instead.
+   - Juice counts as added even when it is "100% juice".
+   - null is only for a genuinely unreadable case (e.g. an unidentifiable packaged item with no panel in frame).
+   added_sugar_g must never exceed sugar_g.
+5. Give a short display label (under 60 chars) — e.g. "Grilled chicken salad", "Two slices pepperoni pizza".
+6. State your portion basis in one short phrase (e.g. "one dinner plate, ~350g", "12oz based on the note").
+7. State confidence 0.0-1.0. Lower confidence for ambiguous photos, no photos (note-only), or unusual foods. A prepared dish whose added sugar you had to reason about is legitimately lower-confidence than a label read — that is expected, not a failure.
+8. If there is truly nothing to go on (no photo, no note, or unreadable), still return your best guess with low confidence — never refuse. A rough number beats no number.
 </instructions>
 
 <response_format>
@@ -61,13 +68,13 @@ Return ONLY a JSON object inside <estimate> tags. No markdown, no text outside t
 {
   "label": "short display label",
   "calories": 000,
-  "macros": {"protein_g": 0, "fat_g": 0, "sat_fat_g": 0, "carbs_g": 0, "sugar_g": 0, "fiber_g": 0, "sodium_mg": 0},
+  "macros": {"protein_g": 0, "fat_g": 0, "sat_fat_g": 0, "carbs_g": 0, "sugar_g": 0, "added_sugar_g": 0, "fiber_g": 0, "sodium_mg": 0},
   "confidence": 0.0,
   "portion_basis": "one short phrase"
 }
 </estimate>
 
-Any macro you truly cannot estimate should be null, not 0 — 0 means "none", not "unknown".
+Any macro you truly cannot estimate should be null, not 0 — 0 means "none", not "unknown". The one field where 0 is an ASSERTION you should make freely is added_sugar_g on unprocessed whole foods (rule 4).
 </response_format>`;
 
 export class KitchenEstimator implements Estimator {
@@ -165,6 +172,7 @@ export class KitchenEstimator implements Estimator {
       sat_fat_g: numOrNull(macros.sat_fat_g),
       carbs_g: numOrNull(macros.carbs_g),
       sugar_g: numOrNull(macros.sugar_g),
+      added_sugar_g: numOrNull(macros.added_sugar_g),
       fiber_g: numOrNull(macros.fiber_g),
       sodium_mg: numOrNull(macros.sodium_mg),
       confidence,
@@ -223,6 +231,7 @@ export function applyPortionModifier(estimate: ModelEstimate, factor: number): M
     sat_fat_g: scale(estimate.sat_fat_g),
     carbs_g: scale(estimate.carbs_g),
     sugar_g: scale(estimate.sugar_g),
+    added_sugar_g: scale(estimate.added_sugar_g),
     fiber_g: scale(estimate.fiber_g),
     sodium_mg: scale(estimate.sodium_mg),
   };

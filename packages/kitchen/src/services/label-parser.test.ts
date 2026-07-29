@@ -19,6 +19,23 @@ describe('derivePer100gFromServing (§ Nutrition panel — capture raw, scale la
     expect(derived!.fiber_g).toBeCloseTo(3.6, 1);
   });
 
+  it('scales the panel added-sugar line with the rest (labels are authoritative)', () => {
+    // "Total Sugars 12g / Includes 9g Added Sugars" on a 40 g serving.
+    const derived = derivePer100gFromServing(40, { calories: 160, sugar_g: 12, added_sugar_g: 9 });
+    expect(derived!.sugar_g).toBeCloseTo(30, 1);
+    expect(derived!.added_sugar_g).toBeCloseTo(22.5, 1);
+  });
+
+  it('keeps an added-sugar 0 as 0 and an unread one as null', () => {
+    // A legible panel with no Added Sugars line prints 0 (the ABSENT LINE = 0
+    // rule); a panel that could not be read at all leaves it unknown. The two
+    // must not collapse into each other through the scaling step.
+    const zero = derivePer100gFromServing(50, { calories: 100, sugar_g: 4, added_sugar_g: 0 });
+    expect(zero!.added_sugar_g).toBe(0);
+    const unknown = derivePer100gFromServing(50, { calories: 100, sugar_g: 4 });
+    expect(unknown!.added_sugar_g).toBeNull();
+  });
+
   it('a null per-serving field stays null in the derivation (unknown, never 0)', () => {
     const derived = derivePer100gFromServing(100, { calories: 100, protein_g: null, sodium_mg: 50 });
     expect(derived!.calories).toBe(100);
