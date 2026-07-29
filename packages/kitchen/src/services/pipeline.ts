@@ -779,7 +779,18 @@ export class KitchenPipeline {
         confidence: adjusted.confidence,
         portion_basis: adjusted.portion_basis,
       };
-      await this.entries.applyEstimate(ulid, adjusted.label, nutrition, 'model', nextStatus);
+      // The exclusion report rides the same write as the numbers it explains
+      // (§ Billing artifacts are not ingredients) — a caller reading the entry
+      // sees what the estimate deliberately left out, and can tell an over-eager
+      // exclusion from a missing food line. Also logged, since the estimate is
+      // the only place this judgement is ever made.
+      if (adjusted.excluded.length > 0) {
+        this.log.info(
+          { ulid, excluded: adjusted.excluded },
+          'Kitchen estimate excluded non-food lines'
+        );
+      }
+      await this.entries.applyEstimate(ulid, adjusted.label, nutrition, 'model', nextStatus, adjusted.excluded);
       this.notifyEstimated(ulid);
       return true;
     } catch (error) {

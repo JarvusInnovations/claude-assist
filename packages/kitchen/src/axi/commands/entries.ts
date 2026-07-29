@@ -68,6 +68,20 @@ const DETAIL_SCHEMA: FieldDef[] = [
   field("confidence"),
   field("portion_basis"),
   field("recipe_ulid"),
+  // Non-food lines the estimator dropped rather than estimating (§ Billing
+  // artifacts are not ingredients). Rendered as `kind: text` pairs so an
+  // over-eager exclusion — a real food line reported as a fee — is readable
+  // right next to the numbers it was left out of. Absent when nothing was.
+  custom("excluded_lines", (e) => {
+    const lines = e.excluded_lines;
+    if (!Array.isArray(lines) || lines.length === 0) return null;
+    return lines
+      .map((l) => {
+        const row = (l ?? {}) as Record<string, unknown>;
+        return `${row.kind ?? "other"}: ${row.text ?? ""}`;
+      })
+      .join("; ");
+  }),
   field("last_error"),
 ];
 
