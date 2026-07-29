@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'bun:test';
-import { applyPortionModifier, portionModifierFor, SYSTEM_PROMPT } from './estimator.js';
+import { applyPortionModifier, parseEstimateResponse, portionModifierFor, SYSTEM_PROMPT } from './estimator.js';
 import type { ModelEstimate } from '../types.js';
+
+/** Wrap a response payload the way the model returns it. */
+function respond(payload: Record<string, unknown>): string {
+  return `<estimate>\n${JSON.stringify(payload)}\n</estimate>`;
+}
 
 function mkEstimate(over: Partial<ModelEstimate> = {}): ModelEstimate {
   return {
@@ -16,6 +21,7 @@ function mkEstimate(over: Partial<ModelEstimate> = {}): ModelEstimate {
     sodium_mg: 600,
     confidence: 0.6,
     portion_basis: 'one bowl',
+    excluded: [],
     ...over,
   };
 }
@@ -108,5 +114,141 @@ describe('SYSTEM_PROMPT added-sugar attribution (§ Filling `added_sugar_g`)', (
   it('counts juice as added sugar (WHO free sugars) and caps added by total', () => {
     expect(SYSTEM_PROMPT.toLowerCase()).toContain('juice counts as added');
     expect(SYSTEM_PROMPT).toContain('never exceed sugar_g');
+  });
+});
+
+describe('SYSTEM_PROMPT non-food billing lines (§ Billing artifacts are not ingredients)', () => {
+  it('names the money lines a receipt or order prints beside the food', () => {
+    const prompt = SYSTEM_PROMPT.toLowerCase();
+    for (const line of [
+      'delivery fee',
+      'service fee',
+      'small order fee',
+      'bag fee',
+      'sales tax',
+      'tip/gratuity',
+      'bottle deposit',
+      'rounding',
+    ]) {
+      expect(prompt).toContain(line);
+    }
+  });
+
+  it('forbids estimating them rather than merely discouraging it', () => {
+    expect(SYSTEM_PROMPT).toContain('BILLING LINES ARE NOT FOOD');
+    expect(SYSTEM_PROMPT).toContain('NEVER estimate nutrition for one');
+  });
+
+  it('states that a negative money line is not negative food', () => {
+    expect(SYSTEM_PROMPT.toLowerCase()).toContain('is not negative food');
+    expect(SYSTEM_PROMPT).toContain('No macro is ever negative');
+  });
+
+  it('keeps an unknown FOOD line separate from a charge — the two must not collapse', () => {
+    // The distinction that makes the rule safe: "I can't tell what food this
+    // is" is not "this is definitely not food".
+    expect(SYSTEM_PROMPT).toContain('UNKNOWN FOOD');
+    expect(SYSTEM_PROMPT.toLowerCase()).toContain('misc grocery');
+    expect(SYSTEM_PROMPT).toContain('must not collapse into one bucket');
+    expect(SYSTEM_PROMPT.toLowerCase()).toContain('when you are unsure which a line is, treat it as food');
+  });
+
+  it('asks for the exclusions to be REPORTED, in the response template', () => {
+    expect(SYSTEM_PROMPT).toMatch(/"excluded":\s*\[\{"text"/);
+    expect(SYSTEM_PROMPT).toContain('fee, tax, tip, deposit, discount, adjustment, other');
+  });
+});
+
+describe('parseEstimateResponse — the exclusion report', () => {
+  const base = {
+    label: 'Delivery order',
+    calories: 900,
+    macros: { protein_g: 40, sodium_mg: 1800 },
+    confidence: 0.5,
+    portion_basis: 'one order',
+  };
+
+  it('carries the reported exclusions through verbatim', () => {
+    const estimate = parseEstimateResponse(
+      respond({
+        ...base,
+        excluded: [
+          { text: 'DELIVERY FEE', kind: 'fee' },
+          { text: 'SALES TAX', kind: 'tax' },
+          { text: 'DRIVER TIP', kind: 'tip' },
+        ],
+      })
+    );
+    expect(estimate.excluded).toEqual([
+      { text: 'DELIVERY FEE', kind: 'fee' },
+      { text: 'SALES TAX', kind: 'tax' },
+      { text: 'DRIVER TIP', kind: 'tip' },
+    ]);
+    // The food still got estimated — excluding the charges is not skipping the meal.
+    expect(estimate.calories).toBe(900);
+  });
+
+  it('defaults to an empty array, so "nothing excluded" is never undefined', () => {
+    expect(parseEstimateResponse(respond(base)).excluded).toEqual([]);
+    expect(parseEstimateResponse(respond({ ...base, excluded: 'nope' })).excluded).toEqual([]);
+  });
+
+  it('files an unrecognized kind as `other` rather than dropping the exclusion', () => {
+    const estimate = parseEstimateResponse(
+      respond({ ...base, excluded: [{ text: 'SMALL ORDER FEE', kind: 'surcharge' }, 'BAG FEE'] })
+    );
+    expect(estimate.excluded).toEqual([
+      { text: 'SMALL ORDER FEE', kind: 'other' },
+      { text: 'BAG FEE', kind: 'other' },
+    ]);
+  });
+
+  it('drops textless entries and bounds the report', () => {
+    const estimate = parseEstimateResponse(
+      respond({
+        ...base,
+        excluded: [{ kind: 'fee' }, { text: '   ', kind: 'fee' }, 42, null, { text: 'TIP', kind: 'tip' }],
+      })
+    );
+    expect(estimate.excluded).toEqual([{ text: 'TIP', kind: 'tip' }]);
+
+    const flooded = parseEstimateResponse(
+      respond({ ...base, excluded: Array.from({ length: 200 }, (_, i) => ({ text: `FEE ${i}`, kind: 'fee' })) })
+    );
+    expect(flooded.excluded).toHaveLength(40);
+    expect(
+      parseEstimateResponse(respond({ ...base, excluded: [{ text: 'X'.repeat(500), kind: 'fee' }] })).excluded[0]!.text
+    ).toHaveLength(200);
+  });
+});
+
+describe('parseEstimateResponse — a negative money line never becomes negative nutrition', () => {
+  it('reads a negative panel field as unknown, not as a subtraction', () => {
+    // The failure this closes: a discount or deposit-return line leaking into
+    // the arithmetic and making a day read as LESS eaten than it was — an error
+    // in the direction nobody questions.
+    const estimate = parseEstimateResponse(
+      respond({
+        label: 'Order with promo credit',
+        calories: -300,
+        macros: { protein_g: 20, fat_g: -5, sodium_mg: -120, carbs_g: 0 },
+        confidence: 0.4,
+        portion_basis: 'one order',
+        excluded: [{ text: 'PROMO -$3.00', kind: 'discount' }],
+      })
+    );
+    expect(estimate.calories).toBeNull();
+    expect(estimate.fat_g).toBeNull();
+    expect(estimate.sodium_mg).toBeNull();
+    // Legitimate values are untouched, and 0 still means zero.
+    expect(estimate.protein_g).toBe(20);
+    expect(estimate.carbs_g).toBe(0);
+    expect(estimate.excluded).toEqual([{ text: 'PROMO -$3.00', kind: 'discount' }]);
+  });
+
+  it('never scales the exclusion report with the portion modifier', () => {
+    const halved = applyPortionModifier(mkEstimate({ excluded: [{ text: 'SERVICE FEE', kind: 'fee' }] }), 0.5);
+    expect(halved.excluded).toEqual([{ text: 'SERVICE FEE', kind: 'fee' }]);
+    expect(halved.calories).toBe(200);
   });
 });

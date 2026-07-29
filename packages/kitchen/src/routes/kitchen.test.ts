@@ -32,6 +32,7 @@ function mkModelEstimate(over: Partial<ModelEstimate> = {}): ModelEstimate {
     sodium_mg: 700,
     confidence: 0.55,
     portion_basis: 'one plate',
+    excluded: [],
     ...over,
   };
 }

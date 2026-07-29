@@ -42,6 +42,7 @@ function mkModelEstimate(over: Partial<ModelEstimate> = {}): ModelEstimate {
     sodium_mg: 700,
     confidence: 0.55,
     portion_basis: 'one plate',
+    excluded: [],
     ...over,
   };
 }
@@ -117,6 +118,39 @@ describe('estimation queue (mocked model)', () => {
     expect(record.label).toBe('Grilled chicken salad');
     expect(record.calories).toBe(450);
     expect(estimator.calls).toBe(1);
+  });
+
+  it('records the estimator\'s non-food exclusions on the entry, and nothing when there were none', async () => {
+    // § Billing artifacts are not ingredients — the exclusions are REPORTED, not
+    // silently dropped, so a caller can audit what the numbers left out.
+    const entries = new MemoryEntryStore();
+    const estimator = new ScriptedEstimator([
+      mkModelEstimate({
+        label: 'Delivery order',
+        calories: 900,
+        excluded: [
+          { text: 'DELIVERY FEE', kind: 'fee' },
+          { text: 'DRIVER TIP', kind: 'tip' },
+        ],
+      }),
+      mkModelEstimate(),
+    ]);
+    const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), estimator, log);
+
+    const order = await pipeline.ingest({ ulid: generateUlid(), note: 'takeout order receipt' }, []);
+    await order.estimation;
+    const withExclusions = (await pipeline.get(order.record.ulid))!;
+    expect(withExclusions.calories).toBe(900);
+    expect(withExclusions.excluded_lines).toEqual([
+      { text: 'DELIVERY FEE', kind: 'fee' },
+      { text: 'DRIVER TIP', kind: 'tip' },
+    ]);
+
+    // An ordinary meal photo excludes nothing, and stores null rather than [] —
+    // one representation of "nothing was excluded".
+    const meal = await pipeline.ingest({ ulid: generateUlid(), note: 'chicken salad' }, []);
+    await meal.estimation;
+    expect((await pipeline.get(meal.record.ulid))!.excluded_lines).toBeNull();
   });
 
   it('leaves the entry estimating without burning an attempt when no estimator is configured', async () => {

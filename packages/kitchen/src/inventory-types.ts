@@ -185,6 +185,14 @@ export interface ProductInput {
   shelf_life_days_opened?: number | null;
   /** § Nutritionally negligible products — see `ProductRecord`. */
   nutrition_negligible?: boolean;
+  /**
+   * Request-only, never stored: proceed with `nutrition_negligible` even though
+   * the sodium guard refused (§ Nutritionally negligible products — § Sodium is
+   * the exception that breaks the marker). The judgement it exists for is a
+   * salt-shaped product whose realistic use genuinely contributes ~0 sodium — a
+   * jar of flaked finishing salt used a few crystals at a time.
+   */
+  nutrition_negligible_override?: boolean;
 }
 
 /**
@@ -212,6 +220,8 @@ export interface ProductPatchInput {
   shelf_life_days_unopened?: number | null;
   shelf_life_days_opened?: number | null;
   nutrition_negligible?: boolean;
+  /** Request-only, never stored — see `ProductInput`. */
+  nutrition_negligible_override?: boolean;
 }
 
 /** What `POST /products/:ulid/merge` reports (§ Product corrections). */

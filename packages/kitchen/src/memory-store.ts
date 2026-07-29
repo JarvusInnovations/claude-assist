@@ -8,6 +8,7 @@ import { normalizeRecipeName } from './types.js';
 import type {
   EntryRecord,
   EntryStatus,
+  EstimateExclusion,
   EstimationSource,
   NutritionFields,
   RecipeComponent,
@@ -55,6 +56,7 @@ export class MemoryEntryStore implements EntryStore {
       component_quantities: entry.component_quantities,
       portion_multiplier: 1,
       inventory_item_ulid: null,
+      excluded_lines: null,
       created_at: now,
       updated_at: now,
     };
@@ -95,10 +97,13 @@ export class MemoryEntryStore implements EntryStore {
     label: string | null,
     nutrition: NutritionFields,
     source: EstimationSource,
-    nextStatus: EntryStatus
+    nextStatus: EntryStatus,
+    excludedLines?: EstimateExclusion[] | null
   ): Promise<void> {
     const record = this.mustGet(ulid);
     Object.assign(record, nutrition);
+    // Mirrors PgEntryStore: an empty report and no report both store null.
+    record.excluded_lines = excludedLines && excludedLines.length > 0 ? structuredClone(excludedLines) : null;
     if (label !== null) record.label = label;
     record.source = source;
     record.status = nextStatus;

@@ -78,6 +78,7 @@ export class MemoryConsumeStore implements ConsumeStore {
       last_error_at: null,
       recipe_ulid: null,
       component_quantities: null,
+      excluded_lines: null,
       portion_multiplier: 1,
       inventory_item_ulid: entry.inventory_item_ulid,
       created_at: now,

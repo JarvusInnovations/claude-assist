@@ -704,8 +704,8 @@ var COMMAND_GROUPS = [
         summary: "seed a product \u2014 UPSERTS on --ulid (create/replace) or the normalized name (enrich in place)"
       },
       {
-        usage: "products update <ulid> [--name NAME] [--nutrition '<json>'] [--negligible|--no-negligible] [any add flag]",
-        summary: "correct a product in place \u2014 partial, only the flags you pass change (the door for adding nutrition later)"
+        usage: "products update <ulid> [--name NAME] [--nutrition '<json>'] [--negligible|--no-negligible|--force-negligible] [any add flag]",
+        summary: "correct a product in place \u2014 partial, only the flags you pass change (the door for adding nutrition later). --negligible is REFUSED for anything salt-bearing (garlic powder qualifies; garlic salt does not) \u2014 --force-negligible overrides"
       },
       {
         usage: "products merge <ulid> --into <ulid>",
@@ -1395,6 +1395,18 @@ var DETAIL_SCHEMA = [
   field("confidence"),
   field("portion_basis"),
   field("recipe_ulid"),
+  // Non-food lines the estimator dropped rather than estimating (§ Billing
+  // artifacts are not ingredients). Rendered as `kind: text` pairs so an
+  // over-eager exclusion — a real food line reported as a fee — is readable
+  // right next to the numbers it was left out of. Absent when nothing was.
+  custom("excluded_lines", (e) => {
+    const lines = e.excluded_lines;
+    if (!Array.isArray(lines) || lines.length === 0) return null;
+    return lines.map((l) => {
+      const row = l ?? {};
+      return `${row.kind ?? "other"}: ${row.text ?? ""}`;
+    }).join("; ");
+  }),
   field("last_error")
 ];
 async function entriesCommand(args) {
@@ -2482,7 +2494,7 @@ var PRODUCTS_HELP = `kitchen-axi products <subcommand> [args] [--json]
        [--nutrition '<json>'] [--nutrition-per-serving '<json>']
        [--serving-size-g N] [--servings-per-container N]
        [--net-content-g N] [--net-content-ml N] [--unit-model counted|fraction]
-       [--ingredients TEXT] [--negligible]
+       [--ingredients TEXT] [--negligible] [--force-negligible]
        [--shelf-life-days-unopened N] [--shelf-life-days-opened N]
   update <ulid> [same flags]        correct a product IN PLACE \u2014 partial, so
                                       only the flags you pass change. Also
@@ -2512,12 +2524,22 @@ var PRODUCTS_HELP = `kitchen-axi products <subcommand> [args] [--json]
   a null inside --nutrition (e.g. '{"sodium_mg": null}' clears just sodium).
 
   --negligible asserts every panel field is ~0 at any realistic serving \u2014
-  spices, dried herbs, salt, vinegar, black coffee, extracts. It clears the
+  spices, dried herbs, vinegar, black coffee, extracts. It clears the
   needs-nutrition flag HONESTLY and makes the product contribute zeros instead
   of nulls. Use it only for that: a US spice jar carries no Nutrition Facts
   panel at all (FDA exempts insignificant amounts), so there is nothing to
   scan and the flag is otherwise unclearable. Never a shortcut for "I don't
   feel like scanning this".
+
+  SALT IS NOT NEGLIGIBLE. Table salt is ~0 on eight panel fields and ~38,700 mg
+  of sodium per 100 g on the ninth \u2014 a teaspoon is a whole day's ceiling \u2014 so
+  marking it would assert zero sodium for the biggest sodium line in the house.
+  Garlic powder qualifies; garlic salt does not. --negligible is REFUSED (400)
+  for a product whose name, aliases, ingredients, or stated sodium say it
+  carries salt; also covered: bouillon, MSG, baking soda/powder, soy and fish
+  sauce, and any blend whose ingredients list salt. Pass --force-negligible to
+  mark it anyway when a realistic serving really does contribute ~0 sodium
+  (flaked finishing salt used a few crystals at a time).
 
   archive never destroys, and merge never deletes the duplicate \u2014 inventory
   items, lexicon lines, and receipt batch lines point at products and must keep
@@ -2623,12 +2645,13 @@ function buildProductWriteBody(flags) {
   if (typeof flags["unit-model"] === "string") {
     body.unit_model_hint = flags["unit-model"] === "" ? null : validateUnitModel(flags["unit-model"]);
   }
-  if (flags.negligible) body.nutrition_negligible = true;
+  if (flags.negligible || flags["force-negligible"]) body.nutrition_negligible = true;
+  if (flags["force-negligible"]) body.nutrition_negligible_override = true;
   if (flags["no-negligible"]) body.nutrition_negligible = false;
   return body;
 }
 async function addProduct(args) {
-  const { flags } = parseArgs(args, ["json", "negligible", "no-negligible"], WRITE_VALUE_FLAGS);
+  const { flags } = parseArgs(args, ["json", "negligible", "no-negligible", "force-negligible"], WRITE_VALUE_FLAGS);
   requireFlag(flags, "name", PRODUCTS_HELP);
   const body = buildProductWriteBody(flags);
   if (typeof flags.ulid === "string") body.ulid = flags.ulid;
@@ -2643,7 +2666,7 @@ async function addProduct(args) {
   ]);
 }
 async function updateProduct(args) {
-  const { positionals, flags } = parseArgs(args, ["json", "negligible", "no-negligible"], WRITE_VALUE_FLAGS);
+  const { positionals, flags } = parseArgs(args, ["json", "negligible", "no-negligible", "force-negligible"], WRITE_VALUE_FLAGS);
   const ulid = requirePositional(positionals, 0, "product ulid", PRODUCTS_HELP);
   const body = buildProductWriteBody(flags);
   if (Object.keys(body).length === 0) {
@@ -2764,7 +2787,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "53f5af3" : "dev";
+var VERSION = true ? "fb9ee6c" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)

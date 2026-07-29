@@ -47,6 +47,8 @@ import type {
   ShelfLifeClass,
 } from '../inventory-types.js';
 import { CONVERT_SHELF_LIFE_CLASSES, PACKAGE_DURABLE_SHELF_LIFE_CLASSES } from '../inventory-types.js';
+import type { NegligibleCandidate } from '../negligible-guard.js';
+import { checkNegligible, negligibleRefusalMessage } from '../negligible-guard.js';
 import type {
   ConversionSourceWrite,
   InventoryStore,
@@ -1675,6 +1677,12 @@ export class InventoryPipeline {
           }. Post to the surviving record, or use a new ulid.`
         );
       }
+      // A replace STATES the whole record, so the guard judges the body's own
+      // facts — not whatever panel the record used to carry.
+      guardNegligible(candidateOfInput(normalizedInput), {
+        asserting: normalizedInput.nutrition_negligible === true,
+        override: input.nutrition_negligible_override,
+      });
       if (existing) {
         const replaced = await this.store.updateProduct(input.ulid, productFields(normalizedInput));
         // Vanished between read and write — fall through to a create rather
@@ -1694,8 +1702,18 @@ export class InventoryPipeline {
     }
     const existing = matches[0];
     if (existing) {
+      // An enrich never null-clobbers, so the resulting product is the merge of
+      // both — and that merge is what the assertion would be made about.
+      guardNegligible(candidateOfEnrich(existing, normalizedInput), {
+        asserting: normalizedInput.nutrition_negligible === true,
+        override: input.nutrition_negligible_override,
+      });
       return { product: await this.enrichProduct(existing, normalizedInput), created: false };
     }
+    guardNegligible(candidateOfInput(normalizedInput), {
+      asserting: normalizedInput.nutrition_negligible === true,
+      override: input.nutrition_negligible_override,
+    });
     return { product: await this.createProduct(normalizedInput), created: true };
   }
 
@@ -1759,6 +1777,37 @@ export class InventoryPipeline {
     if (patch.nutrition_per_serving !== undefined) {
       out.nutrition_per_serving = patchPanel(existing.nutrition_per_serving, patch.nutrition_per_serving);
     }
+
+    // `nutrition_negligible_override` is an instruction, not a fact, so a body
+    // carrying only it passes the schema's `minProperties` while changing
+    // nothing. The contract is "at least one key that changes something".
+    if (Object.keys(out).length === 0) {
+      throw new ProductValidationError('patch body states no field to change');
+    }
+
+    guardNegligible(
+      {
+        name: out.name ?? existing.name,
+        aliases: [...(out.aliases ?? existing.aliases), ...(out.name ? [existing.name] : [])],
+        ingredients: out.ingredients !== undefined ? out.ingredients : existing.ingredients,
+        nutrition_per_100g:
+          out.nutrition_per_100g !== undefined ? out.nutrition_per_100g : existing.nutrition_per_100g,
+        nutrition_per_serving:
+          out.nutrition_per_serving !== undefined ? out.nutrition_per_serving : existing.nutrition_per_serving,
+        serving_size_g: out.serving_size_g !== undefined ? out.serving_size_g : existing.serving_size_g,
+      },
+      {
+        // Two ways a patch asserts, both conditioned on the product ending up
+        // marked: it states the marker, or it RENAMES a product that stays
+        // marked — "garlic powder" → "garlic salt" is a new claim about a
+        // different food wearing an old record's marker. A rename that unmarks
+        // in the same body asserts nothing and is never refused.
+        asserting:
+          (out.nutrition_negligible ?? existing.nutrition_negligible) &&
+          (patch.nutrition_negligible === true || (out.name !== undefined && out.name !== existing.name)),
+        override: patch.nutrition_negligible_override,
+      }
+    );
 
     return this.store.updateProduct(ulid, out);
   }
@@ -2042,6 +2091,62 @@ function productFields(input: ProductInput): Omit<NewProduct, 'ulid'> {
     shelf_life_days_unopened: input.shelf_life_days_unopened ?? null,
     shelf_life_days_opened: input.shelf_life_days_opened ?? null,
     nutrition_negligible: input.nutrition_negligible ?? false,
+  };
+}
+
+/**
+ * Refuse a `nutrition_negligible` assertion the sodium guard rejects
+ * (§ Nutritionally negligible products — § Sodium is the exception that breaks
+ * the marker). A `ProductValidationError`, so the route answers `400` with the
+ * refusal's evidence and the override to pass.
+ *
+ * **The guard fires only when the request ASSERTS the marker** — an explicit
+ * `nutrition_negligible: true` in the body (plus the one rename case
+ * `patchProduct` spells out). Silence is not an assertion, which is what keeps
+ * the machine paths clear: a receipt seed or a label enrich landing on a marked
+ * product says nothing about negligibility and is never blocked by this. The
+ * cost of that choice is that a product marked before this guard existed keeps
+ * its marker until someone re-states it — and when they do, the refusal is how
+ * the pre-existing mismark surfaces.
+ */
+function guardNegligible(
+  candidate: NegligibleCandidate,
+  opts: { asserting: boolean; override?: boolean }
+): void {
+  if (!opts.asserting || opts.override === true) return;
+  const refusal = checkNegligible(candidate);
+  if (refusal) throw new ProductValidationError(negligibleRefusalMessage(candidate.name, refusal));
+}
+
+/** The guard's view of a body that states the whole record (create / replace). */
+function candidateOfInput(input: ProductInput): NegligibleCandidate {
+  return {
+    name: input.name,
+    aliases: input.aliases ?? null,
+    ingredients: input.ingredients ?? null,
+    nutrition_per_100g: input.nutrition_per_100g ?? null,
+    nutrition_per_serving: input.nutrition_per_serving ?? null,
+    serving_size_g: input.serving_size_g ?? null,
+  };
+}
+
+/**
+ * The guard's view of a name-key enrich: the merge `enrichProduct` is about to
+ * write, under the same never-null-clobbering precedence. The stored name is
+ * kept (an enrich doesn't rename) and the incoming spelling joins the aliases,
+ * so a salt-shaped spelling on either side is still seen.
+ */
+function candidateOfEnrich(existing: ProductRecord, input: ProductInput): NegligibleCandidate {
+  return {
+    name: existing.name,
+    aliases: [...existing.aliases, ...(input.aliases ?? []), input.name],
+    ingredients: (input.ingredients?.trim() || null) ?? existing.ingredients,
+    nutrition_per_100g: mergeNutrition(existing.nutrition_per_100g, normalizeNutrition(input.nutrition_per_100g)),
+    nutrition_per_serving: mergeNutrition(
+      existing.nutrition_per_serving,
+      normalizeNutrition(input.nutrition_per_serving)
+    ),
+    serving_size_g: input.serving_size_g ?? existing.serving_size_g,
   };
 }
 

@@ -260,6 +260,13 @@ export interface EntryRecord extends NutritionFields {
   portion_multiplier: number;
   /** Phase 2: the inventory item this entry depleted (set by the depletion matcher). */
   inventory_item_ulid: string | null;
+  /**
+   * Non-food lines the estimator dropped rather than estimating
+   * (§ Billing artifacts are not ingredients). Null when the entry was never
+   * model-estimated or the source carried no such lines; a non-empty array is
+   * the audit trail for what the numbers deliberately exclude.
+   */
+  excluded_lines: EstimateExclusion[] | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -268,6 +275,46 @@ export interface EntryRecord extends NutritionFields {
 export interface PhotoPart {
   data: Buffer;
   mimeType: string;
+}
+
+/**
+ * Why an estimated line was dropped as **not food** (specs/modules/kitchen.md
+ * § Billing artifacts are not ingredients). The kinds are the money lines a
+ * receipt or delivery order prints in the same list as the items:
+ *
+ * - `fee` — delivery, service, small-order, bag, convenience, priority.
+ * - `tax` — sales tax, any tax line.
+ * - `tip` — gratuity, however labeled.
+ * - `deposit` — bottle/container deposit, and its return credit.
+ * - `discount` — promo, coupon, loyalty credit, employee discount.
+ * - `adjustment` — rounding, price correction, refund, balance line.
+ * - `other` — a non-food line that fits none of the above (a gift card, a
+ *   housewares item). The bucket exists so an unmodelled charge is still
+ *   reported rather than being forced into a wrong kind or, worse, estimated.
+ */
+export type ExclusionKind = 'fee' | 'tax' | 'tip' | 'deposit' | 'discount' | 'adjustment' | 'other';
+
+export const EXCLUSION_KINDS = [
+  'fee',
+  'tax',
+  'tip',
+  'deposit',
+  'discount',
+  'adjustment',
+  'other',
+] as const satisfies readonly ExclusionKind[];
+
+/**
+ * One line the estimator read and deliberately did **not** turn into nutrition.
+ * Reported rather than silently dropped: an exclusion is a judgement about the
+ * source text, and a judgement nobody can see is one nobody can correct. It is
+ * also how an over-eager exclusion becomes visible — a real food line reported
+ * as a `fee` is a bug you can read off the entry.
+ */
+export interface EstimateExclusion {
+  /** The line as printed, verbatim, so it can be matched back to the source. */
+  text: string;
+  kind: ExclusionKind;
 }
 
 /** The model's raw structured output for one estimation attempt. */
@@ -284,4 +331,10 @@ export interface ModelEstimate {
   sodium_mg: number | null;
   confidence: number;
   portion_basis: string;
+  /**
+   * Non-food lines the estimator excluded (§ Billing artifacts are not
+   * ingredients). Always an array — `[]` when the source had none, so a caller
+   * never has to tell "nothing excluded" from "the model didn't answer".
+   */
+  excluded: EstimateExclusion[];
 }

@@ -179,8 +179,8 @@ export const COMMAND_GROUPS: CommandGroup[] = [
         summary: "seed a product — UPSERTS on --ulid (create/replace) or the normalized name (enrich in place)",
       },
       {
-        usage: "products update <ulid> [--name NAME] [--nutrition '<json>'] [--negligible|--no-negligible] [any add flag]",
-        summary: "correct a product in place — partial, only the flags you pass change (the door for adding nutrition later)",
+        usage: "products update <ulid> [--name NAME] [--nutrition '<json>'] [--negligible|--no-negligible|--force-negligible] [any add flag]",
+        summary: "correct a product in place — partial, only the flags you pass change (the door for adding nutrition later). --negligible is REFUSED for anything salt-bearing (garlic powder qualifies; garlic salt does not) — --force-negligible overrides",
       },
       {
         usage: "products merge <ulid> --into <ulid>",

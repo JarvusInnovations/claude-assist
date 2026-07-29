@@ -14,7 +14,7 @@ export const PRODUCTS_HELP = `kitchen-axi products <subcommand> [args] [--json]
        [--nutrition '<json>'] [--nutrition-per-serving '<json>']
        [--serving-size-g N] [--servings-per-container N]
        [--net-content-g N] [--net-content-ml N] [--unit-model counted|fraction]
-       [--ingredients TEXT] [--negligible]
+       [--ingredients TEXT] [--negligible] [--force-negligible]
        [--shelf-life-days-unopened N] [--shelf-life-days-opened N]
   update <ulid> [same flags]        correct a product IN PLACE — partial, so
                                       only the flags you pass change. Also
@@ -44,12 +44,22 @@ export const PRODUCTS_HELP = `kitchen-axi products <subcommand> [args] [--json]
   a null inside --nutrition (e.g. '{"sodium_mg": null}' clears just sodium).
 
   --negligible asserts every panel field is ~0 at any realistic serving —
-  spices, dried herbs, salt, vinegar, black coffee, extracts. It clears the
+  spices, dried herbs, vinegar, black coffee, extracts. It clears the
   needs-nutrition flag HONESTLY and makes the product contribute zeros instead
   of nulls. Use it only for that: a US spice jar carries no Nutrition Facts
   panel at all (FDA exempts insignificant amounts), so there is nothing to
   scan and the flag is otherwise unclearable. Never a shortcut for "I don't
   feel like scanning this".
+
+  SALT IS NOT NEGLIGIBLE. Table salt is ~0 on eight panel fields and ~38,700 mg
+  of sodium per 100 g on the ninth — a teaspoon is a whole day's ceiling — so
+  marking it would assert zero sodium for the biggest sodium line in the house.
+  Garlic powder qualifies; garlic salt does not. --negligible is REFUSED (400)
+  for a product whose name, aliases, ingredients, or stated sodium say it
+  carries salt; also covered: bouillon, MSG, baking soda/powder, soy and fish
+  sauce, and any blend whose ingredients list salt. Pass --force-negligible to
+  mark it anyway when a realistic serving really does contribute ~0 sodium
+  (flaked finishing salt used a few crystals at a time).
 
   archive never destroys, and merge never deletes the duplicate — inventory
   items, lexicon lines, and receipt batch lines point at products and must keep
@@ -171,13 +181,17 @@ export function buildProductWriteBody(flags: Record<string, string | boolean>): 
   if (typeof flags["unit-model"] === "string") {
     body.unit_model_hint = flags["unit-model"] === "" ? null : validateUnitModel(flags["unit-model"]);
   }
-  if (flags.negligible) body.nutrition_negligible = true;
+  // --force-negligible IMPLIES --negligible: the only reason to reach for the
+  // override is to make the assertion the guard just refused, so making it
+  // stand alone saves the round trip and removes a way to get it half-right.
+  if (flags.negligible || flags["force-negligible"]) body.nutrition_negligible = true;
+  if (flags["force-negligible"]) body.nutrition_negligible_override = true;
   if (flags["no-negligible"]) body.nutrition_negligible = false;
   return body;
 }
 
 async function addProduct(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json", "negligible", "no-negligible"], WRITE_VALUE_FLAGS);
+  const { flags } = parseArgs(args, ["json", "negligible", "no-negligible", "force-negligible"], WRITE_VALUE_FLAGS);
   requireFlag(flags, "name", PRODUCTS_HELP);
   const body = buildProductWriteBody(flags);
   if (typeof flags.ulid === "string") body.ulid = flags.ulid;
@@ -198,7 +212,7 @@ async function addProduct(args: string[]): Promise<string> {
 }
 
 async function updateProduct(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json", "negligible", "no-negligible"], WRITE_VALUE_FLAGS);
+  const { positionals, flags } = parseArgs(args, ["json", "negligible", "no-negligible", "force-negligible"], WRITE_VALUE_FLAGS);
   const ulid = requirePositional(positionals, 0, "product ulid", PRODUCTS_HELP);
   const body = buildProductWriteBody(flags);
   if (Object.keys(body).length === 0) {

@@ -790,8 +790,15 @@ const PRODUCT_FACT_PROPERTIES = {
   shelf_life_days_opened: { type: ['number', 'null'], minimum: 0 },
   // § Nutritionally negligible products — the ~0-at-any-realistic-serving
   // assertion that lets `needs_nutrition` be satisfied honestly for spices,
-  // salt, vinegar, and the rest of the panel-exempt categories.
+  // dried herbs, vinegar, and the rest of the panel-exempt categories. NOT
+  // salt: it is ~0 on eight fields and ~38,700 mg/100 g of sodium on the ninth,
+  // so the sodium guard refuses it (§ Sodium is the exception that breaks the
+  // marker) unless `nutrition_negligible_override` says otherwise.
   nutrition_negligible: { type: 'boolean' },
+  // Request-only, never stored: apply the marker anyway. Lives on both bodies
+  // rather than in the stored-facts set because it is an instruction about THIS
+  // write, not a fact about the product.
+  nutrition_negligible_override: { type: 'boolean' },
 } as const;
 
 // `ulid` is a REAL upsert key (§ Product corrections). Its absence here — with

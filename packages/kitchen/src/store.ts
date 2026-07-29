@@ -13,6 +13,7 @@ import type {
   ComponentQuantity,
   EntryRecord,
   EntryStatus,
+  EstimateExclusion,
   EstimationSource,
   NutritionFields,
   RecipeComponent,
@@ -79,13 +80,20 @@ export interface EntryStore {
   /** Rows under the estimate-attempt cap, oldest first. */
   selectForEstimation(limit: number, maxAttempts: number): Promise<EntryRecord[]>;
 
-  /** A model/reselect estimate succeeded. Resets attempts + clears error. */
+  /**
+   * A model/reselect estimate succeeded. Resets attempts + clears error.
+   *
+   * `excludedLines` is the estimator's non-food exclusion report
+   * (§ Billing artifacts are not ingredients) — optional, since only the model
+   * path produces one, and `null`/omitted stores nothing.
+   */
   applyEstimate(
     ulid: string,
     label: string | null,
     nutrition: NutritionFields,
     source: EstimationSource,
-    nextStatus: EntryStatus
+    nextStatus: EntryStatus,
+    excludedLines?: EstimateExclusion[] | null
   ): Promise<void>;
   /** Bump the attempt counter + record the error; status is unchanged. */
   recordEstimationFailure(ulid: string, error: string): Promise<number>;
@@ -261,6 +269,9 @@ export function rowToEntry(row: Record<string, unknown>): EntryRecord {
     component_quantities: parseJsonField<ComponentQuantity[]>(
       row.component_quantities as ComponentQuantity[] | string | null
     ),
+    excluded_lines: parseJsonField<EstimateExclusion[]>(
+      row.excluded_lines as EstimateExclusion[] | string | null
+    ),
     portion_multiplier: parseNumeric(row.portion_multiplier) ?? 1,
     inventory_item_ulid: (row.inventory_item_ulid as string | null) ?? null,
     created_at: row.created_at as Date,
@@ -340,10 +351,15 @@ export class PgEntryStore implements EntryStore {
     label: string | null,
     nutrition: NutritionFields,
     source: EstimationSource,
-    nextStatus: EntryStatus
+    nextStatus: EntryStatus,
+    excludedLines?: EstimateExclusion[] | null
   ): Promise<void> {
+    // An empty report and no report are the same fact — nothing was excluded —
+    // so both store NULL rather than an empty array a reader has to interpret.
+    const excluded = excludedLines && excludedLines.length > 0 ? JSON.stringify(excludedLines) : null;
     await this.sql`
       UPDATE kitchen.entries SET
+        excluded_lines = ${excluded}::jsonb,
         calories = ${nutrition.calories}, protein_g = ${nutrition.protein_g},
         fat_g = ${nutrition.fat_g}, sat_fat_g = ${nutrition.sat_fat_g},
         carbs_g = ${nutrition.carbs_g}, sugar_g = ${nutrition.sugar_g},

@@ -231,7 +231,7 @@ in doubt, read the spec.
 
 - `scripts/kitchen-axi products list [--q TEXT] [--limit N]` — products (durable item facts); --q substring-matches name/aliases
 - `scripts/kitchen-axi products add --name NAME [--ulid U] [--shelf-life C] [--aliases a,b] [--package-size S] [--nutrition '<json>'] [--negligible] [--shelf-life-days-unopened N] [--shelf-life-days-opened N]` — seed a product — UPSERTS on --ulid (create/replace) or the normalized name (enrich in place)
-- `scripts/kitchen-axi products update <ulid> [--name NAME] [--nutrition '<json>'] [--negligible|--no-negligible] [any add flag]` — correct a product in place — partial, only the flags you pass change (the door for adding nutrition later)
+- `scripts/kitchen-axi products update <ulid> [--name NAME] [--nutrition '<json>'] [--negligible|--no-negligible|--force-negligible] [any add flag]` — correct a product in place — partial, only the flags you pass change (the door for adding nutrition later). --negligible is REFUSED for anything salt-bearing (garlic powder qualifies; garlic salt does not) — --force-negligible overrides
 - `scripts/kitchen-axi products merge <ulid> --into <ulid>` — fold a duplicate into a survivor: relink its items/lexicon/batch lines, then retire it
 - `scripts/kitchen-axi products archive <ulid>` — retire a product (soft — still resolvable by ulid so linked items keep working)
 - `scripts/kitchen-axi lexicon list [--store S] [--limit N]` — receipt-line → product mappings per store
@@ -247,5 +247,12 @@ in doubt, read the spec.
 - Model-backed steps degrade gracefully: with no model key configured, receipts still post
   (batch stays `parsing`) and label intake returns 503 — the inventory surface stays
   "roughly right, self-healing".
+- `--negligible` asserts that **every** panel field is ~0 at a realistic serving — sodium
+  included. Salt is the trap: it is ~0 on eight fields and ~38,700 mg of sodium per 100 g on
+  the ninth, so marking it would claim zero sodium for the biggest sodium line in the
+  kitchen. **Garlic powder qualifies; garlic salt does not.** The API refuses the marker
+  (400) on evidence of salt in the name, aliases, ingredients, or a stated sodium — also
+  bouillon, MSG, baking soda/powder, and soy/fish sauce. Pass `--force-negligible` only when
+  a realistic serving really does contribute ~0 sodium.
 - This skill is a generic toolkit surface — no instance identity. Installation, hooks, and
   which commands a chat surface exposes are the operator's concern.
