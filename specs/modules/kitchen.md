@@ -1385,7 +1385,8 @@ never enters waste/tossed telemetry. It is reached by its own verb
 carry different bodies and different response shapes — and it is the terminal an
 item **merge** retires its loser into (§ Item corrections). A new terminal state
 (rather than a `DELETE`) is chosen because it mirrors the existing
-`finished`/`tossed` terminal idiom exactly — the row is retained for provenance (its batch line still points
+`finished`/`tossed` terminal idiom exactly — the row is retained for provenance
+(its batch line still points
 at it, a receipt replay stays idempotent), it drops out of the default on-hand
 list and the questions queue by the same state-filter mechanics the other
 terminals use, and it needs no orphan-cleanup of the referencing batch line.
