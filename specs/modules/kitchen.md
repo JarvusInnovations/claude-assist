@@ -1361,13 +1361,23 @@ All tables instance-agnostic empty schema, ULID keys, `kitchen` schema
   (nullable), `state` (enum `stocked | open | finished | tossed | dismissed`),
   `on_hand_fraction` (numeric 0..1, directional; default 1.0), `units_total` /
   `units_remaining` (integer, both nullable, migration
-  `007-kitchen-inventory-units-and-derivations.sql` — the **sealed-unit count
+  `007-kitchen-inventory-units-and-derivations.sql` — the **unit count
   model**, see § count-vs-fraction below; both null (the default) means the
   item is fraction-modeled, unchanged; both set together, never one without the
-  other, `0 <= units_remaining <= units_total`), `needs_info`
+  other, `0 <= units_remaining <= units_total`), `unit_seal`
+  (`'individual' | 'shared'`, nullable — migration
+  `020-kitchen-storage-moves-and-unit-seal.sql`; **what the package seals**:
+  each unit separately, or one container over all of them. Null on a
+  fraction-modeled item (the notion doesn't apply) and read as `individual` on
+  a counted one, so existing rows keep their original behavior — see
+  § count-vs-fraction), `needs_info`
   (bool), `acquired_at` (date), `opened_at` (date, nullable), `closed_at` (date,
-  nullable — finished/tossed/dismissed date), `eat_by` (date, nullable — **derived**,
-  materialized for ordering; recomputed on open), `shelf_life_class` (enum
+  nullable — finished/tossed/dismissed date), `storage_moved_at` (date, nullable
+  — migration `020-kitchen-storage-moves-and-unit-seal.sql`; the date of the most
+  recent recorded storage move, and from then on the item's clock anchor —
+  § Storage moves), `eat_by` (date, nullable — **derived**,
+  materialized for ordering; recomputed on open, on a storage move, and on
+  reconcile), `shelf_life_class` (enum
   snapshot, nullable), `notes` (nullable), `merged_into` (ULID, nullable —
   migration `018-kitchen-item-merge.sql`; set when the row was retired *into* a
   surviving item, see § Item corrections), `created_at`, `updated_at`.
@@ -1447,10 +1457,23 @@ All tables instance-agnostic empty schema, ULID keys, `kitchen` schema
 default day windows in `src/inventory-derive.ts`, `(unopened, opened)`):
 `pantry` (365, 180), `frozen` (180, 90), `fridge_long` (60, 21), `fridge_short`
 (14, 7), `produce` (7, 4), `very_perishable` (3, 2), `prepared` (4, 4),
-`unknown` (null, null — no eat-by until known). `eat_by` =
-`opened_at + opened_window` when opened, else `acquired_at + unopened_window`;
-product-level day overrides win over the class default; `unknown` (and any null
+`unknown` (null, null — no eat-by until known). `eat_by` = **anchor + window**,
+where the window is the `opened` one when the item is opened and the `unopened`
+one otherwise, and the anchor is the **latest** of the dates that legitimately
+start that window: `opened_at` when opened (else `acquired_at`), and
+`storage_moved_at` when a storage move has been recorded (§ Storage moves).
+Product-level day overrides win over the class default; `unknown` (and any null
 window) yields `eat_by = null`.
+
+**A clock is derived whenever the class is known — `needs_info` is orthogonal.**
+`needs_info` means "nobody has established WHAT this is"; the shelf-life class
+means "this is how fast it goes bad". They are unrelated facts, and an
+unidentified fresh item is precisely the one most worth a clock: an unknown
+perishable is a *higher* risk than a known one, not a lower one. So an item
+created (or corrected) with a class derives its `eat_by` from that class whether
+or not `needs_info` is set, and it enters eat-first ordering like anything else.
+A genuinely unknown class already yields a null window, which is the honest way
+to have no clock — the flag never needs to do that job a second time.
 
 `prepared` is the class for a **cooked or assembled dish** — an overnight-oats
 jar, hard-boiled eggs, cooked grains, a batch of soup — the output of a
@@ -1487,20 +1510,22 @@ overrides, not a grocery class.
 
 **Inventory state machine** (`src/inventory-state.ts`):
 `stocked --opened--> open`, `{stocked,open} --finished--> finished`,
-`{stocked,open} --tossed--> tossed`, `{stocked,open} --dismissed--> dismissed`.
-`finished`/`tossed`/`dismissed` are terminal. Opening
+`{stocked,open} --tossed--> tossed`, `{stocked,open} --dismissed--> dismissed`,
+plus the **state-preserving** `{stocked,open} --moved--> {stocked,open}`
+(§ Storage moves — a storage move changes an item's clock, never its open
+state). `finished`/`tossed`/`dismissed` are terminal. Opening
 stamps `opened_at` and re-derives `eat_by` — always from the **effective**
 opened date (the original `opened_at` when one exists: a re-open is an
 idempotent no-op and must not extend the window) and always folding in the
 linked product's precise day-window overrides (every clock re-derivation —
-open, finished-unit revert, reconcile — goes through one helper so overrides
-are never silently dropped). Finishing stamps `closed_at` and
+open, storage move, finished-unit revert, reconcile — goes through one helper so
+overrides are never silently dropped). Finishing stamps `closed_at` and
 sets `on_hand_fraction` to 0. `finished-unit` (counted items only — see
 § count-vs-fraction below) shares `finished`'s legal preconditions
 (`{stocked,open}`, terminal-rejecting), but its CONCRETE next state is
-data-dependent (zero remaining → terminal `finished`; otherwise back to
-`stocked` with a fresh clock) — computed by the pipeline, not the pure
-transition table.
+data-dependent (zero remaining → terminal `finished`; otherwise it depends on
+the item's `unit_seal` — see § count-vs-fraction) — computed by the pipeline,
+not the pure transition table.
 
 `dismissed` is the "this line does not belong in inventory at all" terminal
 state (see § Non-inventory dismissal). It is deliberately **not** a food-waste
@@ -1528,19 +1553,122 @@ event endpoint and the free-text resolver. A full toss or whole-item `finished`
 on a counted item also zeroes `units_remaining` — the sealed remainder is gone
 too.
 
+### Storage moves — the clock re-anchors from the move
+
+A shelf-life class is a claim about **where an item lives**, and food moves. The
+derivation above assumes it never does: an item acquired frozen and later thawed
+would resume a fridge clock as though it had never been frozen, and one recorded
+as a fridge item that was actually in the freezer ages on paper while sitting
+safe. The two errors mislead in opposite directions, and one of them is
+dangerous:
+
+- **Recorded as a fridge class, actually frozen** — over-reports urgency. It nags
+  from eat-first while months of real life remain, and past the window it reads
+  expired. Annoying, and it trains the reader to distrust the whole list.
+- **Recorded as frozen, actually thawed days ago** — under-reports urgency, and
+  this is the dangerous one. A thawed protein reads as indefinitely safe while
+  running a ~1-week fuse. The ledger's whole job is to *not* say that.
+
+So a **storage move** is a first-class event: `moved`, carrying the class the
+item moved **into**. It:
+
+- sets `shelf_life_class` to the destination class,
+- stamps `storage_moved_at` with the move's date,
+- **re-anchors `eat_by` from the move date**, never resuming the prior clock, by
+  becoming the derivation's anchor (§ Shelf-life classes: the anchor is the
+  latest of `opened_at`/`acquired_at` and `storage_moved_at`, and the window is
+  still the opened one iff the item is open — so a sealed pack thawed today gets
+  the destination class's *unopened* window from today, and an already-opened tub
+  moved to the freezer gets `frozen`'s *opened* window from today),
+- leaves the item's **state and `opened_at` untouched** — moving a sealed pack
+  between appliances does not open it, and moving an open one does not re-seal it,
+- and appends a `moved <from>→<to> <date>` line to `notes`, so the transition
+  survives in provenance the way `tossed …` and `reconciled …` do.
+
+Freezer→fridge (starting a clock) is the motivating direction; fridge→freezer
+(pausing one) is the same mechanism inverted and works identically — the window
+changes with the class and the anchor becomes the move, which is exactly "the
+clock you were on is void; here is the new one."
+
+**A move is legal from `stocked` or `open` and rejected on a terminal item**
+(`409`), like every other event. Repeated moves simply re-anchor again; only the
+most recent `storage_moved_at` is retained, because only the current storage
+governs the current clock (the full history lives in `notes`).
+
+**A move into the class the item already carries is legal and still re-anchors.**
+That is not a no-op — it is the case where the ledger's class was right and its
+*basis* was wrong ("it has been in the fridge all along" is a `recount`; "it
+entered the fridge today" is a move). Only `unknown` is refused as a
+destination: a move states where the item now lives, and `unknown` is not a
+place. An item whose class genuinely isn't known reaches that through
+§ Reconcile.
+
+**The reported date is the date of the act, not of the intention.** A caller
+supplying `at` is stating when the item physically changed storage, and the
+module takes it at face value — a thaw described as "yesterday" anchors to
+yesterday even if the decision to thaw was made two days ago. This distinction is
+not pedantic: intention and act routinely land on different days (a pack pulled
+out a day later than planned), and anchoring to the intention silently shortens
+or lengthens a real safety window. Omitted `at` means today, which is the
+overwhelmingly common case — the move is usually being logged as it happens.
+
+**A frozen item still carries an `eat_by`, and is not suppressed from eat-first.**
+Considered and rejected: `frozen`'s 180-day unopened window is a real quality
+boundary (freezer burn, not spoilage), and eat-first orders by `eat_by` ascending
+**nulls last** — so a frozen item already sorts below everything perishable
+without any special case, while keeping the honest "this has been in there eight
+months" signal that a null would throw away. Nulling it would also make the
+dangerous direction worse, not better: an item that *is* frozen would be
+indistinguishable from one whose class was never established. What makes the
+frozen state safe is that leaving it is cheap to record, which is what `moved`
+is for.
+
 ### Unit counts (§ count-vs-fraction)
 
-A discrete multipack of individually-sealed atomic units (a can 3-pack, an egg
-dozen, a sausage-link pack, a yogurt 4-pack) tracks `units_total`/
-`units_remaining` instead of `on_hand_fraction`, as **one row** — no fan-out
-per sealed unit (that fan-out mechanism is a different axis: N *bought* units
+A package of discrete units (a can 3-pack, an egg dozen, a yogurt 4-pack, a
+4-link sausage pack, a sliced loaf) tracks `units_total`/`units_remaining`
+instead of `on_hand_fraction`, as **one row** — no fan-out
+per unit (that fan-out mechanism is a different axis: N *bought* units
 of a product each already become their own item row per the receipt line's
 `quantity`; any one of those rows may itself be a multipack with its own
-`units_total`). Opening a counted item behaves exactly like opening a
-fraction-modeled one — `opened_at` stamps and `eat_by` re-derives from the
-opened window — because opening means "I broke the seal and am now consuming
-from one unit"; only that one open unit runs the perishable clock, and the
-still-sealed remainder is shelf-stable at the unopened window regardless.
+`units_total`).
+
+**`on_hand_fraction` is DERIVED for a counted item, never stored independently.**
+On every read it is `units_remaining ÷ units_total`. The count is the single
+source of truth for how much is left; carrying an unrelated stored fraction
+alongside it gave two answers to one question, and the stale one won on the wire
+— a pack with 1 of 4 links left reported `on_hand_fraction: 1.0`. Two
+consequences: any consumer that only understands fractions (a progress bar, the
+briefing's eat-first read) gets an honest number for free, and the terminal
+zeroing stays consistent by construction (zero units ⇒ `0.0`). Reconcile
+therefore refuses `on_hand_fraction` on a counted item and directs the caller to
+`units_remaining` — not as a quirk, but because the fraction is not a stored fact
+there to correct.
+
+#### Two kinds of counted package — `unit_seal`
+
+A count alone doesn't say what happens when you open the package, and there are
+two genuinely different answers. `unit_seal` records which:
+
+- **`unit_seal: 'individual'`** — each unit carries its own seal (a can 3-pack,
+  yogurt cups in a sleeve, individually-wrapped bars). Opening the item means
+  "I broke *one* unit's seal": only that unit runs the perishable clock, and the
+  still-sealed remainder is shelf-stable at the unopened window regardless.
+- **`unit_seal: 'shared'`** — one seal encloses all the units, so the package is a
+  **container that gets opened** and *also* holds discrete units consumed one at a
+  time (a 4-link vacuum pack, a sliced loaf, an egg carton, a tray of prepped
+  portions). Opening it puts the **whole remainder** on the opened clock at once.
+  Finishing a unit does not re-seal anything.
+
+Null is read as `individual` — the unmarked default and the behavior the count
+model shipped with. `unit_seal` is only meaningful on a counted item; it is null
+on a fraction-modeled one, where the notion doesn't apply.
+
+Before this distinction existed, opening such a package forced a false choice:
+keep counting units and lose the opened clock, or switch to a fraction and lose
+the count. Both discard something true. The container and its contents are two
+facts, and an opened container with N units remaining on the opened clock is the
+state that expresses them together.
 
 The counted sibling of `finished` is the **`finished-unit`** event (`POST
 /inventory/:ulid/events` with `type: 'finished-unit'`, no `fraction`) — an
@@ -1550,20 +1678,38 @@ integer decrement of `units_remaining` by exactly one:
   item (`units_total` null) is rejected (`400`, `NotCountedItemError`) — use
   `finished`/`tossed` there.
 - **Reaching zero remaining** transitions the item to terminal `finished`
-  (`closed_at` stamped, `on_hand_fraction` zeroed) — identical outcome to a
-  whole-item `finished`.
-- **Otherwise** the item reverts to `stocked`, `opened_at` clears, and `eat_by`
-  re-derives from the **unopened** window off `acquired_at` — the unit that was
-  just finished carried the opened clock, but the next-to-open unit was never
-  itself opened, so it starts its own (unopened) clock, not a continuation of
-  the just-finished unit's.
+  (`closed_at` stamped, `on_hand_fraction` therefore `0`) — identical outcome to
+  a whole-item `finished`, on either seal.
+- **Otherwise, on an `individual` seal**, the item reverts to `stocked`,
+  `opened_at` clears, and `eat_by` re-derives from the **unopened** window — the
+  unit that was just finished carried the opened clock, but the next-to-open unit
+  was never itself opened, so it starts its own (unopened) clock, not a
+  continuation of the just-finished unit's.
+- **Otherwise, on a `shared` seal**, the item **stays `open`**, keeps its
+  `opened_at`, and keeps the opened-window `eat_by`. There is no fresh clock to
+  start: the container is open, and every remaining unit has been exposed since it
+  was opened. Only the count moves.
+- **A `finished-unit` on a still-`stocked` `shared`-seal item implies the open.**
+  You cannot eat one link out of a sealed pack, so the event stamps `opened_at`
+  (at the event's date) and derives the opened-window clock, exactly as an
+  explicit `opened` would have. Inferring a clock from an event is what events are
+  for — the alternative leaves the item reading sealed-window-safe while it is
+  physically open, which is the under-reporting direction the module refuses.
+
+Depletion follows the same split: `POST /inventory/:ulid/consume`'s counted branch
+(an N-unit decrement) reverts an `individual`-seal item to a fresh `stocked`
+clock and leaves a `shared`-seal one `open` on its container clock.
 
 Receipt-scan seeding: when a lexicon line's (or its mapped product's)
 `package_size` carries a discernible count ("3 ct", "12-pack", "6 pk", "dozen"
 → 12, "half dozen" → 6; a plain size like "16 oz" carries none), each
 fanned-out item from that line is seeded `units_total = units_remaining =` the
 parsed count instead of the default fraction of 1. A count of 1 ("1 ct")
-describes a single unit, not a multipack, and is left fraction-modeled.
+describes a single unit, not a multipack, and is left fraction-modeled. Receipt
+text cannot tell the two seals apart ("4 CT" fits a can pack and a sausage pack
+equally), so seeding leaves `unit_seal` null (`individual`) and the seal is
+stated by whoever knows the package — at create, at reconcile, or on a `convert`
+derived item.
 
 ### Reconcile — corrections are observations, not events
 
@@ -1589,11 +1735,47 @@ A reconcile is an **observation, not an event**. Its rules:
   count or the new total) makes the item **counted**; `units_total: null`
   reverts it to the fraction model. `units_remaining` alone recounts an
   already-counted item. Zero quantities are rejected — "none left" is a
-  `finished`/`tossed` *event*, not a correction.
+  `finished`/`tossed` *event*, not a correction. `unit_seal` states which kind of
+  counted package it is, and is refused on a fraction-modeled item (there is no
+  seal to describe).
 - **It can resurrect a mis-closed item**: an explicit `state:
   'stocked'|'open'` on a terminal item reopens it and clears `closed_at`. A
   terminal item with no explicit state is rejected (the caller must own the
   resurrection).
+- **It reaches every field a correction actually needs** — quantities and state
+  are not the only things that come out wrong. `shelf_life_class`, `needs_info`,
+  and `product_ulid` are all reconcilable, because each is a fact about the
+  physical item that observation can settle, and a verb documented as reconciling
+  the ledger to reality that cannot reach them is only half a verb. `eat_by`
+  stays **derived and unwritable**: deriving it from the class is the feature, and
+  a manual override would quietly make the class stop meaning anything.
+  - **`shelf_life_class` is a class correction, NOT a storage move** — the
+    distinction is the whole point of having both verbs. A recount says "this was
+    always a fridge item; I recorded the wrong class," so it re-derives `eat_by`
+    against the item's **existing** anchor and never invents a new one. A move
+    (§ Storage moves) says "this entered the fridge on the 8th," which re-anchors.
+    Using a recount for a move under-reports urgency by however long the item sat
+    in its previous storage; using a move for a mis-class fabricates a transition
+    that never happened. Neither is a workaround for the other.
+  - **`needs_info`** is settable both ways: `true` re-queues an item as an open
+    question, `false` clears it. `POST /inventory/:ulid/label` remains the *good*
+    resolution path when a label exists, but it is a dead end when one doesn't —
+    a US spice jar carries no Nutrition Facts panel at all (FDA exempts foods with
+    insignificant amounts of every nutrient), so no rescan can ever clear the
+    flag for it. An identity the owner simply *knows* needs a door that isn't a
+    camera.
+  - **`product_ulid`** relinks the item to a different product, or `null` unlinks
+    it. Included after weighing the alternative: `POST /inventory/:ulid/merge`
+    can also move a product link onto an item, but only when a *second item row*
+    already carries the right one — with no such row, the only path was to mint a
+    decoy item and merge it, which fabricates two records to fix one field.
+    Relinking has no dependents to move (the item **is** the dependent), so
+    nothing merge does is needed here. Setting it clears `needs_info` unless
+    `needs_info` is explicitly supplied (the identity just got established), and
+    adopts the product's `shelf_life_class` only when the item carries none of its
+    own — an item's class is a snapshot and its own value always wins. The target
+    must be a live product: an archived one is refused, naming its `merged_into`
+    survivor when it has one, rather than silently linking to a retired identity.
 - **Every reconcile appends an audit line** to the item's `notes`
   (`reconciled <date>: <changes>[ — <caller context>]`), mirroring the
   `tossed …` idiom, so corrections stay distinguishable from consumption in
@@ -1690,34 +1872,51 @@ Item mutation:
 - `POST /inventory` — create an item directly (manual/verbal purchase, or the
   agentic seed port). JSON `{ ulid?, product_ulid?, raw_label?, store?,
   batch_ulid?, acquired_at? (ISO date), on_hand_fraction?, units_total?,
-  state?, needs_info?, shelf_life_class?, notes? }`. `units_total` makes it a
-  **counted** item (`units_remaining` starts equal to it); omitted stays
-  fraction-modeled — see § count-vs-fraction. ULID optional (server-generates
-  when absent); idempotent when supplied. Returns the **bare** `InventoryItem`
-  (`201`/`200`).
+  unit_seal?, state?, needs_info?, shelf_life_class?, notes? }`. `units_total`
+  makes it a **counted** item (`units_remaining` starts equal to it); omitted
+  stays fraction-modeled — see § count-vs-fraction. `unit_seal`
+  (`'individual'|'shared'`, default `individual`) states what the package seals
+  and is refused without a `units_total`. A supplied `shelf_life_class` derives
+  an `eat_by` whether or not `needs_info` is set (§ Shelf-life classes). ULID
+  optional (server-generates when absent); idempotent when supplied. Returns the
+  **bare** `InventoryItem` (`201`/`200`).
 - `POST /inventory/:ulid/events` — explicit state change. JSON
-  `{ type: 'opened'|'finished'|'finished-unit'|'tossed', fraction? (0..1), at? (ISO date) }`.
+  `{ type: 'opened'|'finished'|'finished-unit'|'tossed'|'moved', fraction? (0..1),
+  to? (shelf-life class), at? (ISO date) }`.
   `fraction` semantics per type: `opened` — absolute remaining fraction
   (omitted = unchanged); `tossed` — **amount tossed** (partial toss decrements
   and stays alive; terminal only at zero remainder or when omitted, per the
   state-machine rules above); `finished` ignores it (always terminal + zeroed,
   and zeroes `units_remaining` too on a counted item); `finished-unit` ignores
   it (see § count-vs-fraction — integer one-unit decrement, counted items
-  only). Returns the **bare** updated `InventoryItem`. `404` unknown item;
-  `409` `InvalidTransitionError` on a terminal item; `400`
-  `NotCountedItemError` for `finished-unit` against a fraction-modeled item.
+  only, with a seal-dependent outcome). `to` applies to `moved` alone and is
+  **required** there (§ Storage moves): it names the class the item moved into,
+  the event re-anchors `eat_by` from `at`, and the item's state and `opened_at`
+  are left untouched. Returns the **bare** updated `InventoryItem`. `404` unknown
+  item; `409` `InvalidTransitionError` on a terminal item; `400`
+  `NotCountedItemError` for `finished-unit` against a fraction-modeled item;
+  `400` `ItemValidationError` for a `moved` with a missing or `unknown` `to`, or
+  a `to` supplied with any other event type.
 - `PATCH /inventory/:ulid` — **reconcile** (§ Reconcile — correction, not
   consumption). JSON, at least one of `{ on_hand_fraction (0..1, exclusive
-  0), units_total (int ≥1 | null), units_remaining (int ≥1 | null), state
-  ('stocked'|'open'), opened_at (ISO date | null), notes }`. Applies the
+  0), units_total (int ≥1 | null), units_remaining (int ≥1 | null), unit_seal
+  ('individual'|'shared'), state
+  ('stocked'|'open'), opened_at (ISO date | null), shelf_life_class,
+  needs_info (bool), product_ulid (ULID | null), notes }`. Applies the
   § Reconcile rules: clocks never inferred, `eat_by` re-derived from
   corrected truth with product overrides, `units_total` reclassifies the
   unit model (null reverts to fraction), explicit `state` may resurrect a
-  terminal item (`closed_at` clears), and an audit line is appended to
-  `notes`. Returns the **bare** updated `InventoryItem`. `404` unknown item;
+  terminal item (`closed_at` clears), a `shelf_life_class` correction re-derives
+  against the item's **existing** anchor rather than re-anchoring (re-anchoring is
+  `moved`'s job — § Storage moves), a `product_ulid` clears `needs_info` unless
+  `needs_info` is itself supplied, and an audit line is appended to
+  `notes`. `eat_by` is deliberately **not** accepted — it is derived. Returns the
+  **bare** updated `InventoryItem`. `404` unknown item;
   `400` `ReconcileValidationError` (contradictory or ineligible correction —
-  e.g. `stocked` with an `opened_at`, zero quantities, a fraction on a
-  counted item) or `NotCountedItemError` (`units_remaining` on a
+  e.g. `stocked` with an `opened_at`, zero quantities, a fraction or a
+  `unit_seal` on a
+  fraction-modeled item, an unknown or archived `product_ulid`) or
+  `NotCountedItemError` (`units_remaining` on a
   fraction-modeled item).
 - `POST /inventory/events` — **free-text event resolver**. JSON
   `{ remark (string, required), at? (ISO date) }`. Best-effort matches the
@@ -1812,7 +2011,7 @@ Item mutation:
   already merged elsewhere. Idempotent on a replay into the same survivor.
 - `POST /inventory/convert` — **conversion (prep transform)** event, see
   § Conversions. JSON `{ sources?: [{ item_ulid, amount? }], derived: { name,
-  shelf_life_class?, on_hand_fraction?, units_total?, store?, notes?,
+  shelf_life_class?, on_hand_fraction?, units_total?, unit_seal?, store?, notes?,
   acquired_at?, recipe_ulid? }, at? (ISO date) }`. `sources` is **optional**
   (`[]` or omitted → a source-less conversion that decrements nothing,
   § Source-less conversions); when present, each
@@ -1821,7 +2020,10 @@ Item mutation:
   fully consumes the source (all remaining units, or the whole remaining
   fraction). `derived`: `name` required; exactly one of `on_hand_fraction` /
   `units_total` describes the new item's quantity model (defaults to a whole
-  fraction-modeled item, `on_hand_fraction: 1`, when neither is given);
+  fraction-modeled item, `on_hand_fraction: 1`, when neither is given), with
+  `unit_seal` stating what a counted batch's package seals — `shared` for a tray
+  of portions under one lid, `individual` (the default) for separately-lidded
+  jars (§ count-vs-fraction); it is refused without a `units_total`.
   `recipe_ulid` is optional provenance only (no macro computation in this
   surface — but it is what makes the derived item consume-eligible, § Consume
   from inventory § Eligibility). Decrements every source given (reaching zero on
@@ -1906,8 +2108,9 @@ Products & lexicon (agentic seed + reads):
   product_ulid, inventory_item_ulid, created_at }`. `quantity` is the
   physical-unit count the line represents (≥ 1; default 1).
 - **InventoryItem**: `{ ulid, product_ulid, product_name, raw_label, store,
-  batch_ulid, state, on_hand_fraction, units_total, units_remaining,
-  needs_info, acquired_at, opened_at, closed_at, eat_by, shelf_life_class,
+  batch_ulid, state, on_hand_fraction, units_total, units_remaining, unit_seal,
+  needs_info, acquired_at, opened_at, closed_at, storage_moved_at, eat_by,
+  shelf_life_class,
   days_until_eat_by, age_days, notes, merged_into, derived_from, created_at,
   updated_at }`.
   `product_name` is the joined product name (falls back to `raw_label`);
@@ -1915,7 +2118,12 @@ Products & lexicon (agentic seed + reads):
   (§ Item corrections);
   `days_until_eat_by`/`age_days` are derived integers (null when
   undeterminable). `units_total`/`units_remaining` are both null for a
-  fraction-modeled item (§ count-vs-fraction). `derived_from` is null unless
+  fraction-modeled item (§ count-vs-fraction), as is `unit_seal`; on a counted
+  item `unit_seal` is always populated (`individual` when unstated) and
+  `on_hand_fraction` is **derived** as `units_remaining ÷ units_total` rather
+  than read from storage. `storage_moved_at` is null until a storage move is
+  recorded, after which it is the item's clock anchor (§ Storage moves).
+  `derived_from` is null unless
   the item was created by a `convert` event, in which case it is
   `{ sources: DerivationSource[], recipe_ulid }` (the same shape carried on
   `InventoryDerivation`, joined for read convenience). Dates are ISO date
@@ -2354,11 +2562,13 @@ follow-up link (contrast the depletion matcher's best-effort, separate
 
 - **Counted item** — `finished-unit` semantics generalized to `quantity`
   units: an integer decrement of `units_remaining`. Reaching zero goes
-  terminal `finished` (identical outcome to a whole-item finish); otherwise
-  the item reverts to `stocked` with `opened_at` cleared and `eat_by`
-  re-derived from the **unopened** window off `acquired_at` — same rule as
-  `finished-unit`, since the unit just consumed carried the opened clock but
-  the next-to-open unit never itself opened.
+  terminal `finished` (identical outcome to a whole-item finish); otherwise the
+  outcome follows the item's `unit_seal`, exactly as `finished-unit`'s does
+  (§ count-vs-fraction) — an `individual`-seal item reverts to `stocked` with
+  `opened_at` cleared and `eat_by` re-derived from the **unopened** window (the
+  unit just consumed carried the opened clock, the next-to-open one never itself
+  opened), while a `shared`-seal item stays `open` on its container's clock, and
+  a still-`stocked` one has the open implied at the event's date.
 - **Fraction item** — `finished` semantics: always fully terminal
   (`closed_at` stamped, `on_hand_fraction` zeroed). A fraction consume is a
   single all-or-nothing tap; `quantity` must be omitted or `1` there
@@ -2469,8 +2679,10 @@ and write the kitchen without hand-rolled `curl`.
       strings derive from one source so the pair cannot drift apart again.
   - `inventory` — list (eat-first order; `--state`, `--closed`),
     `show <ulid>`, `add` (manual/seed create; `--units-total` makes it a
-    counted item), `event <ulid> <opened|finished|finished-unit|tossed>
-    [--fraction]`, `remark "<free text>"` (the resolver; prints
+    counted item, `--unit-seal` states what its package seals),
+    `event <ulid> <opened|finished|finished-unit|tossed|moved>
+    [--fraction] [--to <class>]` (`moved --to` is the storage move —
+    § Storage moves), `remark "<free text>"` (the resolver; prints
     matched/unmatched honestly), `questions`, `convert --from
     <ulid>[:amount]… --to '<derived spec json>'` (prep transform — see
     § Conversions), `consume <item-ulid> [--quantity N] [--at DATE]
@@ -2529,18 +2741,35 @@ and write the kitchen without hand-rolled `curl`.
   computed at every serving surface, never pre-baked into the stored/transmitted
   fields. This keeps the multiplier idempotent (always rescales from base) and the
   wire unambiguous (a macro field never silently means something scaled).
-- **Count tracks sealed units; fraction tracks divisible stock.** The
+- **Count tracks discrete units; fraction tracks divisible stock.** The
   discriminating test for how an inventory item models its on-hand quantity:
   *can you consume a non-integer amount of it in one sitting?* Yes → it's
-  divisible, use a fraction (a tub, bag, jar, bottle). No, it comes as
-  individually-sealed atomic units → use an integer count (a can multipack, an
-  egg dozen, a sausage-link pack). A counted item is still ONE row — the count
+  divisible, use a fraction (a tub, bag, jar, bottle). No, it comes as discrete
+  units → use an integer count (a can multipack, an egg dozen, a sausage-link
+  pack, a sliced loaf). A counted item is still ONE row — the count
   model is not a fan-out — and consumption of it is a whole-unit decrement
-  (`finished-unit`); only the currently-opened unit runs the perishable clock,
-  the sealed remainder is still shelf-stable at the unopened window. A
+  (`finished-unit`). A
   directional fraction is an acceptable stand-in until an item is known to be a
-  multipack, but a fraction stored against a sealed pack (e.g. `0.67` for "2 of
+  multipack, but a fraction stored against a counted pack (e.g. `0.67` for "2 of
   3 cans left") is a lossy approximation of "N whole units left," not the
   truth — receipt intake seeds the count model directly whenever the package
   size carries a discernible count, so this shouldn't need correcting after the
-  fact.
+  fact. **Counting and being openable are independent axes, not alternatives.**
+  Whether the count's units are *individually sealed* (opening one leaves the
+  rest at the unopened window) or share *one container seal* (opening puts the
+  whole remainder on the opened clock) is a second fact, `unit_seal` — and
+  neither answer is the general case, so it is recorded rather than assumed.
+  Forcing a choice between "keep the count" and "keep the opened clock" throws
+  away something true either way.
+- **An item's state must be able to express what is physically the case.** When
+  it can't, the ledger doesn't merely lose detail — it asserts something false,
+  and the direction of the falsehood matters more than its size. Under-reporting
+  urgency (a thawed protein still recorded frozen, a sliced loaf still recorded
+  sealed) is the failure this module exists to prevent, so the model gains a fact
+  rather than leaning on a note or a plausible-looking workaround. The
+  corollary for verbs: **a correction and an event are never substitutes.** An
+  event says something changed on a date; a correction says the record was always
+  wrong. Reaching for one because the other is unavailable writes a fiction that
+  reads as truth — which is why the reconcile surface reaches every field
+  observation can settle, and why a storage move is its own event rather than a
+  clever `opened_at`.

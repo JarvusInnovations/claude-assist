@@ -13,18 +13,27 @@ import {
 import { renderList, renderDetail, renderObject, renderOutput, renderHelp, field, type FieldDef } from "../toon.js";
 import { ENTRY_ROW_SCHEMA } from "../format.js";
 import { cliInvocation } from "../invocation.js";
-import { CONVERT_SHELF_LIFE_CLASSES, PACKAGE_DURABLE_SHELF_LIFE_CLASSES, SHELF_LIFE_CLASSES } from "../reference.js";
+import {
+  CONVERT_SHELF_LIFE_CLASSES,
+  PACKAGE_DURABLE_SHELF_LIFE_CLASSES,
+  SHELF_LIFE_CLASSES,
+  STORAGE_MOVE_SHELF_LIFE_CLASSES,
+  UNIT_SEALS,
+} from "../reference.js";
 
 export const INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json]
 
   list [--state S] [--closed] [--limit N]   on-hand items, eat-first (eat_by asc)
   show <ulid>                               one item with derived eat_by/age
   add [flags]                               create an item (manual/verbal/seed)
-       [--units-total N] makes it a COUNTED item (sealed multipack); omitted stays fraction-modeled
-  event <ulid> <opened|finished|finished-unit|tossed>   explicit state change
-       [--fraction F] [--at DATE]
+       [--units-total N] makes it a COUNTED item; omitted stays fraction-modeled
+       [--unit-seal individual|shared] what that package seals (needs --units-total)
+  event <ulid> <opened|finished|finished-unit|tossed|moved>   explicit event
+       [--fraction F] [--to CLASS] [--at DATE]
   recount <ulid> [--fraction F] [--units-remaining N] [--units-total N]
-       [--uncounted] [--state stocked|open] [--opened-at DATE] [--notes T]
+       [--uncounted] [--unit-seal individual|shared] [--state stocked|open]
+       [--opened-at DATE] [--shelf-life C] [--needs-info|--no-needs-info]
+       [--product-ulid U|--unlink-product] [--notes T]
                                              RECONCILE the ledger to observed reality —
                                              a correction, NOT a consumption event
   dismiss <ulid> [--non-inventory]          RETIRE a record that was never real
@@ -59,14 +68,42 @@ export const INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json
   resurrection 'recount --state stocked|open' reopens a mis-closed item (the
                only way back out of a terminal state)
 
+  'event <ulid> moved --to <class>' is the STORAGE MOVE: food changes where it
+  lives, and the shelf-life class is a claim about where it lives, so the clock
+  RESTARTS from the move rather than resuming the one it was on. Use it whenever
+  an item physically changes appliance — freezer→fridge to thaw (--to
+  fridge_short), fridge→freezer to park a clock (--to frozen). It sets the
+  destination class, stamps the move date as the item's new clock anchor,
+  re-derives eat_by, and leaves state and opened_at ALONE (moving a sealed pack
+  doesn't open it; moving an open one doesn't re-seal it). --at is the date of
+  the ACT, not of the intention: pass the day it actually moved, even if you
+  decided a day earlier. NEVER fake a move with 'event opened --at' or by
+  'recount --opened-at' on a sealed pack — that trades a wrong date for a wrong
+  STATE. And do not use 'recount --shelf-life' for a move: that says "the class
+  was always wrong" and re-derives against the OLD anchor, which under-reports
+  urgency by however long the item sat in its previous storage. Two different
+  facts, two different verbs. A move into the class the item already carries is
+  fine and still re-anchors; --to unknown is refused (a move states where the
+  item now lives, and unknown is not a place).
+
   For 'event … tossed', --fraction is
   the AMOUNT TOSSED — a partial toss decrements on_hand_fraction and keeps the
   item alive (self-heals at the next event); it goes terminal only at zero
   remainder or when --fraction is omitted (full toss). 'opened' --fraction is
   the absolute remaining fraction; 'finished' ignores --fraction (always zeroed).
   'finished-unit' is for a COUNTED item only (units_total set): integer
-  decrement of one sealed unit — reaching zero goes terminal, otherwise the
-  item reverts to a fresh unopened clock for the next unit.
+  decrement of one unit — reaching zero goes terminal, otherwise the outcome
+  depends on WHAT THE PACKAGE SEALS (--unit-seal). individual (the default: a
+  can 3-pack, yogurt cups) means each unit has its own seal, so the item goes
+  back to 'stocked' on a fresh unopened clock. shared (a 4-link vacuum pack, a
+  sliced loaf, an egg carton, a tray of prepped portions) means ONE seal over
+  all the units, so the item stays 'open' on the container's clock and only the
+  count moves — and a finished-unit on a still-sealed shared pack implies the
+  open, because you cannot eat one link out of a sealed pack. Set --unit-seal
+  shared on any package you open once and then eat from N times; otherwise the
+  ledger reports a sealed-window safety margin for something physically open.
+  For a counted item on_hand_fraction is DERIVED (units_remaining/units_total),
+  so recount it with --units-remaining, never --fraction.
 
   'convert' creates a NEW derived item from meal prep (not consumption).
   --from is OPTIONAL and repeatable: with sources it decrements each (an
@@ -103,7 +140,14 @@ export const INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json
   (with optional --units-remaining) reclassifies a fraction item as a COUNTED
   multipack; --uncounted reverts a counted item to the fraction model.
   --state can also resurrect a mis-finished/mis-tossed item — including one
-  closed by mistake before 'dismiss' was reached for. Do NOT fix the
+  closed by mistake before 'dismiss' was reached for. It also reaches the
+  identity fields: --shelf-life corrects a wrong class (re-deriving against the
+  EXISTING anchor — for a class change caused by an actual move, use 'event …
+  moved' instead), --needs-info/--no-needs-info re-queues or clears the open
+  question (the door when no label exists to scan — a spice jar carries no
+  panel at all), and --product-ulid attaches or re-points the product link
+  (--unlink-product clears it), which also clears needs-info. eat_by is never
+  settable — it is derived from the class, which is the point. Do NOT fix the
   ledger by re-firing 'event … opened --fraction' — that stamps a bogus
   opened clock. Never pre-log planned consumption (e.g. a batch-day run that
   hasn't happened); log events when they actually happen and recount when
@@ -139,8 +183,7 @@ export const INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json
   that created it, and any conversion that spent it are left pointing at a
   record that is no longer stock. Merge fills ONLY the survivor's EMPTY
   identity fields from the loser (product_ulid, store, raw_label,
-  batch_ulid, shelf_life_class — the survivor's own values always win), which
-  is the ONLY way to attach a product to an existing item; relinks every
+  batch_ulid, shelf_life_class — the survivor's own values always win); relinks every
   dependent and reports the counts; then retires the loser as dismissed with
   merged_into set. Quantities are NEVER summed and the survivor keeps its own
   clock — merging is not "add these together", it is "these were always one
@@ -156,6 +199,7 @@ const ITEM_ROW_SCHEMA: FieldDef[] = [
   field("on_hand_fraction", "on_hand"),
   field("units_remaining"),
   field("units_total"),
+  field("unit_seal"),
   field("eat_by"),
   field("days_until_eat_by", "days_left"),
   field("store"),
@@ -173,11 +217,13 @@ const ITEM_DETAIL_SCHEMA: FieldDef[] = [
   field("on_hand_fraction", "on_hand"),
   field("units_remaining"),
   field("units_total"),
+  field("unit_seal"),
   { type: "boolYesNo", key: "needs_info" },
   { type: "boolYesNo", key: "needs_nutrition" },
   field("acquired_at"),
   field("opened_at"),
   field("closed_at"),
+  field("storage_moved_at"),
   field("eat_by"),
   field("days_until_eat_by", "days_left"),
   field("age_days"),
@@ -194,7 +240,7 @@ const QUESTION_SCHEMA: FieldDef[] = [
   field("question"),
 ];
 
-const EVENT_TYPES = ["opened", "finished", "finished-unit", "tossed"];
+const EVENT_TYPES = ["opened", "finished", "finished-unit", "tossed", "moved"];
 
 export async function inventoryCommand(args: string[]): Promise<string> {
   const sub = args[0];
@@ -251,7 +297,7 @@ async function showItem(args: string[]): Promise<string> {
 }
 
 async function addItem(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json", "needs-info"], ["ulid", "product-ulid", "raw-label", "store", "batch-ulid", "acquired-at", "fraction", "units-total", "state", "shelf-life", "notes"]);
+  const { flags } = parseArgs(args, ["json", "needs-info"], ["ulid", "product-ulid", "raw-label", "store", "batch-ulid", "acquired-at", "fraction", "units-total", "unit-seal", "state", "shelf-life", "notes"]);
   const body: Record<string, unknown> = {};
   if (typeof flags.ulid === "string") body.ulid = flags.ulid;
   if (typeof flags["product-ulid"] === "string") body.product_ulid = flags["product-ulid"];
@@ -261,6 +307,7 @@ async function addItem(args: string[]): Promise<string> {
   if (typeof flags["acquired-at"] === "string") body.acquired_at = validateDate(flags["acquired-at"], "--acquired-at", INVENTORY_HELP);
   if (typeof flags.fraction === "string") body.on_hand_fraction = parseNumberFlag(flags.fraction, "fraction", INVENTORY_HELP, { min: 0, max: 1 });
   if (typeof flags["units-total"] === "string") body.units_total = parseNumberFlag(flags["units-total"], "units-total", INVENTORY_HELP, { min: 1 });
+  if (typeof flags["unit-seal"] === "string") body.unit_seal = validateUnitSeal(flags["unit-seal"]);
   if (typeof flags.state === "string") body.state = flags.state;
   if (flags["needs-info"]) body.needs_info = true;
   if (typeof flags["shelf-life"] === "string") body.shelf_life_class = validateShelfLife(flags["shelf-life"]);
@@ -317,12 +364,14 @@ export function buildDismissBody(flags: Record<string, string | boolean | undefi
 }
 
 async function itemEvent(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"], ["fraction", "at"]);
+  const { positionals, flags } = parseArgs(args, ["json"], ["fraction", "to", "at"]);
   const ulid = requirePositional(positionals, 0, "item ulid", INVENTORY_HELP);
   const type = requirePositional(positionals, 1, "event type", INVENTORY_HELP);
   assertEventType(type, ulid);
   const body: Record<string, unknown> = { type };
   if (typeof flags.fraction === "string") body.fraction = parseNumberFlag(flags.fraction, "fraction", INVENTORY_HELP, { min: 0, max: 1 });
+  assertMoveDestination(type, typeof flags.to === "string" ? flags.to : undefined);
+  if (typeof flags.to === "string") body.to = flags.to;
   if (typeof flags.at === "string") body.at = validateDate(flags.at, "--at", INVENTORY_HELP);
 
   const item = await api.post(`/api/kitchen/inventory/${encodeURIComponent(ulid)}/events`, body);
@@ -331,16 +380,32 @@ async function itemEvent(args: string[]): Promise<string> {
 }
 
 async function recountItem(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json", "uncounted"], ["fraction", "units-remaining", "units-total", "state", "opened-at", "notes"]);
+  const { positionals, flags } = parseArgs(
+    args,
+    ["json", "uncounted", "needs-info", "no-needs-info", "unlink-product"],
+    ["fraction", "units-remaining", "units-total", "unit-seal", "state", "opened-at", "shelf-life", "product-ulid", "notes"]
+  );
   const ulid = requirePositional(positionals, 0, "item ulid", INVENTORY_HELP);
   const body: Record<string, unknown> = {};
   if (typeof flags.fraction === "string") body.on_hand_fraction = parseNumberFlag(flags.fraction, "fraction", INVENTORY_HELP, { min: 0, max: 1 });
   if (typeof flags["units-remaining"] === "string") body.units_remaining = parseNumberFlag(flags["units-remaining"], "units-remaining", INVENTORY_HELP, { min: 1 });
   if (typeof flags["units-total"] === "string") body.units_total = parseNumberFlag(flags["units-total"], "units-total", INVENTORY_HELP, { min: 1 });
+  if (typeof flags["unit-seal"] === "string") body.unit_seal = validateUnitSeal(flags["unit-seal"]);
   if (flags.uncounted) {
     body.units_total = null;
     body.units_remaining = null;
   }
+  if (typeof flags["shelf-life"] === "string") body.shelf_life_class = validateShelfLife(flags["shelf-life"]);
+  if (flags["needs-info"] && flags["no-needs-info"]) {
+    throw new AxiError("--needs-info and --no-needs-info are contradictory — pass one", "VALIDATION_ERROR", [INVENTORY_HELP]);
+  }
+  if (flags["needs-info"]) body.needs_info = true;
+  if (flags["no-needs-info"]) body.needs_info = false;
+  if (typeof flags["product-ulid"] === "string" && flags["unlink-product"]) {
+    throw new AxiError("--product-ulid and --unlink-product are contradictory — pass one", "VALIDATION_ERROR", [INVENTORY_HELP]);
+  }
+  if (typeof flags["product-ulid"] === "string") body.product_ulid = flags["product-ulid"];
+  if (flags["unlink-product"]) body.product_ulid = null;
   if (typeof flags.state === "string") {
     if (flags.state !== "stocked" && flags.state !== "open") {
       throw new AxiError("recount --state must be stocked or open (a correction never closes an item — use events for that)", "VALIDATION_ERROR", [INVENTORY_HELP]);
@@ -529,6 +594,61 @@ function validateShelfLife(value: string): string {
     throw new AxiError(`--shelf-life must be one of: ${SHELF_LIFE_CLASSES.join(", ")}`, "VALIDATION_ERROR", [INVENTORY_HELP]);
   }
   return value;
+}
+
+function validateUnitSeal(value: string): string {
+  if (!(UNIT_SEALS as readonly string[]).includes(value)) {
+    throw new AxiError(
+      `--unit-seal must be one of: ${UNIT_SEALS.join(", ")} — individual means each unit has its own seal (a can 3-pack), shared means ONE seal over all of them (a 4-link pack, a sliced loaf)`,
+      "VALIDATION_ERROR",
+      [INVENTORY_HELP]
+    );
+  }
+  return value;
+}
+
+/**
+ * Guard the `moved` event's destination class client-side (§ Storage moves), and
+ * — the load-bearing half — REDIRECT the two ways an agent gets this wrong rather
+ * than letting the server's rejection read as "moves don't work". A `moved` with
+ * no `--to` says nothing at all, and a `--to` on any other verb is silently about
+ * to be ignored. Both name the verb that does what was meant.
+ */
+export function assertMoveDestination(type: string, to: string | undefined): void {
+  if (type === "moved") {
+    if (!to) {
+      throw new AxiError(
+        "a storage move needs the class it moved INTO — pass --to <class>",
+        "VALIDATION_ERROR",
+        [
+          `--to must be one of: ${STORAGE_MOVE_SHELF_LIFE_CLASSES.join(", ")} (freezer→fridge to thaw is --to fridge_short; fridge→freezer is --to frozen)`,
+          "unknown is not a move destination — a move states where the item now LIVES; use `recount --shelf-life unknown` when the class genuinely isn't known",
+        ]
+      );
+    }
+    if (!(STORAGE_MOVE_SHELF_LIFE_CLASSES as readonly string[]).includes(to)) {
+      throw new AxiError(
+        `--to must be one of: ${STORAGE_MOVE_SHELF_LIFE_CLASSES.join(", ")}`,
+        "VALIDATION_ERROR",
+        [
+          to === "unknown"
+            ? "a move states where the item now LIVES, and unknown is not a place — use `recount --shelf-life unknown` instead"
+            : INVENTORY_HELP,
+        ]
+      );
+    }
+    return;
+  }
+  if (to !== undefined) {
+    throw new AxiError(
+      `--to is the 'moved' event's destination class; '${type}' does not take it`,
+      "VALIDATION_ERROR",
+      [
+        "To record that an item physically changed storage (and restart its clock from the move), run `event <ulid> moved --to <class>`",
+        "To correct a class that was recorded wrong all along, run `recount <ulid> --shelf-life <class>` — that re-derives against the existing anchor instead of re-anchoring",
+      ]
+    );
+  }
 }
 
 /**

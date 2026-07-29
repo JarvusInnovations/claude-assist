@@ -130,7 +130,10 @@ async function fetchEatFirst(sql: postgres.Sql, limit: number): Promise<EatFirst
         i.state::text AS state,
         to_char(i.eat_by, 'YYYY-MM-DD') AS eat_by,
         (i.eat_by - CURRENT_DATE) AS days_until,
-        i.on_hand_fraction AS fraction
+        -- A counted item DERIVES its on-hand fraction from the count (kitchen
+        -- § count-vs-fraction): the stored column stays at 1 while units are
+        -- consumed, so reading it directly reported a nearly-empty pack as full.
+        COALESCE(i.units_remaining::numeric / NULLIF(i.units_total, 0), i.on_hand_fraction) AS fraction
       FROM kitchen.inventory_items i
       LEFT JOIN kitchen.products p ON p.ulid = i.product_ulid
       WHERE i.state IN ('stocked', 'open') AND i.eat_by IS NOT NULL AND i.on_hand_fraction > 0

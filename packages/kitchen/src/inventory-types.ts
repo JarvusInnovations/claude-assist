@@ -60,6 +60,37 @@ export const PACKAGE_DURABLE_SHELF_LIFE_CLASSES: readonly ShelfLifeClass[] = [
   'fridge_short',
 ];
 
+/**
+ * The classes a **storage move** may name as a destination (§ Storage moves).
+ * Every real class qualifies except `unknown`: a move states where the item now
+ * lives, and `unknown` is not a place. An item whose class genuinely isn't known
+ * reaches that through § Reconcile instead.
+ */
+export const STORAGE_MOVE_SHELF_LIFE_CLASSES: readonly ShelfLifeClass[] = SHELF_LIFE_CLASSES.filter(
+  (cls) => cls !== 'unknown'
+);
+
+/**
+ * What a counted package's seal encloses (§ count-vs-fraction) — counting and
+ * being openable are independent axes, not alternatives:
+ *
+ * - `individual` — each unit carries its own seal (a can 3-pack, yogurt cups in a
+ *   sleeve). Opening means "I broke ONE unit's seal": only that unit runs the
+ *   perishable clock and the sealed remainder stays at the unopened window.
+ * - `shared` — one seal encloses all the units, so the package is a CONTAINER
+ *   that gets opened and also holds discrete units eaten one at a time (a 4-link
+ *   vacuum pack, a sliced loaf, an egg carton, a tray of prepped portions).
+ *   Opening puts the WHOLE remainder on the opened clock; finishing a unit
+ *   re-seals nothing.
+ *
+ * Null is read as `individual` (the unmarked default, and the behavior the count
+ * model shipped with) and stays null on a fraction-modeled item, where the notion
+ * doesn't apply. Resolve it through `unitSealOf`, never inline.
+ */
+export type UnitSeal = 'individual' | 'shared';
+
+export const UNIT_SEALS: readonly UnitSeal[] = ['individual', 'shared'];
+
 export type InventoryState = 'stocked' | 'open' | 'finished' | 'tossed' | 'dismissed';
 
 export const INVENTORY_STATES: readonly InventoryState[] = [
@@ -75,17 +106,22 @@ export type BatchStatus = 'parsing' | 'parsed' | 'failed';
 export type LineMatchOutcome = 'pending' | 'matched' | 'unmatched' | 'skipped';
 
 /**
- * Explicit inventory event types (state-changing). `finished-unit` is the
- * counted-item sibling of `finished`: an integer decrement of one sealed unit
- * rather than a whole-item terminal close (see § count-vs-fraction principle).
+ * Explicit inventory event types. `finished-unit` is the counted-item sibling of
+ * `finished`: an integer decrement of one unit rather than a whole-item terminal
+ * close (see § count-vs-fraction). `moved` is the odd one out — it is the only
+ * event that changes an item's CLOCK without changing its state (§ Storage
+ * moves): it re-anchors `eat_by` from the move date onto the destination class,
+ * and deliberately leaves `state`/`opened_at` alone, because moving a sealed pack
+ * between appliances does not open it and moving an open one does not re-seal it.
  */
-export type InventoryEventType = 'opened' | 'finished' | 'finished-unit' | 'tossed';
+export type InventoryEventType = 'opened' | 'finished' | 'finished-unit' | 'tossed' | 'moved';
 
 export const INVENTORY_EVENT_TYPES: readonly InventoryEventType[] = [
   'opened',
   'finished',
   'finished-unit',
   'tossed',
+  'moved',
 ];
 
 /**
@@ -263,21 +299,37 @@ export interface InventoryItemRecord {
   store: string | null;
   batch_ulid: string | null;
   state: InventoryState;
+  /**
+   * The STORED fraction. Authoritative only for a fraction-modeled item — for a
+   * counted one the wire value is derived from the count (§ count-vs-fraction),
+   * and this column is not the source of truth. Read it through
+   * `onHandFractionOf`, never directly, on any path that can see both models.
+   */
   on_hand_fraction: number;
   /**
-   * Sealed-unit count model (§ count-vs-fraction principle): a discrete
-   * multipack of individually-sealed atomic units (can 3-pack, egg dozen,
-   * sausage-link pack, yogurt 4-pack) tracks `units_total`/`units_remaining`
-   * instead of `on_hand_fraction`, as ONE row (no fan-out). Both null =
-   * fraction-modeled (the default, unchanged); both set together — never one
-   * without the other.
+   * Unit count model (§ count-vs-fraction): a package of discrete units (can
+   * 3-pack, egg dozen, 4-link sausage pack, sliced loaf) tracks
+   * `units_total`/`units_remaining` instead of `on_hand_fraction`, as ONE row (no
+   * fan-out). Both null = fraction-modeled (the default, unchanged); both set
+   * together — never one without the other. `unit_seal` then says what the
+   * package seals.
    */
   units_total: number | null;
   units_remaining: number | null;
+  /** What a counted package seals (§ count-vs-fraction); null = `individual`, and always null on a fraction item. */
+  unit_seal: UnitSeal | null;
   needs_info: boolean;
   acquired_at: Date;
   opened_at: Date | null;
   closed_at: Date | null;
+  /**
+   * Date of the most recent recorded storage move (§ Storage moves) — from then
+   * on the item's clock ANCHOR, so a move restarts the shelf-life window from the
+   * move instead of resuming the window it was on. Only the latest move is
+   * retained (only current storage governs the current clock); the full
+   * transition history lives in `notes`.
+   */
+  storage_moved_at: Date | null;
   eat_by: Date | null;
   shelf_life_class: ShelfLifeClass | null;
   notes: string | null;
@@ -301,8 +353,10 @@ export interface InventoryItemInput {
   batch_ulid?: string | null;
   acquired_at?: string;
   on_hand_fraction?: number;
-  /** Sealed-unit count (mutually exclusive with on_hand_fraction — see InventoryItemRecord). */
+  /** Unit count (mutually exclusive with on_hand_fraction — see InventoryItemRecord). */
   units_total?: number;
+  /** What the counted package seals (§ count-vs-fraction); requires `units_total`. */
+  unit_seal?: UnitSeal;
   state?: InventoryState;
   needs_info?: boolean;
   shelf_life_class?: ShelfLifeClass | null;
@@ -318,9 +372,16 @@ export interface InventoryItemView {
   store: string | null;
   batch_ulid: string | null;
   state: InventoryState;
+  /**
+   * How much is on hand, 0..1. For a counted item this is **derived** —
+   * `units_remaining ÷ units_total` — never the stored column, so a pack with 1
+   * of 4 units left reads `0.25` rather than a stale `1` (§ count-vs-fraction).
+   */
   on_hand_fraction: number;
   units_total: number | null;
   units_remaining: number | null;
+  /** What the counted package seals; `individual` when unstated, null on a fraction item. */
+  unit_seal: UnitSeal | null;
   needs_info: boolean;
   /**
    * The linked product is missing nutrition data (§ Nutrition panel — no
@@ -331,6 +392,8 @@ export interface InventoryItemView {
   acquired_at: string;
   opened_at: string | null;
   closed_at: string | null;
+  /** Date of the most recent storage move (§ Storage moves); null until one is recorded. */
+  storage_moved_at: string | null;
   eat_by: string | null;
   shelf_life_class: ShelfLifeClass | null;
   days_until_eat_by: number | null;
@@ -566,6 +629,21 @@ export interface ParsedLabel {
   aliases: string[];
 }
 
+/**
+ * A `POST /inventory/:ulid/events` body. `fraction` means something different per
+ * type (absolute remainder on `opened`, amount tossed on `tossed`, ignored on the
+ * finishers); `to` applies to `moved` alone and is required there — it names the
+ * shelf-life class the item moved INTO (§ Storage moves). `at` is the date of the
+ * ACT, not of the intention: a thaw reported as yesterday anchors to yesterday
+ * even if the decision to thaw was made two days earlier.
+ */
+export interface InventoryEventInput {
+  type: InventoryEventType;
+  fraction?: number;
+  to?: ShelfLifeClass;
+  at?: string;
+}
+
 /** What the free-text resolver decided for a remark. `recount` routes to § Reconcile, not the event machine. */
 export interface ResolvedEvent {
   type: InventoryEventType | 'recount';
@@ -580,18 +658,36 @@ export interface EventResolution {
 
 /**
  * A § Reconcile correction (PATCH /inventory/:ulid) — an OBSERVATION of
- * reality, never a consumption event. Quantities/model/state are set
+ * reality, never a consumption event. Quantities/model/state/identity are set
  * directly; clocks are never inferred (`opened_at` moves only when explicitly
  * supplied, and a corrected `stocked` state clears it); `eat_by` re-derives
- * from the corrected truth. `units_total: null` reverts a counted item to the
- * fraction model; a number (re)classifies it as counted.
+ * from the corrected truth and is never settable. `units_total: null` reverts a
+ * counted item to the fraction model; a number (re)classifies it as counted.
+ *
+ * It reaches every field observation can settle, because a verb documented as
+ * reconciling the ledger to reality that can't reach a wrong field is only half a
+ * verb. The one boundary that matters: **`shelf_life_class` here is a class
+ * CORRECTION, not a storage move.** It says "this was always a fridge item; I
+ * recorded the wrong class," so it re-derives against the item's EXISTING anchor.
+ * "It entered the fridge on the 8th" is a `moved` event (§ Storage moves), which
+ * re-anchors. Using one for the other either under-reports urgency by however long
+ * the item sat in its previous storage, or fabricates a transition that never
+ * happened.
  */
 export interface ReconcileInput {
   on_hand_fraction?: number;
   units_total?: number | null;
   units_remaining?: number | null;
+  /** What the counted package seals (§ count-vs-fraction); refused on a fraction item. */
+  unit_seal?: UnitSeal;
   state?: 'stocked' | 'open';
   opened_at?: string | null;
+  /** A class CORRECTION — re-derives against the existing anchor, never re-anchors. */
+  shelf_life_class?: ShelfLifeClass;
+  /** Re-queue (`true`) or clear (`false`) the open-question flag. */
+  needs_info?: boolean;
+  /** Relink to a different (live) product, or `null` to unlink. */
+  product_ulid?: string | null;
   /** Free-text context appended to the auto-written `reconciled …` notes line. */
   notes?: string;
 }
@@ -615,6 +711,12 @@ export interface ConversionDerivedInput {
   shelf_life_class?: ShelfLifeClass;
   on_hand_fraction?: number;
   units_total?: number;
+  /**
+   * What a counted batch's package seals (§ count-vs-fraction): `shared` for a
+   * tray of portions under one lid, `individual` (the default) for separately
+   * lidded jars. Requires `units_total`.
+   */
+  unit_seal?: UnitSeal;
   store?: string | null;
   notes?: string | null;
   acquired_at?: string;

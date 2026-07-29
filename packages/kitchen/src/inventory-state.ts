@@ -6,9 +6,13 @@
  *      ├──finished──────>├──finished──> finished (terminal)
  *      └──tossed────────>└──tossed────> tossed  (terminal)
  *
+ *   {stocked, open} ──moved──> itself  (state-preserving: a storage move
+ *                                       changes the clock, not the open state)
+ *
  * Opening stamps opened_at and re-derives eat_by; finishing/tossing stamps
- * closed_at and zeroes on_hand_fraction. This module encodes only which
- * *state* moves are legal — the pipeline applies the side effects.
+ * closed_at and zeroes on_hand_fraction; a move re-anchors eat_by from the move
+ * date. This module encodes only which *state* moves are legal — the pipeline
+ * applies the side effects.
  */
 
 import type { InventoryEventType, InventoryState } from './inventory-types.js';
@@ -54,6 +58,15 @@ export function transitionInventory(state: InventoryState, event: InventoryTrans
 
     case 'tossed':
       if (state === 'stocked' || state === 'open') return 'tossed';
+      throw new InvalidTransitionError(state, event);
+
+    case 'moved':
+      // A storage move (§ Storage moves) changes the item's CLOCK, never its
+      // open state: moving a sealed pack between appliances doesn't open it, and
+      // moving an open one doesn't re-seal it. So the transition is
+      // state-preserving — legal from either live state, refused on a terminal
+      // one like every other event.
+      if (state === 'stocked' || state === 'open') return state;
       throw new InvalidTransitionError(state, event);
 
     case 'dismissed':
