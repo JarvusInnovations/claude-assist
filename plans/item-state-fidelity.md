@@ -4,6 +4,7 @@ depends: [item-corrections]
 specs:
   - specs/modules/kitchen.md
 issues: [157]
+pr: 168
 ---
 
 # Plan: Item state fidelity — storage moves, a reconcile that reaches, and counted-within-open-container
