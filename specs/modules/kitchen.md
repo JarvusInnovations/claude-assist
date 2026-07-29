@@ -2812,6 +2812,7 @@ scope here — this read is derivation-only over rows that already exist.
 
 **`?since` / `?until`** bound the window by toss date; `?limit` caps rows
 (newest kept).
+
 ## Cook mode — a submitted prep worksheet IS the log
 
 The pages module can publish a **worksheet**: weighable components with per-100g
@@ -3076,4 +3077,3 @@ and write the kitchen without hand-rolled `curl`.
   lies in the direction nothing flags: the day already looks accounted for. Every
   surface that records prep — the `convert` verb, cook mode, the app's tabs —
   holds this line, so "did I log this?" has exactly one answer per act.
-
