@@ -1,10 +1,10 @@
 ---
-status: ready
+status: done
 depends: [kitchen-module]
 specs:
   - specs/modules/kitchen.md
 issues: []
-pr: null
+pr: 158
 ---
 
 # Plan: Split added sugar out of total sugar (nine-field panel)
@@ -82,12 +82,72 @@ not open for re-litigation in implementation.
 
 ## Validation
 
-- Full suite green (`bun run test`), `bun run build`, `bun run type-check:axi`,
+- [x] Full suite green (`bun run test`), `bun run build`, `bun run type-check:axi`,
   `bun run check:skills`.
-- A whole-food entry records `0`, not `null`.
-- A day mixing fruit + dairy shows a high `sugar_g` with `added_sugar_g` near zero
+- [x] A whole-food entry records `0`, not `null`.
+- [x] A day mixing fruit + dairy shows a high `sugar_g` with `added_sugar_g` near zero
   and **no over-ceiling verdict** — the exact false alarm this retires.
-- A recipe-computed entry sums `added_sugar_g` across components with correct
+- [x] A recipe-computed entry sums `added_sugar_g` across components with correct
   null-vs-zero semantics.
-- `entries patch --added-sugar` corrects it on an existing entry without a
+- [x] `entries patch --added-sugar` corrects it on an existing entry without a
   delete-and-re-log.
+
+## Notes
+
+- **The canonical panel list is `NUTRITION_FIELD_KEYS` in `types.ts`**, not the
+  `PANEL_FIELDS` name this plan used — the existing export was kept rather than
+  renamed across a dozen call sites. Its scope grew, though: recipe-component
+  summing, the product per-100g completeness check, the meal-planning totals, and
+  the CLI's effective-macro keys all now derive from it instead of re-enumerating
+  the fields. Six hardcoded copies of the list were what made this field addition
+  a scavenger hunt; the next one is the interfaces plus one array.
+- **`DAILY_TARGET_FIELDS` deliberately does NOT derive from it.** Its divergence
+  from the panel (no `sugar_g`) is the feature, so it stays hand-written with the
+  reason attached. A config still naming `sugar_g` is **refused at boot** with its
+  own message pointing at `added_sugar_g` — not silently dropped (the instance
+  would believe it still had a sugar line, and a half-parsed budget is worse than
+  none) and not reported as an unknown field (the field exists; it just cannot
+  carry a target). Removing one field's line disturbed no other target, pinned by
+  a test that configures all eight at once.
+- **The nested bar landed as a nested *figure*, because this repo has no
+  graphical daily view.** The only daily view here is the CLI home view, so the
+  sugar pair renders as ONE value — `62.4 total, added 1.2 / 36 max (34.8 left)` —
+  total bare, verdict on the added portion alone. Two peer target lines would be
+  the text equivalent of the two bars the spec rejects. The spec was amended to
+  say the rule governs the figure rather than the pixels, and that a tabular
+  multi-day rollup (`days`) is not a bar and carries both as unjudged columns. The
+  app's actual graphical bar lives outside this repo and is untouched.
+- **Two spec gaps found while implementing**, both fixed in `84ce237` rather than
+  silently diverged from: § Daily targets still listed `sugar_g` as targetable and
+  omitted `added_sugar_g` (contradicting the section two above it), and four stale
+  "eight-field" counts survived the spec commit.
+- **Products seeded before this field now report `needs_nutrition: true`**, since
+  the completeness check counts all nine fields and a null one means incomplete.
+  That is the intended signal — a label rescan resolves it — but it will light up
+  for every existing product at once.
+- Verified before opening the PR: `bun run test` → every workspace package
+  `0 fail` (kitchen 430 pass, 10 packages all exit 0); `bun run build` → all 14
+  packages exit 0; `bun run type-check:axi` clean; `bun run check:skills` reports
+  all four bundles and SKILL.mds up to date. Full-diff scrub scan clean.
+- **Migration `016-kitchen-added-sugar.sql` has not been run against a live
+  database** — additive `ADD COLUMN IF NOT EXISTS`, applies on next boot.
+- The three unrelated CLI bundles were reverted after `build:skills` touched only
+  their VERSION git-SHA stamp; `check:skills` tolerates that, so the diff stays
+  focused on `kitchen-axi.mjs`.
+
+## Follow-ups
+
+- **Tracked here, not fixed — every existing product now reads
+  `needs_nutrition: true`.** Re-seeding products from labels was out of scope by
+  design; the rescan pass is operational work over real stock, one item at a time,
+  and nothing in code can honestly guess the missing line.
+- **None for historical entries.** They are `null` on purpose. If a day's added
+  sugar is ever wanted retroactively, `entries patch --added-sugar` corrects one
+  entry at a time from a human's actual knowledge — there is no batch inference
+  worth writing, and a fabricated zero is exactly the failure this field exists to
+  avoid.
+- **Deferred — a graphical nested bar in the app client.** The spec's display rule
+  is satisfied in the only daily view this repo has; the phone client's target
+  bars live in another repo and will need the same one-object treatment (total as
+  extent, added as the filled segment, marker at the added ceiling) when it picks
+  the field up.
