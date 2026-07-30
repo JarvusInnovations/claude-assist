@@ -72,9 +72,12 @@ import type {
 import { applyItemStateUpdate } from '../inventory-store.js';
 import {
   deriveEatBy,
+  isCounted,
+  needsNutrition,
   normalizeLexiconLine,
   normalizeProductName,
   parsePackageCount,
+  productPanel,
   toItemView,
   toIsoDate,
   unitSealOf,
@@ -183,11 +186,13 @@ export class ReconcileValidationError extends Error {
 
 /**
  * Thrown by `consume()` when the item does not qualify for one-tap consume
- * (specs/modules/kitchen.md § Consume from inventory — eligibility rule): its
- * macros are not deterministically knowable, because it carries no
- * recipe-linked derivation provenance, or that provenance's recipe can't be
- * resolved / has no components. Mapped to `400` at the route — the app
- * should route this item through the normal photo/reselect path instead.
+ * (specs/modules/kitchen.md § Consume from inventory — eligibility, one test,
+ * two families): its macros are not deterministically knowable through
+ * EITHER channel — no recipe-linked derivation provenance resolves to a
+ * recipe with components, AND it is not a counted item whose linked product
+ * carries both a complete nutrition panel and `unit_edible_g`. Mapped to
+ * `400` at the route — the app should route this item through the normal
+ * photo/reselect path instead.
  */
 export class ConsumeIneligibleError extends Error {
   constructor(itemUlid: string, reason: string) {
@@ -1451,8 +1456,8 @@ export class InventoryPipeline {
    * Returns `null` when the item doesn't exist (→ 404 at the route). Throws:
    * - `InvalidTransitionError` — the item is already terminal (`409`).
    * - `ConsumeValidationError` — a bad `quantity`, or nothing on hand (`400`).
-   * - `ConsumeIneligibleError` — the item carries no recipe-linked macro
-   *   provenance, or that recipe can't be resolved / has no components (`400`).
+   * - `ConsumeIneligibleError` — neither macro-inheritance channel below
+   *   applies (`400`).
    * - `ConsumeNotConfiguredError` — the module wasn't wired with a
    *   `consumeStore`/`resolveRecipe` (`503`).
    *
@@ -1465,18 +1470,29 @@ export class InventoryPipeline {
    * `this.consumeStore.consume()` itself also idempotency-checks inside the
    * same transaction, as a race-safety net for near-simultaneous replays.
    *
-   * **Eligibility & macro inheritance**: an item qualifies only when its
-   * derivation provenance (`derived_from.recipe_ulid`, set by a `convert`
-   * event — see § Conversions) resolves to a recipe with at least one
-   * component. What the recipe DESCRIBES depends on the item's unit model
-   * (§ Consume — the per-unit recipe contract): for a **counted** item the
-   * recipe describes ONE sealed unit (the system-wide per-serving recipe
-   * convention), so the logged macros are `recipe × quantity`; for a
-   * **fraction** item it describes the whole batch, scaled by the item's
-   * current `on_hand_fraction` (consuming finishes whatever fraction
-   * remains). This is the only macro-inheritance channel today — an item
-   * with no recipe-linked provenance has no deterministically-known macros
-   * and is rejected, per the plan's eligibility rule.
+   * **Eligibility & macro inheritance — one test, two independent channels**
+   * (§ Consume from inventory eligibility, `resolveConsumeMacros` below):
+   *
+   * 1. **Derived items** — the item's derivation provenance
+   *    (`derived_from.recipe_ulid`, set by a `convert` event — see
+   *    § Conversions) resolves to a recipe with at least one component. What
+   *    the recipe DESCRIBES depends on the item's unit model (§ Consume —
+   *    the per-unit recipe contract): for a **counted** item the recipe
+   *    describes ONE sealed unit (the system-wide per-serving recipe
+   *    convention), so the logged macros are `recipe × quantity`; for a
+   *    **fraction** item it describes the whole batch, scaled by the item's
+   *    current `on_hand_fraction` (consuming finishes whatever fraction
+   *    remains).
+   * 2. **Counted purchased items** — the item is counted (`units_total` set)
+   *    and its linked product carries a complete nutrition panel (every
+   *    field known, `nutrition_source` `label` or `reference` — never a bare
+   *    `estimate`, which is a guess, not a fact) AND a stated `unit_edible_g`.
+   *    One tap logs `per_100g × unit_edible_g ÷ 100` for one unit, times
+   *    `quantity`.
+   *
+   * Channel 1 is tried first; an item satisfying neither is rejected
+   * (`ConsumeIneligibleError`) — ineligibility is an absence, not an error to
+   * render on the consume shelf.
    *
    * **Depletion** mirrors `finished-unit` for a counted item (integer
    * decrement of `quantity` units; zero remaining goes terminal `finished`,
@@ -1712,28 +1728,81 @@ export class InventoryPipeline {
   }
 
   /**
-   * Consume-eligibility + macro resolution (§ consume doc above). Throws
-   * `ConsumeIneligibleError` when the item carries no usable recipe-linked
-   * provenance — never returns a partial/guessed nutrition object.
+   * Consume-eligibility + macro resolution (§ consume doc above; specs/
+   * modules/kitchen.md § Consume from inventory § Eligibility — one test, two
+   * families). Tries the derived-item channel first, then the counted-
+   * purchased-item channel; throws `ConsumeIneligibleError` when NEITHER
+   * applies — never returns a partial/guessed nutrition object.
    */
   private async resolveConsumeMacros(
     item: InventoryItemRecord,
     derivedFrom: DerivedFromView | null
   ): Promise<NutritionFields> {
-    if (!derivedFrom?.recipe_ulid) {
-      throw new ConsumeIneligibleError(
-        item.ulid,
-        'no known macros — not derived from a recipe-linked conversion (§ Consume from inventory eligibility rule)'
-      );
-    }
+    const derived = await this.resolveDerivedMacros(derivedFrom);
+    if (derived) return derived;
+
+    const product = await this.resolveProductMacros(item);
+    if (product) return product;
+
+    throw new ConsumeIneligibleError(
+      item.ulid,
+      'no known macros — neither a recipe-linked derivation nor a counted item ' +
+        "whose linked product carries a complete nutrition panel + unit_edible_g " +
+        '(§ Consume from inventory eligibility rule)'
+    );
+  }
+
+  /**
+   * Channel 1 — derived items (§ Consume from inventory eligibility). `null`
+   * (not ineligible-thrown) when this channel doesn't apply, so the caller
+   * can fall through to channel 2 rather than hard-failing on a broken or
+   * absent derivation alone.
+   */
+  private async resolveDerivedMacros(derivedFrom: DerivedFromView | null): Promise<NutritionFields | null> {
+    if (!derivedFrom?.recipe_ulid) return null;
     const recipe = await this.resolveRecipe!(derivedFrom.recipe_ulid);
-    if (!recipe || recipe.components.length === 0) {
-      throw new ConsumeIneligibleError(
-        item.ulid,
-        `derivation recipe ${derivedFrom.recipe_ulid} not found or has no components`
-      );
-    }
+    if (!recipe || recipe.components.length === 0) return null;
     return computeRecipeMacros(recipe);
+  }
+
+  /**
+   * Channel 2 — counted purchased items (§ Consume from inventory
+   * eligibility): a counted item (`units_total` set) whose linked product
+   * states BOTH a complete nutrition panel (every one of the nine fields
+   * known — `productPanel`/`needsNutrition` are the single shared source of
+   * truth for "complete", also used by the `needs_nutrition` item flag) and
+   * `unit_edible_g`. `nutrition_source` must be `'label'` or `'reference'` —
+   * a bare `'estimate'` is a guess, and logging it deterministically would
+   * just launder that guess as fact, defeating the reason this channel
+   * exists. Per-unit macros are `per_100g × unit_edible_g ÷ 100`
+   * (`scaleNutrition` in `consume()` then multiplies by `quantity`, the same
+   * as the recipe channel). `null` when this channel doesn't apply.
+   */
+  private async resolveProductMacros(item: InventoryItemRecord): Promise<NutritionFields | null> {
+    if (!isCounted(item) || !item.product_ulid) return null;
+    const product = await this.store.getProduct(item.product_ulid);
+    if (!product) return null;
+    if (product.unit_edible_g == null) return null;
+    if (product.nutrition_source !== 'label' && product.nutrition_source !== 'reference') return null;
+    if (needsNutrition(product)) return null;
+
+    const per100g = productPanel(product)!;
+    const factor = product.unit_edible_g / 100;
+    const scale = (v: number | null): number | null => (v === null ? null : round1(v * factor));
+    return {
+      calories: scale(per100g.calories),
+      protein_g: scale(per100g.protein_g),
+      fat_g: scale(per100g.fat_g),
+      sat_fat_g: scale(per100g.sat_fat_g),
+      carbs_g: scale(per100g.carbs_g),
+      sugar_g: scale(per100g.sugar_g),
+      added_sugar_g: scale(per100g.added_sugar_g),
+      fiber_g: scale(per100g.fiber_g),
+      sodium_mg: scale(per100g.sodium_mg),
+      // Deterministic — exact arithmetic on a stated panel, same as a recipe.
+      confidence: 1,
+      portion_basis: 'product panel (per_100g × unit_edible_g)',
+    };
   }
 
   // ── Free-text event resolver ─────────────────────────────────────────────────
