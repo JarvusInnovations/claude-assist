@@ -1286,6 +1286,237 @@ describe('product corrections routes', () => {
   });
 });
 
+/**
+ * § A panel means nothing without its basis — the per-100g derivation runs at
+ * every product write door, not only the label-scan pipeline. `PER_SERVING` +
+ * `SERVING_SIZE_G` derive to exactly `FULL_PANEL` (defined above: factor ×2),
+ * so every test below can assert against that one shared constant.
+ */
+describe('panel-basis guard routes', () => {
+  let fastify: FastifyInstance;
+  let store: MemoryInventoryStore;
+  let pipeline: InventoryPipeline;
+
+  const FULL_PANEL = {
+    calories: 120, protein_g: 4, fat_g: 2, sat_fat_g: 0.5,
+    carbs_g: 20, sugar_g: 6, added_sugar_g: 0, fiber_g: 3, sodium_mg: 90,
+  };
+  const PER_SERVING = {
+    calories: 60, protein_g: 2, fat_g: 1, sat_fat_g: 0.25,
+    carbs_g: 10, sugar_g: 3, added_sugar_g: 0, fiber_g: 1.5, sodium_mg: 45,
+  };
+  const SERVING_SIZE_G = 50;
+
+  beforeEach(async () => {
+    fastify = Fastify({ logger: false });
+    store = new MemoryInventoryStore();
+    pipeline = new InventoryPipeline(store, new FakeReceiptParser({ store: 'Example Grocer', lines: [] }), null, fastify.log);
+    await fastify.register(registerInventoryRoutes, { inventory: pipeline });
+    await fastify.ready();
+  });
+
+  afterEach(async () => {
+    await fastify.close();
+  });
+
+  const post = (payload: Record<string, unknown>) =>
+    fastify.inject({ method: 'POST', url: '/kitchen/products', payload });
+  const patch = (ulid: string, payload: Record<string, unknown>) =>
+    fastify.inject({ method: 'PATCH', url: `/kitchen/products/${ulid}`, payload });
+
+  it('a bare create with only a serving basis DERIVES per-100g — no per-100g was even stated', async () => {
+    const created = await post({
+      name: 'A 3-can multipack',
+      serving_size_g: SERVING_SIZE_G,
+      nutrition_per_serving: PER_SERVING,
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().nutrition_per_100g).toEqual(FULL_PANEL);
+  });
+
+  it('explicit-ulid create ignores a stated per-100g that AGREES with the derivable one (still derived, not merely passed through)', async () => {
+    const ulid = generateUlid();
+    const created = await post({
+      ulid,
+      name: 'A fruit spread',
+      serving_size_g: SERVING_SIZE_G,
+      nutrition_per_serving: PER_SERVING,
+      nutrition_per_100g: FULL_PANEL,
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().nutrition_per_100g).toEqual(FULL_PANEL);
+  });
+
+  it('a within-tolerance stated per-100g is still REPLACED by the derived value, not merely passed through', async () => {
+    // 91 is within tolerance of the derived 90 (8% + 0.6 = ~7.8), so this
+    // would pass a "close enough" check — but the rule is derive-and-ignore,
+    // not derive-then-accept-if-close, so the stored value is exactly 90.
+    const created = await post({
+      name: 'A pantry staple',
+      serving_size_g: SERVING_SIZE_G,
+      nutrition_per_serving: PER_SERVING,
+      nutrition_per_100g: { ...FULL_PANEL, sodium_mg: 91 },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().nutrition_per_100g.sodium_mg).toBe(90);
+  });
+
+  it('explicit-ulid REPLACE refuses a stated per-100g that CONTRADICTS the derivable one, naming both values', async () => {
+    const ulid = generateUlid();
+    await post({ ulid, name: 'A snack bar', serving_size_g: SERVING_SIZE_G, nutrition_per_serving: PER_SERVING });
+
+    const wrong = { ...FULL_PANEL, calories: 260 }; // stated 260 vs derived 120 — nowhere near tolerance
+    const replaced = await post({
+      ulid,
+      name: 'A snack bar',
+      serving_size_g: SERVING_SIZE_G,
+      nutrition_per_serving: PER_SERVING,
+      nutrition_per_100g: wrong,
+    });
+    expect(replaced.statusCode).toBe(400);
+    expect(replaced.json().error).toContain('calories');
+    expect(replaced.json().error).toContain('260');
+    expect(replaced.json().error).toContain('120');
+  });
+
+  it('a name-key CREATE (no match) derives per-100g from the stated serving basis', async () => {
+    const created = await post({ name: 'A dried-fruit mix', serving_size_g: SERVING_SIZE_G, nutrition_per_serving: PER_SERVING });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().nutrition_per_100g).toEqual(FULL_PANEL);
+  });
+
+  it('a name-key ENRICH derives per-100g from the MERGED serving basis (existing + incoming)', async () => {
+    // Seed with only the serving size; a second write supplies the per-serving
+    // panel. The enrich merges them into one composite before deriving.
+    const seeded = await post({ name: 'A cereal box', serving_size_g: SERVING_SIZE_G });
+    expect(seeded.json().nutrition_per_100g).toBeNull();
+
+    const enriched = await post({ name: 'A cereal box', nutrition_per_serving: PER_SERVING });
+    expect(enriched.statusCode).toBe(200);
+    expect(enriched.json().nutrition_per_100g).toEqual(FULL_PANEL);
+  });
+
+  it('a name-key ENRICH refuses a stated per-100g that contradicts the merged serving basis', async () => {
+    await post({ name: 'A trail mix', serving_size_g: SERVING_SIZE_G, nutrition_per_serving: PER_SERVING });
+    const refused = await post({ name: 'A trail mix', nutrition_per_100g: { ...FULL_PANEL, sodium_mg: 900 } });
+    expect(refused.statusCode).toBe(400);
+    expect(refused.json().error).toContain('sodium_mg');
+  });
+
+  it('PATCH derives per-100g even when the patch body only states nutrition_per_serving', async () => {
+    const created = (await post({ name: 'A yogurt cup', serving_size_g: SERVING_SIZE_G })).json();
+    expect(created.nutrition_per_100g).toBeNull();
+
+    const patched = await patch(created.ulid, { nutrition_per_serving: PER_SERVING });
+    expect(patched.statusCode).toBe(200);
+    expect(patched.json().nutrition_per_100g).toEqual(FULL_PANEL);
+  });
+
+  it('PATCH refuses a stated per-100g that contradicts the existing serving basis', async () => {
+    const created = (
+      await post({ name: 'A jar of sauce', serving_size_g: SERVING_SIZE_G, nutrition_per_serving: PER_SERVING })
+    ).json();
+    const refused = await patch(created.ulid, { nutrition_per_100g: { ...FULL_PANEL, fat_g: 40 } });
+    expect(refused.statusCode).toBe(400);
+    expect(refused.json().error).toContain('fat_g');
+    // And the stored panel is UNCHANGED by the refused write.
+    const unchanged = await fastify.inject({ method: 'GET', url: `/kitchen/products?q=A jar of sauce` });
+    expect(unchanged.json().products[0].nutrition_per_100g).toEqual(FULL_PANEL);
+  });
+
+  it('a TWO-STEP create-then-patch cannot land an underived panel', async () => {
+    // Step 1: create with ONLY the serving basis — honest, derives correctly,
+    // no contradiction possible yet (nothing stated to contradict).
+    const created = (
+      await post({ name: 'A boxed side dish', serving_size_g: SERVING_SIZE_G, nutrition_per_serving: PER_SERVING })
+    ).json();
+    expect(created.nutrition_per_100g).toEqual(FULL_PANEL);
+
+    // Step 2: a SEPARATE request states a per-100g that contradicts what the
+    // first request already established. The guard judges the POST-PATCH
+    // composite (existing serving basis + the patch's stated per-100g), not
+    // just the patch body in isolation, so this is caught exactly like a
+    // single request stating both at once would be.
+    const patched = await patch(created.ulid, { nutrition_per_100g: { ...FULL_PANEL, carbs_g: 90 } });
+    expect(patched.statusCode).toBe(400);
+    expect(patched.json().error).toContain('carbs_g');
+  });
+
+  it('honors a caller-stated per-100g VERBATIM when there is no serving basis at all (genuine per-100g / reference-sourced produce)', async () => {
+    const created = await post({ name: 'Loose Bananas', shelf_life_class: 'produce', nutrition_per_100g: FULL_PANEL });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().nutrition_per_100g).toEqual(FULL_PANEL);
+    expect(created.json().nutrition_per_serving).toBeNull();
+  });
+
+  it('a per-100g stated alongside a PARTIAL per-serving panel fills only the fields the derivation reached', async () => {
+    // The per-serving panel is missing sodium entirely (genuinely unread, not
+    // zero) — the derivation can't produce sodium_mg, so the caller's stated
+    // sodium_mg is honored for that field alone while every other field is
+    // still derived and any DISAGREEING field is still refused.
+    const partialPerServing = { ...PER_SERVING, sodium_mg: null };
+    const created = await post({
+      name: 'A partial-panel item',
+      serving_size_g: SERVING_SIZE_G,
+      nutrition_per_serving: partialPerServing,
+      nutrition_per_100g: { sodium_mg: 500 },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().nutrition_per_100g).toEqual({ ...FULL_PANEL, sodium_mg: 500 });
+  });
+
+  it('GET /kitchen/products/panel-basis-report never finds anything through the guarded doors — only pre-existing rows could disagree', async () => {
+    await post({ name: 'A boxed side dish', serving_size_g: SERVING_SIZE_G, nutrition_per_serving: PER_SERVING });
+    await post({ name: 'Loose Bananas', shelf_life_class: 'produce', nutrition_per_100g: FULL_PANEL });
+    const report = await fastify.inject({ method: 'GET', url: '/kitchen/products/panel-basis-report' });
+    expect(report.statusCode).toBe(200);
+    expect(report.json().findings).toEqual([]);
+    expect(report.json().count).toBe(0);
+  });
+
+  // § Panel operations belong in one implementation — validation REJECTS at
+  // write time, not store-and-flag. These exercise the wiring at the actual
+  // write doors (the pure rules are covered exhaustively in
+  // nutrition-panel.test.ts); one failing case per rule plus the calorie
+  // band's real-world leniency.
+  it('POST rejects a negative panel field at write time (schema-level here; validatePanelFields covers non-schema-guarded surfaces the same way)', async () => {
+    const rejected = await post({ name: 'A miscoded item', nutrition_per_100g: { ...FULL_PANEL, sodium_mg: -5 } });
+    expect(rejected.statusCode).toBe(400);
+  });
+
+  it('POST rejects saturated fat exceeding total fat', async () => {
+    const rejected = await post({ name: 'An implausible spread', nutrition_per_100g: { ...FULL_PANEL, fat_g: 2, sat_fat_g: 5 } });
+    expect(rejected.statusCode).toBe(400);
+    expect(rejected.json().error).toContain('sat_fat_g');
+  });
+
+  it('PATCH rejects added sugar exceeding total sugar', async () => {
+    const created = (await post({ name: 'A cereal bar', nutrition_per_100g: FULL_PANEL })).json();
+    const rejected = await patch(created.ulid, { nutrition_per_100g: { sugar_g: 3, added_sugar_g: 10 } });
+    expect(rejected.statusCode).toBe(400);
+    expect(rejected.json().error).toContain('added_sugar_g');
+  });
+
+  it('POST rejects calories far outside the 4/4/9 macro band', async () => {
+    const rejected = await post({
+      name: 'An implausible label',
+      nutrition_per_100g: { calories: 900, protein_g: 2, carbs_g: 2, fat_g: 2 },
+    });
+    expect(rejected.statusCode).toBe(400);
+    expect(rejected.json().error).toContain('calories');
+  });
+
+  it('POST accepts a real high-fiber, sugar-alcohol-sweetened label whose calories legitimately miss the naive 4/4/9 sum', async () => {
+    // computed = 4*10 + 4*30 + 9*8 = 232; a real bar can legitimately state
+    // meaningfully less because fiber and sugar alcohols are excluded/derated.
+    const accepted = await post({
+      name: 'A high-fiber protein bar',
+      nutrition_per_100g: { calories: 170, protein_g: 10, carbs_g: 30, fat_g: 8, fiber_g: 12 },
+    });
+    expect(accepted.statusCode).toBe(201);
+  });
+});
+
 describe('price history + waste routes', () => {
   let fastify: FastifyInstance;
   let store: MemoryInventoryStore;

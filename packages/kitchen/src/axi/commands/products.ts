@@ -30,11 +30,27 @@ export const PRODUCTS_HELP = `kitchen-axi products <subcommand> [args] [--json]
                                       lines, then retire it
   archive <ulid>                    retire a product (soft; still resolvable by
                                       ulid so linked items keep working)
+  panel-basis-report                READ-ONLY: products whose stored per-100g
+                                      disagrees with the value derivable from
+                                      their own serving basis, beyond an
+                                      8% + 0.6 per-field tolerance. Never
+                                      rewrites anything — a flagged row needs
+                                      'update <ulid>' once you know which
+                                      number is right
 
   shelf-life classes: ${SHELF_LIFE_CLASSES.join(", ")}
   --nutrition is a JSON object of per-100g macros, e.g.
     '{"calories": 52, "protein_g": 0.3, "carbs_g": 14, "fiber_g": 2.4, "sugar_g": 10, "added_sugar_g": 0}'
   --ingredients is the printed ingredients list as a single string
+
+  --nutrition is DERIVED, not stored verbatim, whenever --serving-size-g and
+  --nutrition-per-serving are also present (on this write or already on the
+  record): the stored per-100g is computed from the serving basis, per field,
+  the same way a scanned label already was — passing --nutrition alongside is
+  fine (it is checked, not merged) but a value that CONTRADICTS the derivable
+  one is refused (400) rather than silently overwritten. Only when no serving
+  basis exists at all (a bare --nutrition, or unpackaged produce with no label)
+  is the stated value stored as given.
 
   --unit-edible-g is the edible mass of ONE physical unit of a counted product
   (one egg, one can, one link) — STATED only, never computed from
@@ -141,6 +157,19 @@ const PRICE_POINT_SCHEMA: FieldDef[] = [
   field("unit_basis", "basis"),
 ];
 
+const PANEL_BASIS_FINDING_SCHEMA: FieldDef[] = [
+  field("ulid"),
+  field("name"),
+  {
+    type: "custom",
+    as: "contradictions",
+    fn: (f) =>
+      (Array.isArray(f.contradictions) ? f.contradictions : [])
+        .map((c: { field: string; stated: number; derived: number; tolerance: number }) => `${c.field}: stated ${c.stated} vs derived ${c.derived} (±${c.tolerance})`)
+        .join(" | "),
+  },
+];
+
 /** The write flags shared by `add` and `update` (single-sourced so they can't drift). */
 const WRITE_VALUE_FLAGS = [
   "name",
@@ -179,6 +208,8 @@ export async function productsCommand(args: string[]): Promise<string> {
       return mergeProduct(rest);
     case "archive":
       return archiveProduct(rest);
+    case "panel-basis-report":
+      return panelBasisReport(rest);
     default:
       throw new AxiError(`Unknown products subcommand: ${sub}`, "VALIDATION_ERROR", [PRODUCTS_HELP]);
   }
@@ -336,6 +367,31 @@ async function archiveProduct(args: string[]): Promise<string> {
     renderHelp([
       "Archived, not deleted — off every listing and no longer a name-match candidate, still resolvable by ulid so linked items keep rendering",
       "For a duplicate, prefer `products merge <dupe> --into <survivor>` so its items and lexicon mappings move rather than being stranded",
+    ]),
+  ]);
+}
+
+/**
+ * The legacy sweep (specs/modules/kitchen.md § A panel means nothing without
+ * its basis) — READ-ONLY. Never rewrites a stored value: a flagged row needs
+ * `products update <ulid>` once someone knows which number — the stated
+ * per-100g or the serving basis it disagrees with — is actually right.
+ */
+async function panelBasisReport(args: string[]): Promise<string> {
+  const { flags } = parseArgs(args, ["json"], []);
+  const result = await api.get("/api/kitchen/products/panel-basis-report");
+  if (flags.json) return rawJson(result);
+  const findings = result?.findings ?? [];
+  if (findings.length === 0) {
+    return renderOutput([
+      renderHelp(["No stored per-100g panel disagrees with its own serving basis beyond the 8% + 0.6 tolerance"]),
+    ]);
+  }
+  return renderOutput([
+    renderList("panel_basis_findings", findings, PANEL_BASIS_FINDING_SCHEMA),
+    renderHelp([
+      "Each row's stored nutrition_per_100g disagrees with nutrition_per_serving ÷ serving_size_g × 100 beyond tolerance",
+      "This report never rewrites anything — restate the panel with `products update <ulid>` once you know which number is right",
     ]),
   ]);
 }

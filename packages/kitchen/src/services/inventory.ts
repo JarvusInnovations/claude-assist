@@ -60,6 +60,9 @@ import {
 } from '../inventory-types.js';
 import type { NegligibleCandidate } from '../negligible-guard.js';
 import { checkNegligible, negligibleRefusalMessage } from '../negligible-guard.js';
+import type { PanelBasisCandidate, PanelBasisSweepFinding } from '../panel-basis-guard.js';
+import { panelBasisRefusalMessage, resolvePanelBasis, sweepPanelBasisInconsistencies } from '../panel-basis-guard.js';
+import { panelValidationMessage, validatePanelFields } from '../nutrition-panel.js';
 import type {
   ConversionSourceWrite,
   InventoryStore,
@@ -2404,6 +2407,29 @@ export class InventoryPipeline {
       out.nutrition_per_serving = patchPanel(existing.nutrition_per_serving, patch.nutrition_per_serving);
     }
 
+    // § A panel means nothing without its basis — resolve `nutrition_per_100g`
+    // from the POST-PATCH composite whenever the patch touches ANY of the
+    // three panel-basis fields, not only when it touches `nutrition_per_100g`
+    // itself: a patch that only states `nutrition_per_serving` (or only
+    // `serving_size_g`) must still re-derive per-100g, or the stored panel
+    // goes stale the moment the serving basis changes. Judging the composite
+    // (not the raw patch) is what stops a two-step create-then-patch — create
+    // with only a serving basis, then patch in a contradicting per-100g —
+    // from landing an underived panel one request at a time.
+    if (
+      patch.nutrition_per_100g !== undefined ||
+      patch.nutrition_per_serving !== undefined ||
+      patch.serving_size_g !== undefined
+    ) {
+      const resolvedPer100g = guardPanelBasis(out.name ?? existing.name, {
+        nutrition_per_100g: out.nutrition_per_100g !== undefined ? out.nutrition_per_100g : existing.nutrition_per_100g,
+        nutrition_per_serving:
+          out.nutrition_per_serving !== undefined ? out.nutrition_per_serving : existing.nutrition_per_serving,
+        serving_size_g: out.serving_size_g !== undefined ? out.serving_size_g : existing.serving_size_g,
+      });
+      out.nutrition_per_100g = normalizeNutrition(resolvedPer100g);
+    }
+
     // `nutrition_negligible_override` is an instruction, not a fact, so a body
     // carrying only it passes the schema's `minProperties` while changing
     // nothing. The contract is "at least one key that changes something".
@@ -2509,6 +2535,20 @@ export class InventoryPipeline {
     return this.store.listProducts(filter);
   }
 
+  /**
+   * The legacy sweep (§ A panel means nothing without its basis): a read-only
+   * consistency report over ALREADY-STORED products, for rows written before
+   * this guard existed or through a door it doesn't reach. Reports only —
+   * never rewrites a stored value; see `sweepPanelBasisInconsistencies`.
+   *
+   * Best-effort over live products up to the store's listing cap (500) — this
+   * is operator-facing audit tooling, not a guaranteed-complete migration.
+   */
+  async panelBasisReport(): Promise<PanelBasisSweepFinding[]> {
+    const products = await this.store.listProducts({ limit: 500 });
+    return sweepPanelBasisInconsistencies(products);
+  }
+
   async upsertLexicon(input: LexiconInput): Promise<LexiconRecord> {
     return this.store.upsertLexicon({
       ulid: generateUlid(),
@@ -2536,26 +2576,36 @@ export class InventoryPipeline {
   /**
    * Merge parsed/explicit facts onto an existing product under the field
    * precedence explicit-meta/parsed > keep-existing (never null-clobbering).
-   * `nutrition_per_100g` merges **per-field** so a later partial panel adds
-   * fields without erasing earlier ones; `ingredients`/`package_size` keep the
-   * existing value when the incoming is null; `shelf_life_class` only overrides
-   * when the incoming class is not `unknown`; `aliases` union-merge. Shared by
-   * the label resolve path (match-by-name) and the label enrich path
-   * (already-linked item → enrich the linked product by ulid).
+   * `nutrition_per_100g` is RESOLVED, not merged, from the merged serving
+   * basis (§ A panel means nothing without its basis — `guardPanelBasis`):
+   * derived when the merged `serving_size_g` + `nutrition_per_serving` allow
+   * it, the per-field merge of stated values only where they don't.
+   * `ingredients`/`package_size` keep the existing value when the incoming is
+   * null; `shelf_life_class` only overrides when the incoming class is not
+   * `unknown`; `aliases` union-merge. Shared by the label resolve path
+   * (match-by-name), the label enrich path (already-linked item → enrich the
+   * linked product by ulid), and the merge fold (`mergeProducts`) — this is
+   * the name-key enrich branch of `POST /products` (one of its three write
+   * doors) plus every other caller of this function.
    */
   private async enrichProduct(existing: ProductRecord, input: ProductInput): Promise<ProductRecord> {
+    const servingSizeG = input.serving_size_g ?? existing.serving_size_g;
+    const perServing = mergeNutrition(existing.nutrition_per_serving, normalizeNutrition(input.nutrition_per_serving));
+    const statedPer100g = mergeNutrition(existing.nutrition_per_100g, normalizeNutrition(input.nutrition_per_100g));
+    const resolvedPer100g = guardPanelBasis(existing.name, {
+      nutrition_per_100g: statedPer100g,
+      nutrition_per_serving: perServing,
+      serving_size_g: servingSizeG,
+    });
     const merged = await this.store.updateProduct(existing.ulid, {
       shelf_life_class:
         input.shelf_life_class && input.shelf_life_class !== 'unknown'
           ? input.shelf_life_class
           : existing.shelf_life_class,
       aliases: dedupeAliases([...existing.aliases, ...(input.aliases ?? [])]),
-      nutrition_per_100g: mergeNutrition(existing.nutrition_per_100g, normalizeNutrition(input.nutrition_per_100g)),
-      serving_size_g: input.serving_size_g ?? existing.serving_size_g,
-      nutrition_per_serving: mergeNutrition(
-        existing.nutrition_per_serving,
-        normalizeNutrition(input.nutrition_per_serving)
-      ),
+      nutrition_per_100g: normalizeNutrition(resolvedPer100g),
+      serving_size_g: servingSizeG,
+      nutrition_per_serving: perServing,
       servings_per_container: input.servings_per_container ?? existing.servings_per_container,
       unit_model_hint: input.unit_model_hint ?? existing.unit_model_hint,
       net_content_g: input.net_content_g ?? existing.net_content_g,
@@ -2746,15 +2796,30 @@ function toDerivedFromView(d: InventoryDerivationRecord): DerivedFromView {
  * insert and an explicit-ulid **replace** (§ Product corrections), which is why
  * every omitted field lands on its default rather than being skipped: a replace
  * states the whole record, and that is the only way a caller can clear a field.
+ *
+ * `nutrition_per_100g` is resolved (never taken verbatim) by `guardPanelBasis`
+ * (§ A panel means nothing without its basis): derived from `serving_size_g` +
+ * `nutrition_per_serving` when a basis exists, the stated value only when it
+ * doesn't. This is the explicit-ulid replace/create branch AND the name-key
+ * create branch of `POST /products` (both call `productFields`) — two of the
+ * three write doors.
  */
 function productFields(input: ProductInput): Omit<NewProduct, 'ulid'> {
+  const servingSizeG = input.serving_size_g ?? null;
+  const perServing = normalizeNutrition(input.nutrition_per_serving);
+  const statedPer100g = normalizeNutrition(input.nutrition_per_100g);
+  const resolvedPer100g = guardPanelBasis(input.name, {
+    nutrition_per_100g: statedPer100g,
+    nutrition_per_serving: perServing,
+    serving_size_g: servingSizeG,
+  });
   return {
     name: input.name.trim(),
     shelf_life_class: input.shelf_life_class ?? 'unknown',
     aliases: dedupeAliases(input.aliases ?? []),
-    nutrition_per_100g: normalizeNutrition(input.nutrition_per_100g),
-    serving_size_g: input.serving_size_g ?? null,
-    nutrition_per_serving: normalizeNutrition(input.nutrition_per_serving),
+    nutrition_per_100g: normalizeNutrition(resolvedPer100g),
+    serving_size_g: servingSizeG,
+    nutrition_per_serving: perServing,
     servings_per_container: input.servings_per_container ?? null,
     unit_model_hint: input.unit_model_hint ?? null,
     net_content_g: input.net_content_g ?? null,
@@ -2816,6 +2881,40 @@ function guardNegligible(
   if (!opts.asserting || opts.override === true) return;
   const refusal = checkNegligible(candidate);
   if (refusal) throw new ProductValidationError(negligibleRefusalMessage(candidate.name, refusal));
+}
+
+/**
+ * Resolve the `nutrition_per_100g` a write should actually store
+ * (specs/modules/kitchen.md § A panel means nothing without its basis): given
+ * the post-merge composite a door is about to write, derive per-100g from the
+ * serving basis when one exists, honour the caller's stated value when it
+ * doesn't, and throw a `ProductValidationError` (400) when a stated value
+ * contradicts a derivable one beyond tolerance. Every write door hands this
+ * the record it is ABOUT TO WRITE, exactly like `guardNegligible` — never the
+ * raw request body — so a two-step create-then-patch can't land an underived
+ * panel by splitting the serving basis and the per-100g across two requests.
+ */
+function guardPanelBasis(name: string, candidate: PanelBasisCandidate): Partial<NutritionPer100g> | null {
+  // § Panel operations belong in one implementation — coherence is checked on
+  // whichever raw serving capture is being written (a caller can state an
+  // internally-incoherent per-serving panel even if it's never derived to
+  // per-100g at all), and again on the resolved per-100g below. Both run
+  // through the SAME `validatePanelFields`, so there is one set of rules, not
+  // one per basis.
+  if (candidate.nutrition_per_serving) {
+    const servingIssues = validatePanelFields(candidate.nutrition_per_serving);
+    if (servingIssues.length > 0) throw new ProductValidationError(panelValidationMessage(name, servingIssues));
+  }
+
+  const resolved = resolvePanelBasis(candidate);
+  if (resolved.contradictions.length > 0) {
+    throw new ProductValidationError(panelBasisRefusalMessage(name, resolved.contradictions));
+  }
+  if (resolved.nutrition_per_100g) {
+    const issues = validatePanelFields(resolved.nutrition_per_100g);
+    if (issues.length > 0) throw new ProductValidationError(panelValidationMessage(name, issues));
+  }
+  return resolved.nutrition_per_100g;
 }
 
 /** The guard's view of a body that states the whole record (create / replace). */

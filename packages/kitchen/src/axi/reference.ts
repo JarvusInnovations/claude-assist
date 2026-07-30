@@ -204,6 +204,11 @@ export const COMMAND_GROUPS: CommandGroup[] = [
         usage: "products archive <ulid>",
         summary: "retire a product (soft — still resolvable by ulid so linked items keep working)",
       },
+      {
+        usage: "products panel-basis-report",
+        summary:
+          "READ-ONLY: products whose stored per-100g disagrees with the value derivable from their own serving basis (nutrition_per_serving ÷ serving_size_g × 100) beyond an 8% + 0.6 per-field tolerance. Never rewrites anything — flagged rows need `products update <ulid>` once you know which number is right",
+      },
       { usage: "lexicon list [--store S] [--limit N]", summary: "receipt-line → product mappings per store" },
       {
         usage: "lexicon add --store S --line-text T --product-ulid U [--package-size S] [--shelf-life C]",
