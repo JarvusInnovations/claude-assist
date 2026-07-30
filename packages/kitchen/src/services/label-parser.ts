@@ -10,6 +10,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import type { FastifyBaseLogger } from 'fastify';
 import type { InventoryPhotoPart, NutritionPer100g, ParsedLabel, ShelfLifeClass } from '../inventory-types.js';
 import { SHELF_LIFE_CLASSES } from '../inventory-types.js';
+import { derivePer100gFromServing as derivePer100g } from '../nutrition-panel.js';
 
 class LabelParseError extends Error {
   constructor(message: string) {
@@ -280,26 +281,18 @@ function parsePanel(raw: unknown): Partial<NutritionPer100g> | null {
  * arithmetic. Returns null when the raw serving data isn't usable (no
  * serving_size_g or no per-serving panel) — the caller then falls back to the
  * model's transcribed per-100g column, when one was printed.
+ *
+ * Re-exported (not reimplemented) from `nutrition-panel.ts` — the panel-basis
+ * guard wired at the product write doors (services/inventory.ts) calls the
+ * SAME function, so "derive at every door" and "the label path is
+ * behaviourally unchanged" are one code path, not two kept in sync by hand
+ * (specs/modules/kitchen.md § Panel operations belong in one implementation).
  */
 export function derivePer100gFromServing(
   servingSizeG: number | null,
   perServing: Partial<NutritionPer100g> | null
 ): Partial<NutritionPer100g> | null {
-  if (!servingSizeG || servingSizeG <= 0 || !perServing) return null;
-  const factor = 100 / servingSizeG;
-  const scale = (v: number | null | undefined): number | null =>
-    typeof v === 'number' && Number.isFinite(v) ? Math.round(v * factor * 10) / 10 : null;
-  return {
-    calories: scale(perServing.calories),
-    protein_g: scale(perServing.protein_g),
-    fat_g: scale(perServing.fat_g),
-    sat_fat_g: scale(perServing.sat_fat_g),
-    carbs_g: scale(perServing.carbs_g),
-    sugar_g: scale(perServing.sugar_g),
-    added_sugar_g: scale(perServing.added_sugar_g),
-    fiber_g: scale(perServing.fiber_g),
-    sodium_mg: scale(perServing.sodium_mg),
-  };
+  return derivePer100g(servingSizeG, perServing);
 }
 
 function numOrNull(value: unknown): number | null {

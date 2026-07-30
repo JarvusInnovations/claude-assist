@@ -700,6 +700,16 @@ export const registerInventoryRoutes: FastifyPluginAsync<InventoryRoutesConfig> 
     }
   );
 
+  // GET /kitchen/products/panel-basis-report - the legacy sweep
+  // (specs/modules/kitchen.md § A panel means nothing without its basis): a
+  // READ-ONLY consistency report over already-stored products whose stated
+  // per-100g disagrees with the value derivable from their own serving basis.
+  // Never rewrites anything.
+  fastify.get('/kitchen/products/panel-basis-report', async () => {
+    const findings = await inventory.panelBasisReport();
+    return { findings, count: findings.length };
+  });
+
   fastify.get<{ Params: { ulid: string }; Querystring: { store?: string; limit?: string } }>(
     '/kitchen/products/:ulid/prices',
     {
