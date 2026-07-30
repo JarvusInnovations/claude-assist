@@ -2240,6 +2240,164 @@ describe('consume from inventory (claude-assist#110 — one-tap known-macro log 
 
     expect(entries.records.size).toBe(1); // no duplicate entry
   });
+
+  describe('counted purchased items (product-panel channel, plans/consume-counted-purchased.md)', () => {
+    // One can's TRUE edible weight is 142g — deliberately far from both wrong
+    // derivations a naive implementation might reach for instead:
+    //   - the label's PRINTED SERVING (85g) — smaller than a whole can.
+    //   - net_content_g ÷ units_total (460 / 3 ≈ 153.3g) — a 3-can pack's
+    //     total content per can, which INCLUDES packing liquid a real can
+    //     doesn't hold in its edible portion.
+    // per_100g × 1.42 must be exactly what lands on the entry; either wrong
+    // derivation above would silently produce a different number.
+    const PER_100G = {
+      calories: 120,
+      protein_g: 26,
+      fat_g: 1,
+      sat_fat_g: 0.3,
+      carbs_g: 0,
+      sugar_g: 0,
+      added_sugar_g: 0,
+      fiber_g: 0,
+      sodium_mg: 300,
+    };
+    const UNIT_EDIBLE_G = 142;
+
+    async function cannedTuna(pipeline: InventoryPipeline, overrides: Record<string, unknown> = {}) {
+      const { product } = await pipeline.upsertProduct({
+        name: 'Canned tuna 3-pack',
+        shelf_life_class: 'pantry',
+        nutrition_per_100g: PER_100G,
+        nutrition_source: 'reference',
+        unit_edible_g: UNIT_EDIBLE_G,
+        serving_size_g: 85, // the label's serving — deliberately NOT the unit weight
+        net_content_g: 460, // 3-can pack total content, INCLUDING packing liquid
+        ...overrides,
+      });
+      const { item } = await pipeline.createItem({
+        product_ulid: product.ulid,
+        raw_label: 'Canned tuna 3-pack',
+        shelf_life_class: 'pantry',
+        acquired_at: '2026-07-01',
+        units_total: 3,
+      });
+      return { product, item };
+    }
+
+    it('consumes a counted PURCHASED item with no derivation via the product-panel channel: per_100g × unit_edible_g ÷ 100, integer decrement', async () => {
+      const { pipeline } = harness();
+      const { item } = await cannedTuna(pipeline);
+
+      const result = await pipeline.consume(item.ulid, { ulid: ULID(80) });
+      expect(result).not.toBeNull();
+      expect(result!.entry.source).toBe('reselect');
+      expect(result!.entry.status).toBe('estimated');
+      expect(result!.entry.confidence).toBe(1); // deterministic, not an estimate
+      // NEITHER the 85g-serving figure (120 × 0.85 = 102) NOR the
+      // net_content÷units_total figure (120 × 1.5333… ≈ 184) — the stated
+      // unit_edible_g (142g) is what must land.
+      expect(result!.entry.calories).toBe(170.4); // round1(120 × 1.42)
+      expect(result!.entry.protein_g).toBe(36.9); // round1(26 × 1.42)
+      expect(result!.entry.fat_g).toBe(1.4); // round1(1 × 1.42)
+      expect(result!.entry.sat_fat_g).toBe(0.4); // round1(0.3 × 1.42)
+      expect(result!.entry.sodium_mg).toBe(426); // round1(300 × 1.42)
+
+      expect(result!.item.units_remaining).toBe(2);
+      expect(result!.item.state).toBe('stocked');
+    });
+
+    it('quantity: n scales the product-panel macros and decrements n units', async () => {
+      const { pipeline } = harness();
+      const { item } = await cannedTuna(pipeline);
+
+      const result = await pipeline.consume(item.ulid, { ulid: ULID(81), quantity: 2 });
+      expect(result!.entry.calories).toBe(340.8); // round1(170.4 × 2)
+      expect(result!.entry.sodium_mg).toBe(852); // round1(426 × 2)
+      expect(result!.item.units_remaining).toBe(1);
+    });
+
+    it('a `reference` nutrition_source qualifies — deterministic beats the estimator for a known food', async () => {
+      const { pipeline } = harness();
+      const { item } = await cannedTuna(pipeline, { nutrition_source: 'reference' });
+
+      const result = await pipeline.consume(item.ulid, { ulid: ULID(82) });
+      expect(result!.entry.calories).toBe(170.4);
+      expect(result!.entry.confidence).toBe(1); // no estimator confidence attached
+    });
+
+    it('an `estimate`-sourced panel does NOT qualify — a guess stays a guess, even if complete + unit_edible_g is stated', async () => {
+      const { pipeline } = harness();
+      const { item } = await cannedTuna(pipeline, { nutrition_source: 'estimate' });
+      await expect(pipeline.consume(item.ulid, { ulid: ULID(83) })).rejects.toThrow(ConsumeIneligibleError);
+    });
+
+    it('a counted item whose product has a complete panel but NO unit_edible_g is ConsumeIneligibleError', async () => {
+      const { pipeline } = harness();
+      const { item } = await cannedTuna(pipeline, { unit_edible_g: null });
+      await expect(pipeline.consume(item.ulid, { ulid: ULID(84) })).rejects.toThrow(ConsumeIneligibleError);
+    });
+
+    it('a counted item whose product panel is INCOMPLETE (one field unknown) is ConsumeIneligibleError even with unit_edible_g stated', async () => {
+      const { pipeline } = harness();
+      const { item } = await cannedTuna(pipeline, {
+        nutrition_per_100g: { ...PER_100G, sodium_mg: undefined },
+      });
+      await expect(pipeline.consume(item.ulid, { ulid: ULID(85) })).rejects.toThrow(ConsumeIneligibleError);
+    });
+
+    it('a purchased FRACTION item is refused regardless of panel completeness — no natural unit to log', async () => {
+      const { pipeline } = harness();
+      const { product } = await pipeline.upsertProduct({
+        name: 'Bulk canned tomatoes',
+        shelf_life_class: 'pantry',
+        nutrition_per_100g: PER_100G,
+        nutrition_source: 'label',
+        unit_edible_g: UNIT_EDIBLE_G, // stated on the product, but irrelevant — the ITEM is fraction-modeled
+      });
+      const { item } = await pipeline.createItem({
+        product_ulid: product.ulid,
+        raw_label: 'Bulk canned tomatoes tub',
+        shelf_life_class: 'pantry',
+        acquired_at: '2026-07-01',
+        on_hand_fraction: 1,
+      });
+      await expect(pipeline.consume(item.ulid, { ulid: ULID(86) })).rejects.toThrow(ConsumeIneligibleError);
+    });
+
+    it('a derived item with a resolvable recipe ignores a linked product entirely — derived-item consume is unchanged by this channel', async () => {
+      // Pins the "byte-identical" requirement: even when the derived item is
+      // ALSO linked to a complete-panel, unit_edible_g-bearing product, the
+      // recipe channel is tried FIRST and wins outright — the product-panel
+      // channel is never consulted.
+      const { pipeline } = harness();
+      const { product } = await pipeline.upsertProduct({
+        name: 'Overnight oats jar (retail)',
+        shelf_life_class: 'prepared',
+        nutrition_per_100g: PER_100G,
+        nutrition_source: 'label',
+        unit_edible_g: 200, // would produce a totally different number if consulted
+      });
+      const { item: oats } = await pipeline.createItem({ raw_label: 'Rolled oats', shelf_life_class: 'pantry', acquired_at: '2026-07-01' });
+      const { derived } = await pipeline.convert({
+        sources: [{ item_ulid: oats.ulid }],
+        derived: {
+          name: 'Overnight oats jar',
+          shelf_life_class: 'prepared',
+          units_total: 1,
+          recipe_ulid: RECIPE.ulid,
+        },
+        at: '2026-07-17',
+      });
+      await pipeline.reconcileItem(derived.ulid, { product_ulid: product.ulid });
+
+      const result = await pipeline.consume(derived.ulid, { ulid: ULID(87) });
+      // Exactly the recipe total (§ per-unit recipe contract), never the
+      // product-panel figure (120 × 2 = 240) — same numbers as the
+      // plain derived-item test above.
+      expect(result!.entry.calories).toBe(1092);
+      expect(result!.entry.protein_g).toBe(61.2);
+    });
+  });
 });
 
 describe('stated-weight consumption (§ Stated-weight consumption — eating is not a correction)', () => {

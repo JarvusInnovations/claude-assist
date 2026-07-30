@@ -143,7 +143,7 @@ export const COMMAND_GROUPS: CommandGroup[] = [
       },
       {
         usage: "inventory consume <item-ulid> [--quantity N] [--at DATE] [--ulid ENTRY_ULID]",
-        summary: "one-tap: log a consumption entry with the item's EXACT known macros (no model call) and deplete it, in ONE atomic step; only recipe-linked derived items qualify (else 400); idempotent on --ulid",
+        summary: "one-tap: log a consumption entry with the item's EXACT known macros (no model call) and deplete it, in ONE atomic step; qualifies via EITHER of two channels — a recipe-linked derived item, or a counted purchased item whose linked product has a complete nutrition panel + unit_edible_g (neither channel covers a fraction/divisible item — use 'eat' there); else 400; idempotent on --ulid",
       },
       {
         usage: "inventory eat <item-ulid> [--grams N|--fraction F] [--entry-ulid ENTRY_ULID] [--at DATE]",

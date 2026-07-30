@@ -669,7 +669,7 @@ var COMMAND_GROUPS = [
       },
       {
         usage: "inventory consume <item-ulid> [--quantity N] [--at DATE] [--ulid ENTRY_ULID]",
-        summary: "one-tap: log a consumption entry with the item's EXACT known macros (no model call) and deplete it, in ONE atomic step; only recipe-linked derived items qualify (else 400); idempotent on --ulid"
+        summary: "one-tap: log a consumption entry with the item's EXACT known macros (no model call) and deplete it, in ONE atomic step; qualifies via EITHER of two channels \u2014 a recipe-linked derived item, or a counted purchased item whose linked product has a complete nutrition panel + unit_edible_g (neither channel covers a fraction/divisible item \u2014 use 'eat' there); else 400; idempotent on --ulid"
       },
       {
         usage: "inventory eat <item-ulid> [--grams N|--fraction F] [--entry-ulid ENTRY_ULID] [--at DATE]",
@@ -3111,7 +3111,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "adc66ce" : "dev";
+var VERSION = true ? "411b66a" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)
