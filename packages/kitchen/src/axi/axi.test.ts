@@ -19,6 +19,7 @@ import {
   assertEventType,
   assertMoveDestination,
   buildDismissBody,
+  buildEatBody,
   INVENTORY_HELP,
 } from "./commands/inventory.js";
 import { buildProductWriteBody, PRODUCTS_HELP } from "./commands/products.js";
@@ -417,6 +418,39 @@ describe("convert made-food shelf-life guard (CLI)", () => {
       expect(() => assertConvertShelfLifeClass(okClass)).not.toThrow();
     }
     expect(() => assertConvertShelfLifeClass(undefined)).not.toThrow();
+  });
+});
+
+describe("stated-weight consumption ('eat') is reachable from the CLI (§ Stated-weight consumption)", () => {
+  it("documents 'eat' in the generated reference and the inventory help, and draws the reconcile boundary", () => {
+    const text = commandReferenceText();
+    expect(text).toContain("inventory eat <item-ulid>");
+    expect(INVENTORY_HELP).toContain("eat <item-ulid>");
+    // The whole defect this closes: a caller with a measured weight reached
+    // for recount because it was the only thing that moved the number. The
+    // help text now names the boundary at the point a caller is choosing.
+    expect(INVENTORY_HELP.toLowerCase()).toContain("recount is not how you log eating");
+    expect(INVENTORY_HELP).toContain("'eat' is STATED-WEIGHT CONSUMPTION");
+  });
+
+  it("buildEatBody requires exactly one of --grams/--fraction (never both, never neither)", () => {
+    expect(() => buildEatBody({})).toThrow(AxiError);
+    expect(() => buildEatBody({ grams: "50", fraction: "0.3" })).toThrow(AxiError);
+    expect(buildEatBody({ grams: "50" })).toEqual({ amount_g: 50 });
+    expect(buildEatBody({ fraction: "0.3" })).toEqual({ fraction: 0.3 });
+  });
+
+  it("buildEatBody passes entry-ulid and --at through untouched", () => {
+    const body = buildEatBody({ fraction: "0.25", "entry-ulid": "01JZZZZZZZZZZZZZZZZZZZZZZZ", at: "2026-07-19" });
+    expect(body.fraction).toBe(0.25);
+    expect(body.entry_ulid).toBe("01JZZZZZZZZZZZZZZZZZZZZZZZ");
+    expect(String(body.at)).toStartWith("2026-07-19T12:00:00"); // bare-date local-noon coercion
+  });
+
+  it("buildEatBody range-validates fraction and grams client-side", () => {
+    expect(() => buildEatBody({ fraction: "1.5" })).toThrow(AxiError);
+    expect(() => buildEatBody({ fraction: "-0.1" })).toThrow(AxiError);
+    expect(() => buildEatBody({ grams: "-5" })).toThrow(AxiError);
   });
 });
 

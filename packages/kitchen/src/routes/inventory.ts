@@ -19,6 +19,8 @@
  *   POST   /kitchen/inventory/:ulid/merge  - fold a duplicate item into a survivor
  *   POST   /kitchen/inventory/convert      - prep transform: decrement source(s), create a derived item
  *   POST   /kitchen/inventory/:ulid/consume - one-tap known-macro log + deplete, ONE atomic operation
+ *   POST   /kitchen/inventory/:ulid/consumed - stated-weight consumption: a KNOWN amount eaten off a
+ *                                              divisible item — a consumption, never a reconcile
  * Products & lexicon (agentic seed + reads):
  *   POST   /kitchen/products               - UPSERTS on an explicit ulid or the normalized name (201/200/409)
  *   GET    /kitchen/products               - live products (archived excluded)
@@ -48,6 +50,9 @@ import {
   ProductConflictError,
   ProductValidationError,
   ReconcileValidationError,
+  StatedConsumeConflictError,
+  StatedConsumeNotConfiguredError,
+  StatedConsumeValidationError,
   type InventoryPipeline,
 } from '../services/inventory.js';
 import {
@@ -63,6 +68,7 @@ import {
   type InventoryState,
   type ReconcileInput,
   type ShelfLifeClass,
+  type StatedConsumeInput,
 } from '../inventory-types.js';
 
 export interface InventoryRoutesConfig {
@@ -560,6 +566,48 @@ export const registerInventoryRoutes: FastifyPluginAsync<InventoryRoutesConfig> 
     }
   );
 
+  // ── Stated-weight consumption (§ Stated-weight consumption) ──────────────────
+  //
+  // A KNOWN weight or fraction eaten off an open, divisible item — a
+  // CONSUMPTION, never `PATCH /inventory/:ulid` (reconcile is an observation
+  // and carries no consumption claim by design). Distinct from `/consume`
+  // above (a one-tap action for an item whose macros AND portion are already
+  // both known); this is the ordinary case where a caller measured what left
+  // the container.
+
+  fastify.post<{ Params: { ulid: string }; Body: StatedConsumeInput }>(
+    '/kitchen/inventory/:ulid/consumed',
+    { schema: { body: STATED_CONSUME_BODY_SCHEMA } },
+    async (request, reply) => {
+      try {
+        const result = await inventory.consumeStatedAmount(request.params.ulid, request.body);
+        if (!result) {
+          reply.status(404);
+          return { error: 'Inventory item not found' };
+        }
+        return result;
+      } catch (err) {
+        if (err instanceof InvalidTransitionError) {
+          reply.status(409);
+          return { error: err.message };
+        }
+        if (err instanceof StatedConsumeConflictError) {
+          reply.status(409);
+          return { error: err.message };
+        }
+        if (err instanceof StatedConsumeValidationError) {
+          reply.status(400);
+          return { error: err.message };
+        }
+        if (err instanceof StatedConsumeNotConfiguredError) {
+          reply.status(503);
+          return { error: err.message };
+        }
+        throw err;
+      }
+    }
+  );
+
   // ── Products ──────────────────────────────────────────────────────────────────
 
   // POST /kitchen/products - UPSERTS (specs/modules/kitchen.md § Product
@@ -808,6 +856,24 @@ const CONSUME_BODY_SCHEMA = {
     // item always fully finishes in one consume, so this must be 1/omitted
     // there (enforced in the pipeline, which has the item's on-hand model).
     quantity: { type: 'integer', minimum: 1 },
+    at: { type: 'string' },
+  },
+} as const;
+
+const STATED_CONSUME_BODY_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    // Exactly one of amount_g/fraction is required — enforced in the
+    // pipeline, which knows whether the item's linked product carries a
+    // mass basis (net_content_g) for amount_g.
+    amount_g: { type: 'number', exclusiveMinimum: 0 },
+    fraction: { type: 'number', exclusiveMinimum: 0, maximum: 1 },
+    // An ALREADY-LOGGED consuming journal entry's ulid — also the
+    // idempotency key for the atomic link+deplete (§ Stated-weight
+    // consumption). Omitted, the depletion still records; it just isn't
+    // linked to one specific entry.
+    entry_ulid: { type: 'string', pattern: ULID_PATTERN.source },
     at: { type: 'string' },
   },
 } as const;

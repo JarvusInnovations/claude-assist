@@ -781,6 +781,52 @@ export interface ConsumeResult {
   created: boolean;
 }
 
+// ── Stated-weight consumption (§ Stated-weight consumption) ─────────────────
+
+/**
+ * What a client POSTs to `/inventory/:ulid/consumed` — a KNOWN weight or
+ * fraction eaten off an open, DIVISIBLE (fraction-modeled) item. Distinct from
+ * `POST /inventory/:ulid/consume` (§ Consume from inventory), which is a
+ * one-tap action for an item whose macros AND portion are already both known:
+ * this is for the ordinary case where a caller measured what left the
+ * container, but the item itself carries no such provenance, and reaching for
+ * `PATCH /inventory/:ulid` (§ Reconcile) would misrecord an eaten amount as an
+ * observation that the ledger was wrong.
+ *
+ * Exactly one of `amount_g` / `fraction` is required. Both name a DECREMENT —
+ * the amount EATEN, mirroring `tossed`'s "amount tossed" fraction semantics
+ * (§ API `POST /inventory/:ulid/events`), never `opened`'s absolute-remainder
+ * one. `amount_g` needs the linked product's `net_content_g` as a mass basis;
+ * where it is absent the request is refused (`400`) rather than scaled
+ * against an invented denominator — pass `fraction` directly instead.
+ *
+ * `entry_ulid`, when supplied, is an ALREADY-LOGGED consuming journal entry's
+ * ulid (this endpoint never creates one): the depletion and the link
+ * (`kitchen.entries.inventory_item_ulid`) commit in ONE transaction, and it
+ * doubles as the idempotency key for a retry — a replay neither re-links nor
+ * re-depletes. Omitted, the depletion still records as consumption; it is
+ * simply not linked to one specific journal entry.
+ */
+export interface StatedConsumeInput {
+  amount_g?: number;
+  fraction?: number;
+  entry_ulid?: string;
+  at?: string;
+}
+
+/** Response of `POST /inventory/:ulid/consumed`. */
+export interface StatedConsumeResult {
+  item: InventoryItemView;
+  /** The linked consuming entry, when `entry_ulid` was supplied; else null. */
+  entry: EntryRecord | null;
+  /**
+   * True only when this call freshly linked `entry_ulid` to the item — false
+   * when no `entry_ulid` was supplied, and false on an idempotent replay
+   * (found already linked; neither side was re-applied).
+   */
+  linked: boolean;
+}
+
 // ── Price history (§ Price history) ──────────────────────────────────────────
 
 /**

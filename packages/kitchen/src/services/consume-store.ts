@@ -1,12 +1,20 @@
 /**
- * Cross-table atomic write for "consume from inventory" (claude-assist#110,
- * specs/modules/kitchen.md § Consume from inventory): ONE transaction that
- * both (a) idempotently inserts a consumption entry carrying pre-known
- * macros and (b) depletes the source inventory item. A failure of either
- * side must leave NEITHER applied — this is the hard requirement the plan
- * calls out, and it is deliberately NOT built by composing
- * `EntryStore.insertIfAbsent` + `InventoryStore.updateItemState` as two
- * separate calls (that gap — separate writes with no shared transaction — was
+ * Cross-table atomic writes that both touch `kitchen.entries` AND
+ * `kitchen.inventory_items` in ONE transaction:
+ *
+ * - `consume()` — "consume from inventory" (claude-assist#110,
+ *   specs/modules/kitchen.md § Consume from inventory): idempotently INSERTS
+ *   a consumption entry carrying pre-known macros and depletes the source
+ *   item.
+ * - `linkConsumption()` — "stated-weight consumption" (specs/modules/
+ *   kitchen.md § Stated-weight consumption): LINKS an already-logged entry
+ *   (`kitchen.entries.inventory_item_ulid`) to the item it depleted and
+ *   applies the depletion, without creating the entry.
+ *
+ * Both exist because a failure of either side must leave NEITHER applied —
+ * the hard requirement is the same one, restated for a second write shape.
+ * Neither is built by composing `EntryStore` + `InventoryStore` calls as two
+ * separate writes (that gap — separate writes with no shared transaction — was
  * flagged in `convert`'s review, claude-assist#116, and later closed there too:
  * see `InventoryStore.applyConversion`, claude-assist#156. Every multi-write
  * inventory event now holds the guarantee by this same mechanism).
@@ -14,8 +22,8 @@
  * `kitchen.entries` and `kitchen.inventory_items` are each owned by their
  * own store interface (EntryStore / InventoryStore) for testability and
  * encapsulation, but both live in the same `kitchen` schema behind the same
- * connection pool, so a single transaction can span them safely. This is the
- * ONE write path in the module that deliberately crosses that boundary, and
+ * connection pool, so a single transaction can span them safely. This file is
+ * the ONLY place in the module that deliberately crosses that boundary, and
  * it exists only for this atomicity requirement — everywhere else, entries
  * and inventory stay decoupled through their own interfaces.
  */
@@ -46,6 +54,17 @@ export interface ConsumeWriteResult {
   created: boolean;
 }
 
+/** Result of `linkConsumption` — the stated-weight-consumption atomic write. */
+export interface LinkConsumptionResult {
+  entry: EntryRecord;
+  item: InventoryItemRecord;
+  /**
+   * False when the entry was ALREADY linked to `itemUlid` — a pure replay,
+   * neither side re-applied.
+   */
+  linked: boolean;
+}
+
 export interface ConsumeStore {
   /**
    * Atomically insert `entry` (idempotent on `entry.ulid`) and, only when
@@ -65,6 +84,23 @@ export interface ConsumeStore {
    * depletion already drove the item terminal.
    */
   peekEntry(entryUlid: string): Promise<EntryRecord | null>;
+
+  /**
+   * The stated-weight-consumption atomic write (specs/modules/kitchen.md
+   * § Stated-weight consumption): link an ALREADY-EXISTING entry
+   * (`entryUlid`, journaled separately by the caller — this never inserts
+   * one) to `itemUlid` and apply `itemUpdate`, in ONE transaction. Both
+   * writes commit together or neither does.
+   *
+   * Idempotent on `entryUlid`: when the entry is already linked to
+   * `itemUlid`, this is a pure read (`linked: false`) that reapplies
+   * neither write. The pipeline is expected to have already ruled out the
+   * conflicting case (the entry linked to a DIFFERENT item) and the missing
+   * case (no such entry) before calling this — see
+   * `InventoryPipeline.consumeStatedAmount` — so those are should-never-
+   * happen races here, surfaced as a plain `Error`, not a typed one.
+   */
+  linkConsumption(entryUlid: string, itemUlid: string, itemUpdate: ItemStateUpdate): Promise<LinkConsumptionResult>;
 }
 
 export class PgConsumeStore implements ConsumeStore {
@@ -138,6 +174,73 @@ export class PgConsumeStore implements ConsumeStore {
         throw new Error(`consume: failed to update inventory item ${itemUlid}`);
       }
       return { entry: rowToEntry(inserted[0]!), item: rowToItem(updatedItem), created: true };
+    });
+  }
+
+  async linkConsumption(
+    entryUlid: string,
+    itemUlid: string,
+    itemUpdate: ItemStateUpdate
+  ): Promise<LinkConsumptionResult> {
+    return this.sql.begin(async (rawTx) => {
+      const tx = rawTx as unknown as postgres.Sql;
+
+      // Lock the entry row for the duration of the transaction so a
+      // near-simultaneous replay can't race this read against the UPDATE
+      // below (mirrors `consume`'s ON CONFLICT DO NOTHING idempotency net,
+      // restated for an UPDATE rather than an INSERT).
+      const [entryRow] = await tx`SELECT * FROM kitchen.entries WHERE ulid = ${entryUlid} FOR UPDATE`;
+      if (!entryRow) {
+        // The pipeline already checked this exists before calling in —
+        // reaching here is a should-never-happen race, not a caller error.
+        throw new Error(`linkConsumption: entry ${entryUlid} not found mid-transaction`);
+      }
+      const existingLink = entryRow.inventory_item_ulid as string | null;
+      if (existingLink && existingLink !== itemUlid) {
+        // Ditto: the pipeline's pre-check should have caught this.
+        throw new Error(`linkConsumption: entry ${entryUlid} already linked to a different item (${existingLink})`);
+      }
+
+      if (existingLink === itemUlid) {
+        // Replay: already linked to THIS item. Read both rows back
+        // UNCHANGED — no second deplete.
+        const [currentItem] = await tx`SELECT * FROM kitchen.inventory_items WHERE ulid = ${itemUlid}`;
+        if (!currentItem) {
+          throw new Error(`linkConsumption: replay lookup failed for item ${itemUlid}`);
+        }
+        return { entry: rowToEntry(entryRow), item: rowToItem(currentItem), linked: false };
+      }
+
+      const [current] = await tx`SELECT * FROM kitchen.inventory_items WHERE ulid = ${itemUlid}`;
+      if (!current) {
+        throw new Error(`linkConsumption: inventory item ${itemUlid} not found mid-transaction`);
+      }
+      const [linkedEntryRow] = await tx`
+        UPDATE kitchen.entries SET inventory_item_ulid = ${itemUlid}
+        WHERE ulid = ${entryUlid}
+        RETURNING *
+      `;
+      if (!linkedEntryRow) {
+        throw new Error(`linkConsumption: failed to link entry ${entryUlid}`);
+      }
+      const [updatedItem] = await tx`
+        UPDATE kitchen.inventory_items SET
+          state = ${itemUpdate.state},
+          closed_at = ${itemUpdate.closed_at !== undefined ? itemUpdate.closed_at : (current.closed_at as Date | null)},
+          on_hand_fraction = ${itemUpdate.on_hand_fraction ?? (current.on_hand_fraction as number)},
+          notes = ${itemUpdate.notes !== undefined ? itemUpdate.notes : (current.notes as string | null)}
+          -- Stated-weight consumption only ever depletes a fraction-modeled
+          -- item and appends a provenance note: it never touches opened_at,
+          -- units_remaining, eat_by, shelf_life_class, storage_moved_at,
+          -- unit_seal, needs_info, or product_ulid, so those columns are
+          -- deliberately absent here rather than restated as no-ops.
+        WHERE ulid = ${itemUlid}
+        RETURNING *
+      `;
+      if (!updatedItem) {
+        throw new Error(`linkConsumption: failed to update inventory item ${itemUlid}`);
+      }
+      return { entry: rowToEntry(linkedEntryRow), item: rowToItem(updatedItem), linked: true };
     });
   }
 }

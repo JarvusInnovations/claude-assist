@@ -120,7 +120,7 @@ export const COMMAND_GROUPS: CommandGroup[] = [
       },
       {
         usage: "inventory recount <ulid> [--fraction F] [--units-remaining N] [--units-total N] [--uncounted] [--unit-seal individual|shared] [--state stocked|open] [--opened-at DATE] [--shelf-life C] [--needs-info|--no-needs-info] [--product-ulid U|--unlink-product] [--notes T]",
-        summary: "RECONCILE the ledger to observed reality (\"it's actually 75% full\", \"really 2 of 3 cans\", \"never opened\", \"this was always a fridge item\", \"this is that product\") — a correction, NOT a consumption event; never invents a clock, re-derives eat_by (never settable), can reclassify the unit model + seal, corrects the class against the EXISTING anchor (a real storage move is 'event ... moved' instead), clears or re-queues needs-info without a label scan, re-points product_ulid, and --state can resurrect a mis-closed item",
+        summary: "RECONCILE the ledger to observed reality (\"it's actually 75% full\", \"really 2 of 3 cans\", \"never opened\", \"this was always a fridge item\", \"this is that product\") — a correction, NOT a consumption event; never invents a clock, re-derives eat_by (never settable), can reclassify the unit model + seal, corrects the class against the EXISTING anchor (a real storage move is 'event ... moved' instead), clears or re-queues needs-info without a label scan, re-points product_ulid, and --state can resurrect a mis-closed item. If you MEASURED an amount you ate, that is 'inventory eat', never this — a recount carries no consumption claim",
       },
       {
         usage: "inventory dismiss <ulid> [--non-inventory]",
@@ -144,6 +144,10 @@ export const COMMAND_GROUPS: CommandGroup[] = [
       {
         usage: "inventory consume <item-ulid> [--quantity N] [--at DATE] [--ulid ENTRY_ULID]",
         summary: "one-tap: log a consumption entry with the item's EXACT known macros (no model call) and deplete it, in ONE atomic step; only recipe-linked derived items qualify (else 400); idempotent on --ulid",
+      },
+      {
+        usage: "inventory eat <item-ulid> [--grams N|--fraction F] [--entry-ulid ENTRY_ULID] [--at DATE]",
+        summary: "STATED-WEIGHT CONSUMPTION: a KNOWN weight or fraction eaten off an open DIVISIBLE item — a consumption, never a recount. Fraction-modeled items only (400 on a counted one — use finished-unit/consume there). Exactly one of --grams/--fraction; --grams needs the linked product's net_content_g and is REFUSED (400) without one, never guessed — pass --fraction instead. Reaching/passing zero goes terminal 'finished' (consumed, never tossed); a positive remainder stays open. --entry-ulid links an ALREADY-LOGGED consuming entry atomically with the deplete, and doubles as the idempotency key for a retry",
       },
     ],
   },

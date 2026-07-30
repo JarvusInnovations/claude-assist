@@ -1,9 +1,10 @@
 ---
-status: planned
+status: done
 depends: [kitchen-ledger-integrity, item-corrections]
 specs:
   - specs/modules/kitchen.md
-issues: []
+issues: [172]
+pr: 173
 ---
 
 # Plan: stated-weight consumption — eating a measured amount is not a correction
@@ -85,20 +86,20 @@ Both under-report in the direction nobody audits.
 
 ## Validation
 
-- [ ] `bun run test`, `bun run build`, `bun run type-check:axi`, `bun run
+- [x] `bun run test`, `bun run build`, `bun run type-check:axi`, `bun run
       check:skills` green.
-- [ ] A stated weight off an open divisible item decrements by that amount and is
+- [x] A stated weight off an open divisible item decrements by that amount and is
       recorded as **consumption**, not a correction.
-- [ ] With a consuming entry ULID, depletion and link commit atomically; a
+- [x] With a consuming entry ULID, depletion and link commit atomically; a
       fault-injection test proves neither lands on a mid-transaction failure.
-- [ ] Without one, the consumption still records.
-- [ ] Exact-or-over-zero goes terminal `finished`; a positive remainder leaves the
+- [x] Without one, the consumption still records.
+- [x] Exact-or-over-zero goes terminal `finished`; a positive remainder leaves the
       item open.
-- [ ] A terminal item never appears in waste telemetry from this path.
-- [ ] An item whose product has no `net_content_g` accepts a fraction and is given
+- [x] A terminal item never appears in waste telemetry from this path.
+- [x] An item whose product has no `net_content_g` accepts a fraction and is given
       **no** invented gram basis.
-- [ ] Replaying the same idempotency key does not double-deplete.
-- [ ] Reconcile's behaviour is unchanged; its help text now draws the boundary.
+- [x] Replaying the same idempotency key does not double-deplete.
+- [x] Reconcile's behaviour is unchanged; its help text now draws the boundary.
 
 ## Risks / unknowns
 
@@ -114,4 +115,72 @@ Both under-report in the direction nobody audits.
 
 ## Notes
 
+- **New endpoint, `POST /inventory/:ulid/consumed`, rather than a sixth
+  `POST /inventory/:ulid/events` type.** The event surface returns the bare
+  `InventoryItem`, and every event type shares one fraction semantic per
+  call; this event carries an optional atomic entry link and answers a
+  compound `{ item, entry, linked }`, which is exactly the reasoning that
+  already gave `/consume` its own endpoint rather than folding it into
+  `/events`. Two sibling one-off endpoints beat one endpoint whose response
+  shape depends on its body.
+- **The atomic write is a new method on the EXISTING `ConsumeStore`
+  (`linkConsumption`), not a new store class.** `ConsumeStore` already owns
+  the module's one deliberate crossing of the `EntryStore`/`InventoryStore`
+  boundary; a second crossing belongs in the same file under the same
+  rationale, not a parallel one. `MemoryConsumeStore` gained the mirror
+  implementation and reuses the existing `beforeItemWrite` fault-injection
+  hook — the same structural point (between the first write and the second)
+  in both atomic operations.
+- **Restricted to fraction-modeled items; a counted item is refused
+  (`400 StatedConsumeValidationError`), not silently accepted.** A counted
+  item already has an exact per-unit consumption verb (`finished-unit` /
+  `consume`); "grams eaten off a can 3-pack" has no meaning the ledger can
+  act on that isn't better served by the unit that came off.
+- **`entry_ulid` is the idempotency key exactly when it's supplied — no key
+  is invented for a bare depletion.** Mirrors `consume()`'s convention
+  (its `ulid` doubles as the key). Without `entry_ulid` a replay isn't
+  detected, same as `tossed`/`opened` today — a caller wanting idempotency
+  supplies the entry link.
+- **The amount is always a DELTA (the amount eaten), never a remainder.**
+  Both `amount_g` and `fraction` mirror `tossed`'s "amount tossed" semantic,
+  deliberately not `opened`'s absolute-remainder one — the two existing
+  fraction conventions in this module disagree, and the wrong one silently
+  picked here would have been a real footgun.
+- **The provenance note (`consumed <amount> <date>[ — entry <ulid>]`) was
+  chosen to structurally miss `TOSS_NOTE_SQL_PATTERN`/`parseTossNotes`
+  (which anchor on literal `tossed …`), so a terminal item closed by this
+  path is invisible to waste telemetry BY CONSTRUCTION** — no change to
+  `wasteReport`/`listTossedCandidates` was needed or made, and a test proves
+  it rather than asserting the absence of a code path.
+- **The genuinely open design question — whether arithmetic alone should
+  close an item — is resolved as the spec states**: exact-or-over-zero only,
+  positive remainder left alone. Building it surfaced no reason to prefer
+  the epsilon alternative; nothing here changes that risk's status as a
+  judgement call to revisit if near-zero ghosts show up in practice.
+- **The free-text resolver (`POST /inventory/events`) was deliberately left
+  untouched.** The plan's scope names the endpoint, the store method, and
+  the explicit CLI verb — not remark parsing. A remark like "ate 100g of the
+  hummus" still falls through to the existing opened/finished/tossed/recount
+  matching (or goes unmatched) rather than routing here. Filed as
+  [#172](https://github.com/JarvusInnovations/claude-assist/issues/172).
+- Verified before opening the PR: `bun run test` exit 0 across every
+  workspace package (kitchen 685 pass, 0 fail) — `mealbank.test.ts` hit its
+  known cold-`gitsheets`-invocation hook-timeout flake on the first full run
+  and passed clean on the immediate re-run, twice; per the task's own
+  known-quirk note this was not touched. `bun run build` exit 0 (14/14
+  packages). `bun run type-check:axi` clean. `bun run check:skills` reports
+  all four bundles and SKILL.mds up to date. Full diff and commit message
+  scanned for leaked names/identifiers — clean. Three unrelated CLI bundles
+  (`gmail-axi.mjs`, `google-axi.mjs`, `sessions-axi.mjs`) touched only by
+  `build:cli`'s git-describe VERSION stamp were reverted so the diff stays
+  scoped to kitchen.
+
 ## Follow-ups
+
+- Issue [#172](https://github.com/JarvusInnovations/claude-assist/issues/172)
+  — wire stated-weight consumption into the free-text event resolver
+  (`POST /inventory/events`), so a remark like "ate 100g of the hummus"
+  routes here instead of falling through to opened/finished/tossed/recount
+  matching or going unmatched. Needs its own parsing-policy decisions
+  (consumption vs. correction phrasing, grams vs. fraction extraction,
+  confidence threshold), deliberately out of this plan's scope.

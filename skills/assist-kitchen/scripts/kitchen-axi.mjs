@@ -647,7 +647,7 @@ var COMMAND_GROUPS = [
       },
       {
         usage: "inventory recount <ulid> [--fraction F] [--units-remaining N] [--units-total N] [--uncounted] [--unit-seal individual|shared] [--state stocked|open] [--opened-at DATE] [--shelf-life C] [--needs-info|--no-needs-info] [--product-ulid U|--unlink-product] [--notes T]",
-        summary: `RECONCILE the ledger to observed reality ("it's actually 75% full", "really 2 of 3 cans", "never opened", "this was always a fridge item", "this is that product") \u2014 a correction, NOT a consumption event; never invents a clock, re-derives eat_by (never settable), can reclassify the unit model + seal, corrects the class against the EXISTING anchor (a real storage move is 'event ... moved' instead), clears or re-queues needs-info without a label scan, re-points product_ulid, and --state can resurrect a mis-closed item`
+        summary: `RECONCILE the ledger to observed reality ("it's actually 75% full", "really 2 of 3 cans", "never opened", "this was always a fridge item", "this is that product") \u2014 a correction, NOT a consumption event; never invents a clock, re-derives eat_by (never settable), can reclassify the unit model + seal, corrects the class against the EXISTING anchor (a real storage move is 'event ... moved' instead), clears or re-queues needs-info without a label scan, re-points product_ulid, and --state can resurrect a mis-closed item. If you MEASURED an amount you ate, that is 'inventory eat', never this \u2014 a recount carries no consumption claim`
       },
       {
         usage: "inventory dismiss <ulid> [--non-inventory]",
@@ -670,6 +670,10 @@ var COMMAND_GROUPS = [
       {
         usage: "inventory consume <item-ulid> [--quantity N] [--at DATE] [--ulid ENTRY_ULID]",
         summary: "one-tap: log a consumption entry with the item's EXACT known macros (no model call) and deplete it, in ONE atomic step; only recipe-linked derived items qualify (else 400); idempotent on --ulid"
+      },
+      {
+        usage: "inventory eat <item-ulid> [--grams N|--fraction F] [--entry-ulid ENTRY_ULID] [--at DATE]",
+        summary: "STATED-WEIGHT CONSUMPTION: a KNOWN weight or fraction eaten off an open DIVISIBLE item \u2014 a consumption, never a recount. Fraction-modeled items only (400 on a counted one \u2014 use finished-unit/consume there). Exactly one of --grams/--fraction; --grams needs the linked product's net_content_g and is REFUSED (400) without one, never guessed \u2014 pass --fraction instead. Reaching/passing zero goes terminal 'finished' (consumed, never tossed); a positive remainder stays open. --entry-ulid links an ALREADY-LOGGED consuming entry atomically with the deplete, and doubles as the idempotency key for a retry"
       }
     ]
   },
@@ -1660,6 +1664,9 @@ var INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json]
                                              prep transform: create a derived item, optionally decrementing source(s)
   consume <item-ulid> [--quantity N] [--at DATE] [--ulid ENTRY_ULID]
                                              one-tap: log + deplete a known-macro item, ONE atomic step
+  eat <item-ulid> [--grams N|--fraction F] [--entry-ulid ENTRY_ULID] [--at DATE]
+                                             STATED-WEIGHT CONSUMPTION: a KNOWN amount eaten off an
+                                             open DIVISIBLE item \u2014 a consumption, NEVER a recount
 
   EVERY STATE AN ITEM CAN REACH, and the verb that reaches it:
 
@@ -1667,8 +1674,9 @@ var INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json]
                counted item lands after 'event \u2026 finished-unit' leaves units,
                and where 'recount --state stocked' puts a mis-opened item
     open       'event <ulid> opened'
-    finished   'event <ulid> finished' (whole item) or 'event \u2026 finished-unit'
-               on the LAST unit of a counted item. Terminal. Means CONSUMED \u2014
+    finished   'event <ulid> finished' (whole item), 'event \u2026 finished-unit'
+               on the LAST unit of a counted item, or 'eat' reaching (or
+               passing) zero on a divisible item. Terminal. Means CONSUMED \u2014
                never use it to get a record out of the way
     tossed     'event <ulid> tossed' (full toss, or a partial that reaches
                zero). Terminal. Means WASTED \u2014 it feeds waste telemetry, so
@@ -1766,6 +1774,16 @@ var INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json]
   hasn't happened); log events when they actually happen and recount when
   reality disagrees.
 
+  RECOUNT IS NOT HOW YOU LOG EATING A MEASURED AMOUNT. 'recount --fraction F'
+  is an OBSERVATION ("I looked and it's actually 75% full") \u2014 it carries no
+  consumption claim, touches no clock, and is not tied to any journal entry.
+  If you weighed or measured what came OUT of a divisible container to eat
+  it, that is 'eat' (below), not 'recount' \u2014 recording it as a recount makes
+  the item's history read as a run of measurement errors instead of a meal
+  log, and hides the amount from waste telemetry's eaten-vs-wasted split.
+  Reach for 'recount' only when the ledger disagrees with reality for a
+  reason OTHER than "I just ate some of it."
+
   'consume' is the one-tap "eat a prepared item" action: it creates a
   consumption entry with the item's EXACT known macros (no model call,
   source reselect) AND depletes the item, in ONE atomic step \u2014 a failure of
@@ -1778,6 +1796,26 @@ var INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json]
   consumption entry's ULID explicitly (idempotency key for a retry); omitted,
   the CLI generates one. Replaying the same --ulid is a safe no-op: no
   duplicate entry, no double-deplete.
+
+  'eat' is STATED-WEIGHT CONSUMPTION: a KNOWN weight (or fraction) eaten off
+  an OPEN DIVISIBLE item \u2014 a measured pour off a tub, a weighed portion off a
+  cooked batch. Unlike 'consume' above, the item need not carry any known-
+  macro provenance; unlike 'recount', this IS a consumption event, not an
+  observation. Applies ONLY to a fraction-modeled item (--units-total set
+  means COUNTED \u2014 use 'event \u2026 finished-unit' or 'consume' there instead;
+  400 otherwise). Pass exactly one of --grams or --fraction: --grams needs
+  the linked product's net_content_g as a mass basis and is REFUSED (400,
+  never guessed) without one \u2014 pass --fraction directly there instead. Both
+  name the AMOUNT EATEN (a decrement), mirroring 'event \u2026 tossed' --fraction,
+  never 'opened' --fraction's absolute-remainder sense. Reaching (or passing)
+  zero goes terminal as 'finished' (CONSUMED) \u2014 never 'tossed' \u2014 because
+  landing exactly on zero from a stated weight is coincidence, so closure
+  fires only at or past zero and a positive remainder is left alone rather
+  than rounded away. --entry-ulid names an ALREADY-LOGGED consuming journal
+  entry (e.g. from 'entries log'): the depletion and the link to that entry
+  commit in ONE atomic step, and --entry-ulid doubles as the idempotency key
+  for a retry (a replay neither re-links nor re-depletes). Omit it and the
+  depletion still records as consumption \u2014 it just isn't tied to one entry.
 
   'dismiss' is how a record LEAVES inventory without a claim about food.
   Reach for it whenever the record should never have been stock: a phantom
@@ -1901,6 +1939,8 @@ async function inventoryCommand(args) {
       return convert(rest);
     case "consume":
       return consumeItem(rest);
+    case "eat":
+      return eatItem(rest);
     default:
       throw new AxiError(`Unknown inventory subcommand: ${sub}`, "VALIDATION_ERROR", [INVENTORY_HELP]);
   }
@@ -2180,6 +2220,46 @@ async function consumeItem(args) {
       result?.created ? `Logged + depleted in one atomic step \u2014 run \`${cli} entries show ${result?.entry?.ulid}\` to see the entry` : `Replay of an already-consumed request \u2014 entry ${result?.entry?.ulid} was NOT re-created, item was NOT re-depleted`
     ])
   ]);
+}
+function buildEatBody(flags) {
+  const hasGrams = typeof flags.grams === "string";
+  const hasFraction = typeof flags.fraction === "string";
+  if (hasGrams === hasFraction) {
+    throw new AxiError(
+      "inventory eat needs exactly one of --grams or --fraction (the amount EATEN, not the remainder)",
+      "VALIDATION_ERROR",
+      [INVENTORY_HELP]
+    );
+  }
+  const body = {};
+  if (hasGrams) {
+    body.amount_g = parseNumberFlag(flags.grams, "grams", INVENTORY_HELP, { min: 0 });
+  } else {
+    body.fraction = parseNumberFlag(flags.fraction, "fraction", INVENTORY_HELP, { min: 0, max: 1 });
+  }
+  if (typeof flags["entry-ulid"] === "string") body.entry_ulid = flags["entry-ulid"];
+  if (typeof flags.at === "string") body.at = validateDate(flags.at, "--at", INVENTORY_HELP);
+  return body;
+}
+async function eatItem(args) {
+  const { positionals, flags } = parseArgs(args, ["json"], ["grams", "fraction", "entry-ulid", "at"]);
+  const itemUlid = requirePositional(positionals, 0, "item ulid", INVENTORY_HELP);
+  const body = buildEatBody(flags);
+  const result = await api.post(`/api/kitchen/inventory/${encodeURIComponent(itemUlid)}/consumed`, body);
+  if (flags.json) return rawJson(result);
+  const cli = cliInvocation();
+  const blocks = [
+    renderObject({ linked: result?.linked ?? false }),
+    renderDetail("item", result?.item, ITEM_DETAIL_SCHEMA)
+  ];
+  if (result?.entry) blocks.push(renderDetail("entry", result.entry, ENTRY_ROW_SCHEMA));
+  blocks.push(
+    renderHelp([
+      result?.item?.state === "finished" ? "Reached (or passed) zero on hand \u2014 the item is now terminal (finished, i.e. CONSUMED, never tossed)" : "A positive remainder is left on hand \u2014 the item stays open",
+      body.entry_ulid ? result?.linked ? `Depletion + entry link committed atomically \u2014 run \`${cli} entries show ${body.entry_ulid}\` to see the entry` : `Replay of an already-applied --entry-ulid \u2014 the item was NOT re-depleted` : "This is a CONSUMPTION, not a correction \u2014 for 'the fridge actually holds X' with no eating claim, use `inventory recount` instead"
+    ])
+  );
+  return renderOutput2(blocks);
 }
 function validateShelfLife(value) {
   if (!SHELF_LIFE_CLASSES.includes(value)) {
@@ -3002,7 +3082,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "55819c5" : "dev";
+var VERSION = true ? "138ba6e" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)

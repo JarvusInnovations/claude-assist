@@ -1941,7 +1941,8 @@ not assume one convention): single-resource creates/mutations return the
 objects (`GET /receipts/:ulid` → `{ batch, lines }`; label →
 `{ item, product }`; free-text resolver → `{ matched, item?, event? }`;
 `POST /inventory/convert` → `{ sources, derived, derivation }`;
-`POST /inventory/:ulid/consume` → `{ entry, item, created }`). The
+`POST /inventory/:ulid/consume` → `{ entry, item, created }`;
+`POST /inventory/:ulid/consumed` → `{ item, entry, linked }`). The
 shape stated on each endpoint below is exact.
 
 Receipts:
@@ -2206,6 +2207,38 @@ Item mutation:
   provenance, or that provenance's recipe can't be resolved / has no
   components; `503` — the instance isn't wired for consume (no
   `consumeStore`/recipe resolver configured).
+- `POST /inventory/:ulid/consumed` — **stated-weight consumption**, see
+  § Stated-weight consumption. `:ulid` is the ITEM. JSON `{ amount_g?
+  (number > 0), fraction? (0..1 exclusive-0), entry_ulid? (ULID), at? (ISO
+  date-time) }` — exactly one of `amount_g`/`fraction` required; both name
+  the amount EATEN (a decrement), mirroring `POST /inventory/:ulid/events`'
+  `tossed` fraction semantics, never `opened`'s absolute-remainder one.
+  `amount_g` is converted using the item's linked product's `net_content_g`
+  as the mass basis and is refused when that basis is absent (never guessed
+  — § Stated-weight consumption); pass `fraction` directly there instead.
+  Applies to a **fraction-modeled item only** — `400`
+  `StatedConsumeValidationError` on a counted one (`units_total` set; use
+  `finished-unit` or `consume` instead). Reaching or passing zero goes
+  terminal `finished` (consumed) — never `tossed`; a positive remainder is
+  left on hand, unrounded. `entry_ulid`, when supplied, names an
+  ALREADY-LOGGED consuming journal entry (this endpoint never creates one):
+  the depletion and the link (`kitchen.entries.inventory_item_ulid`) commit
+  in ONE transaction (mirroring `consume`'s atomicity requirement, via
+  `ConsumeStore.linkConsumption` — a sibling of `ConsumeStore.consume`, not a
+  second composed write), and `entry_ulid` doubles as the idempotency key: a
+  replay (already linked to this item) neither re-links nor re-depletes.
+  Omitted, the depletion still records as consumption via a plain
+  single-table write. Returns `{ item: InventoryItem, entry: Entry | null,
+  linked: boolean }` (`linked` true only on a fresh link; false when no
+  `entry_ulid` was supplied, or on an idempotent replay). `404` unknown item;
+  `409` `InvalidTransitionError` — the item is already terminal;
+  `409` `StatedConsumeConflictError` — `entry_ulid` is already linked to a
+  DIFFERENT item; `400` `StatedConsumeValidationError` — neither/both of
+  `amount_g`/`fraction`, an out-of-range amount, an unknown `entry_ulid`, a
+  counted item, or `amount_g` with no mass basis on the linked product; `503`
+  `StatedConsumeNotConfiguredError` — `entry_ulid` was supplied but the
+  instance isn't wired with a `consumeStore` (never required when
+  `entry_ulid` is omitted).
 
 Products & lexicon (agentic seed + reads):
 

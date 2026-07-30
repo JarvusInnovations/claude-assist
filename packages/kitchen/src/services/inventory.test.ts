@@ -14,6 +14,9 @@ import {
   ItemValidationError,
   NotCountedItemError,
   ReconcileValidationError,
+  StatedConsumeConflictError,
+  StatedConsumeNotConfiguredError,
+  StatedConsumeValidationError,
 } from './inventory.js';
 import { InvalidTransitionError } from '../inventory-state.js';
 import type { ReceiptParser, ReceiptParseInput } from './receipt-parser.js';
@@ -2128,6 +2131,217 @@ describe('consume from inventory (claude-assist#110 — one-tap known-macro log 
     expect(replay!.item.units_remaining).toBe(0);
 
     expect(entries.records.size).toBe(1); // no duplicate entry
+  });
+});
+
+describe('stated-weight consumption (§ Stated-weight consumption — eating is not a correction)', () => {
+  function harness() {
+    const store = new MemoryInventoryStore();
+    const entries = new MemoryEntryStore();
+    const consumeStore = new MemoryConsumeStore(entries, store);
+    const pipeline = new InventoryPipeline(store, null, null, log, { consumeStore });
+    return { store, entries, consumeStore, pipeline };
+  }
+
+  it('decrements on_hand_fraction by a direct --fraction amount and leaves a positive remainder open', async () => {
+    const { pipeline } = harness();
+    const { item } = await pipeline.createItem({ raw_label: 'Hummus tub', shelf_life_class: 'fridge_short', acquired_at: '2026-07-01', on_hand_fraction: 1 });
+    await pipeline.applyEvent(item.ulid, 'opened', { at: '2026-07-10' });
+
+    const result = await pipeline.consumeStatedAmount(item.ulid, { fraction: 0.3, at: '2026-07-17' });
+    expect(result).not.toBeNull();
+    expect(result!.item.on_hand_fraction).toBe(0.7);
+    expect(result!.item.state).toBe('open'); // stays alive — a positive remainder is left alone
+    expect(result!.entry).toBeNull(); // no entry_ulid supplied
+    expect(result!.linked).toBe(false);
+    expect(result!.item.notes).toContain('consumed 0.3 2026-07-17');
+  });
+
+  it('converts amount_g to a fraction using the linked product net_content_g mass basis', async () => {
+    const { pipeline } = harness();
+    const { product } = await pipeline.upsertProduct({ name: 'Hummus', shelf_life_class: 'fridge_short', net_content_g: 400 });
+    const { item } = await pipeline.createItem({
+      product_ulid: product.ulid,
+      raw_label: 'Hummus tub',
+      shelf_life_class: 'fridge_short',
+      acquired_at: '2026-07-01',
+      on_hand_fraction: 1,
+    });
+    await pipeline.applyEvent(item.ulid, 'opened', { at: '2026-07-10' });
+
+    // 100g of a 400g tub = a quarter.
+    const result = await pipeline.consumeStatedAmount(item.ulid, { amount_g: 100, at: '2026-07-17' });
+    expect(result!.item.on_hand_fraction).toBe(0.75);
+    expect(result!.item.state).toBe('open');
+  });
+
+  it('refuses amount_g with NO invented denominator when the item has no linked product / net_content_g', async () => {
+    const { pipeline } = harness();
+    const { item } = await pipeline.createItem({ raw_label: 'Homemade hummus', shelf_life_class: 'prepared', acquired_at: '2026-07-01', on_hand_fraction: 1 });
+    await pipeline.applyEvent(item.ulid, 'opened', { at: '2026-07-10' });
+
+    await expect(pipeline.consumeStatedAmount(item.ulid, { amount_g: 100 })).rejects.toThrow(StatedConsumeValidationError);
+
+    // Same refusal when a product IS linked but simply carries no net_content_g.
+    const { product } = await pipeline.upsertProduct({ name: 'Bulk hummus', shelf_life_class: 'fridge_short' });
+    const { item: item2 } = await pipeline.createItem({ product_ulid: product.ulid, raw_label: 'Bulk hummus tub', shelf_life_class: 'fridge_short', acquired_at: '2026-07-01', on_hand_fraction: 1 });
+    await expect(pipeline.consumeStatedAmount(item2.ulid, { amount_g: 50 })).rejects.toThrow(StatedConsumeValidationError);
+  });
+
+  it('rejects neither/both of amount_g and fraction', async () => {
+    const { pipeline } = harness();
+    const { item } = await pipeline.createItem({ raw_label: 'Hummus tub', shelf_life_class: 'fridge_short', acquired_at: '2026-07-01', on_hand_fraction: 1 });
+    await expect(pipeline.consumeStatedAmount(item.ulid, {})).rejects.toThrow(StatedConsumeValidationError);
+    await expect(pipeline.consumeStatedAmount(item.ulid, { amount_g: 10, fraction: 0.1 })).rejects.toThrow(StatedConsumeValidationError);
+  });
+
+  it('rejects a COUNTED item — this event is fraction-modeled items only', async () => {
+    const { pipeline } = harness();
+    const { item } = await pipeline.createItem({ raw_label: 'Yogurt 4-pack', shelf_life_class: 'fridge_short', acquired_at: '2026-07-01', units_total: 4 });
+    await expect(pipeline.consumeStatedAmount(item.ulid, { fraction: 0.5 })).rejects.toThrow(StatedConsumeValidationError);
+  });
+
+  it('rejects an out-of-range fraction, and an item already terminal (409-mapped)', async () => {
+    const { pipeline } = harness();
+    const { item } = await pipeline.createItem({ raw_label: 'Hummus tub', shelf_life_class: 'fridge_short', acquired_at: '2026-07-01', on_hand_fraction: 1 });
+    await expect(pipeline.consumeStatedAmount(item.ulid, { fraction: 0 })).rejects.toThrow(StatedConsumeValidationError);
+    await expect(pipeline.consumeStatedAmount(item.ulid, { fraction: 1.5 })).rejects.toThrow(StatedConsumeValidationError);
+
+    await pipeline.applyEvent(item.ulid, 'finished', {});
+    await expect(pipeline.consumeStatedAmount(item.ulid, { fraction: 0.1 })).rejects.toThrow(InvalidTransitionError);
+  });
+
+  it('goes terminal `finished` (never `tossed`) on an EXACT-zero result', async () => {
+    const { pipeline } = harness();
+    const { item } = await pipeline.createItem({ raw_label: 'Hummus tub', shelf_life_class: 'fridge_short', acquired_at: '2026-07-01', on_hand_fraction: 1 });
+    await pipeline.applyEvent(item.ulid, 'opened', { at: '2026-07-10', fraction: 0.4 });
+
+    const result = await pipeline.consumeStatedAmount(item.ulid, { fraction: 0.4, at: '2026-07-17' });
+    expect(result!.item.state).toBe('finished');
+    expect(result!.item.on_hand_fraction).toBe(0);
+    expect(result!.item.closed_at).not.toBeNull();
+  });
+
+  it('goes terminal `finished` (never `tossed`) when the stated amount OVERSHOOTS zero, without going negative', async () => {
+    const { pipeline } = harness();
+    const { item } = await pipeline.createItem({ raw_label: 'Hummus tub', shelf_life_class: 'fridge_short', acquired_at: '2026-07-01', on_hand_fraction: 1 });
+    await pipeline.applyEvent(item.ulid, 'opened', { at: '2026-07-10', fraction: 0.2 });
+
+    // Estimated 0.5 eaten off a container that only had 0.2 left — overshoot.
+    const result = await pipeline.consumeStatedAmount(item.ulid, { fraction: 0.5, at: '2026-07-17' });
+    expect(result!.item.state).toBe('finished');
+    expect(result!.item.on_hand_fraction).toBe(0);
+  });
+
+  it('a terminal item closed by this path never appears in waste telemetry (never writes a `tossed …` note)', async () => {
+    const { pipeline } = harness();
+    const { item } = await pipeline.createItem({ raw_label: 'Hummus tub', shelf_life_class: 'fridge_short', acquired_at: '2026-07-01', on_hand_fraction: 1 });
+    await pipeline.applyEvent(item.ulid, 'opened', { at: '2026-07-10' });
+    await pipeline.consumeStatedAmount(item.ulid, { fraction: 1, at: '2026-07-17' });
+
+    const waste = await pipeline.wasteReport({});
+    expect(waste.waste.find((r) => r.item_ulid === item.ulid)).toBeUndefined();
+  });
+
+  describe('atomic entry link (entry_ulid)', () => {
+    it('links an ALREADY-LOGGED entry and depletes the item together, in one atomic call', async () => {
+      const { pipeline, entries } = harness();
+      const { item } = await pipeline.createItem({ raw_label: 'Hummus tub', shelf_life_class: 'fridge_short', acquired_at: '2026-07-01', on_hand_fraction: 1 });
+      await pipeline.applyEvent(item.ulid, 'opened', { at: '2026-07-10' });
+      // The consuming entry was journaled separately (e.g. `entries log`) —
+      // this endpoint never creates it.
+      const { record: loggedEntry } = await entries.insertIfAbsent({ ulid: ULID(80), logged_at: new Date('2026-07-17T12:00:00Z'), note: null, recipe_ulid: null, component_quantities: null });
+      expect(loggedEntry.inventory_item_ulid).toBeNull();
+
+      const result = await pipeline.consumeStatedAmount(item.ulid, { fraction: 0.3, entry_ulid: ULID(80), at: '2026-07-17' });
+      expect(result!.linked).toBe(true);
+      expect(result!.entry!.ulid).toBe(ULID(80));
+      expect(result!.entry!.inventory_item_ulid).toBe(item.ulid);
+      expect(result!.item.on_hand_fraction).toBe(0.7);
+
+      // Really landed in the underlying store, not just the returned snapshot.
+      expect(entries.records.get(ULID(80))?.inventory_item_ulid).toBe(item.ulid);
+    });
+
+    it('replaying the same entry_ulid does not double-deplete', async () => {
+      const { pipeline, entries } = harness();
+      const { item } = await pipeline.createItem({ raw_label: 'Hummus tub', shelf_life_class: 'fridge_short', acquired_at: '2026-07-01', on_hand_fraction: 1 });
+      await pipeline.applyEvent(item.ulid, 'opened', { at: '2026-07-10' });
+      await entries.insertIfAbsent({ ulid: ULID(81), logged_at: new Date('2026-07-17T12:00:00Z'), note: null, recipe_ulid: null, component_quantities: null });
+
+      const first = await pipeline.consumeStatedAmount(item.ulid, { fraction: 0.3, entry_ulid: ULID(81), at: '2026-07-17' });
+      expect(first!.linked).toBe(true);
+      expect(first!.item.on_hand_fraction).toBe(0.7);
+
+      const replay = await pipeline.consumeStatedAmount(item.ulid, { fraction: 0.3, entry_ulid: ULID(81), at: '2026-07-17' });
+      expect(replay!.linked).toBe(false);
+      expect(replay!.item.on_hand_fraction).toBe(0.7); // unchanged — NOT depleted again
+    });
+
+    it('a replay succeeds even after the FIRST attempt already drove the item terminal', async () => {
+      const { pipeline, entries } = harness();
+      const { item } = await pipeline.createItem({ raw_label: 'Hummus tub', shelf_life_class: 'fridge_short', acquired_at: '2026-07-01', on_hand_fraction: 1 });
+      await pipeline.applyEvent(item.ulid, 'opened', { at: '2026-07-10' });
+      await entries.insertIfAbsent({ ulid: ULID(82), logged_at: new Date('2026-07-17T12:00:00Z'), note: null, recipe_ulid: null, component_quantities: null });
+
+      const first = await pipeline.consumeStatedAmount(item.ulid, { fraction: 1, entry_ulid: ULID(82), at: '2026-07-17' });
+      expect(first!.item.state).toBe('finished');
+
+      // The item is now terminal — a naive replay would 409 against its own
+      // effect. The idempotency short-circuit must catch this BEFORE the
+      // terminal check runs, exactly as `consume()`'s does.
+      const replay = await pipeline.consumeStatedAmount(item.ulid, { fraction: 1, entry_ulid: ULID(82), at: '2026-07-17' });
+      expect(replay!.linked).toBe(false);
+      expect(replay!.item.state).toBe('finished');
+    });
+
+    it('409s (StatedConsumeConflictError) when entry_ulid is already linked to a DIFFERENT item', async () => {
+      const { pipeline, entries } = harness();
+      const { item: itemA } = await pipeline.createItem({ raw_label: 'Hummus tub', shelf_life_class: 'fridge_short', acquired_at: '2026-07-01', on_hand_fraction: 1 });
+      const { item: itemB } = await pipeline.createItem({ raw_label: 'Other tub', shelf_life_class: 'fridge_short', acquired_at: '2026-07-01', on_hand_fraction: 1 });
+      await pipeline.applyEvent(itemA.ulid, 'opened', { at: '2026-07-10' });
+      await pipeline.applyEvent(itemB.ulid, 'opened', { at: '2026-07-10' });
+      await entries.insertIfAbsent({ ulid: ULID(83), logged_at: new Date('2026-07-17T12:00:00Z'), note: null, recipe_ulid: null, component_quantities: null });
+
+      await pipeline.consumeStatedAmount(itemA.ulid, { fraction: 0.2, entry_ulid: ULID(83) });
+      await expect(
+        pipeline.consumeStatedAmount(itemB.ulid, { fraction: 0.2, entry_ulid: ULID(83) })
+      ).rejects.toThrow(StatedConsumeConflictError);
+    });
+
+    it('400s (StatedConsumeValidationError) when entry_ulid names an entry that does not exist', async () => {
+      const { pipeline } = harness();
+      const { item } = await pipeline.createItem({ raw_label: 'Hummus tub', shelf_life_class: 'fridge_short', acquired_at: '2026-07-01', on_hand_fraction: 1 });
+      await expect(
+        pipeline.consumeStatedAmount(item.ulid, { fraction: 0.2, entry_ulid: ULID(99) })
+      ).rejects.toThrow(StatedConsumeValidationError);
+    });
+
+    it('503s (StatedConsumeNotConfiguredError) when entry_ulid is supplied but no consumeStore is wired', async () => {
+      const store = new MemoryInventoryStore();
+      const pipeline = new InventoryPipeline(store, null, null, log); // no consumeStore
+      const { item } = await pipeline.createItem({ raw_label: 'Hummus tub', shelf_life_class: 'fridge_short', acquired_at: '2026-07-01', on_hand_fraction: 1 });
+      await expect(
+        pipeline.consumeStatedAmount(item.ulid, { fraction: 0.2, entry_ulid: ULID(84) })
+      ).rejects.toThrow(StatedConsumeNotConfiguredError);
+    });
+
+    it('does NOT require a consumeStore when entry_ulid is omitted (plain single-table depletion)', async () => {
+      const store = new MemoryInventoryStore();
+      const pipeline = new InventoryPipeline(store, null, null, log); // no consumeStore
+      const { item } = await pipeline.createItem({ raw_label: 'Hummus tub', shelf_life_class: 'fridge_short', acquired_at: '2026-07-01', on_hand_fraction: 1 });
+      await pipeline.applyEvent(item.ulid, 'opened', { at: '2026-07-10' });
+
+      const result = await pipeline.consumeStatedAmount(item.ulid, { fraction: 0.3 });
+      expect(result!.item.on_hand_fraction).toBe(0.7);
+      expect(result!.entry).toBeNull();
+    });
+  });
+
+  it('404s (returns null) for an unknown item', async () => {
+    const { pipeline } = harness();
+    const result = await pipeline.consumeStatedAmount(ULID(99), { fraction: 0.2 });
+    expect(result).toBeNull();
   });
 });
 

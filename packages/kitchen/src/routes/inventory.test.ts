@@ -574,6 +574,143 @@ describe('inventory routes', () => {
     expect(notConfigured.statusCode).toBe(503);
   });
 
+  it('POST /kitchen/inventory/:ulid/consumed — stated-weight consumption: decrements by amount, terminal on exact-or-over-zero, atomic entry link, 404/400/409/503 per case', async () => {
+    // A dedicated app wired with the consume atomicity store (the shared
+    // `pipeline` in the outer beforeEach has none) so the entry_ulid path is
+    // reachable.
+    const app = Fastify({ logger: false });
+    const s = new MemoryInventoryStore();
+    const e = new MemoryEntryStore();
+    const pl = new InventoryPipeline(s, null, null, app.log, { consumeStore: new MemoryConsumeStore(e, s) });
+    await app.register(registerInventoryRoutes, { inventory: pl });
+    await app.ready();
+
+    const { item: tub } = await pl.createItem({ raw_label: 'Hummus tub', shelf_life_class: 'fridge_short', acquired_at: '2026-07-01', on_hand_fraction: 1 });
+    await pl.applyEvent(tub.ulid, 'opened', { at: '2026-07-10' });
+
+    // Fraction path: partial decrement, stays open.
+    const partial = await app.inject({
+      method: 'POST',
+      url: `/kitchen/inventory/${tub.ulid}/consumed`,
+      payload: { fraction: 0.3, at: '2026-07-17' },
+    });
+    expect(partial.statusCode).toBe(200);
+    const partialBody = partial.json();
+    expect(partialBody.item.on_hand_fraction).toBe(0.7);
+    expect(partialBody.item.state).toBe('open');
+    expect(partialBody.entry).toBeNull();
+    expect(partialBody.linked).toBe(false);
+
+    // amount_g against an item with no mass basis — refused, never guessed.
+    const noBasis = await app.inject({
+      method: 'POST',
+      url: `/kitchen/inventory/${tub.ulid}/consumed`,
+      payload: { amount_g: 50 },
+    });
+    expect(noBasis.statusCode).toBe(400);
+
+    // Terminal on exact-zero, never `tossed`.
+    const finish = await app.inject({
+      method: 'POST',
+      url: `/kitchen/inventory/${tub.ulid}/consumed`,
+      payload: { fraction: 0.7, at: '2026-07-20' },
+    });
+    expect(finish.statusCode).toBe(200);
+    expect(finish.json().item.state).toBe('finished');
+    expect(finish.json().item.on_hand_fraction).toBe(0);
+
+    // 409: already terminal.
+    const terminal = await app.inject({
+      method: 'POST',
+      url: `/kitchen/inventory/${tub.ulid}/consumed`,
+      payload: { fraction: 0.1 },
+    });
+    expect(terminal.statusCode).toBe(409);
+
+    // 400: a counted item is rejected — this event is fraction-modeled only.
+    const { item: packOf4 } = await pl.createItem({ raw_label: 'Yogurt 4-pack', shelf_life_class: 'fridge_short', acquired_at: '2026-07-01', units_total: 4 });
+    const counted = await app.inject({
+      method: 'POST',
+      url: `/kitchen/inventory/${packOf4.ulid}/consumed`,
+      payload: { fraction: 0.5 },
+    });
+    expect(counted.statusCode).toBe(400);
+
+    // 404: unknown item.
+    const missing = await app.inject({
+      method: 'POST',
+      url: `/kitchen/inventory/${generateUlid()}/consumed`,
+      payload: { fraction: 0.1 },
+    });
+    expect(missing.statusCode).toBe(404);
+
+    // Atomic entry link: an ALREADY-LOGGED entry gets linked + the item
+    // depleted, in one call — and idempotent replay of entry_ulid.
+    const { item: openTub } = await pl.createItem({ raw_label: 'Salsa tub', shelf_life_class: 'fridge_short', acquired_at: '2026-07-01', on_hand_fraction: 1 });
+    await pl.applyEvent(openTub.ulid, 'opened', { at: '2026-07-10' });
+    const { record: loggedEntry } = await e.insertIfAbsent({ ulid: generateUlid(), logged_at: new Date('2026-07-17T12:00:00Z'), note: null, recipe_ulid: null, component_quantities: null });
+
+    const linked = await app.inject({
+      method: 'POST',
+      url: `/kitchen/inventory/${openTub.ulid}/consumed`,
+      payload: { fraction: 0.4, entry_ulid: loggedEntry.ulid, at: '2026-07-17' },
+    });
+    expect(linked.statusCode).toBe(200);
+    expect(linked.json().linked).toBe(true);
+    expect(linked.json().entry.ulid).toBe(loggedEntry.ulid);
+    expect(linked.json().item.on_hand_fraction).toBe(0.6);
+
+    const replay = await app.inject({
+      method: 'POST',
+      url: `/kitchen/inventory/${openTub.ulid}/consumed`,
+      payload: { fraction: 0.4, entry_ulid: loggedEntry.ulid, at: '2026-07-17' },
+    });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json().linked).toBe(false);
+    expect(replay.json().item.on_hand_fraction).toBe(0.6); // not depleted again
+
+    // 409: entry_ulid already linked to a DIFFERENT item.
+    const { item: anotherTub } = await pl.createItem({ raw_label: 'Guac tub', shelf_life_class: 'fridge_short', acquired_at: '2026-07-01', on_hand_fraction: 1 });
+    await pl.applyEvent(anotherTub.ulid, 'opened', { at: '2026-07-10' });
+    const conflict = await app.inject({
+      method: 'POST',
+      url: `/kitchen/inventory/${anotherTub.ulid}/consumed`,
+      payload: { fraction: 0.1, entry_ulid: loggedEntry.ulid },
+    });
+    expect(conflict.statusCode).toBe(409);
+
+    // 400: entry_ulid names an entry that doesn't exist.
+    const unknownEntry = await app.inject({
+      method: 'POST',
+      url: `/kitchen/inventory/${anotherTub.ulid}/consumed`,
+      payload: { fraction: 0.1, entry_ulid: generateUlid() },
+    });
+    expect(unknownEntry.statusCode).toBe(400);
+
+    await app.close();
+
+    // 503: entry_ulid supplied but the shared `pipeline` (outer beforeEach)
+    // has no consumeStore wired.
+    const { item: unwired } = await pipeline.createItem({ raw_label: 'Baba ganoush tub', shelf_life_class: 'fridge_short', acquired_at: '2026-07-01', on_hand_fraction: 1 });
+    const notConfigured = await fastify.inject({
+      method: 'POST',
+      url: `/kitchen/inventory/${unwired.ulid}/consumed`,
+      payload: { fraction: 0.2, entry_ulid: generateUlid() },
+    });
+    expect(notConfigured.statusCode).toBe(503);
+
+    // Without entry_ulid, no consumeStore is needed at all — a plain
+    // single-table depletion still records as consumption on the same
+    // (unwired) pipeline.
+    const noStoreNeeded = await fastify.inject({
+      method: 'POST',
+      url: `/kitchen/inventory/${unwired.ulid}/consumed`,
+      payload: { fraction: 0.2 },
+    });
+    expect(noStoreNeeded.statusCode).toBe(200);
+    expect(noStoreNeeded.json().item.on_hand_fraction).toBe(0.8);
+  });
+
   it('POST /kitchen/products then /kitchen/lexicon are creatable for the seed port', async () => {
     const p = await fastify.inject({ method: 'POST', url: '/kitchen/products', payload: { name: 'Oat Milk', shelf_life_class: 'fridge_short', aliases: ['oatmilk'] } });
     expect(p.statusCode).toBe(201);

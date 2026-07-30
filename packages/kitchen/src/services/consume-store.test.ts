@@ -27,6 +27,26 @@ function countedItem(overrides: Partial<NewItem> = {}): NewItem {
   };
 }
 
+function fractionItem(overrides: Partial<NewItem> = {}): NewItem {
+  return {
+    ulid: ULID(10),
+    product_ulid: null,
+    raw_label: 'Hummus tub',
+    store: null,
+    batch_ulid: null,
+    state: 'open',
+    on_hand_fraction: 0.6,
+    units_total: null,
+    units_remaining: null,
+    needs_info: false,
+    acquired_at: new Date('2026-07-10'),
+    eat_by: new Date('2026-07-20'),
+    shelf_life_class: 'fridge_short',
+    notes: null,
+    ...overrides,
+  };
+}
+
 function entryWrite(overrides: Partial<ConsumeEntryWrite> = {}): ConsumeEntryWrite {
   return {
     ulid: ULID(2),
@@ -155,5 +175,93 @@ describe('MemoryConsumeStore — atomic entry+deplete write (claude-assist#110)'
     expect(result.item.state).toBe('finished');
     expect(result.item.on_hand_fraction).toBe(0);
     expect(result.item.closed_at).toEqual(new Date('2026-07-17'));
+  });
+});
+
+describe('MemoryConsumeStore.linkConsumption — stated-weight consumption atomic link+deplete', () => {
+  it('links an already-existing entry and depletes the item together, in one call', async () => {
+    const entries = new MemoryEntryStore();
+    const items = new MemoryInventoryStore();
+    await items.insertItemIfAbsent(fractionItem());
+    // The entry was ALREADY logged separately — linkConsumption never creates it.
+    const { record: preExisting } = await entries.insertIfAbsent({ ulid: ULID(20), logged_at: new Date('2026-07-17T12:00:00Z'), note: null, recipe_ulid: null, component_quantities: null });
+    expect(preExisting.inventory_item_ulid).toBeNull();
+    const store = new MemoryConsumeStore(entries, items);
+
+    const result = await store.linkConsumption(ULID(20), ULID(10), {
+      state: 'open',
+      on_hand_fraction: 0.4,
+      notes: 'consumed 0.2 2026-07-17',
+    });
+
+    expect(result.linked).toBe(true);
+    expect(result.entry.inventory_item_ulid).toBe(ULID(10));
+    expect(result.item.on_hand_fraction).toBe(0.4);
+    expect(result.item.notes).toBe('consumed 0.2 2026-07-17');
+
+    // Both sides actually landed in the underlying stores.
+    expect(entries.records.get(ULID(20))?.inventory_item_ulid).toBe(ULID(10));
+    expect(items.items.get(ULID(10))?.on_hand_fraction).toBe(0.4);
+  });
+
+  it('PROVES atomicity: a forced failure between the link and the deplete leaves NEITHER applied', async () => {
+    const entries = new MemoryEntryStore();
+    const items = new MemoryInventoryStore();
+    await items.insertItemIfAbsent(fractionItem());
+    await entries.insertIfAbsent({ ulid: ULID(21), logged_at: new Date('2026-07-17T12:00:00Z'), note: null, recipe_ulid: null, component_quantities: null });
+    const itemBefore = structuredClone(items.items.get(ULID(10))!);
+    const entryBefore = structuredClone(entries.records.get(ULID(21))!);
+
+    const store = new MemoryConsumeStore(entries, items, {
+      beforeItemWrite: () => {
+        throw new Error('simulated failure between entry link and item deplete');
+      },
+    });
+
+    await expect(
+      store.linkConsumption(ULID(21), ULID(10), { state: 'open', on_hand_fraction: 0.4 })
+    ).rejects.toThrow('simulated failure');
+
+    // Neither side committed: the entry is NOT linked, and the item is
+    // byte-for-byte what it was before the call.
+    expect(entries.records.get(ULID(21))).toEqual(entryBefore);
+    expect(entries.records.get(ULID(21))?.inventory_item_ulid).toBeNull();
+    expect(items.items.get(ULID(10))).toEqual(itemBefore);
+  });
+
+  it('is idempotent on entry_ulid: a replay neither re-links nor re-depletes', async () => {
+    const entries = new MemoryEntryStore();
+    const items = new MemoryInventoryStore();
+    await items.insertItemIfAbsent(fractionItem());
+    await entries.insertIfAbsent({ ulid: ULID(22), logged_at: new Date('2026-07-17T12:00:00Z'), note: null, recipe_ulid: null, component_quantities: null });
+    const store = new MemoryConsumeStore(entries, items);
+
+    const first = await store.linkConsumption(ULID(22), ULID(10), { state: 'open', on_hand_fraction: 0.4 });
+    expect(first.linked).toBe(true);
+    expect(first.item.on_hand_fraction).toBe(0.4);
+
+    // Replay with the SAME entry ulid and a (deliberately different, to prove
+    // it's ignored) item update — a genuine double-apply would show up as
+    // on_hand_fraction dropping further.
+    const second = await store.linkConsumption(ULID(22), ULID(10), { state: 'finished', closed_at: new Date(), on_hand_fraction: 0 });
+    expect(second.linked).toBe(false);
+    expect(second.entry).toEqual(first.entry);
+    expect(second.item.on_hand_fraction).toBe(0.4); // unchanged — NOT re-applied
+    expect(second.item.state).toBe('open');
+  });
+
+  it('throws on an entry already linked to a DIFFERENT item (a genuine conflict, not a replay)', async () => {
+    const entries = new MemoryEntryStore();
+    const items = new MemoryInventoryStore();
+    await items.insertItemIfAbsent(fractionItem());
+    await items.insertItemIfAbsent(fractionItem({ ulid: ULID(11) }));
+    await entries.insertIfAbsent({ ulid: ULID(23), logged_at: new Date('2026-07-17T12:00:00Z'), note: null, recipe_ulid: null, component_quantities: null });
+    const store = new MemoryConsumeStore(entries, items);
+
+    await store.linkConsumption(ULID(23), ULID(10), { state: 'open', on_hand_fraction: 0.4 });
+
+    await expect(
+      store.linkConsumption(ULID(23), ULID(11), { state: 'open', on_hand_fraction: 0.4 })
+    ).rejects.toThrow(/already linked to a different item/);
   });
 });
