@@ -1,9 +1,10 @@
 ---
-status: planned
+status: done
 depends: [product-unit-grams, item-state-fidelity]
 specs:
   - specs/modules/kitchen.md
 issues: []
+pr: 175
 ---
 
 # Plan: one-tap consume for counted purchased items
@@ -67,20 +68,20 @@ depletion links correctly; only the numbers are guessed.
 
 ## Validation
 
-- [ ] `bun run test`, `bun run build`, `bun run type-check:axi`, `bun run
+- [x] `bun run test`, `bun run build`, `bun run type-check:axi`, `bun run
       check:skills` green.
-- [ ] One tap on a counted purchased item logs `per_100g × unit_edible_g ÷ 100` and
+- [x] One tap on a counted purchased item logs `per_100g × unit_edible_g ÷ 100` and
       decrements one unit; `quantity: n` scales both.
-- [ ] The multipack regression: a 3-can pack whose product declares an 85 g label
+- [x] The multipack regression: a 3-can pack whose product declares an 85 g label
       serving against a ~142 g unit logs **the unit**, not the serving.
-- [ ] A counted item whose product has a panel but no `unit_edible_g` is
+- [x] A counted item whose product has a panel but no `unit_edible_g` is
       `400 ConsumeIneligibleError`.
-- [ ] A purchased **fraction** item is refused regardless of panel completeness.
-- [ ] A `reference`-provenance panel is accepted; the entry carries no model call
+- [x] A purchased **fraction** item is refused regardless of panel completeness.
+- [x] A `reference`-provenance panel is accepted; the entry carries no model call
       and no estimator confidence.
-- [ ] Derived-item consume is byte-identical to before — the per-unit recipe
+- [x] Derived-item consume is byte-identical to before — the per-unit recipe
       contract and fraction whole-batch semantics are untouched.
-- [ ] Terminal items are still rejected `409`, checked before eligibility.
+- [x] Terminal items are still rejected `409`, checked before eligibility.
 
 ## Risks / unknowns
 
@@ -97,4 +98,45 @@ depletion links correctly; only the numbers are guessed.
 
 ## Notes
 
+- **Priority order, not a merged OR.** `resolveConsumeMacros` tries the derived
+  (recipe) channel first and returns immediately on success; the product-panel
+  channel is only consulted when channel 1 doesn't apply. This is what makes
+  "derived-item consume is byte-identical" true even for a derived item that
+  also happens to carry a complete-panel, `unit_edible_g`-bearing product link
+  — pinned by a dedicated test (`services/inventory.test.ts`, "a derived item
+  with a resolvable recipe ignores a linked product entirely").
+- **A broken derivation now falls through instead of hard-failing.** Before
+  this plan, `derivedFrom.recipe_ulid` present but unresolvable (recipe
+  missing / no components) threw `ConsumeIneligibleError` immediately. It now
+  falls through to try the product-panel channel before giving up — more
+  permissive, and no existing test exercised the combination (broken
+  derivation + eligible product link), so nothing regressed.
+- **`nutrition_source: 'estimate'` does NOT qualify the product-panel
+  channel**, even with a complete panel + stated `unit_edible_g`. The spec
+  text only calls out that `'reference'` qualifies (contrasting it with
+  `'label'`); it doesn't explicitly rule `'estimate'` in or out. Excluding it
+  is a judgment call, reasoned from the surrounding principle
+  ("a caller that knows the answer states it; the system never re-guesses
+  it") — an `'estimate'` is by definition a guess already sitting in
+  storage, and treating it as deterministic at consume-time would launder
+  that guess as fact with no confidence score attached, which is exactly the
+  failure the eligibility rule exists to prevent. Locked in by a test; worth
+  a second look if it surprises anyone.
+- **Environment note (unrelated to this diff):** a fresh worktree needed
+  `bun install --linker=hoisted` — the default `isolated` linker didn't
+  materialize `@jarvus/*` workspace symlinks in this environment — and `bun
+  run build` before `bun run test`, since two unrelated packages
+  (`session-spawn`, `capture`) import `@jarvus/claude-assist-core`/`-notify`
+  by their built `dist/` entrypoint, which doesn't exist until `build` runs.
+  Neither package is touched by this plan.
+
 ## Follow-ups
+
+- **Shelf noise risk (flagged in Risks above) is real and not yet addressed.**
+  Every counted item with a complete product row now qualifies, which on a
+  full pantry turns the consume shelf into a long, undifferentiated strip.
+  This plan intentionally does not narrow eligibility to compensate (that
+  would reintroduce the estimator for known foods) — the fix is ranking, not
+  narrowing. No plan yet owns the ranking work; Tracked as: watch the consume
+  shelf after this ships and open a plan for eat-first-based ranking if it
+  turns out eat-first ordering alone doesn't cut it.
