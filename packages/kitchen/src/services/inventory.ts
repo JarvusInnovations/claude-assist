@@ -47,6 +47,8 @@ import type {
   ReceiptInput,
   ReconcileInput,
   ShelfLifeClass,
+  StatedConsumeInput,
+  StatedConsumeResult,
   WasteReportView,
   WasteRow,
 } from '../inventory-types.js';
@@ -93,7 +95,7 @@ import type { LabelParser } from './label-parser.js';
 import { convertNetContent, derivePer100gFromServing } from './label-parser.js';
 import type { ConsumeStore } from './consume-store.js';
 import { computeRecipeMacros, round1 } from './recipes.js';
-import type { NutritionFields, RecipeRecord } from '../types.js';
+import type { EntryRecord, NutritionFields, RecipeRecord } from '../types.js';
 
 /** Thrown when a label intake is attempted with no label parser configured. */
 export class LabelParserUnavailableError extends Error {
@@ -211,6 +213,47 @@ export class ConsumeNotConfiguredError extends Error {
   constructor() {
     super('Consume-from-inventory requires both consumeStore and resolveRecipe to be configured');
     this.name = 'ConsumeNotConfiguredError';
+  }
+}
+
+/**
+ * Thrown on malformed `consumeStatedAmount` input (§ Stated-weight
+ * consumption): neither/both of amount_g and fraction, an out-of-range
+ * amount, an unknown `entry_ulid`, a counted item (this event applies to
+ * fraction-modeled items only), or `amount_g` against an item with no mass
+ * basis (linked product's `net_content_g`) — never scaled against an invented
+ * denominator. A `400` at the route.
+ */
+export class StatedConsumeValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'StatedConsumeValidationError';
+  }
+}
+
+/**
+ * Thrown when `consumeStatedAmount`'s `entry_ulid` is already linked to a
+ * DIFFERENT inventory item than the one this call named — a genuine
+ * conflict, not a replay of the same call. A `409` at the route.
+ */
+export class StatedConsumeConflictError extends Error {
+  constructor(entryUlid: string, existingItemUlid: string) {
+    super(`Consuming entry ${entryUlid} is already linked to inventory item ${existingItemUlid}, not this one`);
+    this.name = 'StatedConsumeConflictError';
+  }
+}
+
+/**
+ * Thrown when `consumeStatedAmount()` is called with an `entry_ulid` but the
+ * module wasn't wired with a `consumeStore` (the atomic link needs it) —
+ * mapped to `503`, mirroring `ConsumeNotConfiguredError`. Without an
+ * `entry_ulid` the call never needs `consumeStore` — a bare depletion is a
+ * single-table write.
+ */
+export class StatedConsumeNotConfiguredError extends Error {
+  constructor() {
+    super('Stated-weight consumption with entry_ulid requires consumeStore to be configured');
+    this.name = 'StatedConsumeNotConfiguredError';
   }
 }
 
@@ -1521,6 +1564,142 @@ export class InventoryPipeline {
       item: await this.viewOf(updatedItemRecord, created ? derivedFrom : undefined),
       created,
     };
+  }
+
+  // ── Stated-weight consumption (§ Stated-weight consumption) ─────────────────
+
+  /**
+   * A known weight (or fraction) eaten off an open, DIVISIBLE (fraction-
+   * modeled) item — a CONSUMPTION, never a `reconcile` (§ Stated-weight
+   * consumption). `PATCH /inventory/:ulid` is an observation asserting the
+   * ledger was wrong and carries no consumption claim by design; recording
+   * eating through it reads as a run of measurement errors and hides the
+   * amount from waste telemetry's eaten/wasted split. This is the honest verb
+   * for the ordinary case § Consume from inventory doesn't cover: a caller
+   * measured what left the container, but the item carries no recipe-linked
+   * macro provenance of its own.
+   *
+   * Returns `null` when the item doesn't exist (→ 404 at the route). Throws:
+   * - `InvalidTransitionError` — the item is already terminal (`409`).
+   * - `StatedConsumeValidationError` (`400`) — neither/both of `amount_g` and
+   *   `fraction` supplied, an out-of-range amount, an unknown `entry_ulid`,
+   *   a counted item (this event is fraction-modeled items only — see
+   *   `NotCountedItemError`'s inverse case for `finished-unit`), or
+   *   `amount_g` against an item with no mass basis (the linked product's
+   *   `net_content_g`) — **never scaled against an invented denominator**.
+   * - `StatedConsumeConflictError` (`409`) — `entry_ulid` is already linked
+   *   to a DIFFERENT item.
+   * - `StatedConsumeNotConfiguredError` (`503`) — `entry_ulid` was supplied
+   *   but the module wasn't wired with a `consumeStore`.
+   *
+   * **Amount** is a DECREMENT (the amount EATEN), mirroring `tossed`'s
+   * "amount tossed" fraction semantics, never `opened`'s absolute-remainder
+   * one. `fraction` states it directly; `amount_g` needs the linked
+   * product's `net_content_g` as the mass basis and is refused without one.
+   *
+   * **Terminal on exact-or-over-zero ONLY, and as `finished` (consumed),
+   * never `tossed`.** A stated weight is an estimate of what left the
+   * container, so landing precisely on zero is coincidence — closure fires
+   * on reaching or passing zero, and a positive remainder is left alone
+   * rather than rounded away. The food was eaten, so a terminal outcome here
+   * is never `tossed` — that would corrupt the exact telemetry this event
+   * exists to protect (§ Waste costing only ever reads a `tossed …` note
+   * line, which this path never writes).
+   *
+   * **Entry linkage is optional but atomic when supplied**: given the
+   * consuming entry's ULID, the depletion and the entry link commit
+   * together or neither does — the same hard requirement § Consume from
+   * inventory states, via `this.consumeStore.linkConsumption` (a sibling of
+   * `consumeStore.consume`, not a second composed write). Unlike `consume()`,
+   * this never CREATES the entry — it links one the caller already logged.
+   * Idempotent on `entry_ulid`: a replay (already linked to THIS item)
+   * neither re-links nor re-depletes, checked BEFORE terminal/model
+   * validation for the same reason `consume()`'s replay check runs first —
+   * the first successful call may already have driven the item terminal.
+   * Without `entry_ulid`, the depletion is a plain single-table write (no
+   * `consumeStore` needed) and still records as consumption.
+   */
+  async consumeStatedAmount(itemUlid: string, input: StatedConsumeInput): Promise<StatedConsumeResult | null> {
+    const item = await this.store.getItem(itemUlid);
+    if (!item) return null;
+
+    // ── Idempotency short-circuit (mirrors `consume()`): checked BEFORE
+    // terminal/model validation, because the first successful call may have
+    // already driven the item terminal, and a replay of the same entry_ulid
+    // must still succeed rather than 409 against its own effect. ──
+    if (input.entry_ulid !== undefined) {
+      if (!this.consumeStore) throw new StatedConsumeNotConfiguredError();
+      const existingEntry: EntryRecord | null = await this.consumeStore.peekEntry(input.entry_ulid);
+      if (!existingEntry) {
+        throw new StatedConsumeValidationError(`entry_ulid ${input.entry_ulid} does not exist`);
+      }
+      if (existingEntry.inventory_item_ulid === itemUlid) {
+        return { item: await this.viewOf(item), entry: existingEntry, linked: false };
+      }
+      if (existingEntry.inventory_item_ulid) {
+        throw new StatedConsumeConflictError(input.entry_ulid, existingEntry.inventory_item_ulid);
+      }
+    }
+
+    if (isTerminal(item.state)) {
+      throw new InvalidTransitionError(item.state, 'finished');
+    }
+    if (item.units_total != null) {
+      throw new StatedConsumeValidationError(
+        `item ${itemUlid} is counted, not fraction-modeled — stated-weight consumption applies only to a divisible item (use 'finished-unit' or 'consume' for a counted one)`
+      );
+    }
+
+    const hasGrams = input.amount_g !== undefined;
+    const hasFraction = input.fraction !== undefined;
+    if (hasGrams === hasFraction) {
+      throw new StatedConsumeValidationError('exactly one of amount_g or fraction is required');
+    }
+
+    let deltaFraction: number;
+    if (hasGrams) {
+      if (!(input.amount_g! > 0)) {
+        throw new StatedConsumeValidationError('amount_g must be a positive number');
+      }
+      const product = item.product_ulid ? await this.store.getProduct(item.product_ulid) : null;
+      if (!product?.net_content_g) {
+        throw new StatedConsumeValidationError(
+          `item ${itemUlid} has no mass basis (linked product's net_content_g) — pass fraction directly instead of amount_g`
+        );
+      }
+      deltaFraction = input.amount_g! / product.net_content_g;
+    } else {
+      if (!(input.fraction! > 0 && input.fraction! <= 1)) {
+        throw new StatedConsumeValidationError('fraction must be in (0, 1]');
+      }
+      deltaFraction = input.fraction!;
+    }
+
+    const at = parseDate(input.at);
+    const consumedAmount = clampFraction(deltaFraction);
+    const remaining = clampFraction(item.on_hand_fraction - consumedAmount);
+    const amountLabel = hasGrams ? `${input.amount_g}g` : `${consumedAmount}`;
+    const noteLine = `consumed ${amountLabel} ${toIsoDate(at)}${input.entry_ulid ? ` — entry ${input.entry_ulid}` : ''}`;
+    const notes = item.notes ? `${item.notes}\n${noteLine}` : noteLine;
+
+    const itemUpdate: ItemStateUpdate =
+      remaining <= 0
+        ? { state: 'finished', closed_at: at, on_hand_fraction: 0, notes }
+        : { state: item.state, on_hand_fraction: remaining, notes };
+
+    if (input.entry_ulid !== undefined) {
+      // Atomic: link the already-logged entry + deplete, in ONE transaction.
+      const result = await this.consumeStore!.linkConsumption(input.entry_ulid, itemUlid, itemUpdate);
+      return { item: await this.viewOf(result.item), entry: result.entry, linked: result.linked };
+    }
+
+    // No entry to link: a plain depletion, still recorded as consumption —
+    // a single-table write, no consumeStore needed.
+    const updated = await this.store.updateItemState(itemUlid, itemUpdate);
+    if (!updated) {
+      throw new Error(`consumeStatedAmount: item ${itemUlid} vanished mid-update`);
+    }
+    return { item: await this.viewOf(updated), entry: null, linked: false };
   }
 
   /**
