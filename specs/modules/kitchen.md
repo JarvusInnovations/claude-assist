@@ -82,6 +82,72 @@ sound where the number really is ~0, and the field that breaks the second one is
 powder qualifies; garlic salt does not. Read § Sodium is the exception that breaks
 the marker before marking anything.
 
+### A panel means nothing without its basis
+
+A product can hold the same nutrition twice — `serving_size_g` +
+`nutrition_per_serving`, and `nutrition_per_100g`. **Two stored representations of
+one fact can disagree, and the disagreement is invisible at read time** because both
+columns look equally authoritative. This is the third member of the
+plausible-looking-wrong-number family (§ Nutritionally negligible products § Sodium
+is the exception; § Estimation & model tiering § Billing artifacts are not
+ingredients): a value that looks right, lands on a tracked figure, and is never
+questioned.
+
+**Per-100 g is DERIVED, never stated, wherever serving data exists.** § Data model
+§ Raw serving capture already establishes this for the label-scan path
+(`derivePer100gFromServing`, "capture as printed, scale late"), on the reasoning
+that serving arithmetic is the classic extraction error. That reasoning does not
+stop at the label pipeline, and the rule must not either: **every write door that
+can set a panel derives it the same way.** A door that accepts a caller-stated
+per-100 g alongside a per-serving panel re-opens exactly the hole the label path
+closed, and it is the *quieter* door — a label scan is at least reviewable as a
+transcription, while an API caller's per-100 g arrives with no source at all.
+
+Concretely, when a write leaves both representations present:
+
+- `nutrition_per_100g` is **recomputed** from `nutrition_per_serving ÷
+  serving_size_g × 100`. A caller-supplied per-100 g is ignored, not merged.
+- A caller-supplied per-100 g is honoured **only** when there is no serving basis
+  to derive from — the genuine per-100 g case (labels printed per-100 g, and
+  reference-sourced foods such as unpackaged produce, which carry no label at all).
+- A stated per-100 g that **contradicts** a derivable one is a refusal, not a silent
+  overwrite, so a caller that believes it has better numbers finds out rather than
+  winning by writing last.
+
+**Observed failure.** In a production ledger, 2 of 18 products carrying both
+representations had silently disagreed. In each case most fields had been scaled
+correctly and one or two had not — and the un-scaled fields were **plausible round
+numbers for the food category** rather than off by a consistent factor, which is the
+signature of recall substituted for arithmetic on a per-field basis. `calories` was
+wrong in both. One product under-reported its own energy by a third; the other
+likewise. Neither had gone through the label pipeline; both were written through the
+agent-facing product endpoints, which is why the existing derivation never ran.
+
+**Tolerance for the legacy check.** While rows predating this rule still carry a
+stated per-100 g, a consistency check compares each field against its derived value
+and flags `|stated − derived| > 8% + 0.6`. The absolute floor is load-bearing: label
+values round hard at small magnitudes, so 0.5 g of saturated fat is a 100% relative
+error against 0.4 g and means nothing. Calibrated against the ledger above, this
+band flagged exactly the two genuinely-wrong rows and none of the sixteen sound
+ones.
+
+### Panel operations belong in one implementation
+
+Rebasing, scaling to a weight, summing components into a meal, and validating
+coherence are one concern, not four helpers. A helper gets bypassed at a call site;
+a value type that carries its own basis has to be constructed, and cannot be scaled
+as if it were the other basis. Every server-side surface that computes nutrition —
+product writes, entry computation, recipe resolution, consume (§ Consume from
+inventory), receipt-lexicon seeding — goes through it.
+
+**Validation rejects at write time rather than storing-and-flagging**: no negative
+fields (§ Billing artifacts already establishes that a negative can only be a signed
+money line), saturated fat ≤ fat, added sugar ≤ total sugar, and stated calories
+within a loose band of `4·protein + 4·carbs + 9·fat`. The band must stay loose —
+real labels miss it legitimately on sugar alcohols, fiber accounting, and rounding
+at small servings — because a check that fights reality is a check that gets
+disabled.
+
 ### `added_sugar_g` vs `sugar_g` — two quantities, one target
 
 `sugar_g` is **total** sugar. `added_sugar_g` is the portion added during
@@ -1293,6 +1359,31 @@ All tables instance-agnostic empty schema, ULID keys, `kitchen` schema
   legible lands — a verbatim panel, a partial list, front-of-pack callouts —
   null only when there is genuinely nothing.
 
+  **Per-unit edible grams and panel provenance.** `unit_edible_g` (numeric,
+  nullable) is the **edible mass of ONE physical unit** of a counted product —
+  one egg, one can, one link. It is **stated, never derived**, because both
+  available derivations are wrong in opposite directions and neither error is
+  detectable at read time. `serving_size_g` is the *label's* serving, which
+  coincides with one unit only by luck: a large-egg carton declares a 50 g serving
+  that happens to be one edible egg, while a 3-can multipack can declare an 85 g
+  serving against a ~142 g can — deriving from the serving would log 60% of a can.
+  Going the other way, `net_content_g ÷ units_total` includes inedible mass:
+  shell for eggs, packing water for cans. The two existing fields answer *how much
+  is a serving* and *how much is in the package*; neither answers *how much food is
+  one unit*, which is why it gets its own column. Null is honest and simply makes
+  the product ineligible for one-tap consume (§ Consume from inventory).
+
+  `nutrition_source` (`'label' | 'reference' | 'estimate'`, nullable) records where
+  the panel came from: a scanned label is authoritative for that SKU; a reference
+  table is correct for the food but generic for the SKU (the only option for
+  unpackaged produce, which carries no label); an estimate is a guess. Without the
+  marker a reference-seeded row is indistinguishable from a scanned package, there
+  is no safe upgrade rule, and the `needs_nutrition` sweep cannot tell *no data*
+  from *generic data*. **A label scan supersedes `reference` or `estimate`; neither
+  ever overwrites a `label` panel.** Provenance is orthogonal to basis
+  (§ A panel means nothing without its basis): a label panel is normally
+  per-serving and a reference panel per-100 g, but neither implies the other.
+
   **Net content (§ Prices' divisor).** The label scan also transcribes the
   package's printed net content as a raw `{value, unit}` pair (e.g. `454 g`,
   `64 fl oz`); **deterministic code** converts to `net_content_g` /
@@ -1719,6 +1810,39 @@ text cannot tell the two seals apart ("4 CT" fits a can pack and a sausage pack
 equally), so seeding leaves `unit_seal` null (`individual`) and the seal is
 stated by whoever knows the package — at create, at reconcile, or on a `convert`
 derived item.
+
+### Stated-weight consumption — eating is not a correction
+
+When a **known weight** of an open divisible item is eaten — a measured pour off a
+tub, a weighed portion off a cooked batch — that is a **consumption**: it decrements
+`on_hand_fraction` by the stated amount and links the depletion to the journal entry
+that consumed it.
+
+It must **not** be recorded as a reconcile. § Reconcile below is an *observation*
+asserting the ledger was wrong; it carries no consumption claim by design. Recording
+eating through it is a category error with two costs that compound quietly: the
+item's history reads as a run of measurement errors instead of a meal log, and waste
+telemetry (§ Waste costing) cannot separate food that was eaten from a fraction
+adjusted away. Both surfaces then under-report reality in the direction nobody
+audits.
+
+The gap this closes is structural rather than hypothetical: one-tap consume
+(§ Consume from inventory) requires a *known* portion, which a divisible container
+does not have, so a stated weight had no honest verb at all and callers reached for
+reconcile because it was the only thing that moved the number.
+
+- **Amount** is grams where a total-mass basis exists (`net_content_g`), or a
+  fraction directly where it does not. **Never invent the denominator** — a guessed
+  basis silently mis-scales every subsequent decrement on that item, and unlike a
+  one-off wrong number it compounds.
+- **Reaching zero** goes terminal as `finished` (consumed), never `tossed`. Whether
+  arithmetic alone should close an item is genuinely contested — a stated weight is
+  an estimate of what left the container, so landing exactly on zero is coincidence
+  — so closure fires only on an exact-or-over-zero result, and a positive remainder
+  is left alone rather than rounded away.
+- **Entry linkage** is optional but atomic when supplied: given the consuming
+  entry's ULID, the depletion and the entry link commit together or neither does,
+  the same hard requirement § Consume from inventory states.
 
 ### Reconcile — corrections are observations, not events
 
@@ -2584,16 +2708,33 @@ portioned inventory item whose macros are already known — inherited from the
 conversion/recipe that made it (§ Conversions) — logs to the journal AND
 depletes in one tap: no photo, no model call, no correction.
 
-**Eligibility.** An item qualifies only when its derivation provenance
-(`derived_from.recipe_ulid`, written by the `convert` that created it) resolves
-to a recipe — DB-persisted (`pushed`/`promoted`) or meal-bank sheet-sourced,
-the same merged universe the reselect strip serves — carrying at least one
-component. This is the ONLY macro-inheritance channel today: a raw item with
-no recipe-linked derivation has no deterministically-known macros and is
-rejected (`400 ConsumeIneligibleError`) — it needs the normal photo/reselect
-path, not one-tap consume. An already-terminal item is rejected regardless of
-eligibility (`409`, checked first, mirroring `convert`'s terminal-source
-check).
+**Eligibility — one test, two families.** An item qualifies when the module knows
+**both its panel and its portion**. There are two independent macro-inheritance
+channels, and an already-terminal item is rejected regardless of either (`409`,
+checked first, mirroring `convert`'s terminal-source check):
+
+1. **Derived items** — the item's derivation provenance
+   (`derived_from.recipe_ulid`, written by the `convert` that created it) resolves
+   to a recipe, DB-persisted (`pushed`/`promoted`) or meal-bank sheet-sourced —
+   the same merged universe the reselect strip serves — carrying at least one
+   component.
+2. **Counted purchased items** — the item is counted (`units_total` set) and its
+   linked product carries both a nutrition panel and `unit_edible_g`
+   (§ Data model § Per-unit edible grams). One tap logs one unit's panel,
+   computed as `per_100g × unit_edible_g ÷ 100`, and decrements one unit. A
+   `reference` `nutrition_source` **qualifies**: a generic-but-correct panel for a
+   whole unit is deterministic, and it beats routing a known food through the
+   estimator.
+
+**Purchased fraction items never qualify**, regardless of panel completeness. A
+divisible container has no natural unit, so "eat one" has no meaning, and finishing
+the whole container in one tap is almost never the real act — that is what
+§ Stated-weight consumption is for. This follows directly from § count-vs-fraction:
+one-tap consume is a whole-sealed-unit action.
+
+An item satisfying neither channel is rejected (`400 ConsumeIneligibleError`) and
+simply does not appear on the consume shelf — it needs the normal photo/reselect
+path. Ineligibility is an absence, not an error to render.
 
 **Macro inheritance (deterministic, no model call) — the per-unit recipe
 contract.** The recipe's total macros are computed exactly as a direct
@@ -2842,6 +2983,21 @@ moment plans change. The batch becomes a journal fact at eat time, via
 `POST /inventory/:ulid/consume` (§ Consume from inventory), at whatever share is
 actually eaten then. Attaching `recipe_ulid` on the convert is what keeps that
 one-tap path available (§ Consume from inventory § Eligibility).
+
+**The worksheet's per-100 g references are resolved, never transcribed.** A
+worksheet's components reference products by ULID and the publisher resolves their
+panels from the product records; a literal per-100 g table written into page source
+is acceptable **only** for a component with no product record at all, and is marked
+as such. This is not stylistic. An eaten worksheet is logged born-`manual` and
+**terminal, with no estimation pass** (below), which makes it the highest-trust
+input the module accepts — so it must not also be its least-verified: a hand-typed
+per-100 g literal is a transcription with no checker between it and a permanent
+record, and the composing agent is exactly the actor § A panel means nothing without
+its basis shows substituting recall for arithmetic.
+
+A resolution failure must **degrade visibly** rather than submitting zeros or stale
+numbers. For a terminal log path a blocked submission is recoverable and a silently
+wrong one is not.
 
 **The panel is stated, never re-guessed.** An eaten worksheet has already computed
 its numbers from weighed quantities against per-100g references — they are exact
