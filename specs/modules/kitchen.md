@@ -2777,7 +2777,15 @@ checked first, mirroring `convert`'s terminal-source check):
    computed as `per_100g × unit_edible_g ÷ 100`, and decrements one unit. A
    `reference` `nutrition_source` **qualifies**: a generic-but-correct panel for a
    whole unit is deterministic, and it beats routing a known food through the
-   estimator.
+   estimator. **`estimate` does NOT qualify.** The distinction is not pedantry
+   about provenance tiers — it is the difference between a number that is *correct
+   for the food and generic for the SKU* and a number that was **guessed**.
+   Consume logs deterministically, with no confidence score and no estimation
+   pass, so admitting an `estimate` panel would launder a stored guess into a
+   fact that nothing downstream can question — the exact defect
+   § A panel means nothing without its basis exists to prevent. An item whose
+   only panel is an `estimate` belongs on the photo/reselect path, where the
+   uncertainty stays visible.
 
 **Purchased fraction items never qualify**, regardless of panel completeness. A
 divisible container has no natural unit, so "eat one" has no meaning, and finishing
