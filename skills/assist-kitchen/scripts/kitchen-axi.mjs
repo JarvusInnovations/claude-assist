@@ -727,6 +727,10 @@ var COMMAND_GROUPS = [
         usage: "products archive <ulid>",
         summary: "retire a product (soft \u2014 still resolvable by ulid so linked items keep working)"
       },
+      {
+        usage: "products panel-basis-report",
+        summary: "READ-ONLY: products whose stored per-100g disagrees with the value derivable from their own serving basis (nutrition_per_serving \xF7 serving_size_g \xD7 100) beyond an 8% + 0.6 per-field tolerance. Never rewrites anything \u2014 flagged rows need `products update <ulid>` once you know which number is right"
+      },
       { usage: "lexicon list [--store S] [--limit N]", summary: "receipt-line \u2192 product mappings per store" },
       {
         usage: "lexicon add --store S --line-text T --product-ulid U [--package-size S] [--shelf-life C]",
@@ -2759,11 +2763,27 @@ var PRODUCTS_HELP = `kitchen-axi products <subcommand> [args] [--json]
                                       lines, then retire it
   archive <ulid>                    retire a product (soft; still resolvable by
                                       ulid so linked items keep working)
+  panel-basis-report                READ-ONLY: products whose stored per-100g
+                                      disagrees with the value derivable from
+                                      their own serving basis, beyond an
+                                      8% + 0.6 per-field tolerance. Never
+                                      rewrites anything \u2014 a flagged row needs
+                                      'update <ulid>' once you know which
+                                      number is right
 
   shelf-life classes: ${SHELF_LIFE_CLASSES.join(", ")}
   --nutrition is a JSON object of per-100g macros, e.g.
     '{"calories": 52, "protein_g": 0.3, "carbs_g": 14, "fiber_g": 2.4, "sugar_g": 10, "added_sugar_g": 0}'
   --ingredients is the printed ingredients list as a single string
+
+  --nutrition is DERIVED, not stored verbatim, whenever --serving-size-g and
+  --nutrition-per-serving are also present (on this write or already on the
+  record): the stored per-100g is computed from the serving basis, per field,
+  the same way a scanned label already was \u2014 passing --nutrition alongside is
+  fine (it is checked, not merged) but a value that CONTRADICTS the derivable
+  one is refused (400) rather than silently overwritten. Only when no serving
+  basis exists at all (a bare --nutrition, or unpackaged produce with no label)
+  is the stated value stored as given.
 
   --unit-edible-g is the edible mass of ONE physical unit of a counted product
   (one egg, one can, one link) \u2014 STATED only, never computed from
@@ -2861,6 +2881,15 @@ var PRICE_POINT_SCHEMA = [
   field("cents_per_100ml", "per_100ml\xA2"),
   field("unit_basis", "basis")
 ];
+var PANEL_BASIS_FINDING_SCHEMA = [
+  field("ulid"),
+  field("name"),
+  {
+    type: "custom",
+    as: "contradictions",
+    fn: (f) => (Array.isArray(f.contradictions) ? f.contradictions : []).map((c) => `${c.field}: stated ${c.stated} vs derived ${c.derived} (\xB1${c.tolerance})`).join(" | ")
+  }
+];
 var WRITE_VALUE_FLAGS = [
   "name",
   "ulid",
@@ -2897,6 +2926,8 @@ async function productsCommand(args) {
       return mergeProduct(rest);
     case "archive":
       return archiveProduct(rest);
+    case "panel-basis-report":
+      return panelBasisReport(rest);
     default:
       throw new AxiError(`Unknown products subcommand: ${sub}`, "VALIDATION_ERROR", [PRODUCTS_HELP]);
   }
@@ -3033,6 +3064,24 @@ async function archiveProduct(args) {
     ])
   ]);
 }
+async function panelBasisReport(args) {
+  const { flags } = parseArgs(args, ["json"], []);
+  const result = await api.get("/api/kitchen/products/panel-basis-report");
+  if (flags.json) return rawJson(result);
+  const findings = result?.findings ?? [];
+  if (findings.length === 0) {
+    return renderOutput2([
+      renderHelp(["No stored per-100g panel disagrees with its own serving basis beyond the 8% + 0.6 tolerance"])
+    ]);
+  }
+  return renderOutput2([
+    renderList("panel_basis_findings", findings, PANEL_BASIS_FINDING_SCHEMA),
+    renderHelp([
+      "Each row's stored nutrition_per_100g disagrees with nutrition_per_serving \xF7 serving_size_g \xD7 100 beyond tolerance",
+      "This report never rewrites anything \u2014 restate the panel with `products update <ulid>` once you know which number is right"
+    ])
+  ]);
+}
 function validateShelfLife2(value) {
   if (!SHELF_LIFE_CLASSES.includes(value)) {
     throw new AxiError(`--shelf-life must be one of: ${SHELF_LIFE_CLASSES.join(", ")}`, "VALIDATION_ERROR", [PRODUCTS_HELP]);
@@ -3111,7 +3160,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "adc66ce" : "dev";
+var VERSION = true ? "411b66a" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)
