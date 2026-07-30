@@ -1,9 +1,10 @@
 ---
-status: planned
+status: done
 depends: [kitchen-plausible-wrong-numbers, product-corrections]
 specs:
   - specs/modules/kitchen.md
-issues: []
+issues: [177]
+pr: 178
 ---
 
 # Plan: per-100g is derived at every door, not just the label pipeline
@@ -106,26 +107,26 @@ unguarded door.
 
 ## Validation
 
-- [ ] `bun run test`, `bun run build`, `bun run type-check:axi`, `bun run
+- [x] `bun run test`, `bun run build`, `bun run type-check:axi`, `bun run
       check:skills` green.
-- [ ] A `POST /products` stating a per-100 g alongside a derivable serving basis
+- [x] A `POST /products` stating a per-100 g alongside a derivable serving basis
       stores the **derived** panel, not the stated one — at all three branches.
-- [ ] Same for `PATCH /products/:ulid`, judged on the post-patch composite.
-- [ ] A two-step create-then-patch cannot land an underived panel.
-- [ ] A caller-stated per-100 g with **no** serving basis is stored as given (the
+- [x] Same for `PATCH /products/:ulid`, judged on the post-patch composite.
+- [x] A two-step create-then-patch cannot land an underived panel.
+- [x] A caller-stated per-100 g with **no** serving basis is stored as given (the
       genuine per-100 g and reference-sourced cases still work).
-- [ ] A stated per-100 g contradicting a derivable one is refused with a message
+- [x] A stated per-100 g contradicting a derivable one is refused with a message
       naming both values.
-- [ ] The label-scan path is behaviourally unchanged — it already derived.
-- [ ] The value type cannot scale a per-serving panel as per-100 g (compile-time or
+- [x] The label-scan path is behaviourally unchanged — it already derived.
+- [x] The value type cannot scale a per-serving panel as per-100 g (compile-time or
       runtime error, not a wrong number); rebase round-trips within float tolerance.
-- [ ] Each of the four validations has a failing-case test; the calorie band accepts
+- [x] Each of the four validations has a failing-case test; the calorie band accepts
       real labels that legitimately miss it (sugar alcohols, small-serving rounding).
-- [ ] The sweep flags exactly the two known-bad rows against a fixture of their
+- [x] The sweep flags exactly the two known-bad rows against a fixture of their
       pre-correction values, and none of the other sixteen.
 - [ ] A published worksheet contains no literal per-100 g table for a component that
       has a product record; a failed resolution renders a visible error and blocks
-      submission rather than sending zeros.
+      submission rather than sending zeros. **Not built — see Notes and Follow-ups.**
 
 ## Risks / unknowns
 
@@ -146,4 +147,63 @@ unguarded door.
 
 ## Notes
 
+- **Scope item 1 (spec) landed before this branch started.** § A panel means
+  nothing without its basis, § Panel operations belong in one implementation, and
+  the Cook mode worksheet-resolution rule were already merged to `main` by an
+  earlier commit (`spec(kitchen): derive per-100g at every write door, not just
+  the label pipeline`). This plan's diff is scope items 2–4 (the guard, the value
+  type, the sweep) plus the CLI/route surface for the sweep; item 5 (worksheet
+  references) turned out not to be buildable from this repo — see below.
+- **Worksheet references (scope item 5) were investigated, not built.** No code
+  in this repo composes a `worksheet` definition with `per_basis` data —
+  `pages-axi publish <file>` only publishes raw HTML, and `packages/pages`
+  deliberately never imports the kitchen module (only the `cook_mode` sink is
+  injected, same pattern as `worksheetCookSink`). Whoever composes worksheet
+  JSON today does so by hand or via an agent, entirely outside this repo, so
+  there was no "publisher" to wire product-resolution into. Filed as
+  [#177](https://github.com/JarvusInnovations/claude-assist/issues/177) with the
+  investigation and a suggested shape (an optional `product_ulid` on
+  `WorksheetComponent`, a `productToWorksheetBasis` helper built on
+  `nutrition-panel.ts`, and a decision on where the actual resolve call lives).
+- **The Flutter client could not be verified, only asserted absent.** There is no
+  Flutter/mobile client source in this repo (no `pubspec.yaml` anywhere in the
+  tree) — the plan's "verify this rather than assume it" instruction can't be
+  carried out from here. Whoever owns that client's repo needs to check it
+  directly; this plan does not claim its exposure is small, only that this repo
+  has nothing to check.
+- **The merge-tolerant contradiction check is field-level, not whole-panel.**
+  `resolvePanelBasis` fills a field the serving-basis derivation couldn't reach
+  (the per-serving panel omitted it) from the caller's stated value, rather than
+  discarding it — the spec text ("recomputed... ignored, not merged") reads as
+  whole-panel replacement, but per-field fallback is strictly more lossless and
+  matches the module's existing never-null-clobber conventions elsewhere
+  (`mergeNutrition`, `patchPanel`). Contradiction is still checked per field
+  wherever both a stated and a derived value exist.
+- **`validatePanelFields`'s negative-value rule is currently redundant with the
+  existing Fastify JSON schema** (`PRODUCT_FACT_PROPERTIES` already sets
+  `minimum: 0` on every nutrition field), so a route-level test for it asserts
+  only the `400`, not a specific message — AJV answers first. The rule stays in
+  `validatePanelFields` because it is meant to be the one implementation for
+  every server-side surface (recipe components, consume, receipt-lexicon
+  seeding), most of which have no such schema gate.
+- **The calorie band's constants (25% + 40 kcal) are a judgment call**, not a
+  number quoted anywhere in the spec (unlike the panel-basis tolerance's
+  `8% + 0.6`, which the spec/plan states explicitly). Chosen deliberately loose
+  per the plan's own instruction ("the band must stay loose... a check that
+  fights reality gets disabled"); see the comment beside `CALORIE_BAND_PCT` in
+  `nutrition-panel.ts` for the reasoning and worst-case (sugar-alcohol/fiber-
+  heavy bar) sanity check.
+- **The sweep's 18-row test fixture is synthetic**, shaped to match the plan's
+  description of the real corpus (16 sound rows across varied categories and
+  serving sizes, 2 rows each wrong on `calories` alone by a plausible-round-
+  number-for-the-category amount, one under-reporting by roughly a third) —
+  not the actual historical data, which has no place in a public repo.
+
 ## Follow-ups
+
+- Issue [#177](https://github.com/JarvusInnovations/claude-assist/issues/177) —
+  resolve cook-mode worksheet component per-100g from product records instead
+  of literal per-basis tables (scope item 5, not built — see Notes).
+- Tracked as: the Flutter/mobile client's own repo needs to verify (not assume)
+  that its per-100g exposure is limited to server-provided panels, per this
+  plan's original Risks note — no such client exists in this repo to check.
