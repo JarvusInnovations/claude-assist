@@ -133,7 +133,7 @@ leaves the `needs_nutrition` sweep unable to tell *no data* from *generic data*.
   net content — explicitly never computed. This is expected to return null on
   the overwhelming majority of real scans; that is the point, not a defect.
 - Migration validated against a disposable `postgres:18` Docker container (not
-  the shared devbox instance) — all 21 migrations apply in order, `021` is
+  any shared/deployed instance) — all 21 migrations apply in order, `021` is
   idempotent on replay, and both new columns' `CHECK` constraints and the
   backfill were inspected directly via `psql`.
 
