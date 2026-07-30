@@ -1223,7 +1223,7 @@ describe('product corrections routes', () => {
     expect(bare.nutrition_source).toBeNull();
   });
 
-  it('nutrition_source is one-directional — label beats reference/estimate on every write door', async () => {
+  it('a name-key enrich never downgrades nutrition_source away from label (the automated gap-filler)', async () => {
     // Seeded as a generic reference row (the only option for unpackaged produce).
     const created = (await post({ name: 'Roma Tomato', shelf_life_class: 'produce', nutrition_source: 'reference' })).json();
     expect(created.nutrition_source).toBe('reference');
@@ -1234,7 +1234,9 @@ describe('product corrections routes', () => {
     expect(upgraded.statusCode).toBe(200);
     expect(upgraded.json().nutrition_source).toBe('label');
 
-    // Nothing beats label except label — an enrich attempting 'reference' is refused.
+    // Nothing beats label except label on THIS door — an enrich carries no
+    // evidence against a scanned panel's authority, so an attempted
+    // 'reference' downgrade is refused (stays 'label').
     const refusedEnrich = await post({ name: 'Roma Tomato', nutrition_source: 'reference' });
     expect(refusedEnrich.json().nutrition_source).toBe('label');
 
@@ -1242,31 +1244,45 @@ describe('product corrections routes', () => {
     const refusedEstimate = await post({ name: 'Roma Tomato', nutrition_source: 'estimate' });
     expect(refusedEstimate.json().nutrition_source).toBe('label');
 
-    // Nor a PATCH — the rule is absolute, not just an enrich courtesy.
-    const refusedPatch = await patch(upgraded.json().ulid, { nutrition_source: 'reference' });
-    expect(refusedPatch.json().nutrition_source).toBe('label');
-
-    // Nor an explicit-ulid REPLACE, even though a replace otherwise states the
-    // whole record and reverts every omitted field.
-    const refusedReplace = await post({ ulid: upgraded.json().ulid, name: 'Roma Tomato', nutrition_source: 'reference' });
-    expect(refusedReplace.statusCode).toBe(200);
-    expect(refusedReplace.json().nutrition_source).toBe('label');
-    // ...but the replace still states everything ELSE, e.g. an omitted package_size reverts.
-    expect(refusedReplace.json().package_size).toBeNull();
-
     // Restating 'label' is always a no-op success, never refused.
-    const relabel = await patch(upgraded.json().ulid, { nutrition_source: 'label' });
+    const relabel = await post({ name: 'Roma Tomato', nutrition_source: 'label' });
     expect(relabel.statusCode).toBe(200);
     expect(relabel.json().nutrition_source).toBe('label');
   });
 
-  it('an explicit-ulid replace omitting nutrition_source reverts it to null, same as any other field', async () => {
-    // Omission is not "a reference-sourced write" — only an explicit
-    // reference/estimate value is refused against an existing label (previous
-    // test); a bare omission behaves like every other replaced field.
-    const created = (await post({ name: 'Fresh Basil', nutrition_source: 'reference' })).json();
-    const replaced = await post({ ulid: created.ulid, name: 'Fresh Basil' });
-    expect(replaced.json().nutrition_source).toBeNull();
+  it('an explicit PATCH applies nutrition_source exactly as stated, downgrade from label included', async () => {
+    // A PATCH is the owner asserting a fact — a scan that was wrong, a
+    // mislabeled SKU — not the automated gap-filler the enrich rule guards.
+    const created = (await post({ name: 'Sea Salt Flakes', nutrition_source: 'label' })).json();
+    expect(created.nutrition_source).toBe('label');
+
+    const downgraded = await patch(created.ulid, { nutrition_source: 'reference' });
+    expect(downgraded.statusCode).toBe(200);
+    expect(downgraded.json().nutrition_source).toBe('reference');
+
+    const toEstimate = await patch(created.ulid, { nutrition_source: 'estimate' });
+    expect(toEstimate.json().nutrition_source).toBe('estimate');
+
+    // And a null clear is likewise a plain stated fact, not a refused write.
+    const cleared = await patch(created.ulid, { nutrition_source: null });
+    expect(cleared.json().nutrition_source).toBeNull();
+  });
+
+  it('an explicit-ulid replace applies nutrition_source exactly as stated (the body IS the whole record)', async () => {
+    const created = (await post({ name: 'Fresh Basil', nutrition_source: 'label' })).json();
+    expect(created.nutrition_source).toBe('label');
+
+    // A downgrade via replace applies — this is the owner stating the whole
+    // record, same doctrine as every other field a replace restates.
+    const downgraded = await post({ ulid: created.ulid, name: 'Fresh Basil', nutrition_source: 'reference' });
+    expect(downgraded.statusCode).toBe(200);
+    expect(downgraded.json().nutrition_source).toBe('reference');
+
+    // And an omitted nutrition_source reverts to null, same as any other
+    // omitted field on a replace — omission is not itself a stated downgrade,
+    // it just isn't restated.
+    const reverted = await post({ ulid: created.ulid, name: 'Fresh Basil' });
+    expect(reverted.json().nutrition_source).toBeNull();
   });
 });
 

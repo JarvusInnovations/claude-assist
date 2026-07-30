@@ -946,8 +946,10 @@ const PRODUCT_FACT_PROPERTIES = {
   // there is no code path that computes this from serving_size_g or from
   // net_content_g ÷ units_total; both are wrong in opposite directions.
   unit_edible_g: { type: ['number', 'null'], exclusiveMinimum: 0 },
-  // Where the panel came from. One-directional supersession: nothing may set
-  // this away from 'label' once it holds that value — see resolveNutritionSource.
+  // Where the panel came from. One-directional supersession applies to the
+  // AUTOMATED name-key enrich only (never downgrades an existing 'label') —
+  // an explicit-ulid replace or a PATCH is the owner stating a fact, and the
+  // stated value applies as given. See resolveNutritionSource.
   nutrition_source: { type: ['string', 'null'], enum: [...NUTRITION_SOURCES, null] },
   // § Nutritionally negligible products — the ~0-at-any-realistic-serving
   // assertion that lets `needs_nutrition` be satisfied honestly for spices,

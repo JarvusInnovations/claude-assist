@@ -45,9 +45,10 @@ export const PRODUCTS_HELP = `kitchen-axi products <subcommand> [args] [--json]
   --nutrition-source records where the panel came from: label (scanned
   package, authoritative for that SKU), reference (correct for the food but
   generic for the SKU — the only option for unpackaged produce), or estimate
-  (a guess). One-directional: nothing can move an existing 'label' to
-  'reference'/'estimate' — that write is silently refused, on add and
-  update alike.
+  (a guess). A bare add re-seed (name match, no --ulid) never downgrades an
+  existing label — that automated enrich carries no evidence against a
+  scanned panel. add --ulid (an explicit replace) and update are the owner
+  stating a fact, so a downgrade from label DOES apply there.
 
   add UPSERTS. With --ulid it creates-or-REPLACES that record (a replace states
   the whole record: anything you omit reverts to its default, which is the only

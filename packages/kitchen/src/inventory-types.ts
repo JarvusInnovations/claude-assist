@@ -245,10 +245,13 @@ export interface ProductInput {
   /** § Per-unit edible grams and panel provenance — see `ProductRecord`. STATED, never derived. */
   unit_edible_g?: number | null;
   /**
-   * § Per-unit edible grams and panel provenance — see `ProductRecord`. An
-   * enrich (label composer, name-key upsert, merge) never lets this DOWNGRADE
-   * an existing `'label'` to `'reference'`/`'estimate'`: nothing beats `label`
-   * except another `label`.
+   * § Per-unit edible grams and panel provenance — see `ProductRecord`.
+   * `ProductInput` serves two different doors with two different rules: a
+   * name-key ENRICH (`upsertProductByName`, the label composer, the merge
+   * fold) never lets this DOWNGRADE an existing `'label'` — those writes carry
+   * no evidence against a scanned panel's authority. An explicit-ulid REPLACE
+   * (`POST /products {ulid}`) is the owner stating the whole record, so the
+   * stated value applies as given, downgrade included — see `upsertProduct`.
    */
   nutrition_source?: NutritionSource | null;
   /** § Nutritionally negligible products — see `ProductRecord`. */
@@ -290,10 +293,11 @@ export interface ProductPatchInput {
   /** § Per-unit edible grams and panel provenance — see `ProductRecord`. STATED, never derived. */
   unit_edible_g?: number | null;
   /**
-   * § Per-unit edible grams and panel provenance — see `ProductRecord`. Even
-   * from a PATCH, this can never move an existing `'label'` to
-   * `'reference'`/`'estimate'` — the one-directional supersession rule is
-   * absolute, not just an enrich courtesy.
+   * § Per-unit edible grams and panel provenance — see `ProductRecord`. The
+   * stated value APPLIES, including a downgrade FROM `'label'`: a `PATCH` is
+   * the owner asserting a fact, not the automated gap-filler the
+   * one-directional supersession rule exists to constrain (that rule guards
+   * the enrich door only — see `resolveNutritionSource` in services/inventory.ts).
    */
   nutrition_source?: NutritionSource | null;
   nutrition_negligible?: boolean;

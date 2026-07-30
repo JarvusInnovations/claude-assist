@@ -2297,13 +2297,13 @@ export class InventoryPipeline {
         override: input.nutrition_negligible_override,
       });
       if (existing) {
-        const fields = productFields(normalizedInput);
-        // The one field a replace does NOT fully state: nutrition_source stays
-        // absolutely one-directional even here (see resolveNutritionSource) —
-        // an omitted flag reverts like every other field, but an explicit
-        // 'reference'/'estimate' still cannot pry an existing 'label' loose.
-        fields.nutrition_source = resolveNutritionSource(existing.nutrition_source, normalizedInput.nutrition_source) ?? null;
-        const replaced = await this.store.updateProduct(input.ulid, fields);
+        // A replace STATES the whole record (§ Product corrections — the same
+        // doctrine `nutrition_negligible`'s guard applies), including
+        // `nutrition_source`: the body's own facts are judged, an omitted
+        // field reverts like any other, and an explicit downgrade from
+        // `'label'` APPLIES — this is the owner stating a fact, not the
+        // automated gap-filler the one-directional rule exists to constrain.
+        const replaced = await this.store.updateProduct(input.ulid, productFields(normalizedInput));
         // Vanished between read and write — fall through to a create rather
         // than reporting a replace that didn't happen.
         if (replaced) return { product: replaced, created: false };
@@ -2389,14 +2389,12 @@ export class InventoryPipeline {
     if (patch.shelf_life_days_unopened !== undefined) out.shelf_life_days_unopened = patch.shelf_life_days_unopened;
     if (patch.shelf_life_days_opened !== undefined) out.shelf_life_days_opened = patch.shelf_life_days_opened;
     if (patch.unit_edible_g !== undefined) out.unit_edible_g = patch.unit_edible_g;
-    if (patch.nutrition_source !== undefined) {
-      // Absolute supersession applies even to the owner's own PATCH — see
-      // resolveNutritionSource. A patch attempting 'reference'/'estimate'
-      // against an existing 'label' is silently refused (stays 'label')
-      // rather than a 400, mirroring nutrition_negligible's "silence changes
-      // nothing" idiom rather than inventing a new error surface for it.
-      out.nutrition_source = resolveNutritionSource(existing.nutrition_source, patch.nutrition_source) ?? null;
-    }
+    // The stated value APPLIES here, including a downgrade FROM 'label' — a
+    // PATCH is the owner stating a fact, not the automated gap-filler the
+    // one-directional supersession rule exists to constrain (§ Per-unit
+    // edible grams and panel provenance). `resolveNutritionSource` guards
+    // only the enrich door (name-key upsert, label composer, merge fold).
+    if (patch.nutrition_source !== undefined) out.nutrition_source = patch.nutrition_source;
     if (patch.nutrition_negligible !== undefined) out.nutrition_negligible = patch.nutrition_negligible;
     if (patch.ingredients !== undefined) out.ingredients = patch.ingredients?.trim() || null;
     if (patch.nutrition_per_100g !== undefined) {
@@ -2567,8 +2565,10 @@ export class InventoryPipeline {
       // STATED, never derived (§ Per-unit edible grams and panel provenance):
       // an enrich only ever fills a gap, exactly like serving_size_g above.
       unit_edible_g: input.unit_edible_g ?? existing.unit_edible_g,
-      // One-directional supersession: nothing beats an existing 'label'
-      // except another 'label' (see resolveNutritionSource).
+      // One-directional supersession, THIS DOOR ONLY: an automated enrich
+      // carries no evidence against a scanned panel's authority, so nothing
+      // here beats an existing 'label' except another 'label'. A PATCH or an
+      // explicit-ulid replace is a different door — see resolveNutritionSource.
       nutrition_source: resolveNutritionSource(existing.nutrition_source, input.nutrition_source) ?? existing.nutrition_source,
       // Never un-marks: an enrich carries no evidence AGAINST negligibility
       // (§ Nutritionally negligible products — the marker is cleared only by an
@@ -2772,16 +2772,18 @@ function productFields(input: ProductInput): Omit<NewProduct, 'ulid'> {
 /**
  * One-directional supersession (§ Per-unit edible grams and panel
  * provenance): `label` beats `reference`/`estimate`; nothing beats `label`
- * except another `label`. Applied at every site that writes
- * `nutrition_source` — the name-key enrich, the explicit-ulid replace, the
- * merge fold, AND the owner-facing PATCH — because the rule is absolute, not
- * an enrich-only courtesy: "a label panel is never overwritten by a
- * reference-sourced write" makes no exception for who did the writing.
+ * except another `label`. Guards ONLY the automated gap-filling doors — the
+ * name-key enrich (`upsertProductByName`, the label composer's enrich path)
+ * and the merge fold — because those writes carry no evidence AGAINST a
+ * scanned panel's authority, exactly like `nutrition_negligible` never
+ * un-marks on an enrich. An owner EXPLICITLY stating `nutrition_source` (a
+ * `PATCH`, or an explicit-ulid replace) is not that: it is a fact asserted
+ * about this product, so the stated value applies as given, including a
+ * downgrade from `'label'` — see `patchProduct` and the replace branch of
+ * `upsertProduct`, neither of which calls this function.
  *
- * `incoming === undefined` means this write doesn't state a source at all;
- * the caller decides what that means (preserve existing on enrich, or revert
- * to null on an explicit-ulid replace that omitted the field — reverting an
- * omitted field is not "overwriting with a reference-sourced write").
+ * `incoming === undefined` means this write doesn't state a source at all,
+ * so the existing value is preserved (never null-clobbered by silence).
  */
 function resolveNutritionSource(
   existing: NutritionSource | null,
