@@ -490,6 +490,21 @@ describe("product write body (§ Product corrections)", () => {
     expect(() => buildProductWriteBody({ "unit-model": "sealed" })).toThrow(AxiError);
     expect(buildProductWriteBody({ "unit-model": "counted" })).toEqual({ unit_model_hint: "counted" });
   });
+
+  it("--unit-edible-g and --nutrition-source round-trip onto the wire (§ Per-unit edible grams and panel provenance)", () => {
+    expect(buildProductWriteBody({ "unit-edible-g": "50", "nutrition-source": "label" })).toEqual({
+      unit_edible_g: 50,
+      nutrition_source: "label",
+    });
+    // Empty-string flags clear, same idiom as every other nullable field.
+    expect(buildProductWriteBody({ "unit-edible-g": "", "nutrition-source": "" })).toEqual({
+      unit_edible_g: null,
+      nutrition_source: null,
+    });
+    expect(() => buildProductWriteBody({ "nutrition-source": "guessed" })).toThrow(AxiError);
+    expect(buildProductWriteBody({ "nutrition-source": "reference" })).toEqual({ nutrition_source: "reference" });
+    expect(buildProductWriteBody({ "nutrition-source": "estimate" })).toEqual({ nutrition_source: "estimate" });
+  });
 });
 
 describe("inventory retirement + merge are reachable and discoverable", () => {

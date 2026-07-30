@@ -35,6 +35,7 @@ class CapturingLabelParser implements LabelParser {
       unit_model_hint: null,
       net_content: null,
       aliases: [],
+      unit_edible_g: null,
       ...result,
     };
   }
@@ -1201,6 +1202,71 @@ describe('product corrections routes', () => {
     const p = (await post({ name: 'Ground Nutmeg' })).json();
     const empty = await patch(p.ulid, { nutrition_negligible_override: true });
     expect(empty.statusCode).toBe(400);
+  });
+
+  it('unit_edible_g and nutrition_source round-trip through POST and PATCH', async () => {
+    const created = (
+      await post({ name: 'Store-brand Large Eggs', shelf_life_class: 'fridge_long', unit_edible_g: 50, nutrition_source: 'label' })
+    ).json();
+    expect(created.unit_edible_g).toBe(50);
+    expect(created.nutrition_source).toBe('label');
+
+    // A patch can restate/clear unit_edible_g like any other stated fact.
+    const cleared = await patch(created.ulid, { unit_edible_g: null });
+    expect(cleared.json().unit_edible_g).toBeNull();
+    const restated = await patch(created.ulid, { unit_edible_g: 52 });
+    expect(restated.json().unit_edible_g).toBe(52);
+
+    // A fresh product with no source stated reads null, not a guessed default.
+    const bare = (await post({ name: 'Unlabeled Bulk Item' })).json();
+    expect(bare.unit_edible_g).toBeNull();
+    expect(bare.nutrition_source).toBeNull();
+  });
+
+  it('nutrition_source is one-directional — label beats reference/estimate on every write door', async () => {
+    // Seeded as a generic reference row (the only option for unpackaged produce).
+    const created = (await post({ name: 'Roma Tomato', shelf_life_class: 'produce', nutrition_source: 'reference' })).json();
+    expect(created.nutrition_source).toBe('reference');
+
+    // A later label scan's write (simulated here as an explicit enrich, since
+    // the composer itself is exercised in services/inventory.test.ts) upgrades it.
+    const upgraded = await post({ name: 'Roma Tomato', nutrition_source: 'label' });
+    expect(upgraded.statusCode).toBe(200);
+    expect(upgraded.json().nutrition_source).toBe('label');
+
+    // Nothing beats label except label — an enrich attempting 'reference' is refused.
+    const refusedEnrich = await post({ name: 'Roma Tomato', nutrition_source: 'reference' });
+    expect(refusedEnrich.json().nutrition_source).toBe('label');
+
+    // Nor an 'estimate' via the same door.
+    const refusedEstimate = await post({ name: 'Roma Tomato', nutrition_source: 'estimate' });
+    expect(refusedEstimate.json().nutrition_source).toBe('label');
+
+    // Nor a PATCH — the rule is absolute, not just an enrich courtesy.
+    const refusedPatch = await patch(upgraded.json().ulid, { nutrition_source: 'reference' });
+    expect(refusedPatch.json().nutrition_source).toBe('label');
+
+    // Nor an explicit-ulid REPLACE, even though a replace otherwise states the
+    // whole record and reverts every omitted field.
+    const refusedReplace = await post({ ulid: upgraded.json().ulid, name: 'Roma Tomato', nutrition_source: 'reference' });
+    expect(refusedReplace.statusCode).toBe(200);
+    expect(refusedReplace.json().nutrition_source).toBe('label');
+    // ...but the replace still states everything ELSE, e.g. an omitted package_size reverts.
+    expect(refusedReplace.json().package_size).toBeNull();
+
+    // Restating 'label' is always a no-op success, never refused.
+    const relabel = await patch(upgraded.json().ulid, { nutrition_source: 'label' });
+    expect(relabel.statusCode).toBe(200);
+    expect(relabel.json().nutrition_source).toBe('label');
+  });
+
+  it('an explicit-ulid replace omitting nutrition_source reverts it to null, same as any other field', async () => {
+    // Omission is not "a reference-sourced write" — only an explicit
+    // reference/estimate value is refused against an existing label (previous
+    // test); a bare omission behaves like every other replaced field.
+    const created = (await post({ name: 'Fresh Basil', nutrition_source: 'reference' })).json();
+    const replaced = await post({ ulid: created.ulid, name: 'Fresh Basil' });
+    expect(replaced.json().nutrition_source).toBeNull();
   });
 });
 

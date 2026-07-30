@@ -66,6 +66,7 @@ When several photos are supplied they are complementary views of ONE product, no
 5. Ingredients: transcribe whatever ingredient information is legible, even if rough — a full ingredients panel verbatim (a single comma-separated string), a partial/cut-off list, or front-of-pack ingredient callouts. Null ONLY when there is genuinely no ingredient information anywhere in the photos.
 6. Suggest up to 3 short alias strings someone might use when logging (e.g. "feta", "feta cheese").
 7. unit_model_hint — judge the PACKAGING (not servings): does opening this product mean breaking into one of several individually-sealed atomic units, each starting its own freshness clock (a can 3-pack, a yogurt 4-pack, individually-wrapped bars) -> "counted"; or opening a single container that is then drawn down (a tub, bag, bottle, box of dry goods) -> "fraction". Null when the photos don't show enough of the packaging to judge. Servings-per-container says NOTHING about this — judge only from physical packaging.
+8. unit_edible_g — ONLY when the package prints the edible weight of a SINGLE physical unit as its own distinct figure, separate from the serving size and separate from the total net weight (e.g. an individually-wrapped bar or portion whose own wrapper states "Net Wt 42g" with nothing else on it). This is rare. Null in every other case, including when the serving size looks like it might describe one unit — that similarity is a coincidence you must not resolve. NEVER compute this: not from serving_size_g, and not from net weight divided by a count. If reaching a number requires any arithmetic at all, the answer is null.
 </instructions>
 
 <response_format>
@@ -83,11 +84,12 @@ Return ONLY a JSON object inside <label> tags. No markdown, no text outside the 
   "ingredients": "ingredients as printed (full, partial, or callouts), or null",
   "unit_model_hint": "counted|fraction|null",
   "net_content": {"value": 0, "unit": "g"},
+  "unit_edible_g": null,
   "aliases": ["short", "names"]
 }
 </label>
 
-Any value you cannot read should be null (nutrition_per_serving / nutrition_per_100g themselves may be null when no panel is visible). Remember: nutrition_per_100g is ONLY for a printed per-100g column — never your own conversion.
+Any value you cannot read should be null (nutrition_per_serving / nutrition_per_100g themselves may be null when no panel is visible). Remember: nutrition_per_100g is ONLY for a printed per-100g column — never your own conversion. Remember: unit_edible_g is ONLY a distinct printed per-unit figure — never computed, and null almost always.
 </response_format>`;
 
 export class KitchenLabelParser implements LabelParser {
@@ -175,6 +177,10 @@ export class KitchenLabelParser implements LabelParser {
     const servingsPerContainer = numOrNull(parsed.servings_per_container);
     const unitModelHint =
       parsed.unit_model_hint === 'counted' || parsed.unit_model_hint === 'fraction' ? parsed.unit_model_hint : null;
+    // § Per-unit edible grams and panel provenance — transcription only, same
+    // "reject anything that isn't a bare positive number" guard as the other
+    // raw-capture fields. Never derived from servingSizeG or netContent here.
+    const unitEdibleG = numOrNull(parsed.unit_edible_g);
 
     let netContent: { value: number; unit: string } | null = null;
     if (parsed.net_content && typeof parsed.net_content === 'object') {
@@ -209,6 +215,7 @@ export class KitchenLabelParser implements LabelParser {
       unit_model_hint: unitModelHint,
       net_content: netContent,
       aliases,
+      unit_edible_g: unitEdibleG,
     };
   }
 }

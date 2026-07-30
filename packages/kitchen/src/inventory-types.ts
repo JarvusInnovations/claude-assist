@@ -125,6 +125,18 @@ export const INVENTORY_EVENT_TYPES: readonly InventoryEventType[] = [
 ];
 
 /**
+ * Where a product's nutrition panel came from (§ Per-unit edible grams and
+ * panel provenance): a scanned label is authoritative for that SKU; a
+ * reference table is correct for the food but generic for the SKU (the only
+ * option for unpackaged produce, which carries no label); an estimate is a
+ * guess. Orthogonal to basis — a label panel is normally per-serving and a
+ * reference panel per-100g, but neither field implies the other.
+ */
+export type NutritionSource = 'label' | 'reference' | 'estimate';
+
+export const NUTRITION_SOURCES: readonly NutritionSource[] = ['label', 'reference', 'estimate'];
+
+/**
  * Reference nutrition per 100g on a product. Any field null = unknown.
  * The full nine-field dietary panel (§ Nutrition panel), including
  * `added_sugar_g` — US Nutrition Facts panels have printed "Includes Xg Added
@@ -182,6 +194,17 @@ export interface ProductRecord {
   shelf_life_days_unopened: number | null;
   shelf_life_days_opened: number | null;
   /**
+   * The edible mass of ONE physical unit of a counted product — one egg, one
+   * can, one link (§ Per-unit edible grams and panel provenance). STATED,
+   * never derived: `serving_size_g` is the label's serving, which equals one
+   * unit only by coincidence, and `net_content_g ÷ units_total` (an item-level
+   * quantity) includes inedible mass (shell, packing water). Null makes the
+   * product ineligible for one-tap consume — never an error.
+   */
+  unit_edible_g: number | null;
+  /** Where the nutrition panel came from; see `NutritionSource`. Null = unknown. */
+  nutrition_source: NutritionSource | null;
+  /**
    * The owner's assertion that EVERY panel field is ~0 at any realistic serving
    * (§ Nutritionally negligible products): spices, dried herbs, salt, vinegar,
    * black coffee, extracts. It clears `needs_nutrition` and makes the effective
@@ -219,6 +242,15 @@ export interface ProductInput {
   package_size?: string | null;
   shelf_life_days_unopened?: number | null;
   shelf_life_days_opened?: number | null;
+  /** § Per-unit edible grams and panel provenance — see `ProductRecord`. STATED, never derived. */
+  unit_edible_g?: number | null;
+  /**
+   * § Per-unit edible grams and panel provenance — see `ProductRecord`. An
+   * enrich (label composer, name-key upsert, merge) never lets this DOWNGRADE
+   * an existing `'label'` to `'reference'`/`'estimate'`: nothing beats `label`
+   * except another `label`.
+   */
+  nutrition_source?: NutritionSource | null;
   /** § Nutritionally negligible products — see `ProductRecord`. */
   nutrition_negligible?: boolean;
   /**
@@ -255,6 +287,15 @@ export interface ProductPatchInput {
   package_size?: string | null;
   shelf_life_days_unopened?: number | null;
   shelf_life_days_opened?: number | null;
+  /** § Per-unit edible grams and panel provenance — see `ProductRecord`. STATED, never derived. */
+  unit_edible_g?: number | null;
+  /**
+   * § Per-unit edible grams and panel provenance — see `ProductRecord`. Even
+   * from a PATCH, this can never move an existing `'label'` to
+   * `'reference'`/`'estimate'` — the one-directional supersession rule is
+   * absolute, not just an enrich courtesy.
+   */
+  nutrition_source?: NutritionSource | null;
   nutrition_negligible?: boolean;
   /** Request-only, never stored — see `ProductInput`. */
   nutrition_negligible_override?: boolean;
@@ -627,6 +668,15 @@ export interface ParsedLabel {
    */
   net_content: { value: number; unit: string } | null;
   aliases: string[];
+  /**
+   * The edible mass of ONE physical unit, ONLY when the package prints that
+   * exact figure as its own distinct number (§ Per-unit edible grams and panel
+   * provenance) — e.g. a per-item "Net Wt X g" on an individually-wrapped
+   * unit. Transcription, never arithmetic: NOT the serving size, and NOT net
+   * content divided by a count. Null in the overwhelming majority of scans,
+   * including whenever the only way to reach a number would be to compute it.
+   */
+  unit_edible_g: number | null;
 }
 
 /**

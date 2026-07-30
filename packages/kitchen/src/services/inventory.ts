@@ -34,6 +34,7 @@ import type {
   LexiconInput,
   LexiconRecord,
   NutritionPer100g,
+  NutritionSource,
   ParsedLabel,
   ParsedReceiptLine,
   PriceHistoryView,
@@ -607,6 +608,7 @@ export class InventoryPipeline {
     if (isTerminal(item.state)) throw new InvalidTransitionError(item.state, 'opened');
     if (!this.labelParser && photos.length > 0) throw new LabelParserUnavailableError();
 
+    const scanned = photos.length > 0 && this.labelParser !== null;
     const parsed: ParsedLabel = photos.length > 0 && this.labelParser
       ? await this.labelParser.parse({ photos, hint: item.raw_label })
       : {
@@ -621,6 +623,7 @@ export class InventoryPipeline {
           unit_model_hint: null,
           net_content: null,
           aliases: [] as string[],
+          unit_edible_g: null,
         };
 
     const name = meta.name?.trim() || parsed.name || item.raw_label || 'Unlabeled item';
@@ -649,6 +652,12 @@ export class InventoryPipeline {
       net_content_ml: netContent.net_content_ml,
       ingredients,
       package_size: packageSize,
+      // § Per-unit edible grams and panel provenance — STATED (transcribed by
+      // the vision model when the package printed a distinct per-unit figure;
+      // never derived here from serving_size_g or from net content). A real
+      // label scan asserts its own provenance; a metadata-only resolve (no
+      // photos) states nothing about where the panel came from.
+      ...(scanned ? { unit_edible_g: parsed.unit_edible_g, nutrition_source: 'label' as NutritionSource } : {}),
     };
 
     // Enrich path: an already-linked, non-needs_info item. Bank the parsed panel
@@ -2288,7 +2297,13 @@ export class InventoryPipeline {
         override: input.nutrition_negligible_override,
       });
       if (existing) {
-        const replaced = await this.store.updateProduct(input.ulid, productFields(normalizedInput));
+        const fields = productFields(normalizedInput);
+        // The one field a replace does NOT fully state: nutrition_source stays
+        // absolutely one-directional even here (see resolveNutritionSource) —
+        // an omitted flag reverts like every other field, but an explicit
+        // 'reference'/'estimate' still cannot pry an existing 'label' loose.
+        fields.nutrition_source = resolveNutritionSource(existing.nutrition_source, normalizedInput.nutrition_source) ?? null;
+        const replaced = await this.store.updateProduct(input.ulid, fields);
         // Vanished between read and write — fall through to a create rather
         // than reporting a replace that didn't happen.
         if (replaced) return { product: replaced, created: false };
@@ -2373,6 +2388,15 @@ export class InventoryPipeline {
     if (patch.package_size !== undefined) out.package_size = patch.package_size;
     if (patch.shelf_life_days_unopened !== undefined) out.shelf_life_days_unopened = patch.shelf_life_days_unopened;
     if (patch.shelf_life_days_opened !== undefined) out.shelf_life_days_opened = patch.shelf_life_days_opened;
+    if (patch.unit_edible_g !== undefined) out.unit_edible_g = patch.unit_edible_g;
+    if (patch.nutrition_source !== undefined) {
+      // Absolute supersession applies even to the owner's own PATCH — see
+      // resolveNutritionSource. A patch attempting 'reference'/'estimate'
+      // against an existing 'label' is silently refused (stays 'label')
+      // rather than a 400, mirroring nutrition_negligible's "silence changes
+      // nothing" idiom rather than inventing a new error surface for it.
+      out.nutrition_source = resolveNutritionSource(existing.nutrition_source, patch.nutrition_source) ?? null;
+    }
     if (patch.nutrition_negligible !== undefined) out.nutrition_negligible = patch.nutrition_negligible;
     if (patch.ingredients !== undefined) out.ingredients = patch.ingredients?.trim() || null;
     if (patch.nutrition_per_100g !== undefined) {
@@ -2462,6 +2486,8 @@ export class InventoryPipeline {
       net_content_ml: loser.net_content_ml,
       ingredients: loser.ingredients,
       package_size: loser.package_size,
+      unit_edible_g: loser.unit_edible_g,
+      nutrition_source: loser.nutrition_source,
       nutrition_negligible: loser.nutrition_negligible,
     });
     const relinked = await this.store.relinkProductReferences(loserUlid, survivorUlid);
@@ -2538,6 +2564,12 @@ export class InventoryPipeline {
       net_content_ml: input.net_content_ml ?? existing.net_content_ml,
       ingredients: (input.ingredients?.trim() || null) ?? existing.ingredients,
       package_size: input.package_size ?? existing.package_size,
+      // STATED, never derived (§ Per-unit edible grams and panel provenance):
+      // an enrich only ever fills a gap, exactly like serving_size_g above.
+      unit_edible_g: input.unit_edible_g ?? existing.unit_edible_g,
+      // One-directional supersession: nothing beats an existing 'label'
+      // except another 'label' (see resolveNutritionSource).
+      nutrition_source: resolveNutritionSource(existing.nutrition_source, input.nutrition_source) ?? existing.nutrition_source,
       // Never un-marks: an enrich carries no evidence AGAINST negligibility
       // (§ Nutritionally negligible products — the marker is cleared only by an
       // explicit PATCH).
@@ -2731,8 +2763,33 @@ function productFields(input: ProductInput): Omit<NewProduct, 'ulid'> {
     package_size: input.package_size ?? null,
     shelf_life_days_unopened: input.shelf_life_days_unopened ?? null,
     shelf_life_days_opened: input.shelf_life_days_opened ?? null,
+    unit_edible_g: input.unit_edible_g ?? null,
+    nutrition_source: input.nutrition_source ?? null,
     nutrition_negligible: input.nutrition_negligible ?? false,
   };
+}
+
+/**
+ * One-directional supersession (§ Per-unit edible grams and panel
+ * provenance): `label` beats `reference`/`estimate`; nothing beats `label`
+ * except another `label`. Applied at every site that writes
+ * `nutrition_source` — the name-key enrich, the explicit-ulid replace, the
+ * merge fold, AND the owner-facing PATCH — because the rule is absolute, not
+ * an enrich-only courtesy: "a label panel is never overwritten by a
+ * reference-sourced write" makes no exception for who did the writing.
+ *
+ * `incoming === undefined` means this write doesn't state a source at all;
+ * the caller decides what that means (preserve existing on enrich, or revert
+ * to null on an explicit-ulid replace that omitted the field — reverting an
+ * omitted field is not "overwriting with a reference-sourced write").
+ */
+function resolveNutritionSource(
+  existing: NutritionSource | null,
+  incoming: NutritionSource | null | undefined
+): NutritionSource | null | undefined {
+  if (incoming === undefined) return undefined;
+  if (existing === 'label' && incoming !== 'label') return 'label';
+  return incoming;
 }
 
 /**

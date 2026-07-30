@@ -32,6 +32,8 @@ function product(overrides: Partial<ProductRecord> = {}): ProductRecord {
     package_size: null,
     shelf_life_days_unopened: null,
     shelf_life_days_opened: null,
+    unit_edible_g: null,
+    nutrition_source: null,
     nutrition_negligible: false,
     archived_at: null,
     merged_into: null,
