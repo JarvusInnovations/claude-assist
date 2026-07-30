@@ -34,6 +34,7 @@ import type {
   LexiconInput,
   LexiconRecord,
   NutritionPer100g,
+  NutritionSource,
   ParsedLabel,
   ParsedReceiptLine,
   PriceHistoryView,
@@ -607,6 +608,7 @@ export class InventoryPipeline {
     if (isTerminal(item.state)) throw new InvalidTransitionError(item.state, 'opened');
     if (!this.labelParser && photos.length > 0) throw new LabelParserUnavailableError();
 
+    const scanned = photos.length > 0 && this.labelParser !== null;
     const parsed: ParsedLabel = photos.length > 0 && this.labelParser
       ? await this.labelParser.parse({ photos, hint: item.raw_label })
       : {
@@ -621,6 +623,7 @@ export class InventoryPipeline {
           unit_model_hint: null,
           net_content: null,
           aliases: [] as string[],
+          unit_edible_g: null,
         };
 
     const name = meta.name?.trim() || parsed.name || item.raw_label || 'Unlabeled item';
@@ -649,6 +652,12 @@ export class InventoryPipeline {
       net_content_ml: netContent.net_content_ml,
       ingredients,
       package_size: packageSize,
+      // § Per-unit edible grams and panel provenance — STATED (transcribed by
+      // the vision model when the package printed a distinct per-unit figure;
+      // never derived here from serving_size_g or from net content). A real
+      // label scan asserts its own provenance; a metadata-only resolve (no
+      // photos) states nothing about where the panel came from.
+      ...(scanned ? { unit_edible_g: parsed.unit_edible_g, nutrition_source: 'label' as NutritionSource } : {}),
     };
 
     // Enrich path: an already-linked, non-needs_info item. Bank the parsed panel
@@ -2288,6 +2297,12 @@ export class InventoryPipeline {
         override: input.nutrition_negligible_override,
       });
       if (existing) {
+        // A replace STATES the whole record (§ Product corrections — the same
+        // doctrine `nutrition_negligible`'s guard applies), including
+        // `nutrition_source`: the body's own facts are judged, an omitted
+        // field reverts like any other, and an explicit downgrade from
+        // `'label'` APPLIES — this is the owner stating a fact, not the
+        // automated gap-filler the one-directional rule exists to constrain.
         const replaced = await this.store.updateProduct(input.ulid, productFields(normalizedInput));
         // Vanished between read and write — fall through to a create rather
         // than reporting a replace that didn't happen.
@@ -2373,6 +2388,13 @@ export class InventoryPipeline {
     if (patch.package_size !== undefined) out.package_size = patch.package_size;
     if (patch.shelf_life_days_unopened !== undefined) out.shelf_life_days_unopened = patch.shelf_life_days_unopened;
     if (patch.shelf_life_days_opened !== undefined) out.shelf_life_days_opened = patch.shelf_life_days_opened;
+    if (patch.unit_edible_g !== undefined) out.unit_edible_g = patch.unit_edible_g;
+    // The stated value APPLIES here, including a downgrade FROM 'label' — a
+    // PATCH is the owner stating a fact, not the automated gap-filler the
+    // one-directional supersession rule exists to constrain (§ Per-unit
+    // edible grams and panel provenance). `resolveNutritionSource` guards
+    // only the enrich door (name-key upsert, label composer, merge fold).
+    if (patch.nutrition_source !== undefined) out.nutrition_source = patch.nutrition_source;
     if (patch.nutrition_negligible !== undefined) out.nutrition_negligible = patch.nutrition_negligible;
     if (patch.ingredients !== undefined) out.ingredients = patch.ingredients?.trim() || null;
     if (patch.nutrition_per_100g !== undefined) {
@@ -2462,6 +2484,8 @@ export class InventoryPipeline {
       net_content_ml: loser.net_content_ml,
       ingredients: loser.ingredients,
       package_size: loser.package_size,
+      unit_edible_g: loser.unit_edible_g,
+      nutrition_source: loser.nutrition_source,
       nutrition_negligible: loser.nutrition_negligible,
     });
     const relinked = await this.store.relinkProductReferences(loserUlid, survivorUlid);
@@ -2538,6 +2562,14 @@ export class InventoryPipeline {
       net_content_ml: input.net_content_ml ?? existing.net_content_ml,
       ingredients: (input.ingredients?.trim() || null) ?? existing.ingredients,
       package_size: input.package_size ?? existing.package_size,
+      // STATED, never derived (§ Per-unit edible grams and panel provenance):
+      // an enrich only ever fills a gap, exactly like serving_size_g above.
+      unit_edible_g: input.unit_edible_g ?? existing.unit_edible_g,
+      // One-directional supersession, THIS DOOR ONLY: an automated enrich
+      // carries no evidence against a scanned panel's authority, so nothing
+      // here beats an existing 'label' except another 'label'. A PATCH or an
+      // explicit-ulid replace is a different door — see resolveNutritionSource.
+      nutrition_source: resolveNutritionSource(existing.nutrition_source, input.nutrition_source) ?? existing.nutrition_source,
       // Never un-marks: an enrich carries no evidence AGAINST negligibility
       // (§ Nutritionally negligible products — the marker is cleared only by an
       // explicit PATCH).
@@ -2731,8 +2763,35 @@ function productFields(input: ProductInput): Omit<NewProduct, 'ulid'> {
     package_size: input.package_size ?? null,
     shelf_life_days_unopened: input.shelf_life_days_unopened ?? null,
     shelf_life_days_opened: input.shelf_life_days_opened ?? null,
+    unit_edible_g: input.unit_edible_g ?? null,
+    nutrition_source: input.nutrition_source ?? null,
     nutrition_negligible: input.nutrition_negligible ?? false,
   };
+}
+
+/**
+ * One-directional supersession (§ Per-unit edible grams and panel
+ * provenance): `label` beats `reference`/`estimate`; nothing beats `label`
+ * except another `label`. Guards ONLY the automated gap-filling doors — the
+ * name-key enrich (`upsertProductByName`, the label composer's enrich path)
+ * and the merge fold — because those writes carry no evidence AGAINST a
+ * scanned panel's authority, exactly like `nutrition_negligible` never
+ * un-marks on an enrich. An owner EXPLICITLY stating `nutrition_source` (a
+ * `PATCH`, or an explicit-ulid replace) is not that: it is a fact asserted
+ * about this product, so the stated value applies as given, including a
+ * downgrade from `'label'` — see `patchProduct` and the replace branch of
+ * `upsertProduct`, neither of which calls this function.
+ *
+ * `incoming === undefined` means this write doesn't state a source at all,
+ * so the existing value is preserved (never null-clobbered by silence).
+ */
+function resolveNutritionSource(
+  existing: NutritionSource | null,
+  incoming: NutritionSource | null | undefined
+): NutritionSource | null | undefined {
+  if (incoming === undefined) return undefined;
+  if (existing === 'label' && incoming !== 'label') return 'label';
+  return incoming;
 }
 
 /**

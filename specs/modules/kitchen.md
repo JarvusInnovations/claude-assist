@@ -1379,10 +1379,30 @@ All tables instance-agnostic empty schema, ULID keys, `kitchen` schema
   unpackaged produce, which carries no label); an estimate is a guess. Without the
   marker a reference-seeded row is indistinguishable from a scanned package, there
   is no safe upgrade rule, and the `needs_nutrition` sweep cannot tell *no data*
-  from *generic data*. **A label scan supersedes `reference` or `estimate`; neither
-  ever overwrites a `label` panel.** Provenance is orthogonal to basis
-  (§ A panel means nothing without its basis): a label panel is normally
-  per-serving and a reference panel per-100 g, but neither implies the other.
+  from *generic data*.
+
+  **Supersession guards the automated door, not the owner.** A name-key enrich
+  (a receipt re-seed, the label composer's already-linked-item path, a merge
+  fold) never lets `nutrition_source` downgrade *away* from `'label'` — those
+  writes carry no evidence against a scanned panel's authority, exactly the
+  same non-argument an enrich carries against `nutrition_negligible`
+  (§ Nutritionally negligible products). An explicit-ulid **replace** or a
+  **`PATCH`** is a different act: the owner (or an agent acting on an explicit
+  instruction) stating a fact about this product, including a correction
+  *away* from `'label'` — a scan that was wrong, a mislabeled SKU, a merge that
+  needs undoing by hand. That write applies as stated. Unlike
+  `nutrition_negligible`, there is no tracked-ceiling safety hazard on the
+  other side of `nutrition_source` to guard against: it is metadata about
+  confidence, not a number the daily view treats as a limit, so a stated
+  correction needs no guard and no override flag — it simply lands. A silent
+  refusal here would be strictly worse than either direction of being wrong:
+  the caller believes they corrected the record and did not, which is the
+  looks-right-never-questioned failure this whole area of the module exists to
+  close.
+
+  Provenance is orthogonal to basis (§ A panel means nothing without its
+  basis): a label panel is normally per-serving and a reference panel
+  per-100 g, but neither implies the other.
 
   **Net content (§ Prices' divisor).** The label scan also transcribes the
   package's printed net content as a raw `{value, unit}` pair (e.g. `454 g`,

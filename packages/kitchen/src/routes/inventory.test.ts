@@ -35,6 +35,7 @@ class CapturingLabelParser implements LabelParser {
       unit_model_hint: null,
       net_content: null,
       aliases: [],
+      unit_edible_g: null,
       ...result,
     };
   }
@@ -1201,6 +1202,87 @@ describe('product corrections routes', () => {
     const p = (await post({ name: 'Ground Nutmeg' })).json();
     const empty = await patch(p.ulid, { nutrition_negligible_override: true });
     expect(empty.statusCode).toBe(400);
+  });
+
+  it('unit_edible_g and nutrition_source round-trip through POST and PATCH', async () => {
+    const created = (
+      await post({ name: 'Store-brand Large Eggs', shelf_life_class: 'fridge_long', unit_edible_g: 50, nutrition_source: 'label' })
+    ).json();
+    expect(created.unit_edible_g).toBe(50);
+    expect(created.nutrition_source).toBe('label');
+
+    // A patch can restate/clear unit_edible_g like any other stated fact.
+    const cleared = await patch(created.ulid, { unit_edible_g: null });
+    expect(cleared.json().unit_edible_g).toBeNull();
+    const restated = await patch(created.ulid, { unit_edible_g: 52 });
+    expect(restated.json().unit_edible_g).toBe(52);
+
+    // A fresh product with no source stated reads null, not a guessed default.
+    const bare = (await post({ name: 'Unlabeled Bulk Item' })).json();
+    expect(bare.unit_edible_g).toBeNull();
+    expect(bare.nutrition_source).toBeNull();
+  });
+
+  it('a name-key enrich never downgrades nutrition_source away from label (the automated gap-filler)', async () => {
+    // Seeded as a generic reference row (the only option for unpackaged produce).
+    const created = (await post({ name: 'Roma Tomato', shelf_life_class: 'produce', nutrition_source: 'reference' })).json();
+    expect(created.nutrition_source).toBe('reference');
+
+    // A later label scan's write (simulated here as an explicit enrich, since
+    // the composer itself is exercised in services/inventory.test.ts) upgrades it.
+    const upgraded = await post({ name: 'Roma Tomato', nutrition_source: 'label' });
+    expect(upgraded.statusCode).toBe(200);
+    expect(upgraded.json().nutrition_source).toBe('label');
+
+    // Nothing beats label except label on THIS door — an enrich carries no
+    // evidence against a scanned panel's authority, so an attempted
+    // 'reference' downgrade is refused (stays 'label').
+    const refusedEnrich = await post({ name: 'Roma Tomato', nutrition_source: 'reference' });
+    expect(refusedEnrich.json().nutrition_source).toBe('label');
+
+    // Nor an 'estimate' via the same door.
+    const refusedEstimate = await post({ name: 'Roma Tomato', nutrition_source: 'estimate' });
+    expect(refusedEstimate.json().nutrition_source).toBe('label');
+
+    // Restating 'label' is always a no-op success, never refused.
+    const relabel = await post({ name: 'Roma Tomato', nutrition_source: 'label' });
+    expect(relabel.statusCode).toBe(200);
+    expect(relabel.json().nutrition_source).toBe('label');
+  });
+
+  it('an explicit PATCH applies nutrition_source exactly as stated, downgrade from label included', async () => {
+    // A PATCH is the owner asserting a fact — a scan that was wrong, a
+    // mislabeled SKU — not the automated gap-filler the enrich rule guards.
+    const created = (await post({ name: 'Sea Salt Flakes', nutrition_source: 'label' })).json();
+    expect(created.nutrition_source).toBe('label');
+
+    const downgraded = await patch(created.ulid, { nutrition_source: 'reference' });
+    expect(downgraded.statusCode).toBe(200);
+    expect(downgraded.json().nutrition_source).toBe('reference');
+
+    const toEstimate = await patch(created.ulid, { nutrition_source: 'estimate' });
+    expect(toEstimate.json().nutrition_source).toBe('estimate');
+
+    // And a null clear is likewise a plain stated fact, not a refused write.
+    const cleared = await patch(created.ulid, { nutrition_source: null });
+    expect(cleared.json().nutrition_source).toBeNull();
+  });
+
+  it('an explicit-ulid replace applies nutrition_source exactly as stated (the body IS the whole record)', async () => {
+    const created = (await post({ name: 'Fresh Basil', nutrition_source: 'label' })).json();
+    expect(created.nutrition_source).toBe('label');
+
+    // A downgrade via replace applies — this is the owner stating the whole
+    // record, same doctrine as every other field a replace restates.
+    const downgraded = await post({ ulid: created.ulid, name: 'Fresh Basil', nutrition_source: 'reference' });
+    expect(downgraded.statusCode).toBe(200);
+    expect(downgraded.json().nutrition_source).toBe('reference');
+
+    // And an omitted nutrition_source reverts to null, same as any other
+    // omitted field on a replace — omission is not itself a stated downgrade,
+    // it just isn't restated.
+    const reverted = await post({ ulid: created.ulid, name: 'Fresh Basil' });
+    expect(reverted.json().nutrition_source).toBeNull();
   });
 });
 

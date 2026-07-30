@@ -18,6 +18,7 @@ import type {
   LexiconRecord,
   LineMatchOutcome,
   NutritionPer100g,
+  NutritionSource,
   ProductRecord,
   PurchaseBatchRecord,
   ShelfLifeClass,
@@ -44,6 +45,10 @@ export interface NewProduct {
   package_size: string | null;
   shelf_life_days_unopened: number | null;
   shelf_life_days_opened: number | null;
+  /** § Per-unit edible grams and panel provenance; defaults null (unstated) when omitted. */
+  unit_edible_g?: number | null;
+  /** § Per-unit edible grams and panel provenance; defaults null (unknown) when omitted. */
+  nutrition_source?: NutritionSource | null;
   /** § Nutritionally negligible products; defaults false when omitted. */
   nutrition_negligible?: boolean;
 }
@@ -63,6 +68,8 @@ export interface ProductPatch {
   package_size?: string | null;
   shelf_life_days_unopened?: number | null;
   shelf_life_days_opened?: number | null;
+  unit_edible_g?: number | null;
+  nutrition_source?: NutritionSource | null;
   nutrition_negligible?: boolean;
 }
 
@@ -424,6 +431,8 @@ export function rowToProduct(row: Record<string, unknown>): ProductRecord {
     package_size: (row.package_size as string | null) ?? null,
     shelf_life_days_unopened: row.shelf_life_days_unopened == null ? null : Number(row.shelf_life_days_unopened),
     shelf_life_days_opened: row.shelf_life_days_opened == null ? null : Number(row.shelf_life_days_opened),
+    unit_edible_g: row.unit_edible_g == null ? null : Number(row.unit_edible_g),
+    nutrition_source: (row.nutrition_source as NutritionSource | null) ?? null,
     nutrition_negligible: Boolean(row.nutrition_negligible),
     archived_at: toDateOrNull(row.archived_at),
     merged_into: (row.merged_into as string | null) ?? null,
@@ -590,7 +599,7 @@ export class PgInventoryStore implements InventoryStore {
          serving_size_g, nutrition_per_serving, servings_per_container,
          unit_model_hint, net_content_g, net_content_ml, ingredients,
          package_size, shelf_life_days_unopened, shelf_life_days_opened,
-         nutrition_negligible)
+         unit_edible_g, nutrition_source, nutrition_negligible)
       VALUES (
         ${product.ulid}, ${product.name}, ${product.shelf_life_class},
         ${product.aliases}, ${product.nutrition_per_100g ? this.sql.json(product.nutrition_per_100g as never) : null},
@@ -600,6 +609,7 @@ export class PgInventoryStore implements InventoryStore {
         ${product.unit_model_hint ?? null}, ${product.net_content_g ?? null},
         ${product.net_content_ml ?? null}, ${product.ingredients}, ${product.package_size},
         ${product.shelf_life_days_unopened}, ${product.shelf_life_days_opened},
+        ${product.unit_edible_g ?? null}, ${product.nutrition_source ?? null},
         ${product.nutrition_negligible ?? false}
       )
       RETURNING *
@@ -632,6 +642,8 @@ export class PgInventoryStore implements InventoryStore {
         package_size = ${merged.package_size},
         shelf_life_days_unopened = ${merged.shelf_life_days_unopened},
         shelf_life_days_opened = ${merged.shelf_life_days_opened},
+        unit_edible_g = ${merged.unit_edible_g ?? null},
+        nutrition_source = ${merged.nutrition_source ?? null},
         nutrition_negligible = ${merged.nutrition_negligible}
       WHERE ulid = ${ulid}
       RETURNING *

@@ -1,9 +1,10 @@
 ---
-status: planned
+status: done
 depends: [product-corrections]
 specs:
   - specs/modules/kitchen.md
 issues: []
+pr: 171
 ---
 
 # Plan: per-unit edible grams + nutrition provenance on products
@@ -63,25 +64,38 @@ leaves the `needs_nutrition` sweep unable to tell *no data* from *generic data*.
   which only the label path writes); everything else `'reference'`. Erring upward is
   self-sealing: a false `'label'` makes the supersession rule refuse the *real* scan
   later, so a wrong claim would permanently block its own correction.
-- **Supersession is one-directional and absolute** — `label` beats `reference` and
-  `estimate`; nothing beats `label` except another label.
+- **Supersession guards the automated enrich only, not an owner-stated write.**
+  A name-key enrich (a receipt re-seed, the label composer's already-linked-item
+  path, a merge fold) never lets `nutrition_source` downgrade *away* from
+  `'label'` — those writes carry no evidence against a scanned panel's
+  authority, the same non-argument an enrich carries against
+  `nutrition_negligible`. An explicit-ulid replace or a `PATCH` is the owner
+  stating a fact and applies as given, downgrade included: unlike
+  `nutrition_negligible`, there is no tracked-ceiling safety hazard behind
+  `nutrition_source` to guard against, so the stated correction needs no guard
+  and no override flag — it simply lands.
 - Null stays legal for both columns and simply means the capability is unavailable
   for that product, never an error.
 
 ## Validation
 
-- [ ] `bun run test`, `bun run build`, `bun run type-check:axi`, `bun run
+- [x] `bun run test`, `bun run build`, `bun run type-check:axi`, `bun run
       check:skills` green.
-- [ ] Migration is additive and nullable; no data migration runs.
-- [ ] A label scan sets `nutrition_source: 'label'` and, for a counted product,
+- [x] Both columns are additive and nullable, and the migration also runs a
+      one-time conservative backfill of `nutrition_source` — `'label'` only where
+      label evidence already exists on the row, `'reference'` everywhere else.
+- [x] A label scan sets `nutrition_source: 'label'` and, for a counted product,
       captures `unit_edible_g`.
-- [ ] A `reference`/`estimate` panel is superseded by a later label scan; a `label`
-      panel is never overwritten by a reference-sourced write.
-- [ ] The backfill claims `'label'` for no row lacking label evidence.
-- [ ] **No code path derives `unit_edible_g`** from `serving_size_g` or from
+- [x] A `reference`/`estimate` panel written by an automated enrich (name-key
+      upsert, merge fold) is superseded by a later label scan, and never
+      overwrites an existing `label` panel; an explicit `PATCH` or explicit-ulid
+      replace is the owner's own correction and applies as stated, downgrade
+      from `label` included.
+- [x] The backfill claims `'label'` for no row lacking label evidence.
+- [x] **No code path derives `unit_edible_g`** from `serving_size_g` or from
       `net_content_g ÷ units_total` — asserted against both discriminating cases (a
       50 g unit that is not 56.75 g; a ~142 g unit that is not 85 g).
-- [ ] Both fields round-trip through the API and CLI.
+- [x] Both fields round-trip through the API and CLI.
 
 ## Risks / unknowns
 
@@ -96,5 +110,33 @@ leaves the `needs_nutrition` sweep unable to tell *no data* from *generic data*.
   [`panel-basis-guard`](panel-basis-guard.md). Kept explicitly orthogonal.
 
 ## Notes
+
+- **Migration `021` is additive-and-nullable columns plus a one-time
+  conservative backfill**, not a bare additive migration — the Approach's
+  backfill requirement was always the intent. Verified end-to-end against a
+  disposable Postgres 18 container running migrations 001→021 in order: a row
+  with BOTH `serving_size_g` and `nutrition_per_serving` populated backfills to
+  `'label'`; a row with only one of the pair, or neither, backfills to
+  `'reference'` (including a row with no nutrition data at all). Re-running
+  `021` against an already-migrated database is a no-op (`UPDATE 0`).
+- **Supersession guards the automated enrich door only** — `resolveNutritionSource`
+  (services/inventory.ts) is called from `enrichProduct` alone, which backs the
+  name-key upsert (`upsertProductByName`, including the label composer's
+  already-linked-item path) and the merge fold. `patchProduct` and the
+  explicit-ulid replace branch of `upsertProduct` apply `nutrition_source`
+  exactly as stated, downgrade from `'label'` included — the owner's own
+  correction, not the automated gap-filler the rule exists to constrain. This
+  mirrors the repo's existing doctrine for an explicit-ulid replace (see
+  `plans/kitchen-plausible-wrong-numbers.md` Approach: "a `ulid` replace states
+  the whole record, so the body's own facts are judged").
+- **`unit_edible_g` capture on the label scan is a new, narrow vision-prompt
+  instruction** (`label-parser.ts`): transcribe a per-unit weight ONLY when the
+  package prints it as its own distinct figure, separate from serving size and
+  net content — explicitly never computed. This is expected to return null on
+  the overwhelming majority of real scans; that is the point, not a defect.
+- Migration validated against a disposable `postgres:18` Docker container (not
+  any shared/deployed instance) — all 21 migrations apply in order, `021` is
+  idempotent on replay, and both new columns' `CHECK` constraints and the
+  backfill were inspected directly via `psql`.
 
 ## Follow-ups

@@ -57,6 +57,7 @@ class FakeLabelParser implements LabelParser {
       unit_model_hint: null,
       net_content: null,
       aliases: [],
+      unit_edible_g: null,
       ...result,
     };
   }
@@ -727,6 +728,7 @@ describe('label enrichment (ingredients + full panel + precedence)', () => {
     unit_model_hint: null,
     net_content: null,
     aliases: [],
+    unit_edible_g: null,
     ...over,
   });
 
@@ -806,6 +808,112 @@ describe('label enrichment (ingredients + full panel + precedence)', () => {
     const { item } = await pipeline.createItem({ raw_label: 'X', acquired_at: '2026-07-18' });
     await pipeline.applyEvent(item.ulid, 'finished', { at: '2026-07-18' });
     expect(pipeline.resolveLabel(item.ulid, [photo])).rejects.toThrow();
+  });
+
+  it('a label scan sets nutrition_source: label, and captures unit_edible_g only when the label itself states it', async () => {
+    const store = new MemoryInventoryStore();
+    // The label states a distinct per-unit figure — the rare case where a
+    // single wrapped unit prints its own weight.
+    const label = new FakeLabelParser(
+      mkLabel({
+        name: 'Individually-Wrapped Snack Bar',
+        nutrition_per_100g: { calories: 400 },
+        unit_edible_g: 35,
+      })
+    );
+    const pipeline = new InventoryPipeline(store, null, label, log);
+    const { item } = await pipeline.createItem({ raw_label: 'BAR', acquired_at: '2026-07-18', needs_info: true });
+    const resolved = await pipeline.resolveLabel(item.ulid, [photo]);
+    expect(resolved!.product.nutrition_source).toBe('label');
+    expect(resolved!.product.unit_edible_g).toBe(35);
+  });
+
+  it('a metadata-only resolve (no photos) states no nutrition_source — it never claims label without a scan', async () => {
+    const store = new MemoryInventoryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log);
+    const { item } = await pipeline.createItem({ raw_label: 'Bulk Rice', acquired_at: '2026-07-18', needs_info: true });
+    const resolved = await pipeline.resolveLabel(item.ulid, [], { name: 'Bulk Rice' });
+    expect(resolved!.product.nutrition_source).toBeNull();
+    expect(resolved!.product.unit_edible_g).toBeNull();
+  });
+
+  /**
+   * § Per-unit edible grams and panel provenance — "unit_edible_g is stated,
+   * never derived". Both wrong derivations are wrong in OPPOSITE directions,
+   * so one case apiece isolates each:
+   *
+   *  - A large-egg carton: the label states an 85-serving-looking coincidence
+   *    is NOT how this works — here the label prints a 50 g serving that
+   *    genuinely is one egg's edible mass, while the carton's own net content
+   *    (a dozen at ~56.75 g each WITH shell) is a different, larger number.
+   *    net_content_g ÷ a 12-unit item must never produce 56.75 here.
+   *  - A 3-can multipack: the label's 85 g serving is NOT one can — the can
+   *    itself is ~142 g. serving_size_g must never produce 85 here.
+   *
+   * Nothing in the label composer computes unit_edible_g from either field —
+   * this asserts that even when both traps are present on the SAME resolve,
+   * the product's unit_edible_g stays whatever was explicitly stated (or
+   * null), never the derived-and-wrong number.
+   */
+  it('never derives unit_edible_g from serving_size_g or from net_content_g ÷ units_total (both discriminating cases)', async () => {
+    const store = new MemoryInventoryStore();
+
+    // Case A — egg carton: serving_size_g (50) coincidentally equals the true
+    // edible mass; net_content_g (681, a dozen at ~56.75g incl. shell) ÷ a
+    // 12-unit item's units_total would wrongly yield ~56.75.
+    const eggLabel = new FakeLabelParser(
+      mkLabel({
+        name: 'Large Egg Carton',
+        serving_size_g: 50,
+        nutrition_per_serving: { calories: 70 },
+        net_content: { value: 681, unit: 'g' },
+        unit_model_hint: 'counted',
+        // The scan itself did NOT read a distinct per-unit figure.
+        unit_edible_g: null,
+      })
+    );
+    const eggPipeline = new InventoryPipeline(store, null, eggLabel, log);
+    const { item: eggItem } = await eggPipeline.createItem({
+      raw_label: 'EGGS', acquired_at: '2026-07-18', needs_info: true, units_total: 12,
+    });
+    const eggResolved = await eggPipeline.resolveLabel(eggItem.ulid, [photo]);
+    // NOT the net_content_g ÷ units_total trap (~56.75), and not silently
+    // filled from serving_size_g either — genuinely null until stated.
+    expect(eggResolved!.product.unit_edible_g).toBeNull();
+    expect(eggResolved!.product.net_content_g).toBe(681);
+    expect(eggResolved!.product.serving_size_g).toBe(50);
+
+    // Case B — 3-can multipack: serving_size_g (85) is NOT the ~142 g can;
+    // net_content_g (426 = 3 × 142) ÷ a 3-unit item is the RIGHT arithmetic
+    // this time (142), which is exactly why case A alone wouldn't discriminate.
+    const canLabel = new FakeLabelParser(
+      mkLabel({
+        name: '3-Can Multipack',
+        serving_size_g: 85,
+        nutrition_per_serving: { calories: 90 },
+        net_content: { value: 426, unit: 'g' },
+        unit_model_hint: 'counted',
+        unit_edible_g: null,
+      })
+    );
+    const canPipeline = new InventoryPipeline(store, null, canLabel, log);
+    const { item: canItem } = await canPipeline.createItem({
+      raw_label: 'CANS', acquired_at: '2026-07-18', needs_info: true, units_total: 3,
+    });
+    const canResolved = await canPipeline.resolveLabel(canItem.ulid, [photo]);
+    // NOT the serving_size_g trap (85) — stays null until stated.
+    expect(canResolved!.product.unit_edible_g).toBeNull();
+    expect(canResolved!.product.serving_size_g).toBe(85);
+
+    // Stating the true values explicitly (via PATCH, the owner's own door)
+    // round-trips EXACTLY — never silently corrected to either wrong number.
+    const eggPatched = await store.updateProduct(eggResolved!.product.ulid, { unit_edible_g: 50 });
+    expect(eggPatched!.unit_edible_g).toBe(50);
+    expect(eggPatched!.unit_edible_g).not.toBe(56.75);
+
+    const canPatched = await store.updateProduct(canResolved!.product.ulid, { unit_edible_g: 142 });
+    expect(canPatched!.unit_edible_g).toBe(142);
+    expect(canPatched!.unit_edible_g).not.toBe(85);
   });
 });
 

@@ -84,6 +84,8 @@ export class MemoryInventoryStore implements InventoryStore {
       unit_model_hint: product.unit_model_hint ?? null,
       net_content_g: product.net_content_g ?? null,
       net_content_ml: product.net_content_ml ?? null,
+      unit_edible_g: product.unit_edible_g ?? null,
+      nutrition_source: product.nutrition_source ?? null,
       nutrition_negligible: product.nutrition_negligible ?? false,
       archived_at: null,
       merged_into: null,

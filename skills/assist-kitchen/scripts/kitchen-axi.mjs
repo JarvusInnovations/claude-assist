@@ -2743,6 +2743,7 @@ var PRODUCTS_HELP = `kitchen-axi products <subcommand> [args] [--json]
        [--nutrition '<json>'] [--nutrition-per-serving '<json>']
        [--serving-size-g N] [--servings-per-container N]
        [--net-content-g N] [--net-content-ml N] [--unit-model counted|fraction]
+       [--unit-edible-g N] [--nutrition-source label|reference|estimate]
        [--ingredients TEXT] [--negligible] [--force-negligible]
        [--shelf-life-days-unopened N] [--shelf-life-days-opened N]
   update <ulid> [same flags]        correct a product IN PLACE \u2014 partial, so
@@ -2763,6 +2764,20 @@ var PRODUCTS_HELP = `kitchen-axi products <subcommand> [args] [--json]
   --nutrition is a JSON object of per-100g macros, e.g.
     '{"calories": 52, "protein_g": 0.3, "carbs_g": 14, "fiber_g": 2.4, "sugar_g": 10, "added_sugar_g": 0}'
   --ingredients is the printed ingredients list as a single string
+
+  --unit-edible-g is the edible mass of ONE physical unit of a counted product
+  (one egg, one can, one link) \u2014 STATED only, never computed from
+  --serving-size-g or from a net weight divided by a count; both of those can
+  be wrong for a unit in opposite directions, so enter this only when you know
+  the actual per-unit weight. Null leaves the product ineligible for one-tap
+  consume.
+  --nutrition-source records where the panel came from: label (scanned
+  package, authoritative for that SKU), reference (correct for the food but
+  generic for the SKU \u2014 the only option for unpackaged produce), or estimate
+  (a guess). A bare add re-seed (name match, no --ulid) never downgrades an
+  existing label \u2014 that automated enrich carries no evidence against a
+  scanned panel. add --ulid (an explicit replace) and update are the owner
+  stating a fact, so a downgrade from label DOES apply there.
 
   add UPSERTS. With --ulid it creates-or-REPLACES that record (a replace states
   the whole record: anything you omit reverts to its default, which is the only
@@ -2830,6 +2845,8 @@ var PRODUCT_DETAIL_SCHEMA = [
     as: "nutrition_per_100g",
     fn: (p) => p.nutrition_per_100g ? JSON.stringify(p.nutrition_per_100g) : null
   },
+  field("unit_edible_g"),
+  field("nutrition_source"),
   { type: "boolYesNo", key: "nutrition_negligible", as: "negligible" },
   field("ingredients")
 ];
@@ -2857,6 +2874,8 @@ var WRITE_VALUE_FLAGS = [
   "net-content-g",
   "net-content-ml",
   "unit-model",
+  "unit-edible-g",
+  "nutrition-source",
   "ingredients",
   "shelf-life-days-unopened",
   "shelf-life-days-opened"
@@ -2920,8 +2939,12 @@ function buildProductWriteBody(flags) {
   num("net-content-ml", "net_content_ml");
   num("shelf-life-days-unopened", "shelf_life_days_unopened");
   num("shelf-life-days-opened", "shelf_life_days_opened");
+  num("unit-edible-g", "unit_edible_g");
   if (typeof flags["unit-model"] === "string") {
     body.unit_model_hint = flags["unit-model"] === "" ? null : validateUnitModel(flags["unit-model"]);
+  }
+  if (typeof flags["nutrition-source"] === "string") {
+    body.nutrition_source = flags["nutrition-source"] === "" ? null : validateNutritionSource(flags["nutrition-source"]);
   }
   if (flags.negligible || flags["force-negligible"]) body.nutrition_negligible = true;
   if (flags["force-negligible"]) body.nutrition_negligible_override = true;
@@ -3022,6 +3045,12 @@ function validateUnitModel(value) {
   }
   return value;
 }
+function validateNutritionSource(value) {
+  if (value !== "label" && value !== "reference" && value !== "estimate") {
+    throw new AxiError("--nutrition-source must be label, reference, or estimate", "VALIDATION_ERROR", [PRODUCTS_HELP]);
+  }
+  return value;
+}
 
 // packages/kitchen/src/axi/commands/lexicon.ts
 var LEXICON_HELP = `kitchen-axi lexicon <subcommand> [args] [--json]
@@ -3082,7 +3111,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "138ba6e" : "dev";
+var VERSION = true ? "adc66ce" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)
