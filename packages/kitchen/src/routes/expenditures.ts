@@ -16,6 +16,7 @@
  */
 
 import type { FastifyPluginAsync } from 'fastify';
+import { installStrictValidation } from '../strict-validation.js';
 import { ULID_PATTERN, generateUlid } from '../ulid.js';
 import { coerceBareDateToLocalNoon } from '../date-coerce.js';
 import type { EntryStore, ExpenditureStore } from '../store.js';
@@ -220,6 +221,9 @@ export const registerExpenditureRoutes: FastifyPluginAsync<ExpenditureRoutesConf
   fastify,
   config
 ) => {
+  // specs/modules/kitchen.md § Request validation is strict, not permissive
+  installStrictValidation(fastify);
+
   const { store, entries, tdeeBase, dailyTargets } = config;
   const ownerTz = config.ownerTz ?? resolveOwnerTz();
 

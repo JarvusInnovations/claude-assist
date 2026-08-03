@@ -1095,6 +1095,26 @@ the bare `/kitchen/…` path space belongs to the admin SPA's client-side routes
 and is **not** an API surface — see `specs/behaviors/http-not-found.md` for what
 such a request gets (never a false `200`).
 
+### Request validation is strict, not permissive
+
+Every write body (and any querystring with named parameters) is
+`additionalProperties: false` over an explicit key list — this was already the
+intent everywhere in this module (§ The cook seam in `specs/modules/pages.md`
+states the same rule for the worksheet sink) — but stating `additionalProperties:
+false` is not sufficient on its own: Fastify's default AJV compiler sets
+`removeAdditional: true`, and that combination makes AJV **silently strip**
+unmatched keys instead of rejecting the request, no matter how the schema reads.
+A caller who misnames a field (`nutrition` for `nutrition_per_100g`) gets a
+`200` with the rest of the body applied and the misnamed field discarded
+unmentioned — a partial write reported as a full success, indistinguishable at
+the response from every other partial-field PATCH this module makes legal on
+purpose. The module installs its own strict validator (`removeAdditional:
+false`) wherever it declares a body or querystring schema, so an unrecognized
+key is always a `400` that **names the offending key** and, where there is an
+unambiguous near-miss among the schema's real keys, says what it probably meant.
+This is a module-local fix — the same Fastify default applies to every other
+module's schemas — scoped here because this module is what regressed.
+
 - `POST /entries` — multipart: entry JSON part (ULID, timestamp, note,
   optional recipe ref + component quantities, `reselect_of`, **or** a `macros`
   panel) + 0..N photo parts. Posts immediately (`estimating` when photos present

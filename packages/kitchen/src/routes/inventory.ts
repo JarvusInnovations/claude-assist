@@ -36,6 +36,7 @@
 
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import multipart from '@fastify/multipart';
+import { installStrictValidation } from '../strict-validation.js';
 import { ULID_PATTERN } from '../ulid.js';
 import { InvalidTransitionError } from '../inventory-state.js';
 import {
@@ -113,6 +114,9 @@ export const registerInventoryRoutes: FastifyPluginAsync<InventoryRoutesConfig> 
   fastify,
   { inventory, maxPhotoBytes = 10 * 1024 * 1024, maxPhotos = 6 }
 ) => {
+  // specs/modules/kitchen.md § Request validation is strict, not permissive
+  installStrictValidation(fastify);
+
   await fastify.register(multipart, {
     limits: { fileSize: maxPhotoBytes, files: maxPhotos, fields: 4 },
   });

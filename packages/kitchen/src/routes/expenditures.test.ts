@@ -59,6 +59,22 @@ describe('expenditure routes (§ Expenditure & net energy)', () => {
     expect(badDate.statusCode).toBe(400);
   });
 
+  // specs/modules/kitchen.md § Request validation is strict, not permissive —
+  // the same silent-strip defect fixed on the products PATCH applies to every
+  // schema-validated body in the module (Fastify's default AJV compiler
+  // removes an unmatched key instead of rejecting it); this proves the fix is
+  // installed here too, not just on the route that happened to get reported.
+  it('rejects an unrecognized body key rather than silently dropping it', async () => {
+    await build();
+    const res = await fastify.inject({
+      method: 'POST',
+      url: '/kitchen/expenditures',
+      payload: { occurred_at: '2026-07-22T01:00:00Z', source: 'manual', label: 'x', kcal: 10, notes: 'typo for label' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toContain('"notes"');
+  });
+
   it('summary computes net = (tdee_base + burns) − intake over the window', async () => {
     await build(2300);
     // Intake: one 500-kcal entry at multiplier 0.5 → 250 effective.

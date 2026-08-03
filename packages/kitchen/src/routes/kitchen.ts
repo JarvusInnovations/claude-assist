@@ -17,6 +17,7 @@
 
 import type { FastifyPluginAsync } from 'fastify';
 import multipart from '@fastify/multipart';
+import { installStrictValidation } from '../strict-validation.js';
 import { ULID_PATTERN } from '../ulid.js';
 import { InvalidTransitionError } from '../state.js';
 import {
@@ -271,6 +272,9 @@ export const registerKitchenRoutes: FastifyPluginAsync<KitchenRoutesConfig> = as
   fastify,
   { pipeline, maxPhotoBytes = 10 * 1024 * 1024, maxPhotos = 6, ownerTz = resolveOwnerTz() }
 ) => {
+  // specs/modules/kitchen.md § Request validation is strict, not permissive
+  installStrictValidation(fastify);
+
   await fastify.register(multipart, {
     limits: { fileSize: maxPhotoBytes, files: maxPhotos, fields: 4 },
   });

@@ -115,6 +115,20 @@ describe('weigh-in routes (§ Weigh-ins)', () => {
     expect((await logAt(`${dayUtc(1)}T08:00:00Z`, 80, { body_fat_pct: 21.5 })).statusCode).toBe(201);
   });
 
+  // specs/modules/kitchen.md § Request validation is strict, not permissive —
+  // the same silent-strip defect fixed on the products PATCH applies to every
+  // schema-validated body in the module (Fastify's default AJV compiler
+  // removes an unmatched key instead of rejecting it); this proves the fix is
+  // installed here too, not just on the route that happened to get reported.
+  it('rejects an unrecognized body key rather than silently dropping it', async () => {
+    await build();
+    const res = await logAt(`${dayUtc(1)}T08:00:00Z`, 80, { weight: 80 });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toContain('"weight"');
+    // An obvious near-miss (a prefix of the real field) is named, not just "invalid body".
+    expect(res.json().error).toContain('weight_kg');
+  });
+
   it('DELETE removes a reading; a second delete is a 404', async () => {
     await build();
     const ulid = generateUlid();
