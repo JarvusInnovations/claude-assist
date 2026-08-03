@@ -1,8 +1,9 @@
 ---
-status: in-progress
+status: done
 depends: [kitchen-module, product-corrections]
 specs:
   - specs/modules/kitchen.md
+pr: 181
 ---
 
 # Plan: reject unknown request keys instead of silently stripping them
@@ -139,12 +140,46 @@ each one covers every route declared in that file, GET querystrings included.
   offer a confidently wrong one. Worth a second look if a future misnamed-key
   incident gets a useless suggestion.
 
+## Notes
+
+- The initial "scope it first" question ("is this just PATCH /products, or
+  other kitchen write endpoints") had a deeper answer than either option: it
+  isn't a permissive-schema problem anywhere in the module — every schema
+  already declared `additionalProperties: false` correctly. The defect is
+  Fastify's default AJV compiler option (`removeAdditional: true`), which
+  makes that keyword silently filter instead of reject. Confirmed empirically
+  (a bare `Fastify()` instance with an inline `additionalProperties:false`
+  schema and no other configuration reproduces the silent strip) before
+  writing any fix, to avoid chasing the wrong layer.
+- `ajv` had to be pinned to the exact version (`8.17.1`) already resolved
+  transitively via `@fastify/ajv-compiler`, not the latest (`8.20.0`) that
+  `bun add ajv` installs by default — two different major-compatible ajv
+  copies produced structurally-incompatible TypeScript types for the same
+  nominal version range under bun's isolated linker. `ajv-formats` needed
+  adding too (fastify's own compiler auto-registers it; a bare `Ajv()` doesn't
+  ship `format: 'date-time'` support and threw at schema-compile time on the
+  `since`/`until` querystring schemas without it).
+- `summary-days.test.ts` has 2 failing assertions in this branch
+  (`an entry at T00:47Z reports the owner-local day...` and the UTC-fallback
+  sibling) — both hardcode `2026-07-26` inside a query that defaults to the
+  trailing 7 owner-local days from the real clock, so they silently rot as
+  the current date advances past the window. Confirmed pre-existing and
+  unrelated by stashing this diff and re-running against unmodified
+  `origin/main`: identical 2 failures. Not fixed here (out of scope; not the
+  reported defect) but worth a follow-up before it confuses someone else.
+- `mealbank.test.ts` (flagged as occasionally-flaky under a 5s hook budget)
+  passed cleanly on every run in this session — no re-run needed.
+
 ## Follow-ups
 
-- Issue — apply the same `installStrictValidation` pattern (or a shared
-  version promoted to `packages/core`) to every other module
-  (`google`, `sessions`, `capture`, `notify`, `chat`, `pages`, `ledger`,
-  `briefing`, `slack-urgency`, `session-spawn`). Each shares the identical
-  `removeAdditional: true` default and has never been audited for this. Not
-  filed as a numbered issue yet — flagged here for Chris to triage; this
-  plan's mandate was the module that regressed, not a repo-wide sweep.
+- Tracked as: apply the same `installStrictValidation` pattern (or a shared
+  version promoted to `packages/core`) to every other module (`google`,
+  `sessions`, `capture`, `notify`, `chat`, `pages`, `ledger`, `briefing`,
+  `slack-urgency`, `session-spawn`) — each shares the identical
+  `removeAdditional: true` default via `apps/server/src/server.ts`'s
+  unmodified Fastify instantiation and has never been audited for this.
+  Flagged for Chris to triage into a real plan; this plan's mandate was the
+  module that regressed, not a repo-wide sweep.
+- Tracked as: `summary-days.test.ts`'s two date-hardcoded assertions (see
+  Notes) will keep failing as the clock advances — needs a relative-date fix,
+  unrelated to this plan.
