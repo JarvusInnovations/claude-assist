@@ -124,7 +124,7 @@ each one covers every route declared in that file, GET querystrings included.
 - [ ] Live-traffic confirmation that no external caller outside this repo
       (the capture app referenced in `weigh-ins.ts`'s `hc_uuid` comment,
       or any other out-of-repo client) sends an extra key — not verifiable
-      from this checkout; flagged in the PR for Chris to confirm before merge.
+      from this checkout; flagged in the PR for the reviewer to confirm before merge.
 
 ## Risks / unknowns
 
@@ -189,7 +189,7 @@ each one covers every route declared in that file, GET querystrings included.
   `slack-urgency`, `session-spawn`) — each shares the identical
   `removeAdditional: true` default via `apps/server/src/server.ts`'s
   unmodified Fastify instantiation and has never been audited for this.
-  Flagged for Chris to triage into a real plan; this plan's mandate was the
+  Flagged for the maintainer to triage into a real plan; this plan's mandate was the
   module that regressed, not a repo-wide sweep.
 - Tracked as: `summary-days.test.ts`'s two date-hardcoded assertions (see
   Notes) will keep failing as the clock advances — needs a relative-date fix,
