@@ -655,6 +655,25 @@ describe('kitchen routes', () => {
       expect(response.statusCode).toBe(404);
     });
 
+    // specs/modules/kitchen.md § Request validation is strict, not permissive
+    // — the same silent-strip defect fixed on the products PATCH applies to
+    // every schema-validated body in the module (Fastify's default AJV
+    // compiler removes an unmatched key instead of rejecting it); this proves
+    // the fix is installed here too, not just on the route that got reported.
+    it('rejects an unrecognized body key rather than silently dropping it', async () => {
+      const ulid = generateUlid();
+      await new KitchenPipeline(entries, recipes, estimator, fastify.log).ingest({ ulid, note: 'x' }, []);
+
+      const response = await fastify.inject({
+        method: 'PATCH',
+        url: `/kitchen/entries/${ulid}`,
+        payload: { calories: 300, notes: 'typo for note' },
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error).toContain('"notes"');
+      expect(response.json().error).toContain('note');
+    });
+
     it('accepts a portion_multiplier PATCH: 200, base unscaled on the wire, source unchanged', async () => {
       const ulid = generateUlid();
       const seedPipeline = new KitchenPipeline(entries, recipes, estimator, fastify.log);

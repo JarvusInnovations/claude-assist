@@ -22,6 +22,7 @@
  */
 
 import type { FastifyPluginAsync } from 'fastify';
+import { installStrictValidation } from '../strict-validation.js';
 import { ULID_PATTERN, ulidFromSeed } from '../ulid.js';
 import { coerceBareDateToLocalNoon } from '../date-coerce.js';
 import type { WeighInRecord, WeighInStore } from '../store.js';
@@ -191,6 +192,9 @@ export const registerWeighInRoutes: FastifyPluginAsync<WeighInRoutesConfig> = as
   fastify,
   config
 ) => {
+  // specs/modules/kitchen.md § Request validation is strict, not permissive
+  installStrictValidation(fastify);
+
   const { store } = config;
   const ownerTz = config.ownerTz ?? resolveOwnerTz();
 

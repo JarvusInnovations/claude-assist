@@ -181,6 +181,7 @@
         "@anthropic-ai/sdk": "^0.71.2",
         "@fastify/multipart": "^9.0.3",
         "@jarvus/claude-assist-core": "workspace:*",
+        "ajv": "8.17.1",
         "fastify": "^5.7.1",
         "fastify-plugin": "^5.1.0",
         "gitsheets": "^2.5.0",

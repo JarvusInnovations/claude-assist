@@ -1284,6 +1284,52 @@ describe('product corrections routes', () => {
     const reverted = await post({ ulid: created.ulid, name: 'Fresh Basil' });
     expect(reverted.json().nutrition_source).toBeNull();
   });
+
+  // THE REGRESSION (production, same day): `additionalProperties: false` on
+  // this schema reads as "reject an unknown key," but Fastify's default AJV
+  // compiler sets `removeAdditional: true`, and that combination makes AJV
+  // SILENTLY STRIP an unmatched key instead of rejecting the request — no
+  // matter what the schema says. A caller who misnamed the panel field
+  // (`nutrition` instead of `nutrition_per_100g`) got a `200`, the other two
+  // fields applied, and the panel discarded with no trace: an inventory item
+  // stayed flagged `needs_nutrition` and nobody knew why until they went
+  // looking. `installStrictValidation` (../strict-validation.ts) overrides
+  // the default so unknown keys are always refused.
+  it('PATCH refuses an unrecognized key instead of silently dropping it (the reported defect)', async () => {
+    const created = (await post({ name: 'A shelf-stable snack', shelf_life_class: 'pantry' })).json();
+
+    const misnamed = await patch(created.ulid, {
+      // The caller meant `nutrition_per_100g` — this is not a real field.
+      nutrition: FULL_PANEL,
+      nutrition_source: 'reference',
+      unit_edible_g: 118,
+    });
+    expect(misnamed.statusCode).toBe(400);
+    expect(misnamed.json().error).toContain('"nutrition"');
+    // An obvious near-miss is named, not just "invalid body".
+    expect(misnamed.json().error).toContain('nutrition_per_100g');
+
+    // Nothing from the rejected request applied — not even the two
+    // legitimately-named fields sent alongside the typo. A validation
+    // failure is refused as a whole, never partially honored.
+    const reread = await fastify.inject({ method: 'GET', url: '/kitchen/products' });
+    const stored = reread.json().products.find((p: { ulid: string }) => p.ulid === created.ulid);
+    expect(stored.nutrition_per_100g).toBeNull();
+    expect(stored.nutrition_source).toBeNull();
+    expect(stored.unit_edible_g).toBeNull();
+
+    // The correctly-named field still works, proving this isn't a case of
+    // nutrition_per_100g having become unreachable.
+    const correct = await patch(created.ulid, { nutrition_per_100g: FULL_PANEL });
+    expect(correct.statusCode).toBe(200);
+    expect(correct.json().nutrition_per_100g).toEqual(FULL_PANEL);
+  });
+
+  it('POST /kitchen/products likewise refuses an unrecognized key', async () => {
+    const res = await post({ name: 'A pantry item', nutrition: FULL_PANEL });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toContain('"nutrition"');
+  });
 });
 
 /**
