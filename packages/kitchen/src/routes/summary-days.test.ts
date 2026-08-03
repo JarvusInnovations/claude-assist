@@ -72,9 +72,15 @@ describe('summary group=day + module-owned local-day (§ Timezone & local-day bu
   it('an entry at T00:47Z reports the owner-local day, not the UTC date', async () => {
     await build({ tz: 'America/New_York' });
     // 2026-07-26T00:47Z is 2026-07-25 20:47 in NY — the meal belongs to the 25th.
+    // Explicit since/until (rather than the default trailing window) keeps this
+    // test's outcome independent of wall-clock date — it's testing timezone
+    // bucketing, not window defaulting.
     await seedEntry('2026-07-26T00:47:00Z', { calories: 600, protein_g: 40 });
 
-    const res = await fastify.inject({ method: 'GET', url: '/kitchen/summary?group=day' });
+    const res = await fastify.inject({
+      method: 'GET',
+      url: '/kitchen/summary?group=day&since=2026-07-25T00:00:00Z&until=2026-07-27T00:00:00Z',
+    });
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.group).toBe('day');
@@ -177,7 +183,12 @@ describe('summary group=day + module-owned local-day (§ Timezone & local-day bu
   it('unset KITCHEN_OWNER_TZ ⇒ UTC fallback stated in the response tz note', async () => {
     await build({}); // no tz
     await seedEntry('2026-07-26T00:47:00Z', { calories: 500 });
-    const res = await fastify.inject({ method: 'GET', url: '/kitchen/summary?group=day' });
+    // Explicit since/until keeps this independent of wall-clock date (see the
+    // sibling test above for why the default trailing window is unsafe here).
+    const res = await fastify.inject({
+      method: 'GET',
+      url: '/kitchen/summary?group=day&since=2026-07-25T00:00:00Z&until=2026-07-27T00:00:00Z',
+    });
     const body = res.json();
     expect(body.tz).toBe('UTC (KITCHEN_OWNER_TZ unset)');
     expect((body.days as Array<{ day: string }>)[0]!.day).toBe('2026-07-26'); // UTC date, stated
