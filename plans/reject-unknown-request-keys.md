@@ -169,6 +169,17 @@ each one covers every route declared in that file, GET querystrings included.
   reported defect) but worth a follow-up before it confuses someone else.
 - `mealbank.test.ts` (flagged as occasionally-flaky under a 5s hook budget)
   passed cleanly on every run in this session — no re-run needed.
+- CI's first two runs on the PR failed `Build & Test` on `ajv-formats` —
+  `Cannot find module 'ajv-formats' or its corresponding type declarations`.
+  The dependency was resolved locally (a stale link left behind by the
+  `bun remove ajv ajv-formats` → `bun add ajv@8.17.1` version-pinning step,
+  which never re-added `ajv-formats`) but not recorded in `package.json`, so
+  CI's clean `bun install` never linked it into kitchen's isolated
+  `node_modules`. Caught by rerunning the whole verification cycle
+  (`rm -rf node_modules **/node_modules && bun install`) after the PR's CI
+  came back red, rather than trusting the locally-green result — the actual
+  discipline this class of defect calls for. Fixed by explicitly
+  `bun add ajv-formats@3.0.1`; confirmed with a second clean-install cycle.
 
 ## Follow-ups
 
