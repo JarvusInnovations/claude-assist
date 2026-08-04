@@ -153,6 +153,9 @@ export default createPlugin('kitchen', async (fastify: FastifyInstance, options:
   let pipeline: KitchenPipeline;
 
   const inventory = new InventoryPipeline(inventoryStore, receiptParser, labelParser, fastify.log, {
+    // Same resolved zone the entries/expenditure/weigh-in routes bucket by, so
+    // an item's dates and the journal entry for the same act agree on the day.
+    ownerTz,
     linkEntry: (entryUlid, itemUlid) => entryStore.linkInventoryItem(entryUlid, itemUlid),
     // The entries half of an item merge (§ Item corrections) — same store seam.
     relinkEntries: (fromItemUlid, toItemUlid) => entryStore.relinkInventoryItem(fromItemUlid, toItemUlid),
@@ -426,7 +429,6 @@ export {
   NotCountedItemError,
   normalizeLine,
   candidateStrings,
-  parseDate,
   type InventoryPipelineConfig,
   type DepletableEntry,
 } from './services/inventory.js';
