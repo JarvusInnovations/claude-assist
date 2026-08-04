@@ -16,7 +16,7 @@ import { describe, expect, it } from "bun:test";
 import { coerceBareDateToLocalNoon } from "./date-coerce.js";
 import { normalizeNewEntry } from "./store.js";
 import { buildLogEntryFields, buildPatchBody } from "./axi/commands/entries.js";
-import { validateDate } from "./axi/args.js";
+import { validateCalendarDate, validateDate } from "./axi/args.js";
 
 describe("coerceBareDateToLocalNoon — the shared choke-point helper", () => {
   it("coerces a bare YYYY-MM-DD to local noon WITH the dated day's offset (EDT)", () => {
@@ -121,5 +121,32 @@ describe("server-side ingest coercion (normalizeNewEntry)", () => {
     const now = new Date("2026-07-24T18:30:00Z");
     const e = normalizeNewEntry({ ulid: "01ABC" }, now);
     expect(e.logged_at).toBe(now);
+  });
+});
+
+/**
+ * The other half of the rule (claude-assist#184): a flag whose destination is a
+ * calendar DAY does NOT get the instant coercion. Which validator a flag calls
+ * is the whole contract, so both are asserted side by side.
+ */
+describe("validateCalendarDate — inventory flags name a day, not an instant", () => {
+  it("passes a bare YYYY-MM-DD through verbatim where validateDate would coerce it", () => {
+    expect(validateCalendarDate("2026-07-24", "--at", "usage")).toBe("2026-07-24");
+    expect(validateDate("2026-07-24", "--at", "usage")).toBe("2026-07-24T12:00:00-04:00");
+  });
+
+  it("keeps the waste window in the shape its route accepts", () => {
+    // The route pins since/until to ^\d{4}-\d{2}-\d{2}$ and compares them
+    // against bare toss dates as strings. An instant is not merely redundant
+    // there — it is rejected, and before that it excluded same-day tosses.
+    const routePattern = /^\d{4}-\d{2}-\d{2}$/;
+    expect(routePattern.test(validateCalendarDate("2026-07-24", "--since", "usage"))).toBe(true);
+    expect(routePattern.test(validateDate("2026-07-24", "--since", "usage"))).toBe(false);
+  });
+
+  it("still passes a full timestamp through, and still rejects nonsense", () => {
+    expect(validateCalendarDate("2026-07-24T15:00:00-04:00", "--at", "usage")).toBe("2026-07-24T15:00:00-04:00");
+    expect(() => validateCalendarDate("not-a-date", "--at", "usage")).toThrow(/Invalid date for --at/);
+    expect(() => validateCalendarDate("2026-13-45", "--at", "usage")).toThrow(/Invalid date for --at/);
   });
 });

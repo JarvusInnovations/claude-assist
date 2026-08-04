@@ -643,7 +643,7 @@ var COMMAND_GROUPS = [
       },
       {
         usage: "inventory event <ulid> <opened|finished|finished-unit|tossed|moved> [--fraction F] [--to CLASS] [--at DATE]",
-        summary: "explicit event; for tossed, --fraction is the AMOUNT TOSSED (partial toss decrements + stays alive, terminal only at zero remainder or when omitted); finished-unit is a counted item's integer one-unit decrement, whose outcome depends on --unit-seal (individual \u2014 back to a fresh sealed clock; shared \u2014 stays open on the container's clock). 'moved --to <class>' is the STORAGE MOVE: an item physically changed appliance (freezer to fridge to thaw, fridge to freezer to park a clock), so its clock RESTARTS from the move date on the destination class \u2014 state and opened_at are untouched, and --at is the date of the ACT, not of the intention. The consumption/waste verbs never reach the fifth state, dismissed, which has its own verb ('inventory dismiss')"
+        summary: "explicit event; for tossed, --fraction is the AMOUNT TOSSED (partial toss decrements + stays alive, terminal only at zero remainder or when omitted); finished-unit is a counted item's integer one-unit decrement, whose outcome depends on --unit-seal (individual \u2014 back to a fresh sealed clock; shared \u2014 stays open on the container's clock). 'moved --to <class>' is the STORAGE MOVE: an item physically changed appliance (freezer to fridge to thaw, fridge to freezer to park a clock), so its clock RESTARTS from the move date on the destination class \u2014 state and opened_at are untouched, and --at is the date of the ACT, not of the intention. --at (here and on every inventory verb) is a CALENDAR DAY resolved in the instance's own timezone: omitted it is today where the food is, never today in UTC, so an evening event and the meal entry it depletes agree on the day; a bare YYYY-MM-DD is taken verbatim, so you never compute an offset. The consumption/waste verbs never reach the fifth state, dismissed, which has its own verb ('inventory dismiss')"
       },
       {
         usage: "inventory recount <ulid> [--fraction F] [--units-remaining N] [--units-total N] [--uncounted] [--unit-seal individual|shared] [--state stocked|open] [--opened-at DATE] [--shelf-life C] [--needs-info|--no-needs-info] [--product-ulid U|--unlink-product] [--notes T]",
@@ -1026,6 +1026,12 @@ function requirePositional(positionals, index, label, usage) {
 var DATE_ONLY2 = /^\d{4}-\d{2}-\d{2}$/;
 var ISO_DATETIME = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?$/;
 function validateDate(value, flag, usage) {
+  return coerceBareDateToLocalNoon(wellFormedDate(value, flag, usage));
+}
+function validateCalendarDate(value, flag, usage) {
+  return wellFormedDate(value, flag, usage);
+}
+function wellFormedDate(value, flag, usage) {
   const wellFormed = DATE_ONLY2.test(value) || ISO_DATETIME.test(value);
   if (!wellFormed || Number.isNaN(Date.parse(value))) {
     throw new AxiError(`Invalid date for ${flag}: ${value}`, "VALIDATION_ERROR", [
@@ -1033,7 +1039,7 @@ function validateDate(value, flag, usage) {
       usage
     ]);
   }
-  return coerceBareDateToLocalNoon(value);
+  return value;
 }
 function parseNumberFlag(value, flag, usage, opts = {}) {
   const n = Number(value);
@@ -1711,6 +1717,14 @@ var INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json]
   fine and still re-anchors; --to unknown is refused (a move states where the
   item now lives, and unknown is not a place).
 
+  EVERY --at / --acquired-at / --opened-at / --since / --until HERE IS A
+  CALENDAR DAY (YYYY-MM-DD), not a timestamp, and the server resolves it in the
+  instance's own timezone. Omit it and you get today where the food is, not
+  today in UTC \u2014 so an evening event no longer lands on tomorrow's date while
+  the journal entry for the same meal sits on today. Pass a bare date to name a
+  different day; it is taken verbatim, so you never compute an offset. A full
+  ISO timestamp is accepted too and is read as the day its wall clock names.
+
   For 'event \u2026 tossed', --fraction is
   the AMOUNT TOSSED \u2014 a partial toss decrements on_hand_fraction and keeps the
   item alive (self-heals at the next event); it goes terminal only at zero
@@ -1960,7 +1974,11 @@ async function listItems(args) {
   });
   if (flags.json) return rawJson(result);
   const items = result?.items ?? [];
-  return renderList("items", items, ITEM_ROW_SCHEMA);
+  const list = renderList("items", items, ITEM_ROW_SCHEMA);
+  if (typeof result?.tz === "string" && result.tz.includes("unset")) {
+    return renderOutput2([list, renderObject({ tz: result.tz })]);
+  }
+  return list;
 }
 async function showItem(args) {
   const { positionals, flags } = parseArgs(args, ["json"], []);
@@ -1977,7 +1995,7 @@ async function addItem(args) {
   if (typeof flags["raw-label"] === "string") body.raw_label = flags["raw-label"];
   if (typeof flags.store === "string") body.store = flags.store;
   if (typeof flags["batch-ulid"] === "string") body.batch_ulid = flags["batch-ulid"];
-  if (typeof flags["acquired-at"] === "string") body.acquired_at = validateDate(flags["acquired-at"], "--acquired-at", INVENTORY_HELP);
+  if (typeof flags["acquired-at"] === "string") body.acquired_at = validateCalendarDate(flags["acquired-at"], "--acquired-at", INVENTORY_HELP);
   if (typeof flags.fraction === "string") body.on_hand_fraction = parseNumberFlag(flags.fraction, "fraction", INVENTORY_HELP, { min: 0, max: 1 });
   if (typeof flags["units-total"] === "string") body.units_total = parseNumberFlag(flags["units-total"], "units-total", INVENTORY_HELP, { min: 1 });
   if (typeof flags["unit-seal"] === "string") body.unit_seal = validateUnitSeal(flags["unit-seal"]);
@@ -2014,7 +2032,7 @@ function assertEventType(type, ulid = "<ulid>") {
 function buildDismissBody(flags) {
   const body = {};
   if (flags["non-inventory"]) body.non_inventory = true;
-  if (typeof flags.at === "string") body.at = validateDate(flags.at, "--at", INVENTORY_HELP);
+  if (typeof flags.at === "string") body.at = validateCalendarDate(flags.at, "--at", INVENTORY_HELP);
   return body;
 }
 async function itemEvent(args) {
@@ -2026,7 +2044,7 @@ async function itemEvent(args) {
   if (typeof flags.fraction === "string") body.fraction = parseNumberFlag(flags.fraction, "fraction", INVENTORY_HELP, { min: 0, max: 1 });
   assertMoveDestination(type, typeof flags.to === "string" ? flags.to : void 0);
   if (typeof flags.to === "string") body.to = flags.to;
-  if (typeof flags.at === "string") body.at = validateDate(flags.at, "--at", INVENTORY_HELP);
+  if (typeof flags.at === "string") body.at = validateCalendarDate(flags.at, "--at", INVENTORY_HELP);
   const item = await api.post(`/api/kitchen/inventory/${encodeURIComponent(ulid)}/events`, body);
   if (flags.json) return rawJson(item);
   return renderDetail("item", item, ITEM_DETAIL_SCHEMA);
@@ -2064,7 +2082,7 @@ async function recountItem(args) {
     }
     body.state = flags.state;
   }
-  if (typeof flags["opened-at"] === "string") body.opened_at = validateDate(flags["opened-at"], "--opened-at", INVENTORY_HELP);
+  if (typeof flags["opened-at"] === "string") body.opened_at = validateCalendarDate(flags["opened-at"], "--opened-at", INVENTORY_HELP);
   if (typeof flags.notes === "string") body.notes = flags.notes;
   if (Object.keys(body).length === 0) {
     throw new AxiError("recount needs at least one correction (e.g. --fraction 0.75)", "VALIDATION_ERROR", [INVENTORY_HELP]);
@@ -2122,7 +2140,7 @@ async function remark(args) {
   const text = positionals.join(" ").trim();
   if (!text) throw new AxiError("inventory remark needs free text", "VALIDATION_ERROR", [INVENTORY_HELP]);
   const body = { remark: text };
-  if (typeof flags.at === "string") body.at = validateDate(flags.at, "--at", INVENTORY_HELP);
+  if (typeof flags.at === "string") body.at = validateCalendarDate(flags.at, "--at", INVENTORY_HELP);
   const result = await api.post("/api/kitchen/inventory/events", body);
   if (flags.json) return rawJson(result);
   const cli = cliInvocation();
@@ -2151,8 +2169,8 @@ async function questions(args) {
 }
 async function waste(args) {
   const { flags } = parseArgs(args, ["json"], ["since", "until", "limit"]);
-  const since = typeof flags.since === "string" ? validateDate(flags.since, "--since", INVENTORY_HELP) : void 0;
-  const until = typeof flags.until === "string" ? validateDate(flags.until, "--until", INVENTORY_HELP) : void 0;
+  const since = typeof flags.since === "string" ? validateCalendarDate(flags.since, "--since", INVENTORY_HELP) : void 0;
+  const until = typeof flags.until === "string" ? validateCalendarDate(flags.until, "--until", INVENTORY_HELP) : void 0;
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", INVENTORY_HELP, { min: 1 })) : void 0;
   const result = await api.get("/api/kitchen/inventory/waste", { since, until, limit });
   if (flags.json) return rawJson(result);
@@ -2197,7 +2215,7 @@ async function convert(args) {
     sources: fromValues.map(parseSource),
     derived
   };
-  if (typeof flags.at === "string") body.at = validateDate(flags.at, "--at", INVENTORY_HELP);
+  if (typeof flags.at === "string") body.at = validateCalendarDate(flags.at, "--at", INVENTORY_HELP);
   const result = await api.post("/api/kitchen/inventory/convert", body);
   if (flags.json) return rawJson(result);
   return renderOutput2([
@@ -2212,7 +2230,7 @@ async function consumeItem(args) {
   if (typeof flags.quantity === "string") {
     body.quantity = parseNumberFlag(flags.quantity, "quantity", INVENTORY_HELP, { min: 1 });
   }
-  if (typeof flags.at === "string") body.at = validateDate(flags.at, "--at", INVENTORY_HELP);
+  if (typeof flags.at === "string") body.at = validateCalendarDate(flags.at, "--at", INVENTORY_HELP);
   const result = await api.post(`/api/kitchen/inventory/${encodeURIComponent(itemUlid)}/consume`, body);
   if (flags.json) return rawJson(result);
   const cli = cliInvocation();
@@ -2242,7 +2260,7 @@ function buildEatBody(flags) {
     body.fraction = parseNumberFlag(flags.fraction, "fraction", INVENTORY_HELP, { min: 0, max: 1 });
   }
   if (typeof flags["entry-ulid"] === "string") body.entry_ulid = flags["entry-ulid"];
-  if (typeof flags.at === "string") body.at = validateDate(flags.at, "--at", INVENTORY_HELP);
+  if (typeof flags.at === "string") body.at = validateCalendarDate(flags.at, "--at", INVENTORY_HELP);
   return body;
 }
 async function eatItem(args) {
@@ -2607,7 +2625,7 @@ async function scanReceipt(args) {
   }
   const meta = { ulid: typeof flags.ulid === "string" ? flags.ulid : generateUlid() };
   if (typeof flags.store === "string") meta.store = flags.store;
-  if (typeof flags["purchased-at"] === "string") meta.purchased_at = validateDate(flags["purchased-at"], "--purchased-at", RECEIPTS_HELP);
+  if (typeof flags["purchased-at"] === "string") meta.purchased_at = validateCalendarDate(flags["purchased-at"], "--purchased-at", RECEIPTS_HELP);
   const form = await buildMultipartForm("receipt", meta, photos);
   const batch = await api.postForm("/api/kitchen/receipts", form);
   if (flags.json) return rawJson(batch);
@@ -3160,7 +3178,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "411b66a" : "dev";
+var VERSION = true ? "6260f40" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)
