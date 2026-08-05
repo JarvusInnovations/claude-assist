@@ -444,7 +444,10 @@ describe("stated-weight consumption ('eat') is reachable from the CLI (§ Stated
     const body = buildEatBody({ fraction: "0.25", "entry-ulid": "01JZZZZZZZZZZZZZZZZZZZZZZZ", at: "2026-07-19" });
     expect(body.fraction).toBe(0.25);
     expect(body.entry_ulid).toBe("01JZZZZZZZZZZZZZZZZZZZZZZZ");
-    expect(String(body.at)).toStartWith("2026-07-19T12:00:00"); // bare-date local-noon coercion
+    // An inventory `--at` is a CALENDAR DAY, sent verbatim: the server resolves
+    // it in the owner's zone, so the CLI never turns it into a machine-local
+    // instant first (claude-assist#184).
+    expect(body.at).toBe("2026-07-19");
   });
 
   it("buildEatBody range-validates fraction and grams client-side", () => {
@@ -556,9 +559,9 @@ describe("inventory retirement + merge are reachable and discoverable", () => {
   it("sends non_inventory only when asked (a one-off phantom must not teach the parser a rule)", () => {
     expect(buildDismissBody({})).toEqual({});
     expect(buildDismissBody({ "non-inventory": true })).toEqual({ non_inventory: true });
-    // `--at` goes through the same bare-date coercion every other verb uses
-    // (local noon, never midnight UTC — which would land on the wrong day).
-    expect(String(buildDismissBody({ at: "2026-07-19" }).at)).toStartWith("2026-07-19T12:00:00");
+    // `--at` is a calendar day here, sent verbatim for the server to resolve in
+    // the owner's zone — the same contract every inventory verb now keeps.
+    expect(buildDismissBody({ at: "2026-07-19" }).at).toBe("2026-07-19");
   });
 });
 

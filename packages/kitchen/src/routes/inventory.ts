@@ -212,7 +212,9 @@ export const registerInventoryRoutes: FastifyPluginAsync<InventoryRoutesConfig> 
       if (request.query.state) states = [request.query.state as InventoryState];
       else if (request.query.include_closed === 'true') states = [...INVENTORY_STATES];
       const items = await inventory.listInventory({ states, limit });
-      return { items, count: items.length };
+      // The zone every date on these rows was derived in — stated, so a UTC
+      // fallback is visible rather than a silent guess (§ Timezone).
+      return { items, count: items.length, tz: inventory.tz };
     }
   );
 

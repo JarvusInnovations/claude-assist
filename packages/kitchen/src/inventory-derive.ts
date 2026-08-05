@@ -17,6 +17,7 @@ import type {
   UnitSeal,
 } from './inventory-types.js';
 import { NUTRITION_FIELD_KEYS, normalizeRecipeName } from './types.js';
+import { localDay } from './zoned.js';
 
 /** Default (unopened, opened) day windows per shelf-life class; null = no eat-by. */
 export const SHELF_LIFE_WINDOWS: Record<ShelfLifeClass, { unopened: number | null; opened: number | null }> = {
@@ -252,14 +253,21 @@ export function onHandFractionOf(
 /**
  * Project a stored item (+ optional joined product) into the wire view,
  * computing days_until_eat_by / age_days relative to `now`.
+ *
+ * `zone` is the owner timezone the "today" those two counts measure from is
+ * taken in (§ Timezone & local-day bucketing). It matters for the same reason
+ * the stored dates do: read from a UTC evening, a UTC-derived "today" is already
+ * tomorrow, and every `days_until_eat_by` comes back one day short of the truth.
+ * Defaults to UTC, matching the module-wide stated fallback.
  */
 export function toItemView(
   record: InventoryItemRecord,
   product: Pick<ProductRecord, 'name' | 'nutrition_per_100g' | 'nutrition_negligible'> | null,
   now = new Date(),
-  derivedFrom: DerivedFromView | null = null
+  derivedFrom: DerivedFromView | null = null,
+  zone = 'UTC'
 ): InventoryItemView {
-  const today = new Date(now.toISOString().slice(0, 10));
+  const today = new Date(`${localDay(now, zone)}T00:00:00.000Z`);
   return {
     ulid: record.ulid,
     product_ulid: record.product_ulid,

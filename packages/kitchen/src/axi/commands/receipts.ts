@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { api, buildMultipartForm } from "../client.js";
 import { generateUlid } from "../../ulid.js";
 import { AxiError } from "axi-sdk-js";
-import { parseArgs, requirePositional, rawJson, validateDate, parseNumberFlag } from "../args.js";
+import { parseArgs, requirePositional, rawJson, validateCalendarDate, parseNumberFlag } from "../args.js";
 import { renderList, renderDetail, renderObject, renderOutput, renderHelp, field, type FieldDef } from "../toon.js";
 import { cliInvocation } from "../invocation.js";
 
@@ -86,7 +86,7 @@ async function scanReceipt(args: string[]): Promise<string> {
 
   const meta: Record<string, unknown> = { ulid: typeof flags.ulid === "string" ? flags.ulid : generateUlid() };
   if (typeof flags.store === "string") meta.store = flags.store;
-  if (typeof flags["purchased-at"] === "string") meta.purchased_at = validateDate(flags["purchased-at"], "--purchased-at", RECEIPTS_HELP);
+  if (typeof flags["purchased-at"] === "string") meta.purchased_at = validateCalendarDate(flags["purchased-at"], "--purchased-at", RECEIPTS_HELP);
 
   const form = await buildMultipartForm("receipt", meta, photos);
   const batch = await api.postForm("/api/kitchen/receipts", form);

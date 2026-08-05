@@ -7,6 +7,8 @@ import {
   localDisplay,
   localToday,
   formatOffset,
+  ownerLocalDate,
+  ownerLocalInstant,
 } from './zoned.js';
 
 /**
@@ -95,5 +97,89 @@ describe('formatOffset + localToday', () => {
     // At 2026-07-26T00:47Z, "today" in New York is still the 25th.
     expect(localToday('America/New_York', new Date('2026-07-26T00:47:00Z'))).toBe('2026-07-25');
     expect(localToday('UTC', new Date('2026-07-26T00:47:00Z'))).toBe('2026-07-26');
+  });
+});
+
+/**
+ * Owner-local resolution of the `at` an inventory verb carries
+ * (claude-assist#184). Every instant below is seeded explicitly — nothing here
+ * reads the wall clock, so none of it decays.
+ */
+describe('ownerLocalDate — the calendar day an inventory DATE stamps', () => {
+  it('an evening instant stamps the LOCAL day, not the UTC day it has crossed into', () => {
+    // 21:31 in a −04:00 instance is already 01:31Z the next morning: the shape
+    // of the reported defect, where a finish at dinner closed on the 4th.
+    const evening = new Date('2026-08-04T01:31:00Z');
+    expect(ownerLocalDate(undefined, 'America/New_York', evening).toISOString()).toBe('2026-08-03T00:00:00.000Z');
+    // The same instant read as UTC is the day the bug produced.
+    expect(ownerLocalDate(undefined, 'UTC', evening).toISOString()).toBe('2026-08-04T00:00:00.000Z');
+  });
+
+  it('a supplied full local timestamp stamps the day its wall clock reads', () => {
+    expect(ownerLocalDate('2026-08-03T21:31:00-04:00', 'America/New_York').toISOString()).toBe(
+      '2026-08-03T00:00:00.000Z'
+    );
+  });
+
+  it('a bare calendar date is taken VERBATIM — no zone math to get wrong', () => {
+    // The day survives an east and a west zone unchanged, which a round-trip
+    // through a machine-local instant would not guarantee.
+    expect(ownerLocalDate('2026-08-03', 'America/New_York').toISOString()).toBe('2026-08-03T00:00:00.000Z');
+    expect(ownerLocalDate('2026-08-03', 'Asia/Kolkata').toISOString()).toBe('2026-08-03T00:00:00.000Z');
+    expect(ownerLocalDate('  2026-08-03  ', 'Pacific/Auckland').toISOString()).toBe('2026-08-03T00:00:00.000Z');
+  });
+
+  it('an eastern instance sees the mirror case (morning, not evening)', () => {
+    // 2026-08-02T20:00Z is 01:30 on the 3rd in Kolkata, still the 2nd in UTC.
+    expect(ownerLocalDate(undefined, 'Asia/Kolkata', new Date('2026-08-02T20:00:00Z')).toISOString()).toBe(
+      '2026-08-03T00:00:00.000Z'
+    );
+    expect(ownerLocalDate(undefined, 'UTC', new Date('2026-08-02T20:00:00Z')).toISOString()).toBe(
+      '2026-08-02T00:00:00.000Z'
+    );
+  });
+
+  it('holds across both DST transitions', () => {
+    // Spring-forward: 2026-03-08T06:30Z = 01:30 EST (−05:00) → the 8th.
+    expect(ownerLocalDate(undefined, 'America/New_York', new Date('2026-03-08T06:30:00Z')).toISOString()).toBe(
+      '2026-03-08T00:00:00.000Z'
+    );
+    // Fall-back: 2026-11-01T05:30Z = 01:30 EDT (−04:00) → the 1st.
+    expect(ownerLocalDate(undefined, 'America/New_York', new Date('2026-11-01T05:30:00Z')).toISOString()).toBe(
+      '2026-11-01T00:00:00.000Z'
+    );
+  });
+
+  it('an unparseable value falls back to the local day rather than throwing', () => {
+    const evening = new Date('2026-08-04T01:31:00Z');
+    expect(ownerLocalDate('not-a-date', 'America/New_York', evening).toISOString()).toBe('2026-08-03T00:00:00.000Z');
+  });
+});
+
+describe('ownerLocalInstant — the timestamptz an inventory verb writes', () => {
+  it('a bare date becomes noon in the OWNER zone, not the sending machine’s', () => {
+    expect(ownerLocalInstant('2026-08-03', 'America/New_York').toISOString()).toBe('2026-08-03T16:00:00.000Z');
+    // Winter: EST is −05:00, so noon local is 17:00Z — the offset tracks the
+    // DATED day, not today.
+    expect(ownerLocalInstant('2026-01-15', 'America/New_York').toISOString()).toBe('2026-01-15T17:00:00.000Z');
+    expect(ownerLocalInstant('2026-08-03', 'Asia/Kolkata').toISOString()).toBe('2026-08-03T06:30:00.000Z');
+    expect(ownerLocalInstant('2026-08-03', 'UTC').toISOString()).toBe('2026-08-03T12:00:00.000Z');
+  });
+
+  it('noon local always falls on the day it names', () => {
+    for (const zone of ['America/New_York', 'Asia/Kolkata', 'Pacific/Auckland', 'Pacific/Honolulu', 'UTC']) {
+      expect(localDay(ownerLocalInstant('2026-08-03', zone), zone)).toBe('2026-08-03');
+    }
+  });
+
+  it('a full timestamp passes through as the instant it names', () => {
+    expect(ownerLocalInstant('2026-08-03T21:31:00-04:00', 'America/New_York').toISOString()).toBe(
+      '2026-08-04T01:31:00.000Z'
+    );
+  });
+
+  it('absent ⇒ the seeded now', () => {
+    const now = new Date('2026-08-04T01:31:00Z');
+    expect(ownerLocalInstant(undefined, 'America/New_York', now).toISOString()).toBe('2026-08-04T01:31:00.000Z');
   });
 });

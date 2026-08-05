@@ -96,6 +96,7 @@ import {
   type PriceLine,
 } from '../inventory-pricing.js';
 import { matchScore, parseRemark } from '../inventory-remark.js';
+import { localToday, ownerLocalDate, ownerLocalInstant, resolveOwnerTz, type OwnerTz } from '../zoned.js';
 import { generateUlid, isValidUlid } from '../ulid.js';
 import type { ReceiptParser } from './receipt-parser.js';
 import type { LabelParser } from './label-parser.js';
@@ -300,6 +301,18 @@ export interface InventoryPipelineConfig {
    * `ConsumeNotConfiguredError`.
    */
   resolveRecipe?: (recipeUlid: string) => Promise<RecipeRecord | null>;
+  /**
+   * The owner timezone every inventory date is derived in (§ Timezone &
+   * local-day bucketing). Absent, the module falls back to UTC — stated in the
+   * `tz` field the inventory reads carry, never a silent guess.
+   */
+  ownerTz?: OwnerTz;
+  /**
+   * The clock every defaulted date reads. Injectable so a test can seed the
+   * exact instant a day boundary turns on — the default-`at` path is the one
+   * the caller never passes a date to, and therefore the one worth pinning.
+   */
+  now?: () => Date;
 }
 
 /** The minimal entry shape the depletion matcher needs (avoids importing EntryRecord). */
@@ -332,6 +345,8 @@ export class InventoryPipeline {
   private consumeStore?: ConsumeStore;
   private resolveRecipe?: (recipeUlid: string) => Promise<RecipeRecord | null>;
   private inflight = new Set<Promise<unknown>>();
+  private ownerTz: OwnerTz;
+  private now: () => Date;
 
   constructor(
     private store: InventoryStore,
@@ -345,6 +360,24 @@ export class InventoryPipeline {
     this.relinkEntries = config.relinkEntries;
     this.consumeStore = config.consumeStore;
     this.resolveRecipe = config.resolveRecipe;
+    this.ownerTz = config.ownerTz ?? resolveOwnerTz();
+    this.now = config.now ?? (() => new Date());
+  }
+
+  /** The zone label inventory reads state alongside their dates (§ Timezone). */
+  get tz(): string {
+    return this.ownerTz.note;
+  }
+
+  /**
+   * Every server-derived inventory DATE goes through here: `acquired_at`,
+   * `opened_at`, `closed_at`, `storage_moved_at`, the `eat_by` anchor they feed,
+   * and the dates stamped into toss/consumption audit notes. One choke point, in
+   * the owner's zone, so an inventory event and the journal entry for the same
+   * act can never disagree about what day it is (claude-assist#184).
+   */
+  private eventDay(at?: string | null): Date {
+    return ownerLocalDate(at, this.ownerTz.zone, this.now());
   }
 
   // ── Receipt intake ────────────────────────────────────────────────────────
@@ -360,7 +393,7 @@ export class InventoryPipeline {
     input: ReceiptInput,
     photos: InventoryPhotoPart[]
   ): Promise<{ batch: PurchaseBatchView; created: boolean; parse?: Promise<void> }> {
-    const purchasedAt = parseDate(input.purchased_at);
+    const purchasedAt = this.eventDay(input.purchased_at);
     const { record, created } = await this.store.insertBatchIfAbsent({
       ulid: input.ulid,
       source: 'receipt',
@@ -829,7 +862,7 @@ export class InventoryPipeline {
     type: InventoryEventType,
     opts: { fraction?: number; to?: ShelfLifeClass; at?: string }
   ): Promise<InventoryItemRecord | null> {
-    const at = parseDate(opts.at);
+    const at = this.eventDay(opts.at);
 
     if (type === 'moved') return this.applyStorageMove(item, opts.to, at);
 
@@ -1175,7 +1208,7 @@ export class InventoryPipeline {
     //    state clears it (stocked means sealed); otherwise unchanged. ──
     let openedAt = item.opened_at;
     if (input.opened_at !== undefined) {
-      openedAt = input.opened_at === null ? null : parseDate(input.opened_at);
+      openedAt = input.opened_at === null ? null : this.eventDay(input.opened_at);
     }
     if (state === 'stocked') {
       if (input.opened_at != null) {
@@ -1214,7 +1247,7 @@ export class InventoryPipeline {
       changes.push(`product_ulid ${item.product_ulid ?? 'null'}→${productUlid ?? 'null'}`);
     }
     if (needsInfo !== item.needs_info) changes.push(`needs_info ${item.needs_info}→${needsInfo}`);
-    const summary = `reconciled ${toIsoDate(new Date())}: ${changes.length ? changes.join(', ') : 'no-op'}${input.notes ? ` — ${input.notes}` : ''}`;
+    const summary = `reconciled ${localToday(this.ownerTz.zone, this.now())}: ${changes.length ? changes.join(', ') : 'no-op'}${input.notes ? ` — ${input.notes}` : ''}`;
 
     const updated = await this.store.updateItemState(item.ulid, {
       state,
@@ -1315,7 +1348,7 @@ export class InventoryPipeline {
       );
     }
 
-    const at = parseDate(input.at);
+    const at = this.eventDay(input.at);
 
     // `sources` is optional: a source-less conversion registers a prepared
     // item ("I made this") with empty provenance, decrementing nothing.
@@ -1344,7 +1377,7 @@ export class InventoryPipeline {
     }
 
     const derived = input.derived;
-    const acquiredAt = parseDate(derived.acquired_at ?? input.at);
+    const acquiredAt = this.eventDay(derived.acquired_at ?? input.at);
     // A convert output is a prepared dish: default it to the `prepared` class
     // (~4 days from the make date) so it always earns an eat-by and joins
     // eat-first ordering, rather than falling to `unknown` (no eat-by). A
@@ -1529,7 +1562,7 @@ export class InventoryPipeline {
       throw new ConsumeValidationError('quantity must be a positive integer');
     }
 
-    const at = parseDate(input.at);
+    const at = this.eventDay(input.at);
     let itemUpdate: ItemStateUpdate;
     let share: number;
 
@@ -1571,7 +1604,11 @@ export class InventoryPipeline {
 
     const derivedFrom = await this.derivedFromFor(item.ulid);
     const nutrition = scaleNutrition(await this.resolveConsumeMacros(item, derivedFrom), share);
-    const loggedAt = input.at ? new Date(input.at) : new Date();
+    // The entry half is a `timestamptz`, so it takes the instant rather than the
+    // day — but through the same owner zone, so a bare date lands at local noon
+    // on the day the item's `closed_at` just recorded, not midnight UTC the
+    // evening before (claude-assist#184).
+    const loggedAt = ownerLocalInstant(input.at, this.ownerTz.zone, this.now());
 
     const { entry, item: updatedItemRecord, created } = await this.consumeStore.consume(
       {
@@ -1703,7 +1740,7 @@ export class InventoryPipeline {
       deltaFraction = input.fraction!;
     }
 
-    const at = parseDate(input.at);
+    const at = this.eventDay(input.at);
     const consumedAmount = clampFraction(deltaFraction);
     const remaining = clampFraction(item.on_hand_fraction - consumedAmount);
     const amountLabel = hasGrams ? `${input.amount_g}g` : `${consumedAmount}`;
@@ -2136,7 +2173,7 @@ export class InventoryPipeline {
   ): Promise<DismissResolution | null> {
     const item = await this.store.getItem(itemUlid);
     if (!item) return null;
-    const at = parseDate(opts.at);
+    const at = this.eventDay(opts.at);
     const nextState = transitionInventory(item.state, 'dismissed'); // throws on terminal
     const primary = await this.store.updateItemState(itemUlid, { state: nextState, closed_at: at });
 
@@ -2257,7 +2294,9 @@ export class InventoryPipeline {
     }
 
     // 4. Retire.
-    const retired = await this.store.retireMergedItem(loserUlid, survivorUlid, new Date());
+    // The loser's `closed_at` is a DATE like every other terminal stamp — the
+    // owner-local day, not the raw instant PG would cast in its own zone.
+    const retired = await this.store.retireMergedItem(loserUlid, survivorUlid, this.eventDay());
 
     return {
       item: await this.viewOf(merged),
@@ -2269,7 +2308,7 @@ export class InventoryPipeline {
   // ── Direct item / product / lexicon creation (manual + agentic seed) ──────────
 
   async createItem(input: InventoryItemInput): Promise<{ item: InventoryItemView; created: boolean }> {
-    const acquiredAt = parseDate(input.acquired_at);
+    const acquiredAt = this.eventDay(input.acquired_at);
     const cls = input.shelf_life_class ?? null;
     let productCls: ShelfLifeClass | null = cls;
     let product: ProductRecord | null = null;
@@ -2734,7 +2773,7 @@ export class InventoryPipeline {
   private async viewOf(item: InventoryItemRecord, derivedFrom?: DerivedFromView | null): Promise<InventoryItemView> {
     const product = item.product_ulid ? await this.store.getProduct(item.product_ulid) : null;
     const resolved = derivedFrom !== undefined ? derivedFrom : await this.derivedFromFor(item.ulid);
-    return toItemView(item, product, new Date(), resolved);
+    return toItemView(item, product, this.now(), resolved, this.ownerTz.zone);
   }
 
   private async viewsOf(items: InventoryItemRecord[]): Promise<InventoryItemView[]> {
@@ -2744,8 +2783,9 @@ export class InventoryPipeline {
       toItemView(
         i,
         i.product_ulid ? products.get(i.product_ulid) ?? null : null,
-        new Date(),
-        derivations.has(i.ulid) ? toDerivedFromView(derivations.get(i.ulid)!) : null
+        this.now(),
+        derivations.has(i.ulid) ? toDerivedFromView(derivations.get(i.ulid)!) : null,
+        this.ownerTz.zone
       )
     );
   }
@@ -3096,14 +3136,6 @@ export function mergeNutrition(
   const out = {} as NutritionPer100g;
   for (const k of NUTRITION_KEYS) out[k] = incoming[k] ?? existing[k];
   return out;
-}
-
-/** Parse an ISO date/date-time to a day-normalized (UTC midnight) Date; default today. */
-export function parseDate(input?: string | null): Date {
-  if (!input) return new Date(new Date().toISOString().slice(0, 10));
-  const d = new Date(input);
-  if (Number.isNaN(d.getTime())) return new Date(new Date().toISOString().slice(0, 10));
-  return new Date(d.toISOString().slice(0, 10));
 }
 
 function toBatchView(b: PurchaseBatchRecord): PurchaseBatchView {

@@ -109,3 +109,73 @@ export function formatOffset(minutes: number): string {
 export function localToday(zone: string, now: Date = new Date()): string {
   return localDay(now, zone);
 }
+
+/** A bare calendar date with no time-of-day. */
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+
+/** A `YYYY-MM-DD` calendar day as the UTC-midnight `Date` a `DATE` column round-trips. */
+function dayValue(day: string): Date {
+  return new Date(`${day}T00:00:00.000Z`);
+}
+
+/**
+ * Resolve a caller-supplied `at` into the **owner-local calendar day**, as the
+ * UTC-midnight `Date` a `DATE` column stores and round-trips.
+ *
+ * Three inputs, one answer — "what day was this, where the owner lives":
+ *
+ * - **Absent** → the owner-local day *now*. Deriving it from the UTC date is the
+ *   defect this exists to prevent: any evening event in a western-hemisphere
+ *   instance has already crossed into the next UTC day, so a UTC-stamped date
+ *   lands a day late while the journal entry for the same act buckets correctly.
+ * - **A bare `YYYY-MM-DD`** → taken **verbatim**. The caller named a calendar
+ *   day and the column stores calendar days; there is no instant in between to
+ *   convert, and converting one would only re-introduce a zone the caller never
+ *   meant to state.
+ * - **An instant** → the owner-local day *of that instant*, so a full local
+ *   timestamp with an offset lands on the day its wall clock read.
+ *
+ * An unparseable value falls back to "now" rather than throwing: these are date
+ * *stamps* on an event that already happened, and the API validates the shape of
+ * anything it accepts upstream.
+ */
+export function ownerLocalDate(
+  input: string | null | undefined,
+  zone: string,
+  now: Date = new Date()
+): Date {
+  const raw = typeof input === 'string' ? input.trim() : '';
+  if (raw === '') return dayValue(localDay(now, zone));
+  if (DATE_ONLY.test(raw)) return dayValue(raw);
+  const instant = new Date(raw);
+  if (Number.isNaN(instant.getTime())) return dayValue(localDay(now, zone));
+  return dayValue(localDay(instant, zone));
+}
+
+/**
+ * Resolve a caller-supplied `at` into an **instant** for a `timestamptz` column
+ * (the consumption entry an inventory verb writes alongside its item update),
+ * with the same day semantics as `ownerLocalDate`.
+ *
+ * A bare `YYYY-MM-DD` becomes **noon in the owner zone** — the § Logged-at
+ * backdating backstop, resolved against the owner's zone rather than whatever
+ * machine happened to send it, so the entry buckets on the day the caller named.
+ * Any value carrying a time-of-day passes through as the instant it names.
+ */
+export function ownerLocalInstant(
+  input: string | null | undefined,
+  zone: string,
+  now: Date = new Date()
+): Date {
+  const raw = typeof input === 'string' ? input.trim() : '';
+  if (raw === '') return now;
+  if (DATE_ONLY.test(raw)) {
+    // Noon UTC on the named day is the probe: it is inside that day in every
+    // real-world zone, so the offset it reads is the one in effect at local
+    // noon there. Shifting back by that offset yields local noon as an instant.
+    const probe = new Date(`${raw}T12:00:00.000Z`);
+    return new Date(probe.getTime() - offsetMinutes(probe, zone) * 60_000);
+  }
+  const instant = new Date(raw);
+  return Number.isNaN(instant.getTime()) ? now : instant;
+}

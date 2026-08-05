@@ -7,7 +7,7 @@ import {
   requirePositional,
   rawJson,
   parseJson,
-  validateDate,
+  validateCalendarDate,
   parseNumberFlag,
 } from "../args.js";
 import { renderList, renderDetail, renderObject, renderOutput, renderHelp, field, type FieldDef } from "../toon.js";
@@ -92,6 +92,14 @@ export const INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json
   facts, two different verbs. A move into the class the item already carries is
   fine and still re-anchors; --to unknown is refused (a move states where the
   item now lives, and unknown is not a place).
+
+  EVERY --at / --acquired-at / --opened-at / --since / --until HERE IS A
+  CALENDAR DAY (YYYY-MM-DD), not a timestamp, and the server resolves it in the
+  instance's own timezone. Omit it and you get today where the food is, not
+  today in UTC — so an evening event no longer lands on tomorrow's date while
+  the journal entry for the same meal sits on today. Pass a bare date to name a
+  different day; it is taken verbatim, so you never compute an offset. A full
+  ISO timestamp is accepted too and is read as the day its wall clock names.
 
   For 'event … tossed', --fraction is
   the AMOUNT TOSSED — a partial toss decrements on_hand_fraction and keeps the
@@ -354,7 +362,13 @@ async function listItems(args: string[]): Promise<string> {
   });
   if (flags.json) return rawJson(result);
   const items = result?.items ?? [];
-  return renderList("items", items, ITEM_ROW_SCHEMA);
+  const list = renderList("items", items, ITEM_ROW_SCHEMA);
+  // Same disclosure the day rollup uses: name the zone only when it is the UTC
+  // fallback, so an unconfigured instance's dates are never read as local ones.
+  if (typeof result?.tz === "string" && result.tz.includes("unset")) {
+    return renderOutput([list, renderObject({ tz: result.tz })]);
+  }
+  return list;
 }
 
 async function showItem(args: string[]): Promise<string> {
@@ -373,7 +387,7 @@ async function addItem(args: string[]): Promise<string> {
   if (typeof flags["raw-label"] === "string") body.raw_label = flags["raw-label"];
   if (typeof flags.store === "string") body.store = flags.store;
   if (typeof flags["batch-ulid"] === "string") body.batch_ulid = flags["batch-ulid"];
-  if (typeof flags["acquired-at"] === "string") body.acquired_at = validateDate(flags["acquired-at"], "--acquired-at", INVENTORY_HELP);
+  if (typeof flags["acquired-at"] === "string") body.acquired_at = validateCalendarDate(flags["acquired-at"], "--acquired-at", INVENTORY_HELP);
   if (typeof flags.fraction === "string") body.on_hand_fraction = parseNumberFlag(flags.fraction, "fraction", INVENTORY_HELP, { min: 0, max: 1 });
   if (typeof flags["units-total"] === "string") body.units_total = parseNumberFlag(flags["units-total"], "units-total", INVENTORY_HELP, { min: 1 });
   if (typeof flags["unit-seal"] === "string") body.unit_seal = validateUnitSeal(flags["unit-seal"]);
@@ -428,7 +442,7 @@ export function assertEventType(type: string, ulid = "<ulid>"): void {
 export function buildDismissBody(flags: Record<string, string | boolean | undefined>): Record<string, unknown> {
   const body: Record<string, unknown> = {};
   if (flags["non-inventory"]) body.non_inventory = true;
-  if (typeof flags.at === "string") body.at = validateDate(flags.at, "--at", INVENTORY_HELP);
+  if (typeof flags.at === "string") body.at = validateCalendarDate(flags.at, "--at", INVENTORY_HELP);
   return body;
 }
 
@@ -441,7 +455,7 @@ async function itemEvent(args: string[]): Promise<string> {
   if (typeof flags.fraction === "string") body.fraction = parseNumberFlag(flags.fraction, "fraction", INVENTORY_HELP, { min: 0, max: 1 });
   assertMoveDestination(type, typeof flags.to === "string" ? flags.to : undefined);
   if (typeof flags.to === "string") body.to = flags.to;
-  if (typeof flags.at === "string") body.at = validateDate(flags.at, "--at", INVENTORY_HELP);
+  if (typeof flags.at === "string") body.at = validateCalendarDate(flags.at, "--at", INVENTORY_HELP);
 
   const item = await api.post(`/api/kitchen/inventory/${encodeURIComponent(ulid)}/events`, body);
   if (flags.json) return rawJson(item);
@@ -481,7 +495,7 @@ async function recountItem(args: string[]): Promise<string> {
     }
     body.state = flags.state;
   }
-  if (typeof flags["opened-at"] === "string") body.opened_at = validateDate(flags["opened-at"], "--opened-at", INVENTORY_HELP);
+  if (typeof flags["opened-at"] === "string") body.opened_at = validateCalendarDate(flags["opened-at"], "--opened-at", INVENTORY_HELP);
   if (typeof flags.notes === "string") body.notes = flags.notes;
   if (Object.keys(body).length === 0) {
     throw new AxiError("recount needs at least one correction (e.g. --fraction 0.75)", "VALIDATION_ERROR", [INVENTORY_HELP]);
@@ -557,7 +571,7 @@ async function remark(args: string[]): Promise<string> {
   const text = positionals.join(" ").trim();
   if (!text) throw new AxiError("inventory remark needs free text", "VALIDATION_ERROR", [INVENTORY_HELP]);
   const body: Record<string, unknown> = { remark: text };
-  if (typeof flags.at === "string") body.at = validateDate(flags.at, "--at", INVENTORY_HELP);
+  if (typeof flags.at === "string") body.at = validateCalendarDate(flags.at, "--at", INVENTORY_HELP);
 
   const result = await api.post("/api/kitchen/inventory/events", body);
   if (flags.json) return rawJson(result);
@@ -590,8 +604,8 @@ async function questions(args: string[]): Promise<string> {
 
 async function waste(args: string[]): Promise<string> {
   const { flags } = parseArgs(args, ["json"], ["since", "until", "limit"]);
-  const since = typeof flags.since === "string" ? validateDate(flags.since, "--since", INVENTORY_HELP) : undefined;
-  const until = typeof flags.until === "string" ? validateDate(flags.until, "--until", INVENTORY_HELP) : undefined;
+  const since = typeof flags.since === "string" ? validateCalendarDate(flags.since, "--since", INVENTORY_HELP) : undefined;
+  const until = typeof flags.until === "string" ? validateCalendarDate(flags.until, "--until", INVENTORY_HELP) : undefined;
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", INVENTORY_HELP, { min: 1 })) : undefined;
   const result = await api.get("/api/kitchen/inventory/waste", { since, until, limit });
   if (flags.json) return rawJson(result);
@@ -646,7 +660,7 @@ async function convert(args: string[]): Promise<string> {
     sources: fromValues.map(parseSource),
     derived,
   };
-  if (typeof flags.at === "string") body.at = validateDate(flags.at, "--at", INVENTORY_HELP);
+  if (typeof flags.at === "string") body.at = validateCalendarDate(flags.at, "--at", INVENTORY_HELP);
 
   const result = await api.post("/api/kitchen/inventory/convert", body);
   if (flags.json) return rawJson(result);
@@ -664,7 +678,7 @@ async function consumeItem(args: string[]): Promise<string> {
   if (typeof flags.quantity === "string") {
     body.quantity = parseNumberFlag(flags.quantity, "quantity", INVENTORY_HELP, { min: 1 });
   }
-  if (typeof flags.at === "string") body.at = validateDate(flags.at, "--at", INVENTORY_HELP);
+  if (typeof flags.at === "string") body.at = validateCalendarDate(flags.at, "--at", INVENTORY_HELP);
 
   const result = await api.post(`/api/kitchen/inventory/${encodeURIComponent(itemUlid)}/consume`, body);
   if (flags.json) return rawJson(result);
@@ -713,7 +727,7 @@ export function buildEatBody(flags: Record<string, string | boolean | undefined>
     body.fraction = parseNumberFlag(flags.fraction as string, "fraction", INVENTORY_HELP, { min: 0, max: 1 });
   }
   if (typeof flags["entry-ulid"] === "string") body.entry_ulid = flags["entry-ulid"];
-  if (typeof flags.at === "string") body.at = validateDate(flags.at, "--at", INVENTORY_HELP);
+  if (typeof flags.at === "string") body.at = validateCalendarDate(flags.at, "--at", INVENTORY_HELP);
   return body;
 }
 

@@ -95,6 +95,36 @@ const ISO_DATETIME = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\
  * the noon coercion only rescues the bare-date backstop case.
  */
 export function validateDate(value: string, flag: string, usage: string): string {
+  return coerceBareDateToLocalNoon(wellFormedDate(value, flag, usage));
+}
+
+/**
+ * Validate a flag whose destination is a **calendar day**, not an instant —
+ * every inventory date (`acquired_at`, `opened_at`, `closed_at`,
+ * `storage_moved_at`, the waste window) and the events that stamp them.
+ *
+ * Same accepted shapes as `validateDate`, but a bare `YYYY-MM-DD` is passed
+ * **verbatim**, deliberately:
+ *
+ * - The server derives the day in the OWNER's zone (§ Timezone & local-day
+ *   bucketing — "no AXI caller ever supplies, knows, or computes a
+ *   timezone/offset"). Turning a bare date into a machine-local instant first
+ *   makes the stored day depend on where the CLI happened to run, which is the
+ *   one input the module's day-bucketing is designed never to take.
+ * - Some of these flags are compared as bare date STRINGS server-side (the
+ *   waste window, whose route accepts `^\d{4}-\d{2}-\d{2}$` only). An instant
+ *   is not merely redundant there; it is rejected.
+ *
+ * The local-noon backstop `validateDate` applies stays where it belongs: flags
+ * that land in a `timestamptz` (`entries log --at` and friends), where a bare
+ * date genuinely has to become some instant and midnight UTC is the wrong one.
+ */
+export function validateCalendarDate(value: string, flag: string, usage: string): string {
+  return wellFormedDate(value, flag, usage);
+}
+
+/** Shared shape check: a bare `YYYY-MM-DD` or a full ISO 8601 timestamp. */
+function wellFormedDate(value: string, flag: string, usage: string): string {
   const wellFormed = DATE_ONLY.test(value) || ISO_DATETIME.test(value);
   if (!wellFormed || Number.isNaN(Date.parse(value))) {
     throw new AxiError(`Invalid date for ${flag}: ${value}`, "VALIDATION_ERROR", [
@@ -102,7 +132,7 @@ export function validateDate(value: string, flag: string, usage: string): string
       usage,
     ]);
   }
-  return coerceBareDateToLocalNoon(value);
+  return value;
 }
 
 /**

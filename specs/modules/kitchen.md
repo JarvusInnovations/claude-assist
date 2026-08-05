@@ -490,6 +490,38 @@ mis-buckets — the rollup exists so no agent ever does it.
 totals, and the weekly trend all bucket by the owner zone via this one config —
 no surface re-derives day boundaries independently.
 
+**Inventory dates are owner-local calendar days.** The `DATE`-typed inventory
+columns — `acquired_at`, `opened_at`, `closed_at`, `storage_moved_at`, the
+`purchase_batches.purchased_at` they descend from, the `eat_by` those anchor, and
+the dates written into toss/consumption/reconcile audit notes — are the *owner's*
+calendar day of the act, never the UTC day. This is stated rather than left to
+"the whole module surface" because it was violated exactly once and silently: a
+UTC-stamped inventory date and an owner-bucketed journal entry, written seconds
+apart for the same meal, disagreed by a day for every evening event in a
+western-hemisphere instance. The two must always name one day.
+
+Three inputs, one rule:
+
+- **No date supplied** → the owner-local day *now*. This is the common path and
+  was the defective one.
+- **A bare `YYYY-MM-DD`** → taken **verbatim**. The caller named a calendar day
+  and the column stores calendar days; there is no instant in between, so no
+  offset is applied — including by the CLI, which passes these flags through
+  unconverted rather than routing them via § Logged-at backdating's local-noon
+  coercion. That coercion belongs to `timestamptz` fields (`logged_at`,
+  `occurred_at`), where a bare date genuinely must become *some* instant;
+  applying it to a calendar-day field would make the stored day depend on where
+  the CLI ran, which is precisely the caller-owned timezone this section
+  abolishes.
+- **A full timestamp** → the owner-local day its wall clock reads.
+
+The derived read-time counts (`days_until_eat_by`, `age_days`) measure from the
+owner-local *today* for the same reason: read from a UTC evening, "today" is
+already tomorrow and every remaining-days figure comes back one short. And where
+an inventory verb also writes a consumption entry (§ Consume, § Stated-weight
+consumption), the entry's `logged_at` resolves through the same zone, so the item
+and its entry cannot disagree.
+
 ## Weigh-ins — scale data via the capture app (phase 3)
 
 Weight is the goal metric and the empirical tuner for `KITCHEN_TDEE_BASE`
