@@ -1,10 +1,10 @@
 ---
-status: in-progress
+status: done
 depends: [kitchen-owner-tz, logged-at-noon-default, kitchen-module]
 specs:
   - specs/modules/kitchen.md
 issues: [184]
-pr:
+pr: 185
 ---
 
 # Plan: Inventory dates bucket by the owner timezone
