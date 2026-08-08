@@ -1,0 +1,52 @@
+name: UI Checks
+
+# Single-package frontend (e.g. a Vite + React app under app/ or ui/). Use this
+# instead of the ts-lint matrix when the front end is one package you want gated
+# on its own path. Lint + format + type-check + test + build in one job.
+#
+# Scope note: the Build step here is the FRONTEND COMPILE/BUILD gate — cheap,
+# credential-free, and it catches real breaks (`vite build` walks the full
+# asset graph, so a bad import of a CSS/image/route asset fails here even when
+# `tsc -b` is clean). That is in scope. CONTAINER image builds are not — a
+# Dockerfile is exercised by the push-triggered build workflow, which belongs
+# to the release/deploy skills (see the scope table in SKILL.md).
+on:
+  pull_request:
+    paths:
+      - 'ui/**'              # ADAPT: frontend package dir
+      - '.github/workflows/ui-checks.yml'
+  push:
+    branches: [develop]
+    paths:
+      - 'ui/**'
+      - '.github/workflows/ui-checks.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Lint, format, type-check, test, build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui          # ADAPT
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-asdf
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Lint
+        run: bun run lint
+      - name: Check formatting
+        run: bun run format:check
+      - name: Type check
+        run: bun run typecheck
+      - name: Test
+        run: bun run test
+      # `vite build` resolves the full asset/import graph (CSS, images, route
+      # files) that `tsc -b` never sees — a broken asset import passes
+      # typecheck and fails only here. Delete only if the package truly has no
+      # build script.
+      - name: Build
+        run: bun run build

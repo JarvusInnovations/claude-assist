@@ -1,0 +1,15 @@
+# Append to the package's pyproject.toml. Add ruff to the dev dependency group
+# with `uv add --dev ruff` (don't hand-edit the deps table).
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+# E  pycodestyle errors      F  pyflakes
+# I  isort (import order)    B  flake8-bugbear (likely bugs)
+# UP pyupgrade (modernize)
+select = ["E", "F", "I", "B", "UP"]
+
+# Exempt machine-generated files (protobuf, etc.) — they aren't hand-maintained.
+# [tool.ruff.lint.per-file-ignores]
+# "src/pkg/foo_pb2.py" = ["ALL"]

@@ -1,0 +1,63 @@
+name: Docs
+
+# Docs gate + Pages deploy, one workflow, shared build job. The strict build
+# GATES pull requests — a broken link or a page missing from nav fails the PR
+# instead of failing after merge inside the deploy run. The Pages upload/deploy
+# only happens on push to develop (job-level `if`), so PRs get the gate without
+# the deploy or its permissions.
+on:
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - '.github/workflows/docs.yml'
+  push:
+    branches: [develop]
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - '.github/workflows/docs.yml'
+
+# pages/id-token are only exercised by the push-only deploy job; PR runs use
+# nothing beyond contents: read.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Per-ref group: serializes develop deploys without letting a PR build cancel
+# an in-flight deploy (a bare `group: pages` would).
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-asdf   # provides uv/uvx; or astral-sh/setup-uv@v7 if the composite doesn't fit
+
+      # uvx pulls mkdocs + theme without a project-level dependency.
+      # ADAPT: one --with per plugin the site uses (e.g. --with mkdocs-mermaid-zoom).
+      - name: Build docs
+        run: uvx --with mkdocs-material mkdocs build --strict
+
+      # Only the push run feeds a deploy; skip the upload on PRs.
+      - name: Upload pages artifact
+        if: github.event_name == 'push'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
