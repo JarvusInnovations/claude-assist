@@ -1,5 +1,5 @@
 {
-  "name": "@jarvus/claude-assist-google",
+  "name": "@jarvus/claude-assist-approvals",
   "version": "0.1.0",
   "type": "module",
   "main": "dist/index.js",
@@ -10,19 +10,16 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "test": "bun test src"
+    "test": "bun test"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.71.2",
     "@jarvus/claude-assist-core": "workspace:*",
     "fastify": "^5.7.1",
     "fastify-plugin": "^5.1.0",
-    "googleapis": "^148.0.0",
-    "p-limit": "^7.2.0",
-    "postgres": "^3.4.8",
-    "typescript": "^5.9.3"
+    "postgres": "^3.4.8"
   },
   "devDependencies": {
-    "@types/node": "^25.0.10"
+    "@types/node": "^25.0.10",
+    "typescript": "^5.9.3"
   }
 }

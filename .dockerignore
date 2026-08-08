@@ -72,6 +72,20 @@
 !packages/pages/bin/**
 !packages/pages/migrations/
 !packages/pages/migrations/**
+# packages/approvals
+!packages/approvals/package.json
+!packages/approvals/tsconfig.json
+!packages/approvals/src/**
+!packages/approvals/migrations/
+!packages/approvals/migrations/**
+
+# packages/invoker
+!packages/invoker/package.json
+!packages/invoker/tsconfig.json
+!packages/invoker/src/**
+!packages/invoker/migrations/
+!packages/invoker/migrations/**
+
 # packages/ledger
 !packages/ledger/package.json
 !packages/ledger/tsconfig.json

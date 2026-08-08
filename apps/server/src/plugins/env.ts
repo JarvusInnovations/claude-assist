@@ -55,6 +55,35 @@ const schema = {
     // AI Features (optional)
     ANTHROPIC_API_KEY: { type: 'string' },
     OUTLINE_CONCURRENCY: { type: 'number', default: 5 },
+
+    // --- Invoker: the single choke point for metered model calls ---
+    // Tier overrides. A call site names a tier describing its work; these are
+    // the only place a model id is configured (specs/modules/invoker.md).
+    MODEL_TIER_CLASSIFY: { type: 'string' },
+    MODEL_TIER_EXTRACT: { type: 'string' },
+    MODEL_TIER_VISION: { type: 'string' },
+    MODEL_TIER_SYNTHESIZE: { type: 'string' },
+    // Stop all metered invocation while leaving the host healthy. Per-feature
+    // disable flags answer "turn this pipeline off"; this answers "stop
+    // spending, now, everywhere."
+    MODEL_KILL_SWITCH: { type: 'boolean', default: false },
+    // Rolling-daily ceilings. A breach raises one human approval per window
+    // and fails calls transiently; it does not silently stop the instance.
+    MODEL_DAILY_BUDGET_USD: { type: 'number' },
+    MODEL_DAILY_BUDGET_TOKENS: { type: 'number' },
+    // JSON object of per-task dollar ceilings, e.g. {"google.triage": 2.5}.
+    MODEL_TASK_BUDGETS_USD: { type: 'string' },
+    // JSON object of price overrides, USD per million tokens, keyed by model:
+    // {"claude-haiku-4-5": {"input": 1, "output": 5}}.
+    MODEL_PRICES: { type: 'string' },
+    MODEL_MAX_ATTEMPTS: { type: 'number', default: 3 },
+    MODEL_RETRY_BASE_MS: { type: 'number', default: 500 },
+    MODEL_TIMEOUT_MS: { type: 'number' },
+
+    // --- Approvals: human gates that never block a worker ---
+    ENABLE_APPROVALS: { type: 'boolean', default: true },
+    APPROVAL_EXPIRY_MS: { type: 'number', default: 86400000 },
+    APPROVAL_EXPIRE_CRON: { type: 'string' },
     TRIAGE_CONCURRENCY: { type: 'number', default: 5 },
 
     // Google OAuth
@@ -332,6 +361,21 @@ declare module 'fastify' {
       // AI Features
       ANTHROPIC_API_KEY?: string;
       OUTLINE_CONCURRENCY: number;
+      MODEL_TIER_CLASSIFY?: string;
+      MODEL_TIER_EXTRACT?: string;
+      MODEL_TIER_VISION?: string;
+      MODEL_TIER_SYNTHESIZE?: string;
+      MODEL_KILL_SWITCH: boolean;
+      MODEL_DAILY_BUDGET_USD?: number;
+      MODEL_DAILY_BUDGET_TOKENS?: number;
+      MODEL_TASK_BUDGETS_USD?: string;
+      MODEL_PRICES?: string;
+      MODEL_MAX_ATTEMPTS: number;
+      MODEL_RETRY_BASE_MS: number;
+      MODEL_TIMEOUT_MS?: number;
+      ENABLE_APPROVALS: boolean;
+      APPROVAL_EXPIRY_MS: number;
+      APPROVAL_EXPIRE_CRON?: string;
       TRIAGE_CONCURRENCY: number;
 
       // Google OAuth

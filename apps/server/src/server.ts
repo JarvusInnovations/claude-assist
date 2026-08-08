@@ -16,11 +16,13 @@ import notifyPlugin from '@jarvus/claude-assist-notify';
 import sessionSpawnPlugin, { parseSpawnCommand } from '@jarvus/claude-assist-session-spawn';
 import pagesPlugin, { registerPagesPublicRoutes } from '@jarvus/claude-assist-pages';
 import ledgerPlugin from '@jarvus/claude-assist-ledger';
+import approvalsPlugin from '@jarvus/claude-assist-approvals';
+import invokerPlugin from '@jarvus/claude-assist-invoker';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import envPlugin from './plugins/env.js';
 import { resolveUnmatched } from './not-found.js';
-import type { CoverageLedgerConfig } from '@jarvus/claude-assist-core';
+import type { CoverageLedgerConfig, ModelTier } from '@jarvus/claude-assist-core';
 import type { FastifyBaseLogger, FastifyInstance } from 'fastify';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -49,6 +51,75 @@ function parseCoverageLedgers(
     log.error({ err }, 'NOTIFY_COVERAGE_LEDGERS is malformed — no coverage ledgers registered');
     return [];
   }
+}
+
+/**
+ * Parse a JSON object of numeric values (per-task budgets). Malformed config
+ * is logged and treated as absent rather than failing boot — a typo in a
+ * budget must not take the whole instance down.
+ */
+function parseNumberMap(
+  raw: string | undefined,
+  varName: string,
+  log: FastifyBaseLogger,
+): Record<string, number> | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      throw new Error('expected a JSON object');
+    }
+    const out: Record<string, number> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value !== 'number' || !Number.isFinite(value)) {
+        throw new Error(`${key} must be a number`);
+      }
+      out[key] = value;
+    }
+    return out;
+  } catch (err) {
+    log.error({ err }, `${varName} is malformed — ignoring it`);
+    return undefined;
+  }
+}
+
+/** Parse the model price-override map (USD per million tokens). */
+function parsePriceMap(
+  raw: string | undefined,
+  log: FastifyBaseLogger,
+): Record<string, { input: number; output: number; cacheWrite?: number; cacheRead?: number }> | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      throw new Error('expected a JSON object');
+    }
+    const out: Record<string, { input: number; output: number }> = {};
+    for (const [model, value] of Object.entries(parsed)) {
+      const price = value as { input?: unknown; output?: unknown };
+      if (typeof price.input !== 'number' || typeof price.output !== 'number') {
+        throw new Error(`${model} needs numeric input and output prices`);
+      }
+      out[model] = value as { input: number; output: number };
+    }
+    return out;
+  } catch (err) {
+    log.error({ err }, 'MODEL_PRICES is malformed — using the built-in price table');
+    return undefined;
+  }
+}
+
+/** Collect the per-tier model overrides that are actually set. */
+function resolveTierOverrides(app: FastifyInstance): Partial<Record<ModelTier, string>> {
+  const pairs: Array<[ModelTier, string | undefined]> = [
+    ['classify', app.config.MODEL_TIER_CLASSIFY],
+    ['extract', app.config.MODEL_TIER_EXTRACT],
+    ['vision', app.config.MODEL_TIER_VISION],
+    ['synthesize', app.config.MODEL_TIER_SYNTHESIZE],
+  ];
+  return Object.fromEntries(pairs.filter(([, v]) => v !== undefined)) as Partial<
+    Record<ModelTier, string>
+  >;
 }
 
 /**
@@ -175,6 +246,65 @@ await fastify.register(
     } else {
       api.log.info('Notify module disabled');
     }
+
+    // Approvals module — registered after notify (it dispatches through
+    // fastify.notify) and before the invoker, which raises the budget gate.
+    if (fastify.config.ENABLE_APPROVALS) {
+      api.log.info('Approvals module enabled');
+      await api.register(approvalsPlugin, {
+        migrationsDir: join(__dirname, '../../../packages/approvals/migrations'),
+        disableMigrations: fastify.config.DISABLE_MIGRATIONS,
+        approvalsConfig: {
+          defaultExpiryMs: fastify.config.APPROVAL_EXPIRY_MS,
+          ...(fastify.config.APPROVAL_EXPIRE_CRON
+            ? { expireCron: fastify.config.APPROVAL_EXPIRE_CRON }
+            : {}),
+          ...(fastify.config.PAGES_BASE_URL ? { baseUrl: fastify.config.PAGES_BASE_URL } : {}),
+        },
+      });
+    } else {
+      api.log.info('Approvals module disabled');
+    }
+
+    // Invoker module — the single choke point for metered model calls. MUST
+    // register before every module that takes a model, since they read
+    // fastify.invoker at registration and skip constructing their services
+    // when it is absent or disabled.
+    api.log.info('Invoker module enabled');
+    await api.register(invokerPlugin, {
+      migrationsDir: join(__dirname, '../../../packages/invoker/migrations'),
+      disableMigrations: fastify.config.DISABLE_MIGRATIONS,
+      invokerConfig: {
+        ...(fastify.config.ANTHROPIC_API_KEY
+          ? { anthropicApiKey: fastify.config.ANTHROPIC_API_KEY }
+          : {}),
+        tierModels: resolveTierOverrides(fastify),
+        ...(parsePriceMap(fastify.config.MODEL_PRICES, fastify.log)
+          ? { prices: parsePriceMap(fastify.config.MODEL_PRICES, fastify.log) }
+          : {}),
+        killSwitch: fastify.config.MODEL_KILL_SWITCH,
+        ...(fastify.config.MODEL_DAILY_BUDGET_USD !== undefined
+          ? { dailyBudgetUsd: fastify.config.MODEL_DAILY_BUDGET_USD }
+          : {}),
+        ...(fastify.config.MODEL_DAILY_BUDGET_TOKENS !== undefined
+          ? { dailyBudgetTokens: fastify.config.MODEL_DAILY_BUDGET_TOKENS }
+          : {}),
+        ...(parseNumberMap(fastify.config.MODEL_TASK_BUDGETS_USD, 'MODEL_TASK_BUDGETS_USD', fastify.log)
+          ? {
+              taskBudgetsUsd: parseNumberMap(
+                fastify.config.MODEL_TASK_BUDGETS_USD,
+                'MODEL_TASK_BUDGETS_USD',
+                fastify.log,
+              ),
+            }
+          : {}),
+        maxAttempts: fastify.config.MODEL_MAX_ATTEMPTS,
+        retryBaseMs: fastify.config.MODEL_RETRY_BASE_MS,
+        ...(fastify.config.MODEL_TIMEOUT_MS !== undefined
+          ? { timeoutMs: fastify.config.MODEL_TIMEOUT_MS }
+          : {}),
+      },
+    });
 
     // Session-spawn module — registered after notify (needs fastify.notify for
     // takeover-link dispatch) and BEFORE kitchen so its fastify.sessionSpawner

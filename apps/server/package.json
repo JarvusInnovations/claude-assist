@@ -31,6 +31,8 @@
     "@jarvus/claude-assist-core": "workspace:*",
     "@jarvus/claude-assist-google": "workspace:*",
     "@jarvus/claude-assist-kitchen": "workspace:*",
+    "@jarvus/claude-assist-approvals": "workspace:*",
+    "@jarvus/claude-assist-invoker": "workspace:*",
     "@jarvus/claude-assist-ledger": "workspace:*",
     "@jarvus/claude-assist-notify": "workspace:*",
     "@jarvus/claude-assist-pages": "workspace:*",

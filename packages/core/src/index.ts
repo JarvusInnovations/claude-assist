@@ -44,6 +44,9 @@ export {
   type KitchenEventOutcome,
   type KitchenRecipesProvider,
   type KitchenRecipeSummary,
+  type InvokerPluginConfig,
+  type ApprovalsPluginConfig,
+  type ModelPriceConfig,
 } from './plugin.js';
 
 // Tana MCP client (shared by capture's inbox executor + the briefing render)
@@ -69,6 +72,46 @@ export type {
 
 // Audit-ledger contract (direct-write surface)
 export type { Ledger, LedgerActor, LedgerRecordInput } from './ledger.js';
+
+// Advisory locks + lease-claimed work (specs/behaviors/scheduled-work-leases.md)
+export { withAdvisoryLock, advisoryLockKey, type AdvisoryLockResult } from './locks.js';
+export {
+  createLeaseQueue,
+  type LeaseQueue,
+  type LeaseQueueConfig,
+  type LeaseClaim,
+  type LeaseFailureOutcome,
+} from './queue.js';
+
+// Model-invocation contract — the single choke point for metered model calls
+export {
+  ModelInvocationError,
+  isTransientModelError,
+  MODEL_TIERS,
+  type ModelTier,
+  type ModelInvoker,
+  type InvokeRequest,
+  type TaggedInvokeRequest,
+  type InvokeMessage,
+  type InvokeContentBlock,
+  type InvokeResult,
+  type InvokeUsage,
+  type ModelFailureReason,
+  type SpendSnapshot,
+  type SpendTaskRow,
+} from './invoker.js';
+
+// Human-approval contract
+export {
+  ApprovalConflictError,
+  type ApprovalService,
+  type ApprovalRecord,
+  type ApprovalRequestInput,
+  type ApprovalResolution,
+  type ApprovalDecision,
+  type ApprovalStatus,
+  type ApprovalListFilter,
+} from './approvals.js';
 
 // Session-spawn contract (warm an interactive session, dispatch its takeover link)
 export type {

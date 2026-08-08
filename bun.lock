@@ -61,11 +61,13 @@
       "dependencies": {
         "@fastify/env": "^5.0.3",
         "@fastify/static": "^9.0.0",
+        "@jarvus/claude-assist-approvals": "workspace:*",
         "@jarvus/claude-assist-briefing": "workspace:*",
         "@jarvus/claude-assist-capture": "workspace:*",
         "@jarvus/claude-assist-chat": "workspace:*",
         "@jarvus/claude-assist-core": "workspace:*",
         "@jarvus/claude-assist-google": "workspace:*",
+        "@jarvus/claude-assist-invoker": "workspace:*",
         "@jarvus/claude-assist-kitchen": "workspace:*",
         "@jarvus/claude-assist-ledger": "workspace:*",
         "@jarvus/claude-assist-notify": "workspace:*",
@@ -84,6 +86,20 @@
       },
       "peerDependencies": {
         "typescript": "^5",
+      },
+    },
+    "packages/approvals": {
+      "name": "@jarvus/claude-assist-approvals",
+      "version": "0.1.0",
+      "dependencies": {
+        "@jarvus/claude-assist-core": "workspace:*",
+        "fastify": "^5.7.1",
+        "fastify-plugin": "^5.1.0",
+        "postgres": "^3.4.8",
+      },
+      "devDependencies": {
+        "@types/node": "^25.0.10",
+        "typescript": "^5.9.3",
       },
     },
     "packages/briefing": {
@@ -172,6 +188,21 @@
       },
       "devDependencies": {
         "@types/node": "^25.0.10",
+      },
+    },
+    "packages/invoker": {
+      "name": "@jarvus/claude-assist-invoker",
+      "version": "0.1.0",
+      "dependencies": {
+        "@anthropic-ai/sdk": "^0.71.2",
+        "@jarvus/claude-assist-core": "workspace:*",
+        "fastify": "^5.7.1",
+        "fastify-plugin": "^5.1.0",
+        "postgres": "^3.4.8",
+      },
+      "devDependencies": {
+        "@types/node": "^25.0.10",
+        "typescript": "^5.9.3",
       },
     },
     "packages/kitchen": {
@@ -431,6 +462,8 @@
 
     "@jarvus/claude-assist-admin": ["@jarvus/claude-assist-admin@workspace:apps/admin"],
 
+    "@jarvus/claude-assist-approvals": ["@jarvus/claude-assist-approvals@workspace:packages/approvals"],
+
     "@jarvus/claude-assist-briefing": ["@jarvus/claude-assist-briefing@workspace:packages/briefing"],
 
     "@jarvus/claude-assist-capture": ["@jarvus/claude-assist-capture@workspace:packages/capture"],
@@ -440,6 +473,8 @@
     "@jarvus/claude-assist-core": ["@jarvus/claude-assist-core@workspace:packages/core"],
 
     "@jarvus/claude-assist-google": ["@jarvus/claude-assist-google@workspace:packages/google"],
+
+    "@jarvus/claude-assist-invoker": ["@jarvus/claude-assist-invoker@workspace:packages/invoker"],
 
     "@jarvus/claude-assist-kitchen": ["@jarvus/claude-assist-kitchen@workspace:packages/kitchen"],
 
@@ -1271,6 +1306,8 @@
 
     "@jarvus/claude-assist-admin/@types/bun": ["@types/bun@1.3.7", "", { "dependencies": { "bun-types": "1.3.7" } }, "sha512-lmNuMda+Z9b7tmhA0tohwy8ZWFSnmQm1UDWXtH5r9F7wZCfkeO3Jx7wKQ1EOiKq43yHts7ky6r8SDJQWRNupkA=="],
 
+    "@jarvus/claude-assist-approvals/@types/node": ["@types/node@25.0.10", "", { "dependencies": { "undici-types": "~7.16.0" } }, "sha512-zWW5KPngR/yvakJgGOmZ5vTBemDoSqF3AcV/LrO5u5wTWyEAVVh+IT39G4gtyAkh3CtTZs8aX/yRM82OfzHJRg=="],
+
     "@jarvus/claude-assist-briefing/@types/node": ["@types/node@25.0.10", "", { "dependencies": { "undici-types": "~7.16.0" } }, "sha512-zWW5KPngR/yvakJgGOmZ5vTBemDoSqF3AcV/LrO5u5wTWyEAVVh+IT39G4gtyAkh3CtTZs8aX/yRM82OfzHJRg=="],
 
     "@jarvus/claude-assist-capture/@types/node": ["@types/node@25.0.10", "", { "dependencies": { "undici-types": "~7.16.0" } }, "sha512-zWW5KPngR/yvakJgGOmZ5vTBemDoSqF3AcV/LrO5u5wTWyEAVVh+IT39G4gtyAkh3CtTZs8aX/yRM82OfzHJRg=="],
@@ -1282,6 +1319,8 @@
     "@jarvus/claude-assist-core/@types/node": ["@types/node@25.0.10", "", { "dependencies": { "undici-types": "~7.16.0" } }, "sha512-zWW5KPngR/yvakJgGOmZ5vTBemDoSqF3AcV/LrO5u5wTWyEAVVh+IT39G4gtyAkh3CtTZs8aX/yRM82OfzHJRg=="],
 
     "@jarvus/claude-assist-google/@types/node": ["@types/node@25.0.10", "", { "dependencies": { "undici-types": "~7.16.0" } }, "sha512-zWW5KPngR/yvakJgGOmZ5vTBemDoSqF3AcV/LrO5u5wTWyEAVVh+IT39G4gtyAkh3CtTZs8aX/yRM82OfzHJRg=="],
+
+    "@jarvus/claude-assist-invoker/@types/node": ["@types/node@25.0.10", "", { "dependencies": { "undici-types": "~7.16.0" } }, "sha512-zWW5KPngR/yvakJgGOmZ5vTBemDoSqF3AcV/LrO5u5wTWyEAVVh+IT39G4gtyAkh3CtTZs8aX/yRM82OfzHJRg=="],
 
     "@jarvus/claude-assist-kitchen/@types/node": ["@types/node@25.0.10", "", { "dependencies": { "undici-types": "~7.16.0" } }, "sha512-zWW5KPngR/yvakJgGOmZ5vTBemDoSqF3AcV/LrO5u5wTWyEAVVh+IT39G4gtyAkh3CtTZs8aX/yRM82OfzHJRg=="],
 
@@ -1379,6 +1418,8 @@
 
     "@jarvus/claude-assist-admin/@types/bun/bun-types": ["bun-types@1.3.7", "", { "dependencies": { "@types/node": "*" } }, "sha512-qyschsA03Qz+gou+apt6HNl6HnI+sJJLL4wLDke4iugsE6584CMupOtTY1n+2YC9nGVrEKUlTs99jjRLKgWnjQ=="],
 
+    "@jarvus/claude-assist-approvals/@types/node/undici-types": ["undici-types@7.16.0", "", {}, "sha512-Zz+aZWSj8LE6zoxD+xrjh4VfkIG8Ya6LvYkZqtUQGJPZjYl53ypCaUwWqo7eI0x66KBGeRo+mlBEkMSeSZ38Nw=="],
+
     "@jarvus/claude-assist-briefing/@types/node/undici-types": ["undici-types@7.16.0", "", {}, "sha512-Zz+aZWSj8LE6zoxD+xrjh4VfkIG8Ya6LvYkZqtUQGJPZjYl53ypCaUwWqo7eI0x66KBGeRo+mlBEkMSeSZ38Nw=="],
 
     "@jarvus/claude-assist-capture/@types/node/undici-types": ["undici-types@7.16.0", "", {}, "sha512-Zz+aZWSj8LE6zoxD+xrjh4VfkIG8Ya6LvYkZqtUQGJPZjYl53ypCaUwWqo7eI0x66KBGeRo+mlBEkMSeSZ38Nw=="],
@@ -1390,6 +1431,8 @@
     "@jarvus/claude-assist-core/@types/node/undici-types": ["undici-types@7.16.0", "", {}, "sha512-Zz+aZWSj8LE6zoxD+xrjh4VfkIG8Ya6LvYkZqtUQGJPZjYl53ypCaUwWqo7eI0x66KBGeRo+mlBEkMSeSZ38Nw=="],
 
     "@jarvus/claude-assist-google/@types/node/undici-types": ["undici-types@7.16.0", "", {}, "sha512-Zz+aZWSj8LE6zoxD+xrjh4VfkIG8Ya6LvYkZqtUQGJPZjYl53ypCaUwWqo7eI0x66KBGeRo+mlBEkMSeSZ38Nw=="],
+
+    "@jarvus/claude-assist-invoker/@types/node/undici-types": ["undici-types@7.16.0", "", {}, "sha512-Zz+aZWSj8LE6zoxD+xrjh4VfkIG8Ya6LvYkZqtUQGJPZjYl53ypCaUwWqo7eI0x66KBGeRo+mlBEkMSeSZ38Nw=="],
 
     "@jarvus/claude-assist-kitchen/@types/node/undici-types": ["undici-types@7.16.0", "", {}, "sha512-Zz+aZWSj8LE6zoxD+xrjh4VfkIG8Ya6LvYkZqtUQGJPZjYl53ypCaUwWqo7eI0x66KBGeRo+mlBEkMSeSZ38Nw=="],
 

@@ -5,6 +5,8 @@ import type { Scheduler } from './scheduler.js';
 import type { NotifyDispatcher, HeartbeatRegistry } from './notify.js';
 import type { SessionSpawner } from './session-spawn.js';
 import type { Ledger } from './ledger.js';
+import type { ModelInvoker, ModelTier } from './invoker.js';
+import type { ApprovalService } from './approvals.js';
 
 /**
  * Extended Fastify instance with claude-assist decorators
@@ -37,6 +39,19 @@ declare module 'fastify' {
      * (`SESSION_SPAWN_CMD` unset), `spawn()` returns a `not_configured` record.
      */
     sessionSpawner?: SessionSpawner;
+    /**
+     * The single choke point for metered model calls. Present only when the
+     * invoker module is loaded; a module that needs a model takes it from here
+     * at registration and skips constructing its service when
+     * `invoker.enabled` is false. See `specs/modules/invoker.md`.
+     */
+    invoker?: ModelInvoker;
+    /**
+     * Human-approval gates. Present only when the approvals module is loaded;
+     * callers guard with `fastify.approvals?.…`. Never awaited — `request()`
+     * records and notifies, and the caller returns.
+     */
+    approvals?: ApprovalService;
   }
 }
 
@@ -69,6 +84,57 @@ export interface PluginOptions {
   ledgerConfig?: LedgerPluginConfig;
   /** Configuration for kitchen plugin */
   kitchenConfig?: KitchenPluginConfig;
+  /** Configuration for the invoker plugin */
+  invokerConfig?: InvokerPluginConfig;
+  /** Configuration for the approvals plugin */
+  approvalsConfig?: ApprovalsPluginConfig;
+}
+
+/**
+ * Configuration for the invoker plugin — the single metered-model choke point.
+ *
+ * Every field here is a lever on spend or on which model does which job. Model
+ * ids appear in `tierModels` and nowhere else in the system.
+ */
+export interface InvokerPluginConfig {
+  /** The one metered credential. Absent leaves the invoker disabled. */
+  anthropicApiKey?: string;
+  /** Per-tier model overrides. Unset tiers fall back to the built-in map. */
+  tierModels?: Partial<Record<ModelTier, string>>;
+  /** Per-model price overrides, USD per million tokens. */
+  prices?: Record<string, ModelPriceConfig>;
+  /** Stop all metered invocation while leaving the host healthy. */
+  killSwitch?: boolean;
+  /** Rolling-window dollar ceiling. Unset means no dollar ceiling. */
+  dailyBudgetUsd?: number;
+  /** Rolling-window token ceiling. Unset means no token ceiling. */
+  dailyBudgetTokens?: number;
+  /** Per-task dollar ceilings, keyed by task id. */
+  taskBudgetsUsd?: Record<string, number>;
+  /** Transport attempts per call, including the first. Default 3. */
+  maxAttempts?: number;
+  /** First retry delay in ms; doubles with jitter. Default 500. */
+  retryBaseMs?: number;
+  /** Default wall-clock timeout in ms. Default 120000. */
+  timeoutMs?: number;
+}
+
+/** USD per million tokens, by token class. */
+export interface ModelPriceConfig {
+  input: number;
+  output: number;
+  cacheWrite?: number;
+  cacheRead?: number;
+}
+
+/** Configuration for the approvals plugin. */
+export interface ApprovalsPluginConfig {
+  /** Default lifetime of a pending request, ms. Default 24h. */
+  defaultExpiryMs?: number;
+  /** Cron for the expiry sweep. Default every 15 minutes. */
+  expireCron?: string;
+  /** Base URL a notification links to, so a human can act on the request. */
+  baseUrl?: string;
 }
 
 /**
