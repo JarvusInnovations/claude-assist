@@ -224,7 +224,7 @@ export interface TriageServiceDeps {
   residueJudge?: EmailResidueJudge;
   /** Owner-interest evaluator for solicitation-class (RFP/RFQ) mail. */
   opportunityEvaluator?: OpportunityEvaluator;
-  /** Quiet-hours window (default 22:00–07:00 America/New_York). */
+  /** Quiet-hours window (default 22:00–07:00 UTC until a zone is configured). */
   quietHours?: QuietHoursConfig;
   /** Cold-outreach heuristic parameters (defaults are generic). */
   coldOutreach?: ColdOutreachConfig;
@@ -330,7 +330,7 @@ export class TriageService {
         log,
         {
           quietHours: deps.quietHours ?? {
-            timeZone: 'America/New_York',
+            timeZone: 'UTC',
             startHour: 22,
             endHour: 7,
           },

@@ -9,12 +9,12 @@ describe('isSecretUrl', () => {
   });
 
   it('flags a generic remote-control / takeover link', () => {
-    expect(isSecretUrl('https://herdr.example.com/rc/xyz-token')).toBe(true);
+    expect(isSecretUrl('https://sessions.example.com/rc/xyz-token')).toBe(true);
     expect(isSecretUrl('https://host/takeover/abc123')).toBe(true);
   });
 
   it('does not flag an ordinary URL', () => {
-    expect(isSecretUrl('https://hq.jarv.us/projects/42')).toBe(false);
+    expect(isSecretUrl('https://team.example.org/projects/42')).toBe(false);
     expect(isSecretUrl('https://example.com/code/sessions')).toBe(false);
   });
 });
@@ -27,13 +27,13 @@ describe('redactUrl', () => {
   });
 
   it('redacts a generic RC link to host only', () => {
-    expect(redactUrl('https://herdr.example.com/rc/secret-token')).toBe(
-      'https://herdr.example.com/[redacted-session-link]'
+    expect(redactUrl('https://sessions.example.com/rc/secret-token')).toBe(
+      'https://sessions.example.com/[redacted-session-link]'
     );
   });
 
   it('passes an ordinary URL through unchanged', () => {
-    const url = 'https://hq.jarv.us/projects/42';
+    const url = 'https://team.example.org/projects/42';
     expect(redactUrl(url)).toBe(url);
   });
 });
@@ -47,7 +47,7 @@ describe('redactText', () => {
   });
 
   it('leaves ordinary text and non-secret URLs alone', () => {
-    const body = 'See https://hq.jarv.us/proposals/9 for details.';
+    const body = 'See https://team.example.org/proposals/9 for details.';
     expect(redactText(body)).toBe(body);
   });
 });

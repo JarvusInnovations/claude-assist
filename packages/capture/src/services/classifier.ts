@@ -11,8 +11,8 @@
  * (diet) extend that list + this prompt + ROUTING_TABLE.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import type { FastifyBaseLogger } from 'fastify';
+import type { ModelInvoker } from '@jarvus/claude-assist-core';
 import type {
   CaptureRecord,
   CaptureType,
@@ -55,21 +55,22 @@ export function deterministicClassification(
 }
 
 export interface ClassifierConfig {
-  apiKey: string;
-  /** default: claude-haiku-4-5 */
+  /** The single metered-model choke point (specs/modules/invoker.md). */
+  invoker: ModelInvoker;
+  /** Pin a model for this call site. Prefer moving the tier instead. */
   model?: string;
   maxTokens?: number;
 }
 
 const SYSTEM_PROMPT = `<role>
-You classify short personal captures — stray thoughts, links, and notes that the owner (a consulting-business owner) jotted down for himself. Your only job is to pick the capture's type so a router can file it. You never act on the content.
+You classify short personal captures — stray thoughts, links, and notes that the owner (who runs a business) jotted down for themselves. Your only job is to pick the capture's type so a router can file it. You never act on the content.
 </role>
 
 <taxonomy>
 - stray_thought: An idea, observation, reminder-to-self, or note with no clear next action and no team relevance. The default when nothing else clearly fits.
 - link_reference: The capture exists to save a URL/article/tool for later reference. Commentary about a link is still link_reference when the link is the point.
 - actionable: The capture describes something the owner needs to DO — a task, follow-up, errand, or promise ("email the accountant about the invoice", "renew the domain"). A vague topic to maybe explore someday is a stray_thought, not actionable.
-- team_relevant: The capture is primarily about Jarvus team/client/project matters that would belong in the team's shared record — client situations, project decisions, personnel notes, leads. When a capture is both actionable and team-relevant, prefer team_relevant.
+- team_relevant: The capture is primarily about team/client/project matters that would belong in the team's shared record — client situations, project decisions, personnel notes, leads. When a capture is both actionable and team-relevant, prefer team_relevant.
 - kitchen_event: The capture is a passing remark about the owner's food/kitchen inventory — that an item was opened, finished/used up, or thrown out/tossed (e.g. "opened the feta", "finished the milk", "tossed half the tomatoes"). Only physical stock-state changes count, not meals eaten or shopping plans.
 </taxonomy>
 
@@ -95,14 +96,14 @@ Return ONLY a JSON object inside <classification> tags. No markdown, no text out
 </response_format>`;
 
 export class CaptureClassifier {
-  private client: Anthropic;
-  private model: string;
+  private invoker: ModelInvoker;
+  private model: string | undefined;
   private maxTokens: number;
   private log: FastifyBaseLogger;
 
   constructor(config: ClassifierConfig, log: FastifyBaseLogger) {
-    this.client = new Anthropic({ apiKey: config.apiKey });
-    this.model = config.model ?? 'claude-haiku-4-5';
+    this.invoker = config.invoker;
+    this.model = config.model;
     this.maxTokens = config.maxTokens ?? 1024;
     this.log = log;
   }
@@ -117,50 +118,28 @@ export class CaptureClassifier {
       return links.length > 0 ? { ...deterministic, links } : deterministic;
     }
 
-    const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
-      { role: 'user', content: this.buildPrompt(capture, links) },
-    ];
+    // Retries, the parse-correction turn, timeouts, and spend accounting all
+    // live in the invoker now; what stays here is the prompt and the taxonomy
+    // validation, which are this module's own judgment.
+    const parsed = await this.invoker.invokeTagged<
+      Pick<Classification, 'type' | 'confidence' | 'title' | 'rationale'>
+    >({
+      task: 'capture.classify',
+      tier: 'classify',
+      maxTokens: this.maxTokens,
+      ...(this.model ? { model: this.model } : {}),
+      system: SYSTEM_PROMPT,
+      tag: 'classification',
+      parse: (raw) => this.parseClassification(raw),
+      messages: [{ role: 'user', content: this.buildPrompt(capture, links) }],
+    });
 
-    const maxRetries = 1;
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      const response = await this.client.messages.create({
-        model: this.model,
-        max_tokens: this.maxTokens,
-        system: SYSTEM_PROMPT,
-        messages,
-      });
-
-      const textContent = response.content.find((c) => c.type === 'text');
-      if (!textContent || textContent.type !== 'text') {
-        throw new Error('No text response from classifier');
-      }
-      messages.push({ role: 'assistant', content: textContent.text });
-
-      try {
-        const parsed = this.parseClassification(textContent.text);
-        return {
-          ...parsed,
-          classifier: 'model',
-          model: this.model,
-          ...(links.length > 0 ? { links } : {}),
-        };
-      } catch (error) {
-        if (attempt < maxRetries && error instanceof ClassificationParseError) {
-          this.log.warn(
-            { ulid: capture.ulid, attempt, error: error.message },
-            'Classification parse failed, requesting correction'
-          );
-          messages.push({
-            role: 'user',
-            content: `<error>Parse failed: ${error.message}</error>\n\nReturn the corrected JSON inside <classification> tags.`,
-          });
-        } else {
-          throw error;
-        }
-      }
-    }
-
-    throw new Error('Unexpected: classifier retry loop exited without result');
+    return {
+      ...parsed,
+      classifier: 'model',
+      model: this.model ?? this.invoker.modelFor('classify'),
+      ...(links.length > 0 ? { links } : {}),
+    };
   }
 
   private buildPrompt(capture: CaptureRecord, links: LinkMetadata[]): string {
@@ -189,17 +168,13 @@ ${linksBlock ? `<links>\n${linksBlock}\n</links>` : ''}
 </capture>`;
   }
 
+  /** Receives the contents of the `<classification>` block; the invoker extracts it. */
   private parseClassification(
-    text: string
+    raw: string
   ): Pick<Classification, 'type' | 'confidence' | 'title' | 'rationale'> {
-    const match = text.match(/<classification>\s*([\s\S]*?)\s*<\/classification>/);
-    if (!match) {
-      throw new ClassificationParseError('No <classification> tags found in response');
-    }
-
     let parsed: Record<string, unknown>;
     try {
-      parsed = JSON.parse(match[1]!.trim());
+      parsed = JSON.parse(raw.trim());
     } catch (error) {
       throw new ClassificationParseError(
         `JSON parse error: ${error instanceof Error ? error.message : String(error)}`

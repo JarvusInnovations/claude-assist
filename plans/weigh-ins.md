@@ -17,9 +17,9 @@ The kitchen module's weigh-in surface per `specs/modules/kitchen.md`
 raw list read, the derived `GET /kitchen/weight?days=N` (daily median
 collapse + 7-day rolling trend, read-time only), DELETE, and the CLI verbs
 (`weigh-ins list|log`, `weight trend`). Evidence base: the two 2026-07-26
-probe dumps (Hari plans/health-connect-probe.md + health-probe-v2.md).
+probe dumps captured on the instance side).
 
-Out of scope: the app-side Health Connect reader (hari-capture, its own
+Out of scope: the app-side Health Connect reader (the capture app, its own
 spec/plan), any automatic TDEE/targets tuning (spec forbids it), summary/net
 changes.
 
@@ -119,4 +119,4 @@ changes.
 - Owner-facing surfaces for the trend (daily briefing line, app display,
   plan-session context) deliberately deferred until real data accumulates
   and the TDEE-tuning conversation happens — tracked by the coordination
-  plan in Hari (plans/weigh-ins-sync.md).
+  plan on the instance side.

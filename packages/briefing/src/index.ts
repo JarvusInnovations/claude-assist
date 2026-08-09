@@ -53,7 +53,13 @@ export const DAILY_BRIEFING_PIPELINE = 'daily-briefing';
 export const MEETING_ALERTS_PIPELINE = 'meeting-alerts';
 export const MEETING_BRIEFINGS_PIPELINE = 'meeting-briefings';
 
-const DEFAULT_TIMEZONE = 'America/New_York';
+/**
+ * Where the owner lives is instance data, so the toolkit picks the only zone
+ * that is nobody's home: UTC. An unset BRIEFING_TIMEZONE means the morning
+ * cron fires at 06:30 UTC and "today" is a UTC day — correct, and obviously
+ * wrong to anyone who meant a local morning, which is the point.
+ */
+const DEFAULT_TIMEZONE = 'UTC';
 
 export default createPlugin('briefing', async (fastify: FastifyInstance, options: PluginOptions) => {
   const config = options.briefingConfig ?? {};

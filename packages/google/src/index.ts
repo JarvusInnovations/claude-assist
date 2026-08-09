@@ -140,7 +140,7 @@ export default createPlugin('google', async (fastify: FastifyInstance, options: 
         residueJudge,
         opportunityEvaluator,
         quietHours: {
-          timeZone: config.urgencyTimeZone ?? 'America/New_York',
+          timeZone: config.urgencyTimeZone ?? 'UTC',
           startHour: config.urgencyQuietStartHour ?? 22,
           endHour: config.urgencyQuietEndHour ?? 7,
         },

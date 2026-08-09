@@ -187,20 +187,22 @@ bunx @jarvus/claude-assist-sessions push [options]
 
 ## Suppressing automated sessions
 
-Some local tools spawn large volumes of tiny, automated Claude sessions (e.g. the M87
-review-item triage runner) that flood the archive. These pass the subagent/min-size
-filters because they're real UUID-named transcripts above the size threshold.
+Some local tools spawn large volumes of tiny, automated Claude sessions — a review-item
+triage runner, a batch linter, a cron that asks one question — and they flood the archive.
+They pass the subagent/min-size filters because they're real UUID-named transcripts above
+the size threshold.
 
 Ingest suppresses any session whose **parsed user messages** contain a configured marker
 substring. Matching parsed user messages — not raw transcript text — is deliberate: a
 legitimate session that merely quotes a marker in tool output or assistant prose is *not*
 dropped, only sessions whose initiating prompt is the automation's marker.
 
-A built-in default suppresses the M87 triage runner. Add your own via the
-`SESSIONS_IGNORE_MARKERS` env var (newline-separated; appended to the defaults):
+There are no built-in markers — which automation counts as noise is a property of your
+deployment, not of the toolkit. Declare yours in the `SESSIONS_IGNORE_MARKERS` env var
+(newline-separated), using the stable opening line of the automation's prompt:
 
 ```bash
-SESSIONS_IGNORE_MARKERS="You are triaging a local-first M87 review item.
+SESSIONS_IGNORE_MARKERS="You are triaging a review item.
 Another automation prompt prefix"
 ```
 

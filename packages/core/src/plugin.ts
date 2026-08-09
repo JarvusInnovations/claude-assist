@@ -227,6 +227,26 @@ export interface KitchenPluginConfig {
  * Configuration for the ledger plugin (derived audit ledger + direct writes).
  */
 export interface LedgerPluginConfig {
+  /**
+   * Instance-specific extraction rules, appended after the built-in set.
+   * The seam that keeps one operator's CLI names out of a public toolkit —
+   * see the ledger module's `EXAMPLE_EXTRA_RULES`.
+   */
+  extraRules?: Array<{
+    name: string;
+    tool: string;
+    toolPrefix?: boolean;
+    pattern: string;
+    exclude?: string;
+    actionType: string;
+    targetSystem: string;
+    summary?: string;
+  }>;
+  /**
+   * Suffix appended to the built-in `RULES_VERSION`. Bump it after changing
+   * `extraRules` to re-derive the historical corpus under the new ruleset.
+   */
+  rulesVersionSuffix?: string;
   /** Cron for the incremental derivation pass (default every 15 min). */
   deriveCron?: string;
   /** Tool-calls scanned per derivation batch (default 1000). */
@@ -403,8 +423,9 @@ export interface SessionsPluginConfig {
   /** Disable AI outline generation */
   disableGenerateOutlines?: boolean;
   /**
-   * Transcript content substrings that mark a session for ingest suppression.
-   * Appended to the built-in defaults (e.g. M87 triage runner).
+   * Prompt substrings that mark a session for ingest suppression — the seam
+   * for whatever local automation floods this instance's archive. Which
+   * automation that is, is instance data; the toolkit ships no defaults.
    */
   ignoreContentMarkers?: readonly string[];
 

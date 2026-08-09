@@ -108,7 +108,7 @@ export default createPlugin('slack-urgency', async (fastify: FastifyInstance, op
   const pipeline = new UrgencyPipeline(store, classifier, roster, notifier, permalinks, fastify.log, {
     ownerId: config.ownerId,
     quietHours: {
-      timeZone: config.timeZone ?? 'America/New_York',
+      timeZone: config.timeZone ?? 'UTC',
       startHour: config.quietStartHour ?? 22,
       endHour: config.quietEndHour ?? 7,
     },

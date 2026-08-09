@@ -22,7 +22,11 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import envPlugin from './plugins/env.js';
 import { resolveUnmatched } from './not-found.js';
-import type { CoverageLedgerConfig, ModelTier } from '@jarvus/claude-assist-core';
+import type {
+  CoverageLedgerConfig,
+  LedgerPluginConfig,
+  ModelTier,
+} from '@jarvus/claude-assist-core';
 import type { FastifyBaseLogger, FastifyInstance } from 'fastify';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -49,6 +53,39 @@ function parseCoverageLedgers(
     });
   } catch (err) {
     log.error({ err }, 'NOTIFY_COVERAGE_LEDGERS is malformed — no coverage ledgers registered');
+    return [];
+  }
+}
+
+/**
+ * Parse LEDGER_EXTRA_RULES — a JSON array of extraction-rule specs for this
+ * instance's own CLIs. The committed ruleset covers tools any instance is
+ * likely to run; a private CLI's name is instance data and enters here rather
+ * than through a patch to the ruleset.
+ *
+ * Malformed config logs and yields no rules rather than failing boot: an
+ * under-populated ledger is visible and recoverable (fix the config, bump
+ * LEDGER_RULES_VERSION_SUFFIX, re-derive); a host that won't start is neither.
+ */
+function parseLedgerExtraRules(
+  raw: string | undefined,
+  log: FastifyBaseLogger,
+): NonNullable<LedgerPluginConfig['extraRules']> {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) throw new Error('expected a JSON array');
+    return parsed.map((entry) => {
+      const spec = entry as Record<string, unknown>;
+      for (const field of ['name', 'tool', 'pattern', 'actionType', 'targetSystem']) {
+        if (typeof spec[field] !== 'string') {
+          throw new Error(`each rule needs a string ${field}`);
+        }
+      }
+      return spec as unknown as NonNullable<LedgerPluginConfig['extraRules']>[number];
+    });
+  } catch (err) {
+    log.error({ err }, 'LEDGER_EXTRA_RULES is malformed — no instance rules registered');
     return [];
   }
 }
@@ -210,6 +247,10 @@ await fastify.register(
         migrationsDir: join(__dirname, '../../../packages/ledger/migrations'),
         disableMigrations: fastify.config.DISABLE_MIGRATIONS,
         ledgerConfig: {
+          extraRules: parseLedgerExtraRules(fastify.config.LEDGER_EXTRA_RULES, fastify.log),
+          ...(fastify.config.LEDGER_RULES_VERSION_SUFFIX
+            ? { rulesVersionSuffix: fastify.config.LEDGER_RULES_VERSION_SUFFIX }
+            : {}),
           deriveCron: fastify.config.LEDGER_DERIVE_CRON,
           batchSize: fastify.config.LEDGER_DERIVE_BATCH_SIZE,
           disableDerivation:

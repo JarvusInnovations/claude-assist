@@ -40,8 +40,9 @@ const schema = {
     SESSIONS_MIN_FILE_SIZE: { type: 'number', default: 500 },
     SESSIONS_DISABLE_LOCAL_INGEST: { type: 'boolean', default: false },
     SESSIONS_DISABLE_GENERATE_OUTLINES: { type: 'boolean', default: false },
-    // Newline-separated transcript substrings; sessions containing any are
-    // suppressed from ingest. Appended to built-in defaults (e.g. M87 triage).
+    // Newline-separated prompt substrings; sessions containing any are
+    // suppressed from ingest. No defaults — which local automation is noise is
+    // instance data (packages/sessions/src/ignore.ts).
     SESSIONS_IGNORE_MARKERS: { type: 'string' },
     // Classification pipeline (self-improvement loop)
     SESSIONS_DISABLE_CLASSIFICATION: { type: 'boolean', default: false },
@@ -113,7 +114,8 @@ const schema = {
     GOOGLE_TRIAGE_SEED_FILE: { type: 'string' },
     // Two-tier urgency quiet hours (owner TZ). INTERRUPTs raised inside the
     // window are HELD and shown in the morning briefing; emergencies pierce.
-    GOOGLE_URGENCY_TZ: { type: 'string', default: 'America/New_York' },
+    // No default: where the owner sleeps is instance data. Unset ⇒ UTC.
+    GOOGLE_URGENCY_TZ: { type: 'string' },
     GOOGLE_URGENCY_QUIET_START: { type: 'number', default: 22 },
     GOOGLE_URGENCY_QUIET_END: { type: 'number', default: 7 },
     // Individual client contacts (get standing in the ATTENTION bar). Point at a
@@ -195,8 +197,9 @@ const schema = {
     ENABLE_BRIEFING: { type: 'boolean', default: true },
     BRIEFING_DISABLE: { type: 'boolean', default: false },
     BRIEFING_DISABLE_ALERTS: { type: 'boolean', default: false },
-    // Timezone for "today" + the morning cron (server clock is UTC).
-    BRIEFING_TIMEZONE: { type: 'string', default: 'America/New_York' },
+    // Timezone for "today" + the morning cron. No default: set it to the
+    // owner's IANA zone, or the briefing lands on a UTC day at a UTC hour.
+    BRIEFING_TIMEZONE: { type: 'string' },
     // Cron in BRIEFING_TIMEZONE; default 06:30 local.
     BRIEFING_CRON: { type: 'string', default: '30 6 * * *' },
     // Alert evaluation cadence (server local / UTC). Every minute: 1-minute
@@ -302,6 +305,13 @@ const schema = {
     LEDGER_DERIVE_BATCH_SIZE: { type: 'number', default: 1000 },
     // Disable the scheduled derivation (direct writes + queries still work).
     LEDGER_DISABLE_DERIVE: { type: 'boolean', default: false },
+    // Extraction rules for THIS instance's own CLIs, as a JSON array appended
+    // after the built-in set — the seam that keeps one operator's tool roster
+    // out of a public toolkit. See EXAMPLE_EXTRA_RULES in packages/ledger.
+    LEDGER_EXTRA_RULES: { type: 'string' },
+    // Bump after changing LEDGER_EXTRA_RULES to re-derive the whole corpus
+    // under the new ruleset; leave unset to classify only new calls.
+    LEDGER_RULES_VERSION_SUFFIX: { type: 'string' },
 
     // Slack urgency module (read-only urgency listener over the owner's Slack)
     ENABLE_SLACK_URGENCY: { type: 'boolean', default: false },
@@ -313,7 +323,8 @@ const schema = {
     SLACK_URGENCY_WATCH_CHANNELS: { type: 'string' },
     // Pin a model for the residue pass, overriding the `classify` tier.
     SLACK_URGENCY_MODEL: { type: 'string' },
-    SLACK_URGENCY_TZ: { type: 'string', default: 'America/New_York' },
+    // Owner's IANA zone for the quiet-hours window. Unset ⇒ UTC.
+    SLACK_URGENCY_TZ: { type: 'string' },
     SLACK_URGENCY_QUIET_START: { type: 'number', default: 22 },
     SLACK_URGENCY_QUIET_END: { type: 'number', default: 7 },
     SLACK_URGENCY_COOLDOWN_MIN: { type: 'number', default: 30 },
@@ -394,7 +405,7 @@ declare module 'fastify' {
       GOOGLE_DISABLE_EMAIL_ALERTS: boolean;
       GOOGLE_TEAM_DOMAINS: string;
       GOOGLE_TRIAGE_SEED_FILE?: string;
-      GOOGLE_URGENCY_TZ: string;
+      GOOGLE_URGENCY_TZ?: string;
       GOOGLE_URGENCY_QUIET_START: number;
       GOOGLE_URGENCY_QUIET_END: number;
       GOOGLE_CONTACTS_FILE?: string;
@@ -442,7 +453,7 @@ declare module 'fastify' {
       ENABLE_BRIEFING: boolean;
       BRIEFING_DISABLE: boolean;
       BRIEFING_DISABLE_ALERTS: boolean;
-      BRIEFING_TIMEZONE: string;
+      BRIEFING_TIMEZONE?: string;
       BRIEFING_CRON: string;
       BRIEFING_ALERT_CRON: string;
       BRIEFING_ALERT_WINDOW_MINUTES: number;
@@ -501,6 +512,8 @@ declare module 'fastify' {
       LEDGER_DERIVE_CRON: string;
       LEDGER_DERIVE_BATCH_SIZE: number;
       LEDGER_DISABLE_DERIVE: boolean;
+      LEDGER_EXTRA_RULES?: string;
+      LEDGER_RULES_VERSION_SUFFIX?: string;
 
       // Slack urgency module
       ENABLE_SLACK_URGENCY: boolean;
@@ -508,7 +521,7 @@ declare module 'fastify' {
       SLACK_URGENCY_ROSTER?: string;
       SLACK_URGENCY_WATCH_CHANNELS?: string;
       SLACK_URGENCY_MODEL?: string;
-      SLACK_URGENCY_TZ: string;
+      SLACK_URGENCY_TZ?: string;
       SLACK_URGENCY_QUIET_START: number;
       SLACK_URGENCY_QUIET_END: number;
       SLACK_URGENCY_COOLDOWN_MIN: number;

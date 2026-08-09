@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'bun:test';
 import {
+  EXAMPLE_EXTRA_RULES,
   RULES,
   RULES_VERSION,
   classifyToolCall,
+  compileRules,
   deriveAction,
   type ToolCallRow,
 } from './rules.js';
@@ -18,9 +20,6 @@ function ruleFor(command: string, tool = 'Bash'): string | null {
 
 describe('classifyToolCall — positive matches (one per seed rule)', () => {
   const cases: Array<[string, string, string]> = [
-    ['hq-axi.write', 'hq-axi log "wrapped up a thing"', 'team-record-write'],
-    ['hq-axi.write', 'hq-axi project create --name Widget', 'team-record-write'],
-    ['hq-axi.write', 'hq-axi commitment resolve 7', 'team-record-write'],
     ['gh.pr', 'gh pr merge 42 --method merge', 'repo-write'],
     ['gh.pr', 'gh-axi pr create --title Thing', 'repo-write'],
     ['gh.issue', 'gh issue comment 9 --body hi', 'repo-write'],
@@ -57,7 +56,6 @@ describe('classifyToolCall — negative (not ledger-worthy)', () => {
     'git commit -m "local work"',
     'gh pr view 42',           // read-only, not a write verb
     'gh issue list',           // read-only
-    'hq-axi search widgets',   // read-only query, not a write verb
     'gws-axi gmail list',      // read-only
     'slack-axi search foo',    // read-only
     'echo "deploying with gh pr"', // no actual write subcommand
@@ -86,10 +84,13 @@ describe('git push dry-run guard', () => {
 });
 
 describe('classifyToolCall — first match wins + segment scoping', () => {
-  it('classifies on the first ledger-worthy verb of a compound command', () => {
-    // hq-axi appears before the gh push in the pipeline; hq wins.
-    const c = classifyToolCall('Bash', 'hq-axi log "x" && gh pr merge 3');
-    expect(c?.rule.name).toBe('hq-axi.write');
+  it('resolves a compound command by RULE order, not by position in the string', () => {
+    // Both segments are ledger-worthy. The winner is whichever rule comes first
+    // in the ordered set — `gh.pr` here — regardless of which verb the operator
+    // happened to type first. Worth pinning: it is the rule most likely to be
+    // misremembered when someone adds a rule and wonders why it never fires.
+    const c = classifyToolCall('Bash', 'slack-axi post --text x && gh pr merge 3');
+    expect(c?.rule.name).toBe('gh.pr');
   });
 
   it('does not bleed a pattern across a pipe boundary', () => {
@@ -120,7 +121,7 @@ describe('deriveAction', () => {
       msg_index: 0,
       ts: '2026-07-12T10:00:00Z',
       tool_name: 'Bash',
-      target: 'hq-axi log "did a thing"',
+      target: 'slack-axi post --channel general --text "did a thing"',
       is_sidechain: false,
       ...overrides,
     };
@@ -128,8 +129,8 @@ describe('deriveAction', () => {
 
   it('builds a derived record with a session actor + context pointer', () => {
     const rec = deriveAction(tc({}))!;
-    expect(rec.actionType).toBe('team-record-write');
-    expect(rec.targetSystem).toBe('hq');
+    expect(rec.actionType).toBe('outbound');
+    expect(rec.targetSystem).toBe('slack');
     expect(rec.actor).toEqual({
       kind: 'session',
       session_id: '00000000-0000-0000-0000-000000000001',
@@ -162,5 +163,78 @@ describe('RULES catalog', () => {
   it('has unique rule names', () => {
     const names = RULES.map((r) => r.name);
     expect(new Set(names).size).toBe(names.length);
+  });
+
+  it('names no instance-specific CLI — private tooling arrives through config', () => {
+    // The shipped set covers tools any instance is likely to run. Anything
+    // narrower belongs in LEDGER_EXTRA_RULES, which is what keeps one
+    // operator's tool roster out of a public toolkit.
+    const shipped = new Set(RULES.map((r) => r.targetSystem));
+    expect([...shipped].sort()).toEqual([
+      'calendar',
+      'document',
+      'email',
+      'git',
+      'github',
+      'notification',
+      'slack',
+    ]);
+  });
+});
+
+describe('compileRules (the instance-config seam)', () => {
+  it('compiles a spec into a rule that classifies and summarizes', () => {
+    const rules = compileRules(EXAMPLE_EXTRA_RULES);
+    const c = classifyToolCall('Bash', 'team-cli log "wrapped up a thing"', rules)!;
+
+    expect(c.rule.name).toBe('team-cli.write');
+    expect(c.rule.actionType).toBe('team-record-write');
+    // `$1` interpolates the matched verb, so a config rule can name what it saw
+    // without shipping a function.
+    expect(c.rule.summarize(c.match, '')).toBe('Team record log');
+  });
+
+  it('runs configured rules AFTER the built-ins, refining rather than shadowing', () => {
+    const shadowing = compileRules([
+      {
+        name: 'greedy',
+        tool: 'Bash',
+        pattern: '.',
+        actionType: 'other',
+        targetSystem: 'other',
+      },
+    ]);
+    const c = classifyToolCall('Bash', 'git push origin main', [...RULES, ...shadowing]);
+    expect(c?.rule.name).toBe('git.push');
+  });
+
+  it('honors an exclude pattern', () => {
+    const rules = compileRules([
+      {
+        name: 'deploy',
+        tool: 'Bash',
+        pattern: String.raw`\bdeploy\b`,
+        exclude: String.raw`--dry-run`,
+        actionType: 'deploy',
+        targetSystem: 'infra',
+      },
+    ]);
+    expect(classifyToolCall('Bash', 'deploy prod', rules)?.rule.name).toBe('deploy');
+    expect(classifyToolCall('Bash', 'deploy prod --dry-run', rules)).toBeNull();
+  });
+
+  it('skips a malformed spec with a callback instead of throwing', () => {
+    // One bad regex in an operator's config must not take the instance down;
+    // the cost is an under-populated ledger, which is visible and fixable.
+    const errors: string[] = [];
+    const rules = compileRules(
+      [
+        { name: 'bad', tool: 'Bash', pattern: '([', actionType: 'x', targetSystem: 'y' },
+        { name: 'good', tool: 'Bash', pattern: 'ok', actionType: 'x', targetSystem: 'y' },
+      ],
+      (spec) => errors.push(spec.name),
+    );
+    expect(errors).toEqual(['bad']);
+    expect(rules.map((r) => r.name)).toEqual(['good']);
   });
 });

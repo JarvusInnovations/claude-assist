@@ -11,14 +11,27 @@
  * a rule retroactively improves the whole ledger — there is no emit-time capture
  * path that can silently break.
  *
- * Rules match public agent-facing CLIs (invoked via the `Bash` tool) plus a few
- * MCP tool calls. Patterns are intentionally scoped to a single shell segment
- * (they stop at `|`, `&`, `;`, newline) so a compound command classifies on its
- * first ledger-worthy verb rather than bleeding across pipelines.
+ * Rules match agent-facing CLIs (invoked via the `Bash` tool) plus a few MCP
+ * tool calls. Patterns are intentionally scoped to a single shell segment (they
+ * stop at `|`, `&`, `;`, newline) so a compound command classifies on its first
+ * ledger-worthy verb rather than bleeding across pipelines.
+ *
+ * **The built-in set covers tools any instance is likely to run.** An instance
+ * that drives its own CLIs — a team knowledge system, an internal service —
+ * adds rules through config (`LEDGER_EXTRA_RULES`) rather than by patching this
+ * file; see `compileRules` and `EXAMPLE_EXTRA_RULES` below. Instance tooling is
+ * instance data, and the toolkit ships the mechanism, not the roster.
  */
 
-/** Bump on any rule change; a mismatch with the stored version re-derives. */
-export const RULES_VERSION = '2026-07-12.1';
+/**
+ * Bump on any rule change; a mismatch with the stored version re-derives.
+ *
+ * Note the *configured* extra rules deliberately do not participate in this
+ * version. An operator adding a rule bumps `LEDGER_RULES_VERSION_SUFFIX` (or
+ * simply accepts that new calls classify going forward) — re-deriving the whole
+ * corpus is a heavy operation to trigger from a config edit.
+ */
+export const RULES_VERSION = '2026-08-08.1';
 
 /** A tool-call row as read from `sessions.tool_calls`. */
 export interface ToolCallRow {
@@ -75,16 +88,6 @@ function extractNumber(_match: RegExpMatchArray, target: string): string | null 
  * readability.
  */
 export const RULES: LedgerRule[] = [
-  // ── Team-record writes: the HQ CLI (log / entity create-update / commitment) ──
-  {
-    name: 'hq-axi.write',
-    tool: 'Bash',
-    pattern: new RegExp(String.raw`\bhq-axi\b${SEG}\b(log|create|update|commitment)\b`),
-    actionType: 'team-record-write',
-    targetSystem: 'hq',
-    summarize: (m) => `HQ ${m[1] ?? 'write'}`,
-  },
-
   // ── Repo writes: GitHub via gh / gh-axi ──────────────────────────────────
   {
     name: 'gh.pr',
@@ -253,3 +256,88 @@ export function deriveAction(
     rulesVersion,
   };
 }
+
+
+/**
+ * A rule as an operator writes it in config — plain JSON, no functions.
+ *
+ * This is the seam that keeps an instance's own tooling out of a public
+ * toolkit. `pattern` and `exclude` are regex *source* strings, applied
+ * case-sensitively over the tool call's target.
+ */
+export interface LedgerRuleSpec {
+  name: string;
+  /** Tool name to match, e.g. `Bash` or an MCP tool name. */
+  tool: string;
+  toolPrefix?: boolean;
+  /** Regex source. Use `SEGMENT` (see below) to span flags within one command. */
+  pattern: string;
+  exclude?: string;
+  actionType: string;
+  targetSystem: string;
+  /**
+   * Human summary. `$1`…`$9` interpolate the pattern's capture groups, so a
+   * rule can name the verb it matched without shipping a function.
+   */
+  summary?: string;
+}
+
+/**
+ * The single-shell-segment matcher, exported so a configured pattern can use
+ * the same scoping the built-in rules do rather than re-deriving it.
+ */
+export const SEGMENT = SEG;
+
+/** Substitute `$1`…`$9` from a match, leaving unmatched groups empty. */
+function interpolate(template: string, match: RegExpMatchArray): string {
+  return template.replace(/\$([1-9])/g, (_, digit: string) => match[Number(digit)] ?? '');
+}
+
+/**
+ * Compile operator-supplied rule specs into runnable rules.
+ *
+ * A malformed spec is skipped with a warning rather than failing boot: one bad
+ * regex in a config blob must not take the instance down, and a missing rule is
+ * visible as an under-populated ledger.
+ */
+export function compileRules(
+  specs: LedgerRuleSpec[],
+  onError?: (spec: LedgerRuleSpec, error: unknown) => void,
+): LedgerRule[] {
+  const compiled: LedgerRule[] = [];
+  for (const spec of specs) {
+    try {
+      compiled.push({
+        name: spec.name,
+        tool: spec.tool,
+        ...(spec.toolPrefix ? { toolPrefix: true } : {}),
+        pattern: new RegExp(spec.pattern),
+        ...(spec.exclude ? { exclude: new RegExp(spec.exclude) } : {}),
+        actionType: spec.actionType,
+        targetSystem: spec.targetSystem,
+        summarize: (m) => (spec.summary ? interpolate(spec.summary, m) : spec.name),
+      });
+    } catch (error) {
+      onError?.(spec, error);
+    }
+  }
+  return compiled;
+}
+
+/**
+ * A worked example for the docs and for operators to copy.
+ *
+ * It classifies writes made through an instance-specific team-knowledge CLI —
+ * exactly the kind of rule that belongs in an instance's config and not in a
+ * public toolkit. Replace the CLI name and verbs with your own.
+ */
+export const EXAMPLE_EXTRA_RULES: LedgerRuleSpec[] = [
+  {
+    name: 'team-cli.write',
+    tool: 'Bash',
+    pattern: String.raw`\bteam-cli\b${SEG}\b(log|create|update|commitment)\b`,
+    actionType: 'team-record-write',
+    targetSystem: 'team-records',
+    summary: 'Team record $1',
+  },
+];

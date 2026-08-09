@@ -69,7 +69,7 @@ function bashCall(id: number, command: string, overrides: Partial<ToolCallRow> =
 function fixtureCorpus(): ToolCallRow[] {
   return [
     bashCall(1, 'ls -la'), // routine
-    bashCall(2, 'hq-axi log "note"'), // ledger-worthy
+    bashCall(2, 'slack-axi post --channel general --text note'), // ledger-worthy
     bashCall(3, 'git status'), // routine
     bashCall(4, 'gh pr merge 5 --method merge'), // ledger-worthy
     bashCall(5, 'git push origin main'), // ledger-worthy
@@ -87,9 +87,9 @@ describe('runIncrementalDerivation', () => {
     expect(result.scanned).toBe(6);
     expect(result.inserted).toBe(3);
     expect(derived.map((d) => d.actionType).sort()).toEqual([
+      'outbound',
       'repo-write',
       'repo-write',
-      'team-record-write',
     ]);
     // Cursor advanced to the last tool-call id.
     expect(getState()?.lastToolCallId).toBe(6);

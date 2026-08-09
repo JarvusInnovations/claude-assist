@@ -125,4 +125,4 @@ time-of-day is returned untouched.
 ## Follow-ups
 
 - **None.** Companion agent-practice (always supply an explicit local time on a
-  backdated log) is captured on the Hari side, not a code follow-up here.
+  backdated log) is captured on the instance side, not a code follow-up here.

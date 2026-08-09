@@ -22,7 +22,7 @@ In scope: the convert relaxation (route schema + `convert()` + `ConvertInput`
 type + the `kitchen-axi inventory convert` CLI), a source-less route test, and
 the SKILL.md guidance (a decisive rule + an "I made a batch" workflow).
 
-**Out of scope**: an app "I prepped this" action (a hari-capture surface, its
+**Out of scope**: an app "I prepped this" action (a capture-app surface, its
 own plan); attaching provenance to an already-existing plain item (re-mint via
 a source-less convert instead — that's exactly what the jar migration does).
 
@@ -48,7 +48,7 @@ a source-less convert instead — that's exactly what the jar migration does).
 - Guidance lives in the hand-written SKILL.md sections (Decisive rules + Common
   workflows) plus the `reference.ts` entry that feeds the generated command
   list; `bun run build:skills` regenerates both artifacts.
-- The vendored copy in the Hari instance is a separate manual sync step (Hari's
+- An instance's vendored copy is a separate manual sync step (the instance's
   `.agents/skills/assist-kitchen/` was stale — see Follow-ups); this plan ships
   the source of truth.
 
@@ -87,11 +87,11 @@ a source-less convert instead — that's exactly what the jar migration does).
 
 ## Follow-ups
 
-- **Skill-sync drift** — Hari's vendored `assist-kitchen` skill lagged the
+- **Skill-sync drift** — an instance's vendored `assist-kitchen` skill lagged the
   claude-assist build by a day (convert/consume shipped but never synced), which
   is what hid the feature from the agent. The sync is manual; worth a
   check/automation so the instance can't silently run a stale CLI.
-- **App "I prepped this" action** — a hari-capture surface over this endpoint so
+- **App "I prepped this" action** — a capture-app surface over this endpoint so
   prep can be logged from the phone, not only the CLI. Separate plan.
 - **No "prepared dish" shelf-life class** — the jar minted with
   `shelf_life_class: fridge_short` → `eat_by` 14 days out, but a prepared oat jar
@@ -100,5 +100,5 @@ a source-less convert instead — that's exactly what the jar migration does).
   and sinks it in eat-first ordering. Worth a `prepared`/`leftovers` class (or a
   convert-time `eat_by`/shelf-life-days override for derived items).
 - **Meal-bank oat-jar accuracy** — the banked "Overnight oats" recipe (~357 kcal)
-  understates Chris's actual jars (~490-510). Reconcile the bank against the
+  understates the owner's actual jars. Reconcile the bank against the
   full-build recipe pushed here. Doctrine/bank concern, not this module.
