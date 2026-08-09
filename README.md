@@ -132,6 +132,7 @@ packages/
   capture/        # Fast idempotent capture, then classify-and-route
   kitchen/        # Consumption journal, inventory, receipts, recipes
   training/       # Weekly adaptive training plans, gated on async approval
+  finance/        # Personal ledger mirror + monthly review batch (opt-in)
   notify/         # Notification dispatcher + heartbeat/coverage registry
   ledger/         # Derived audit ledger over ingested tool calls
   pages/          # Publish interactive HTML, collect structured responses
@@ -181,7 +182,7 @@ POST /api/approvals/:id/resolve     # Approve / deny / answer one
 
 Each module registers its own surface beneath `/api` as well — `/api/sessions`,
 `/api/emails`, `/api/capture`, `/api/kitchen`, `/api/training`, `/api/ledger`,
-`/api/pages`. See
+`/api/pages`, `/api/finance`. See
 the module's `src/routes.ts` for its endpoints.
 
 ## Docker
