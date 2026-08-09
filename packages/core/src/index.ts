@@ -50,6 +50,8 @@ export {
   type InvokerPluginConfig,
   type ApprovalsPluginConfig,
   type ModelPriceConfig,
+  type FinancePluginConfig,
+  type FinanceSourceMode,
 } from './plugin.js';
 
 // Tana MCP client (shared by capture's inbox executor + the briefing render)
@@ -75,6 +77,9 @@ export type {
 
 // Audit-ledger contract (direct-write surface)
 export type { Ledger, LedgerActor, LedgerRecordInput } from './ledger.js';
+
+// Page-publishing contract (server-side half of the pages module)
+export type { PagePublisher, PublishPageInput, PublishedPage } from './page-publisher.js';
 
 // Advisory locks + lease-claimed work (specs/behaviors/scheduled-work-leases.md)
 export { withAdvisoryLock, advisoryLockKey, type AdvisoryLockResult } from './locks.js';

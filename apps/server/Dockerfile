@@ -21,6 +21,7 @@ COPY packages/invoker/package.json packages/invoker/package.json
 COPY packages/ledger/package.json packages/ledger/package.json
 COPY packages/kitchen/package.json packages/kitchen/package.json
 COPY packages/training/package.json packages/training/package.json
+COPY packages/finance/package.json packages/finance/package.json
 COPY apps/server/package.json apps/server/package.json
 COPY apps/admin apps/admin
 RUN bun install --frozen-lockfile
@@ -41,6 +42,7 @@ COPY packages/slack-urgency packages/slack-urgency
 COPY packages/briefing packages/briefing
 COPY packages/pages packages/pages
 COPY packages/approvals packages/approvals
+COPY packages/finance packages/finance
 COPY packages/invoker packages/invoker
 COPY packages/ledger packages/ledger
 COPY packages/kitchen packages/kitchen

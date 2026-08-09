@@ -79,6 +79,8 @@ jobs:
       # schema over SQL, never by import).
       - name: Build training
         run: bun run --filter @jarvus/claude-assist-training build
+      - name: Build finance
+        run: bun run --filter @jarvus/claude-assist-finance build
 
       - name: Build server
         run: bun run --filter @jarvus/claude-assist-server build

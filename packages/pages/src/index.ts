@@ -19,9 +19,11 @@ import {
   type PluginOptions,
   type Scheduler,
   type NotifyDispatcher,
+  type PagePublisher,
   type PagesPluginConfig,
 } from '@jarvus/claude-assist-core';
 import { PgPagesStore } from './store.js';
+import { createPagePublisher } from './publisher.js';
 import { registerPagesApiRoutes } from './routes/api.js';
 
 // Module augmentation for fastify decorators
@@ -30,6 +32,7 @@ declare module 'fastify' {
     sql: postgres.Sql;
     scheduler: Scheduler;
     notify?: NotifyDispatcher;
+    pages?: PagePublisher;
   }
 }
 
@@ -46,6 +49,10 @@ export default createPlugin('pages', async (fastify: FastifyInstance, options: P
     // than landing in the queue as if they had been logged.
     worksheetCookSink: config.worksheetCookSink,
   });
+
+  // Server-side publish surface, for pipelines that render a page on a
+  // schedule and have no request to derive a base URL from.
+  fastify.decorate('pages', createPagePublisher(store, config.baseUrl));
 
   fastify.log.info(
     { cookMode: config.worksheetCookSink ? 'wired' : 'unavailable' },
@@ -69,6 +76,7 @@ export {
   type CookModeStatus,
 } from './routes/api.js';
 export { PgPagesStore, type PagesStore } from './store.js';
+export { createPagePublisher } from './publisher.js';
 export { MemoryPagesStore } from './memory-store.js';
 export { HELPER_SCRIPT } from './helper-script.js';
 export { PAGE_CSP } from './csp.js';

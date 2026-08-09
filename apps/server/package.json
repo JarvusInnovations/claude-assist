@@ -29,6 +29,7 @@
     "@jarvus/claude-assist-capture": "workspace:*",
     "@jarvus/claude-assist-chat": "workspace:*",
     "@jarvus/claude-assist-core": "workspace:*",
+    "@jarvus/claude-assist-finance": "workspace:*",
     "@jarvus/claude-assist-google": "workspace:*",
     "@jarvus/claude-assist-kitchen": "workspace:*",
     "@jarvus/claude-assist-approvals": "workspace:*",

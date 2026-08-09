@@ -7,6 +7,7 @@ import type { SessionSpawner } from './session-spawn.js';
 import type { Ledger } from './ledger.js';
 import type { ModelInvoker, ModelTier } from './invoker.js';
 import type { ApprovalService } from './approvals.js';
+import type { PagePublisher } from './page-publisher.js';
 
 /**
  * Extended Fastify instance with claude-assist decorators
@@ -52,6 +53,13 @@ declare module 'fastify' {
      * records and notifies, and the caller returns.
      */
     approvals?: ApprovalService;
+    /**
+     * Server-side page publishing. Present only when the pages module is
+     * loaded; a pipeline that renders a review page guards with
+     * `fastify.pages?.publish(...)` and reports the surface as unavailable
+     * rather than failing when it is absent.
+     */
+    pages?: PagePublisher;
   }
 }
 
@@ -90,6 +98,89 @@ export interface PluginOptions {
   invokerConfig?: InvokerPluginConfig;
   /** Configuration for the approvals plugin */
   approvalsConfig?: ApprovalsPluginConfig;
+  /** Configuration for the personal-finance plugin */
+  financeConfig?: FinancePluginConfig;
+}
+
+/**
+ * Which source the finance module pulls the ledger from.
+ *
+ * `api` talks to the provider's own (unofficial, undocumented) HTTP API.
+ * `command` shells out to an operator-supplied exporter that speaks the
+ * documented JSON contract — the seam for a headless-browser session on a
+ * machine that stays logged in, for providers with no usable API or an API
+ * that has drifted. There is deliberately no third mode: a source that cannot
+ * be reached reports unavailable and the batch exits clean.
+ */
+export type FinanceSourceMode = 'api' | 'command';
+
+/**
+ * Configuration for the personal-finance plugin (ledger pull + monthly review
+ * batch + transaction-workflow assist).
+ *
+ * PERSONAL DOMAIN. Every credential here belongs to the instance owner as a
+ * private individual. Nothing this module reads or derives may be written to a
+ * shared/team system of record — the module has no such write path, by
+ * construction, and must not grow one.
+ */
+export interface FinancePluginConfig {
+  /** Where transactions come from (default `api`). */
+  sourceMode?: FinanceSourceMode;
+  /**
+   * Provider API base URL (FINANCE_API_BASE_URL). No default: which host
+   * serves an unofficial API is instance data, and a wrong-but-plausible
+   * default would send the owner's credentials somewhere they didn't choose.
+   */
+  apiBaseUrl?: string;
+  /** Account identity for the provider login (FINANCE_API_EMAIL). */
+  apiEmail?: string;
+  /** Account password (FINANCE_API_PASSWORD). */
+  apiPassword?: string;
+  /**
+   * Base32 TOTP secret for accounts with MFA (FINANCE_API_TOTP_SECRET).
+   * Absent + MFA required ⇒ login fails loudly rather than half-succeeding.
+   */
+  apiTotpSecret?: string;
+  /**
+   * A pre-issued session token (FINANCE_API_TOKEN), for operators who would
+   * rather mint one interactively than store a password. Present ⇒ the module
+   * never sends credentials at all.
+   */
+  apiToken?: string;
+  /**
+   * Exporter binary for `command` mode (FINANCE_SOURCE_CMD), as a JSON argv
+   * array. Receives the request as JSON on stdin and prints the documented
+   * envelope to stdout. See the module's RUNBOOK.
+   */
+  sourceCommand?: string[];
+  /** Wall-clock bound on an exporter run, ms (default 180000). */
+  sourceCommandTimeoutMs?: number;
+  /** IANA timezone the monthly period boundaries are computed in. Unset ⇒ UTC. */
+  timeZone?: string;
+  /** Currency code for rendering (default USD). */
+  currency?: string;
+  /** Cron for the monthly batch (default `0 13 3 * *` — the 3rd of the month). */
+  reviewCron?: string;
+  /** Skip the scheduled monthly batch (the API surface still works). */
+  disableReview?: boolean;
+  /**
+   * Staleness threshold registered with the coverage ledger. Default
+   * `40 days` — a month plus slack, so one skipped month pages and a batch
+   * that merely runs late does not.
+   */
+  coverageThreshold?: string;
+  /** Pin a model for the categorize/annotate assist, overriding the `classify` tier. */
+  assistModel?: string;
+  /** Max transactions handed to the assist per review (default 60). */
+  assistLimit?: number;
+  /** Skip the model-backed assist entirely; the review still renders. */
+  disableAssist?: boolean;
+  /** tana-local MCP endpoint for the review's Tana link. */
+  tanaMcpUrl?: string;
+  /** tana-local MCP Personal Access Token. */
+  tanaMcpToken?: string;
+  /** Tana workspace the review link is written into. Unset ⇒ no Tana link. */
+  tanaWorkspaceId?: string;
 }
 
 /**
@@ -845,6 +936,7 @@ export function createPlugin(
       trainingConfig: opts.trainingConfig,
       invokerConfig: opts.invokerConfig,
       approvalsConfig: opts.approvalsConfig,
+      financeConfig: opts.financeConfig,
     };
 
     fastify.log.info(`Loading plugin: ${name}`);

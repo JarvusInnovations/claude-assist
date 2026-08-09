@@ -242,6 +242,50 @@ const schema = {
     // derived from the request's forwarded-proto/host headers).
     PAGES_BASE_URL: { type: 'string' },
 
+    // --- Finance module (personal ledger + monthly review batch) ---
+    // PERSONAL DOMAIN. Every credential below belongs to the instance owner as
+    // a private individual, and nothing this module reads ever reaches a shared
+    // or team surface. Cadence is a monthly batch — there is no daily ritual.
+    ENABLE_FINANCE: { type: 'boolean', default: false },
+    // Where transactions come from: `api` (the provider's own unofficial HTTP
+    // API) or `command` (an operator-supplied exporter — the seam for a
+    // headless browser session). See packages/finance/RUNBOOK.md.
+    FINANCE_SOURCE_MODE: { type: 'string', enum: ['api', 'command'], default: 'api' },
+    // NO DEFAULT, deliberately: which host serves an unofficial API is instance
+    // data, and a plausible-looking default would send the owner's credentials
+    // somewhere they never chose.
+    FINANCE_API_BASE_URL: { type: 'string' },
+    FINANCE_API_EMAIL: { type: 'string' },
+    FINANCE_API_PASSWORD: { type: 'string' },
+    // Base32 TOTP secret, for an account with MFA. Absent + MFA required ⇒ the
+    // login fails loudly rather than half-succeeding.
+    FINANCE_API_TOTP_SECRET: { type: 'string' },
+    // A session token minted by hand instead. Present ⇒ no credentials are ever
+    // sent by this host.
+    FINANCE_API_TOKEN: { type: 'string' },
+    // Exporter argv as a JSON array, for FINANCE_SOURCE_MODE=command.
+    FINANCE_SOURCE_CMD: { type: 'string' },
+    FINANCE_SOURCE_CMD_TIMEOUT_MS: { type: 'number', default: 180000 },
+    // Owner's IANA zone. Unset ⇒ UTC, which on the 1st of a month can put the
+    // batch on the wrong side of a period boundary.
+    FINANCE_TIMEZONE: { type: 'string' },
+    FINANCE_CURRENCY: { type: 'string', default: 'USD' },
+    // Cron in FINANCE_TIMEZONE; default 09:00 on the 3rd (not the 1st — the
+    // provider's own sync lags the month boundary).
+    FINANCE_REVIEW_CRON: { type: 'string', default: '0 9 3 * *' },
+    FINANCE_DISABLE_REVIEW: { type: 'boolean', default: false },
+    // Postgres interval. A month plus slack, so a skipped month pages and a
+    // batch that merely runs late does not.
+    FINANCE_COVERAGE_THRESHOLD: { type: 'string', default: '40 days' },
+    // Pin a model for the categorize/annotate assist, overriding the `classify`
+    // tier. Unset — the normal case — lets the tier map decide.
+    FINANCE_ASSIST_MODEL: { type: 'string' },
+    FINANCE_ASSIST_LIMIT: { type: 'number', default: 60 },
+    FINANCE_DISABLE_ASSIST: { type: 'boolean', default: false },
+    // Tana workspace the review's day-node link lands in. Unset ⇒ no Tana link
+    // (the page is still published). Reuses the shared TANA_MCP_* credentials.
+    FINANCE_TANA_WORKSPACE_ID: { type: 'string' },
+
     // Briefing module (daily briefing + join-required meeting alerts)
     ENABLE_BRIEFING: { type: 'boolean', default: true },
     BRIEFING_DISABLE: { type: 'boolean', default: false },
@@ -522,6 +566,26 @@ declare module 'fastify' {
       // Pages module
       ENABLE_PAGES: boolean;
       PAGES_BASE_URL?: string;
+
+      // Finance module (personal domain — monthly batch only)
+      ENABLE_FINANCE: boolean;
+      FINANCE_SOURCE_MODE: 'api' | 'command';
+      FINANCE_API_BASE_URL?: string;
+      FINANCE_API_EMAIL?: string;
+      FINANCE_API_PASSWORD?: string;
+      FINANCE_API_TOTP_SECRET?: string;
+      FINANCE_API_TOKEN?: string;
+      FINANCE_SOURCE_CMD?: string;
+      FINANCE_SOURCE_CMD_TIMEOUT_MS: number;
+      FINANCE_TIMEZONE?: string;
+      FINANCE_CURRENCY: string;
+      FINANCE_REVIEW_CRON: string;
+      FINANCE_DISABLE_REVIEW: boolean;
+      FINANCE_COVERAGE_THRESHOLD: string;
+      FINANCE_ASSIST_MODEL?: string;
+      FINANCE_ASSIST_LIMIT: number;
+      FINANCE_DISABLE_ASSIST: boolean;
+      FINANCE_TANA_WORKSPACE_ID?: string;
 
       // Briefing module
       ENABLE_BRIEFING: boolean;

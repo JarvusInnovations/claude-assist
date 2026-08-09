@@ -19,6 +19,7 @@ import pagesPlugin, { registerPagesPublicRoutes } from '@jarvus/claude-assist-pa
 import ledgerPlugin from '@jarvus/claude-assist-ledger';
 import approvalsPlugin from '@jarvus/claude-assist-approvals';
 import invokerPlugin from '@jarvus/claude-assist-invoker';
+import financePlugin from '@jarvus/claude-assist-finance';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import envPlugin from './plugins/env.js';
@@ -115,6 +116,30 @@ function parseNumberMap(
       out[key] = value;
     }
     return out;
+  } catch (err) {
+    log.error({ err }, `${varName} is malformed — ignoring it`);
+    return undefined;
+  }
+}
+
+/**
+ * Parse a JSON argv array (the same convention as CHAT_CONTEXT_COMMANDS /
+ * SESSION_SPAWN_CMD). Malformed config logs and yields undefined rather than
+ * failing boot — the module it feeds reports itself unconfigured, which is a
+ * visible, fixable state.
+ */
+function parseArgvArray(
+  raw: string | undefined,
+  varName: string,
+  log: FastifyBaseLogger,
+): string[] | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed) || parsed.some((item) => typeof item !== 'string')) {
+      throw new Error('expected a JSON array of strings');
+    }
+    return parsed as string[];
   } catch (err) {
     log.error({ err }, `${varName} is malformed — ignoring it`);
     return undefined;
@@ -589,6 +614,51 @@ await fastify.register(
       });
     } else {
       api.log.info('Pages module disabled');
+    }
+
+    // Finance module — personal ledger mirror + monthly review batch. MUST
+    // register after pages (it publishes the review through fastify.pages),
+    // after notify (the "review ready" ping + its coverage heartbeat), and
+    // after the invoker (the categorize/annotate assist).
+    //
+    // PERSONAL DOMAIN: this module holds the owner's own financial credentials
+    // and has no write path to any shared or team surface. Off by default —
+    // an instance opts in by configuring a source.
+    if (fastify.config.ENABLE_FINANCE) {
+      api.log.info('Finance module enabled');
+      await api.register(financePlugin, {
+        migrationsDir: join(__dirname, '../../../packages/finance/migrations'),
+        disableMigrations: fastify.config.DISABLE_MIGRATIONS,
+        financeConfig: {
+          sourceMode: fastify.config.FINANCE_SOURCE_MODE,
+          apiBaseUrl: fastify.config.FINANCE_API_BASE_URL,
+          apiEmail: fastify.config.FINANCE_API_EMAIL,
+          apiPassword: fastify.config.FINANCE_API_PASSWORD,
+          apiTotpSecret: fastify.config.FINANCE_API_TOTP_SECRET,
+          apiToken: fastify.config.FINANCE_API_TOKEN,
+          sourceCommand: parseArgvArray(
+            fastify.config.FINANCE_SOURCE_CMD,
+            'FINANCE_SOURCE_CMD',
+            fastify.log,
+          ),
+          sourceCommandTimeoutMs: fastify.config.FINANCE_SOURCE_CMD_TIMEOUT_MS,
+          timeZone: fastify.config.FINANCE_TIMEZONE,
+          currency: fastify.config.FINANCE_CURRENCY,
+          reviewCron: fastify.config.FINANCE_REVIEW_CRON,
+          disableReview:
+            fastify.config.DISABLE_SYNCS || fastify.config.FINANCE_DISABLE_REVIEW,
+          coverageThreshold: fastify.config.FINANCE_COVERAGE_THRESHOLD,
+          assistModel: fastify.config.FINANCE_ASSIST_MODEL,
+          assistLimit: fastify.config.FINANCE_ASSIST_LIMIT,
+          disableAssist: fastify.config.FINANCE_DISABLE_ASSIST,
+          tanaMcpUrl: fastify.config.TANA_MCP_URL,
+          tanaMcpToken: fastify.config.TANA_MCP_TOKEN,
+          tanaWorkspaceId:
+            fastify.config.FINANCE_TANA_WORKSPACE_ID ?? fastify.config.TANA_WORKSPACE_ID,
+        },
+      });
+    } else {
+      api.log.info('Finance module disabled');
     }
 
     // Slack urgency module — read-only listener over the owner's Slack; interrupts
