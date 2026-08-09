@@ -3,9 +3,8 @@ Description=claude-assist server (Fastify API on :2529)
 After=network-online.target
 Wants=network-online.target
 # User units can't declare a dependency on the system docker.service (it lives
-# in a different manager/namespace than systemd --user). The postgres
-# dependency (docker container server-postgres-1, 127.0.0.1:2528) is instead
-# handled by ExecStartPre polling below.
+# in a different manager/namespace than systemd --user), so the postgres
+# dependency (127.0.0.1:2528) is handled by ExecStartPre polling below.
 StartLimitIntervalSec=300
 StartLimitBurst=10
 
@@ -15,26 +14,24 @@ Type=simple
 # elsewhere than ~/claude-assist.
 WorkingDirectory=%h/claude-assist/apps/server
 
-# systemd --user's default PATH is minimal (no ~/.local/bin, no asdf shims —
-# verified on this box: systemctl --user show-environment). The bun shim at
-# ~/.asdf/shims/bun execs `asdf exec bun`, which needs the real `asdf` binary
-# (installed at ~/.local/bin/asdf here) on PATH or it fails with
-# "exec: asdf: not found". Prepend both so the shim resolves normally.
+# systemd --user's default PATH is minimal — no ~/.local/bin, no version-manager
+# shims (check yours with: systemctl --user show-environment). A shimmed `bun`
+# typically execs its version manager, which then has to be on PATH itself or the
+# shim fails with "exec: <manager>: not found". The value below assumes an asdf
+# layout; edit it to match your install, or point ExecStart at an absolute bun.
 Environment=PATH=%h/.local/bin:%h/.asdf/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin
 
 # Waits for postgres to accept connections (bounded retries) before starting.
 ExecStartPre=%h/claude-assist/deploy/systemd/wait-for-postgres.sh
 
-# asdf-stable invocation: resolves the bun version via the repo's
-# .tool-versions (walked up from WorkingDirectory) at every start, instead of
-# hardcoding a version-pinned path like ~/.asdf/installs/bun/1.3.6/bin/bun
-# that would go stale on a bun upgrade.
+# Invoke the shim, not a version-pinned install path: the shim re-resolves the
+# bun version from the repo's .tool-versions at every start, so a bun upgrade
+# doesn't strand the unit on a path that no longer exists.
 ExecStart=%h/.asdf/shims/bun src/server.ts
 
 # The app loads its own config via @fastify/env (dotenv: true), which reads
 # ./.env relative to process.cwd() — i.e. WorkingDirectory above. No
-# EnvironmentFile= is needed here; apps/server/.env is the single source of
-# env for the process, same as it is today in the herdr pane.
+# EnvironmentFile= is needed; apps/server/.env is the single source of env.
 
 Restart=on-failure
 RestartSec=5

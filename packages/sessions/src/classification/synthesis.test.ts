@@ -19,7 +19,7 @@ function event(
     summary: 'the owner corrected the deploy target',
     confidence: 0.9,
     quote: 'no, deploy to staging not prod',
-    model: 'claude-haiku-4-5',
+    model: 'test-classify-model',
     created_at: new Date('2026-07-05T12:00:00Z'),
     project_path: '/home/user/claude-assist',
     git_branch: 'main',

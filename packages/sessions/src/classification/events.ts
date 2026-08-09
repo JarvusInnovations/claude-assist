@@ -1,15 +1,15 @@
 /**
- * Classification event detector — the cheap-model (Haiku) pass over each new
- * message window. Mirrors the capture classifier and email triage patterns:
- * XML-tagged JSON output, one parse-correction retry, enum validation.
+ * Classification event detector — the cheap-model pass over each new message
+ * window. Mirrors the capture classifier and email triage patterns: XML-tagged
+ * JSON output, one parse-correction retry, enum validation.
  *
  * A window usually yields an EMPTY array — that's the point. The prompt is
  * tuned for signal density so the weekly synthesis isn't drowning in trivia;
  * an event is only emitted for a clear, high-value signal.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import type { FastifyBaseLogger } from 'fastify';
+import type { ModelInvoker } from '@jarvus/claude-assist-core';
 import { CLASSIFICATION_EVENT_TYPES, type ClassificationEventType, type DetectedEvent } from './types.js';
 
 class EventParseError extends Error {
@@ -20,8 +20,9 @@ class EventParseError extends Error {
 }
 
 export interface ClassificationConfig {
-  apiKey: string;
-  /** default: claude-haiku-4-5 */
+  /** The single metered-model choke point (specs/modules/invoker.md). */
+  invoker: ModelInvoker;
+  /** Pin a model for this call site. Prefer moving the tier instead. */
   model?: string;
   maxTokens?: number;
 }
@@ -73,16 +74,15 @@ ${ctx.deltaText}
 </window>`;
 }
 
-/** Parse the model's <events> array, validating each event. Pure. */
-export function parseClassificationEvents(text: string): DetectedEvent[] {
-  const match = text.match(/<events>\s*([\s\S]*?)\s*<\/events>/);
-  if (!match) {
-    throw new EventParseError('No <events> tags found in response');
-  }
-
+/**
+ * Parse the model's events array, validating each event. Pure.
+ *
+ * Receives the contents of the `<events>` block; the invoker extracts it.
+ */
+export function parseClassificationEvents(raw: string): DetectedEvent[] {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(match[1]!.trim());
+    parsed = JSON.parse(raw.trim());
   } catch (error) {
     throw new EventParseError(
       `JSON parse error: ${error instanceof Error ? error.message : String(error)}`
@@ -90,7 +90,7 @@ export function parseClassificationEvents(text: string): DetectedEvent[] {
   }
 
   if (!Array.isArray(parsed)) {
-    throw new EventParseError('Expected a JSON array inside <events>');
+    throw new EventParseError('Expected a JSON array of events');
   }
 
   const events: DetectedEvent[] = [];
@@ -116,57 +116,42 @@ export function parseClassificationEvents(text: string): DetectedEvent[] {
 }
 
 /**
- * The Haiku classifier. One `classifyDelta` call per session delta window.
+ * The delta classifier. One `classifyDelta` call per session delta window.
  */
 export class ClassificationEventClassifier {
-  private client: Anthropic;
-  readonly model: string;
+  private invoker: ModelInvoker;
+  private pinnedModel: string | undefined;
   private maxTokens: number;
   private log: FastifyBaseLogger;
 
   constructor(config: ClassificationConfig, log: FastifyBaseLogger) {
-    this.client = new Anthropic({ apiKey: config.apiKey });
-    this.model = config.model ?? 'claude-haiku-4-5';
+    this.invoker = config.invoker;
+    this.pinnedModel = config.model;
     this.maxTokens = config.maxTokens ?? 1024;
     this.log = log;
   }
 
+  /** Which model produced an event — stored alongside it on append. */
+  get model(): string {
+    return this.pinnedModel ?? this.invoker.modelFor('classify');
+  }
+
   async classifyDelta(ctx: DeltaContext): Promise<DetectedEvent[]> {
-    const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
-      { role: 'user', content: buildClassificationPrompt(ctx) },
-    ];
-
-    const maxRetries = 1;
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      const response = await this.client.messages.create({
-        model: this.model,
-        max_tokens: this.maxTokens,
-        system: CLASSIFICATION_SYSTEM_PROMPT,
-        messages,
-      });
-
-      const textBlock = response.content.find((b) => b.type === 'text');
-      const rawText = textBlock?.type === 'text' ? textBlock.text : '';
-      messages.push({ role: 'assistant', content: rawText });
-
-      try {
-        return parseClassificationEvents(rawText);
-      } catch (error) {
-        if (attempt < maxRetries && error instanceof EventParseError) {
-          this.log.warn(
-            { sessionId: ctx.sessionId, attempt, error: error.message },
-            'Classification parse failed, requesting correction'
-          );
-          messages.push({
-            role: 'user',
-            content: `<error>Parse failed: ${error.message}</error>\n\nReturn the corrected JSON array inside <events> tags (an empty array is fine).`,
-          });
-        } else {
-          throw error;
-        }
-      }
-    }
-
-    throw new Error('Unexpected: classifier retry loop exited without result');
+    // The tag extraction, the parse-correction turn, retries, and spend
+    // accounting live in the invoker; the prompt and the row-level validation
+    // are this module's own judgment.
+    return this.invoker.invokeTagged<DetectedEvent[]>({
+      task: 'sessions.classify',
+      tier: 'classify',
+      maxTokens: this.maxTokens,
+      ...(this.pinnedModel ? { model: this.pinnedModel } : {}),
+      system: CLASSIFICATION_SYSTEM_PROMPT,
+      // A long fixed preamble on a sweep that runs every 30 minutes across a
+      // batch of sessions — worth an explicit cache breakpoint.
+      cacheSystem: true,
+      tag: 'events',
+      parse: parseClassificationEvents,
+      messages: [{ role: 'user', content: buildClassificationPrompt(ctx) }],
+    });
   }
 }

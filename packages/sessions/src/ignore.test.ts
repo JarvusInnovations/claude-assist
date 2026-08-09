@@ -5,18 +5,19 @@ import {
 } from './ignore.js';
 
 describe('matchesIgnoreMarker', () => {
-  const M87 = 'You are triaging a local-first M87 review item.';
+  const RUNNER_PROMPT = 'You are triaging a review item.';
 
-  it('matches when a user message is the M87 triage prompt (default markers)', () => {
+  it('matches a configured marker anywhere in a user message', () => {
     const userMessages = [
       '<command-name>/model</command-name>',
-      `${M87}\n\nUse the provided prompt context to produce a recommendation.`,
+      `${RUNNER_PROMPT}\n\nUse the provided prompt context to produce a recommendation.`,
     ];
-    expect(matchesIgnoreMarker(userMessages)).toBe(true);
+    expect(matchesIgnoreMarker(userMessages, [RUNNER_PROMPT])).toBe(true);
   });
 
-  it('ships the M87 marker in the defaults', () => {
-    expect(DEFAULT_SESSION_IGNORE_MARKERS).toContain(M87);
+  it('ships no default markers — which automation to suppress is instance data', () => {
+    expect(DEFAULT_SESSION_IGNORE_MARKERS).toEqual([]);
+    expect(matchesIgnoreMarker([RUNNER_PROMPT])).toBe(false);
   });
 
   it('does not match ordinary session user messages', () => {
@@ -34,7 +35,7 @@ describe('matchesIgnoreMarker', () => {
   });
 
   it('never matches when the marker list is empty', () => {
-    expect(matchesIgnoreMarker([M87], [])).toBe(false);
+    expect(matchesIgnoreMarker([RUNNER_PROMPT], [])).toBe(false);
   });
 
   it('never matches when there are no user messages', () => {

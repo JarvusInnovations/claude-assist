@@ -187,20 +187,22 @@ bunx @jarvus/claude-assist-sessions push [options]
 
 ## Suppressing automated sessions
 
-Some local tools spawn large volumes of tiny, automated Claude sessions (e.g. the M87
-review-item triage runner) that flood the archive. These pass the subagent/min-size
-filters because they're real UUID-named transcripts above the size threshold.
+Some local tools spawn large volumes of tiny, automated Claude sessions — a review-item
+triage runner, a batch linter, a cron that asks one question — and they flood the archive.
+They pass the subagent/min-size filters because they're real UUID-named transcripts above
+the size threshold.
 
 Ingest suppresses any session whose **parsed user messages** contain a configured marker
 substring. Matching parsed user messages — not raw transcript text — is deliberate: a
 legitimate session that merely quotes a marker in tool output or assistant prose is *not*
 dropped, only sessions whose initiating prompt is the automation's marker.
 
-A built-in default suppresses the M87 triage runner. Add your own via the
-`SESSIONS_IGNORE_MARKERS` env var (newline-separated; appended to the defaults):
+There are no built-in markers — which automation counts as noise is a property of your
+deployment, not of the toolkit. Declare yours in the `SESSIONS_IGNORE_MARKERS` env var
+(newline-separated), using the stable opening line of the automation's prompt:
 
 ```bash
-SESSIONS_IGNORE_MARKERS="You are triaging a local-first M87 review item.
+SESSIONS_IGNORE_MARKERS="You are triaging a review item.
 Another automation prompt prefix"
 ```
 
@@ -222,14 +224,14 @@ all in `src/classification/`:
    for >48h gets a terminal (final) pass and is then flagged done.
 
 2. **Classification events** (`classification_events`, APPEND-ONLY). A cheap
-   Haiku pass over each new-message window records typed signals —
+   classify-tier pass over each new-message window records typed signals —
    `correction` (highest value), `friction`, `rule-candidate`,
    `notable-decision` — each with a seq range, one-line summary, confidence, and
    a verbatim quote. Windows usually yield nothing; the prompt is tuned for
    signal density. No window ever rewrites a prior window's events.
 
-3. **Weekly synthesis + narrative** (`synthesis_reports`). Once a week a stronger
-   model (Sonnet) digests the events into a structured report — proposed
+3. **Weekly synthesis + narrative** (`synthesis_reports`). Once a week the strong
+   synthesize tier digests the events into a structured report — proposed
    memory/rule/hook/skill/spec changes and ranked friction hotspots — plus an
    dev-diary-style narrative of how the system evolved. Both are persisted
    **and** delivered via the notify digest.

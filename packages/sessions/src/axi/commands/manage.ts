@@ -6,8 +6,8 @@ import { cliInvocation } from "../invocation.js";
 export const OUTLINES_HELP = `sessions-axi outlines [<session-id>...] [--json]
 sessions-axi outlines progress [--json]
 
-  Generate AI outlines for sessions missing or with stale ones (needs
-  ANTHROPIC_API_KEY on the server). With no ids, processes all pending.
+  Generate AI outlines for sessions missing or with stale ones (needs the
+  server's model invoker). With no ids, processes all pending.
   \`outlines progress\` reports background generation status.`;
 
 export async function outlinesCommand(args: string[]): Promise<string> {

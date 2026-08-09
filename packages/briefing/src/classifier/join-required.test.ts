@@ -342,19 +342,28 @@ describe('conferencingUrl', () => {
   });
 });
 
+// parseJoin now receives the CONTENTS of the <join> block — the invoker owns
+// tag extraction, so these assert the validation this module still owns.
 describe('parseJoin (model output)', () => {
   it('parses a valid join verdict', () => {
-    expect(parseJoin('<join>{"join_required": true, "confidence": 0.9}</join>')).toEqual({
+    expect(parseJoin('{"join_required": true, "confidence": 0.9}')).toEqual({
       joinRequired: true,
       confidence: 0.9,
     });
   });
 
-  it('throws without tags', () => {
-    expect(() => parseJoin('no tags here')).toThrow();
+  it('throws on a non-JSON body', () => {
+    expect(() => parseJoin('no json here')).toThrow();
   });
 
   it('throws on a non-boolean verdict', () => {
-    expect(() => parseJoin('<join>{"join_required":"yes"}</join>')).toThrow();
+    expect(() => parseJoin('{"join_required":"yes"}')).toThrow();
+  });
+
+  it('clamps an out-of-range confidence rather than failing the window', () => {
+    expect(parseJoin('{"join_required": false, "confidence": 7}')).toEqual({
+      joinRequired: false,
+      confidence: 0.5,
+    });
   });
 });

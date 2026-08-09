@@ -2,9 +2,9 @@
 # ExecStartPre helper for claude-assist-server.service.
 #
 # systemd --user units can't declare After=/Requires= on the system
-# docker.service (different manager/namespace), so we can't guarantee the
-# server-postgres-1 container is up by the time this unit starts — e.g. right
-# after boot, before Docker has finished starting containers. Poll instead.
+# docker.service (different manager/namespace), so there is no way to guarantee
+# the postgres container is up by the time this unit starts — right after boot,
+# for instance, before Docker has finished starting containers. Poll instead.
 set -euo pipefail
 
 HOST="127.0.0.1"

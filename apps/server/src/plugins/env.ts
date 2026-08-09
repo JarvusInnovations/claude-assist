@@ -40,8 +40,9 @@ const schema = {
     SESSIONS_MIN_FILE_SIZE: { type: 'number', default: 500 },
     SESSIONS_DISABLE_LOCAL_INGEST: { type: 'boolean', default: false },
     SESSIONS_DISABLE_GENERATE_OUTLINES: { type: 'boolean', default: false },
-    // Newline-separated transcript substrings; sessions containing any are
-    // suppressed from ingest. Appended to built-in defaults (e.g. M87 triage).
+    // Newline-separated prompt substrings; sessions containing any are
+    // suppressed from ingest. No defaults — which local automation is noise is
+    // instance data (packages/sessions/src/ignore.ts).
     SESSIONS_IGNORE_MARKERS: { type: 'string' },
     // Classification pipeline (self-improvement loop)
     SESSIONS_DISABLE_CLASSIFICATION: { type: 'boolean', default: false },
@@ -50,11 +51,45 @@ const schema = {
     SESSIONS_CLASSIFICATION_LOOKBACK: { type: 'string', default: '3 days' },
     SESSIONS_CLASSIFICATION_CRON: { type: 'string' },
     SESSIONS_SYNTHESIS_CRON: { type: 'string' },
-    SESSIONS_SYNTHESIS_MODEL: { type: 'string', default: 'claude-sonnet-5' },
+    // Pin a model for weekly synthesis, overriding the `synthesize` tier.
+    // Unset — the normal case — lets MODEL_TIER_SYNTHESIZE / the built-in tier
+    // map decide, so a model swap is one edit instead of one per call site.
+    SESSIONS_SYNTHESIS_MODEL: { type: 'string' },
 
-    // AI Features (optional)
+    // The one metered credential. Read by the invoker module and nothing else:
+    // every module that needs a model reaches it through `fastify.invoker`, so
+    // spend has a single accounted-for path (specs/modules/invoker.md).
     ANTHROPIC_API_KEY: { type: 'string' },
     OUTLINE_CONCURRENCY: { type: 'number', default: 5 },
+
+    // --- Invoker: the single choke point for metered model calls ---
+    // Tier overrides. A call site names a tier describing its work; these are
+    // the only place a model id is configured (specs/modules/invoker.md).
+    MODEL_TIER_CLASSIFY: { type: 'string' },
+    MODEL_TIER_EXTRACT: { type: 'string' },
+    MODEL_TIER_VISION: { type: 'string' },
+    MODEL_TIER_SYNTHESIZE: { type: 'string' },
+    // Stop all metered invocation while leaving the host healthy. Per-feature
+    // disable flags answer "turn this pipeline off"; this answers "stop
+    // spending, now, everywhere."
+    MODEL_KILL_SWITCH: { type: 'boolean', default: false },
+    // Rolling-daily ceilings. A breach raises one human approval per window
+    // and fails calls transiently; it does not silently stop the instance.
+    MODEL_DAILY_BUDGET_USD: { type: 'number' },
+    MODEL_DAILY_BUDGET_TOKENS: { type: 'number' },
+    // JSON object of per-task dollar ceilings, e.g. {"google.triage": 2.5}.
+    MODEL_TASK_BUDGETS_USD: { type: 'string' },
+    // JSON object of price overrides, USD per million tokens, keyed by model:
+    // {"claude-haiku-4-5": {"input": 1, "output": 5}}.
+    MODEL_PRICES: { type: 'string' },
+    MODEL_MAX_ATTEMPTS: { type: 'number', default: 3 },
+    MODEL_RETRY_BASE_MS: { type: 'number', default: 500 },
+    MODEL_TIMEOUT_MS: { type: 'number' },
+
+    // --- Approvals: human gates that never block a worker ---
+    ENABLE_APPROVALS: { type: 'boolean', default: true },
+    APPROVAL_EXPIRY_MS: { type: 'number', default: 86400000 },
+    APPROVAL_EXPIRE_CRON: { type: 'string' },
     TRIAGE_CONCURRENCY: { type: 'number', default: 5 },
 
     // Google OAuth
@@ -79,7 +114,8 @@ const schema = {
     GOOGLE_TRIAGE_SEED_FILE: { type: 'string' },
     // Two-tier urgency quiet hours (owner TZ). INTERRUPTs raised inside the
     // window are HELD and shown in the morning briefing; emergencies pierce.
-    GOOGLE_URGENCY_TZ: { type: 'string', default: 'America/New_York' },
+    // No default: where the owner sleeps is instance data. Unset ⇒ UTC.
+    GOOGLE_URGENCY_TZ: { type: 'string' },
     GOOGLE_URGENCY_QUIET_START: { type: 'number', default: 22 },
     GOOGLE_URGENCY_QUIET_END: { type: 'number', default: 7 },
     // Individual client contacts (get standing in the ATTENTION bar). Point at a
@@ -113,10 +149,11 @@ const schema = {
     ENABLE_KITCHEN: { type: 'boolean', default: true },
     KITCHEN_DISABLE_ESTIMATION: { type: 'boolean', default: false },
     KITCHEN_CONCURRENCY: { type: 'number', default: 3 },
-    // Vision-capable estimation model; defaults to a strong vision tier (open-ended meal estimation).
-    KITCHEN_ESTIMATION_MODEL: { type: 'string', default: 'claude-fable-5' },
-    // Cheap vision model for mechanical receipt-line extraction (phase 2).
-    KITCHEN_RECEIPT_MODEL: { type: 'string', default: 'claude-haiku-4-5' },
+    // Per-call-site model pins. Unset — the normal case — routes each call to
+    // its tier: estimation and label panels to `vision`, the mechanical
+    // receipt-line extraction to `extract`.
+    KITCHEN_ESTIMATION_MODEL: { type: 'string' },
+    KITCHEN_RECEIPT_MODEL: { type: 'string' },
     // Model for the spawned interactive meal-planning session — an INTERACTIVE
     // HUMAN session under subscription auth, unrelated to the metered models
     // above. Unset ⇒ the instance-wide SESSION_SPAWN_MODEL applies.
@@ -160,8 +197,9 @@ const schema = {
     ENABLE_BRIEFING: { type: 'boolean', default: true },
     BRIEFING_DISABLE: { type: 'boolean', default: false },
     BRIEFING_DISABLE_ALERTS: { type: 'boolean', default: false },
-    // Timezone for "today" + the morning cron (server clock is UTC).
-    BRIEFING_TIMEZONE: { type: 'string', default: 'America/New_York' },
+    // Timezone for "today" + the morning cron. No default: set it to the
+    // owner's IANA zone, or the briefing lands on a UTC day at a UTC hour.
+    BRIEFING_TIMEZONE: { type: 'string' },
     // Cron in BRIEFING_TIMEZONE; default 06:30 local.
     BRIEFING_CRON: { type: 'string', default: '30 6 * * *' },
     // Alert evaluation cadence (server local / UTC). Every minute: 1-minute
@@ -188,8 +226,8 @@ const schema = {
 
     // Per-meeting briefings (preps on the virtuous cycle)
     ENABLE_MEETING_BRIEFINGS: { type: 'boolean', default: true },
-    // Sonnet-class prep composer model.
-    MEETING_PREP_MODEL: { type: 'string', default: 'claude-sonnet-5' },
+    // Pin a model for the prep composer, overriding the `synthesize` tier.
+    MEETING_PREP_MODEL: { type: 'string' },
     // Optional pluggable prior-occurrence context CLI (transcripts/HQ timelines/
     // Slack). Receives occurrence metadata as JSON on stdin + --series-key/
     // --occurrence-key args; prints context text on stdout. Unset → omitted.
@@ -267,6 +305,13 @@ const schema = {
     LEDGER_DERIVE_BATCH_SIZE: { type: 'number', default: 1000 },
     // Disable the scheduled derivation (direct writes + queries still work).
     LEDGER_DISABLE_DERIVE: { type: 'boolean', default: false },
+    // Extraction rules for THIS instance's own CLIs, as a JSON array appended
+    // after the built-in set — the seam that keeps one operator's tool roster
+    // out of a public toolkit. See EXAMPLE_EXTRA_RULES in packages/ledger.
+    LEDGER_EXTRA_RULES: { type: 'string' },
+    // Bump after changing LEDGER_EXTRA_RULES to re-derive the whole corpus
+    // under the new ruleset; leave unset to classify only new calls.
+    LEDGER_RULES_VERSION_SUFFIX: { type: 'string' },
 
     // Slack urgency module (read-only urgency listener over the owner's Slack)
     ENABLE_SLACK_URGENCY: { type: 'boolean', default: false },
@@ -276,9 +321,10 @@ const schema = {
     SLACK_URGENCY_ROSTER: { type: 'string' },
     // CSV of channel ids to watch beyond DMs.
     SLACK_URGENCY_WATCH_CHANNELS: { type: 'string' },
-    // Residue classifier model (defaults to claude-haiku-4-5); reuses ANTHROPIC_API_KEY.
+    // Pin a model for the residue pass, overriding the `classify` tier.
     SLACK_URGENCY_MODEL: { type: 'string' },
-    SLACK_URGENCY_TZ: { type: 'string', default: 'America/New_York' },
+    // Owner's IANA zone for the quiet-hours window. Unset ⇒ UTC.
+    SLACK_URGENCY_TZ: { type: 'string' },
     SLACK_URGENCY_QUIET_START: { type: 'number', default: 22 },
     SLACK_URGENCY_QUIET_END: { type: 'number', default: 7 },
     SLACK_URGENCY_COOLDOWN_MIN: { type: 'number', default: 30 },
@@ -327,11 +373,26 @@ declare module 'fastify' {
       SESSIONS_CLASSIFICATION_LOOKBACK: string;
       SESSIONS_CLASSIFICATION_CRON?: string;
       SESSIONS_SYNTHESIS_CRON?: string;
-      SESSIONS_SYNTHESIS_MODEL: string;
+      SESSIONS_SYNTHESIS_MODEL?: string;
 
       // AI Features
       ANTHROPIC_API_KEY?: string;
       OUTLINE_CONCURRENCY: number;
+      MODEL_TIER_CLASSIFY?: string;
+      MODEL_TIER_EXTRACT?: string;
+      MODEL_TIER_VISION?: string;
+      MODEL_TIER_SYNTHESIZE?: string;
+      MODEL_KILL_SWITCH: boolean;
+      MODEL_DAILY_BUDGET_USD?: number;
+      MODEL_DAILY_BUDGET_TOKENS?: number;
+      MODEL_TASK_BUDGETS_USD?: string;
+      MODEL_PRICES?: string;
+      MODEL_MAX_ATTEMPTS: number;
+      MODEL_RETRY_BASE_MS: number;
+      MODEL_TIMEOUT_MS?: number;
+      ENABLE_APPROVALS: boolean;
+      APPROVAL_EXPIRY_MS: number;
+      APPROVAL_EXPIRE_CRON?: string;
       TRIAGE_CONCURRENCY: number;
 
       // Google OAuth
@@ -344,7 +405,7 @@ declare module 'fastify' {
       GOOGLE_DISABLE_EMAIL_ALERTS: boolean;
       GOOGLE_TEAM_DOMAINS: string;
       GOOGLE_TRIAGE_SEED_FILE?: string;
-      GOOGLE_URGENCY_TZ: string;
+      GOOGLE_URGENCY_TZ?: string;
       GOOGLE_URGENCY_QUIET_START: number;
       GOOGLE_URGENCY_QUIET_END: number;
       GOOGLE_CONTACTS_FILE?: string;
@@ -369,8 +430,8 @@ declare module 'fastify' {
       ENABLE_KITCHEN: boolean;
       KITCHEN_DISABLE_ESTIMATION: boolean;
       KITCHEN_CONCURRENCY: number;
-      KITCHEN_ESTIMATION_MODEL: string;
-      KITCHEN_RECEIPT_MODEL: string;
+      KITCHEN_ESTIMATION_MODEL?: string;
+      KITCHEN_RECEIPT_MODEL?: string;
       KITCHEN_PLAN_SESSION_MODEL?: string;
       KITCHEN_MAX_PHOTO_BYTES: number;
       KITCHEN_MAX_PHOTOS: number;
@@ -392,7 +453,7 @@ declare module 'fastify' {
       ENABLE_BRIEFING: boolean;
       BRIEFING_DISABLE: boolean;
       BRIEFING_DISABLE_ALERTS: boolean;
-      BRIEFING_TIMEZONE: string;
+      BRIEFING_TIMEZONE?: string;
       BRIEFING_CRON: string;
       BRIEFING_ALERT_CRON: string;
       BRIEFING_ALERT_WINDOW_MINUTES: number;
@@ -407,7 +468,7 @@ declare module 'fastify' {
 
       // Per-meeting briefings (preps)
       ENABLE_MEETING_BRIEFINGS: boolean;
-      MEETING_PREP_MODEL: string;
+      MEETING_PREP_MODEL?: string;
       MEETING_CONTEXT_BIN?: string;
       MEETING_CONTEXT_ARGS: string;
       MEETING_CRON: string;
@@ -451,6 +512,8 @@ declare module 'fastify' {
       LEDGER_DERIVE_CRON: string;
       LEDGER_DERIVE_BATCH_SIZE: number;
       LEDGER_DISABLE_DERIVE: boolean;
+      LEDGER_EXTRA_RULES?: string;
+      LEDGER_RULES_VERSION_SUFFIX?: string;
 
       // Slack urgency module
       ENABLE_SLACK_URGENCY: boolean;
@@ -458,7 +521,7 @@ declare module 'fastify' {
       SLACK_URGENCY_ROSTER?: string;
       SLACK_URGENCY_WATCH_CHANNELS?: string;
       SLACK_URGENCY_MODEL?: string;
-      SLACK_URGENCY_TZ: string;
+      SLACK_URGENCY_TZ?: string;
       SLACK_URGENCY_QUIET_START: number;
       SLACK_URGENCY_QUIET_END: number;
       SLACK_URGENCY_COOLDOWN_MIN: number;

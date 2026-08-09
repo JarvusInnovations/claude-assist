@@ -2,9 +2,12 @@ import { describe, expect, it } from 'bun:test';
 import { applyPortionModifier, parseEstimateResponse, portionModifierFor, SYSTEM_PROMPT } from './estimator.js';
 import type { ModelEstimate } from '../types.js';
 
-/** Wrap a response payload the way the model returns it. */
+/**
+ * The `<estimate>` block's CONTENTS — what the invoker hands `parse` after it
+ * has extracted the tag.
+ */
 function respond(payload: Record<string, unknown>): string {
-  return `<estimate>\n${JSON.stringify(payload)}\n</estimate>`;
+  return JSON.stringify(payload);
 }
 
 function mkEstimate(over: Partial<ModelEstimate> = {}): ModelEstimate {

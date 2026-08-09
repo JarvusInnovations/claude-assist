@@ -37,6 +37,12 @@ jobs:
       - name: Build core
         run: bun run --filter @jarvus/claude-assist-core build
 
+      - name: Build approvals
+        run: bun run --filter @jarvus/claude-assist-approvals build
+
+      - name: Build invoker
+        run: bun run --filter @jarvus/claude-assist-invoker build
+
       - name: Build sessions
         run: bun run --filter @jarvus/claude-assist-sessions build
 

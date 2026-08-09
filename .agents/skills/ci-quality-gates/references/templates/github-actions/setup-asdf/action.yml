@@ -1,0 +1,32 @@
+name: Setup ASDF tools
+description: >-
+  Install and cache the project's asdf-managed toolchain from .tool-versions.
+  Drop this in at .github/actions/setup-asdf/ and call it with
+  `- uses: ./.github/actions/setup-asdf` right after actions/checkout. It is the
+  single source of the provisioning block every quality-gate job shares — cache
+  hit skips the install, and `asdf reshim` makes the freshly-cached shims
+  resolvable in later steps.
+runs:
+  using: composite
+  steps:
+    - name: Setup ASDF
+      uses: asdf-vm/actions/setup@v4
+
+    - name: Restore ASDF tools from cache
+      id: asdf-tools-cache
+      uses: actions/cache@v5
+      with:
+        key: asdf-tools-${{ hashFiles('.tool-versions') }}
+        restore-keys: |
+          asdf-tools-
+        path: |
+          ${{ env.ASDF_DIR }}/plugins
+          ${{ env.ASDF_DIR }}/installs
+
+    - name: Install ASDF tools on cache miss
+      if: ${{ steps.asdf-tools-cache.outputs.cache-hit != 'true' }}
+      uses: asdf-vm/actions/install@v4
+
+    - name: Reshim ASDF tools
+      shell: bash
+      run: asdf reshim

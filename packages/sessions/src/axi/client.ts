@@ -36,7 +36,7 @@ function buildUrl(server: string, path: string, query?: Query): string {
 function suggestForStatus(status: number): string[] {
   if (status === 404) return ["Check the id — try `search` to look one up"];
   if (status === 400) return ["Check required params and value formats for this command"];
-  if (status === 503) return ["The server is up but this feature may be disabled (e.g. ANTHROPIC_API_KEY not set)"];
+  if (status === 503) return ["The server is up but this feature may be disabled (e.g. the model invoker is unavailable)"];
   return [];
 }
 

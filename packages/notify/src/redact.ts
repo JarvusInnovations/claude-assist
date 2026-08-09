@@ -1,18 +1,18 @@
 /**
- * Redaction for session-control (RC takeover) links.
+ * Redaction for session-control (remote-control takeover) links.
  *
- * herdr-rc returns a claude.ai takeover link of the form
+ * A session spawner returns a takeover link of the form
  *   https://claude.ai/code/session_<token>
- * (see tools/herdr-rc). That link is a live session-control handle — anyone
- * holding it can take over the session — so it is treated as a secret: the
- * dispatcher DELIVERS it to the channel, but the notifications log stores only
- * a redacted form. `payload_hash` (below) lets a delivery be correlated to its
- * payload without persisting the secret.
+ * That link is a live session-control handle — anyone holding it can take over
+ * the session — so it is treated as a secret: the dispatcher DELIVERS it to the
+ * channel, but the notifications log stores only a redacted form.
+ * `payload_hash` (below) lets a delivery be correlated to its payload without
+ * persisting the secret.
  */
 
 import { createHash } from 'node:crypto';
 
-/** The claude.ai RC takeover link; the `session_<token>` segment is the secret. */
+/** The takeover link; the `session_<token>` segment is the secret. */
 const CLAUDE_SESSION_RE = /https?:\/\/claude\.ai\/code\/session_[A-Za-z0-9_-]+/i;
 const CLAUDE_SESSION_RE_G = /https?:\/\/claude\.ai\/code\/session_[A-Za-z0-9_-]+/gi;
 

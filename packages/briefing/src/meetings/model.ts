@@ -13,7 +13,7 @@
  * Sonnet-class default (claude-sonnet-5), matching the sessions-synthesis job.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
+import type { ModelInvoker } from '@jarvus/claude-assist-core';
 import type { FastifyBaseLogger } from 'fastify';
 import type { PrepInputs } from './compose.js';
 import { buildPrepPrompt, deterministicPrep } from './compose.js';
@@ -39,32 +39,37 @@ You write a concise pre-meeting prep briefing for the owner. You are given a mee
 Return ONLY a Tana-style bullet outline: lines beginning with "- " (two-space indent for nesting). No supertags, no "#", no numbered lists, no preamble, no closing remarks.
 </response_format>`;
 
-export class AnthropicPrepComposer implements PrepComposer {
-  private client: Anthropic;
+export class PrepComposerService implements PrepComposer {
+  private invoker: ModelInvoker;
   readonly modelId: string;
+  private model: string | undefined;
   private maxTokens: number;
   private log: FastifyBaseLogger;
 
-  constructor(config: { apiKey: string; model?: string; maxTokens?: number }, log: FastifyBaseLogger) {
-    this.client = new Anthropic({ apiKey: config.apiKey });
-    this.modelId = config.model ?? 'claude-sonnet-5';
+  constructor(
+    config: { invoker: ModelInvoker; model?: string; maxTokens?: number },
+    log: FastifyBaseLogger,
+  ) {
+    this.invoker = config.invoker;
+    this.model = config.model;
+    // Recorded on the stored prep so a rendered artifact still says what wrote it.
+    this.modelId = config.model ?? config.invoker.modelFor('synthesize');
     this.maxTokens = config.maxTokens ?? 1500;
     this.log = log;
   }
 
   async compose(inputs: PrepInputs): Promise<string> {
     try {
-      const res = await this.client.messages.create({
-        model: this.modelId,
-        max_tokens: this.maxTokens,
+      // Free text, not a tagged payload — no parse-correction turn to run.
+      const result = await this.invoker.invoke({
+        task: 'briefing.meeting-prep',
+        tier: 'synthesize',
+        maxTokens: this.maxTokens,
+        ...(this.model ? { model: this.model } : {}),
         system: SYSTEM_PROMPT,
         messages: [{ role: 'user', content: buildPrepPrompt(inputs) }],
       });
-      const text = res.content
-        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-        .map((b) => b.text)
-        .join('\n')
-        .trim();
+      const text = result.text;
       // Guard against an empty / non-bullet reply — fall back rather than render junk.
       if (!text || !text.includes('- ')) return deterministicPrep(inputs);
       return normalizeBullets(text);

@@ -1,6 +1,6 @@
 /**
  * Classification sweep orchestrator. Selects sessions with unclassified delta,
- * serializes only the new-message window (per-session cursor), runs the Haiku
+ * serializes only the new-message window (per-session cursor), runs the
  * classifier, appends events, and advances the cursor — delta-only, idempotent,
  * append-only.
  *

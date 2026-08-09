@@ -16,6 +16,8 @@ COPY packages/session-spawn/package.json packages/session-spawn/package.json
 COPY packages/slack-urgency/package.json packages/slack-urgency/package.json
 COPY packages/briefing/package.json packages/briefing/package.json
 COPY packages/pages/package.json packages/pages/package.json
+COPY packages/approvals/package.json packages/approvals/package.json
+COPY packages/invoker/package.json packages/invoker/package.json
 COPY packages/ledger/package.json packages/ledger/package.json
 COPY packages/kitchen/package.json packages/kitchen/package.json
 COPY apps/server/package.json apps/server/package.json
@@ -37,6 +39,8 @@ COPY packages/session-spawn packages/session-spawn
 COPY packages/slack-urgency packages/slack-urgency
 COPY packages/briefing packages/briefing
 COPY packages/pages packages/pages
+COPY packages/approvals packages/approvals
+COPY packages/invoker packages/invoker
 COPY packages/ledger packages/ledger
 COPY packages/kitchen packages/kitchen
 COPY apps/server apps/server
@@ -52,6 +56,8 @@ RUN cd packages/session-spawn && bun run build
 RUN cd packages/slack-urgency && bun run build
 RUN cd packages/briefing && bun run build
 RUN cd packages/pages && bun run build
+RUN cd packages/approvals && bun run build
+RUN cd packages/invoker && bun run build
 RUN cd packages/ledger && bun run build
 RUN cd packages/kitchen && bun run build
 

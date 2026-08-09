@@ -1,146 +1,124 @@
-# claude-assist-server systemd --user unit
+# Running the server under `systemd --user`
 
-Migrates the server from a manually-run `bun src/server.ts` process in a herdr
-terminal pane (no persisted logs, dies with the pane) to a supervised
-`systemd --user` service, matching the pattern already in use on this box for
-Tana (`~/.config/systemd/user/tana.service`, `xvfb.service`, `openbox.service`,
-`x11vnc.service`) and an MCP proxy (`mcp-proxy.service`).
-
-Files here:
+The server is a single long-lived process. Started by hand it dies with your
+terminal and keeps no logs; under a `systemd --user` unit it survives logout,
+restarts on failure, and writes to journald. This directory holds a unit that
+does that, plus the one helper it needs.
 
 - `claude-assist-server.service` — the unit
-- `wait-for-postgres.sh` — `ExecStartPre` helper that polls
-  `server-postgres-1` (127.0.0.1:2528) before starting, since a `--user` unit
-  can't depend on the system `docker.service`
+- `wait-for-postgres.sh` — an `ExecStartPre` helper that waits for postgres on
+  127.0.0.1:2528, since a `--user` unit cannot declare a dependency on the
+  system-level `docker.service` that usually hosts it
 
-Nothing in this directory is installed, enabled, or started automatically —
-see "Install" below to do that manually when ready.
+Nothing here installs itself. Follow the steps below when you're ready.
 
-## Prerequisites (already verified on this box)
+Paths in this guide use `%h` (systemd's expansion for the unit user's home) and
+assume the repo is checked out at `%h/claude-assist`. If yours lives elsewhere,
+adjust `WorkingDirectory` and `ExecStart` in the unit to match.
 
-**Lingering is enabled** for the deploy user (referred to below as `<user>`):
+## Prerequisites
 
-```
-$ loginctl show-user <user>
-...
-Linger=yes
-```
-
-This means the `<user>` account's systemd instance (and anything running under
-it, including this unit once enabled) keeps running after logout / without an
-active session — same as it does today for Tana. No action needed here.
-
-`~/.config/systemd/user/` already holds the Tana units (`tana.service`,
-`xvfb.service`, `openbox.service`, `x11vnc.service`) plus
-`mcp-proxy.service` and `anytype.service`, all `enabled` and
-`WantedBy=default.target`. This unit follows the same convention.
-
-## Surprises found while preparing this
-
-- **`systemd --user`'s default PATH is minimal** — verified via
-  `systemctl --user show-environment`, it's just
-  `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin`.
-  No `~/.local/bin`, no asdf shims. The asdf `bun` shim
-  (`~/.asdf/shims/bun`) execs `asdf exec bun`, and `asdf` itself lives at
-  `~/.local/bin/asdf` on this box — under the unadorned default PATH the shim
-  fails with `exec: asdf: not found`. The unit sets an explicit
-  `Environment=PATH=...` that prepends `~/.local/bin` and `~/.asdf/shims` to
-  the default systemd PATH to fix this. Confirmed working end-to-end with
-  `env -i` reproducing that exact PATH + `WorkingDirectory` combo — resolves
-  to bun 1.3.6 via the repo's `.tool-versions`.
-- **The bun shim is asdf-stable, not version-pinned** — `~/.asdf/shims/bun`
-  always resolves the version from `.tool-versions` at invocation time
-  (walking up from cwd), so the unit doesn't need to reference
-  `~/.asdf/installs/bun/<version>/bin/bun` directly and won't go stale on a
-  `bun` upgrade.
-- **Env loading is dotenv-via-cwd, not systemd `EnvironmentFile=`.** The
-  server's `src/plugins/env.ts` registers `@fastify/env` with `dotenv: true`,
-  which loads `.env` relative to `process.cwd()`. There's no explicit path —
-  it only works because the process's cwd is `apps/server`. The unit sets
-  `WorkingDirectory=%h/claude-assist/apps/server` for exactly this
-  reason; no `EnvironmentFile=` directive is used or needed, and the unit
-  doesn't duplicate anything from `.env`.
-- **`server-postgres-1` is a plain docker container**, not docker-compose
-  managed by the "api" service (that service is `profiles: ["disabled"]` in
-  `docker-compose.override.yml` — the bare-metal `bun src/server.ts` process
-  is the real prod runtime, matching what's running today). Since a
-  `--user` unit can't `After=`/`Requires=` the system `docker.service`,
-  `wait-for-postgres.sh` polls `pg_isready -h 127.0.0.1 -p 2528` for up to
-  60s (30 attempts × 2s) before `ExecStart` runs. If it times out the unit
-  fails and `Restart=on-failure` retries — useful after a reboot if Docker is
-  still coming up when this unit starts.
-- **The in-process scheduler needs no separate unit.** `apps/server/src/server.ts`
-  calls `createScheduler(fastify)` from `@jarvus/claude-assist-core`
-  (`packages/core/src/scheduler.ts`, built on `croner`) — cron-ish jobs run
-  as timers inside the same Fastify process, not as separate cron jobs or
-  processes. One unit covers everything.
-- **Health endpoint is namespaced**: `/api/health`, not `/health` — the
-  routes are registered under an `/api` prefix in `server.ts`.
-- `NODE_ENV=development` is set in the live `apps/server/.env` today (not
-  `production`) — that's existing behavior carried over as-is, not something
-  this migration changes. It only affects log formatting (pino-pretty
-  transport vs. raw JSON).
-
-## Install (do this manually — not done by preparing this PR)
+**Enable lingering** for the account the service runs as, or its systemd
+instance stops at logout and takes the server with it:
 
 ```bash
-# 1. Symlink (preferred, keeps it in sync with the repo) or copy the unit
-ln -s ~/claude-assist/deploy/systemd/claude-assist-server.service \
+sudo loginctl enable-linger <user>
+loginctl show-user <user> | grep Linger   # expect: Linger=yes
+```
+
+**Know how `bun` resolves on a minimal PATH.** `systemd --user` starts with a
+bare PATH — no `~/.local/bin`, no version-manager shims:
+
+```bash
+systemctl --user show-environment | grep '^PATH='
+```
+
+If you install bun through a version manager, its shim usually needs the
+manager's own binary on PATH to work at all, so invoking the shim from a unit
+fails with something like `exec: asdf: not found`. The unit therefore sets an
+explicit `Environment=PATH=...`. Edit that line to match your installation, or
+point `ExecStart` at an absolute bun path. Reproduce the exact environment
+before trusting it:
+
+```bash
+env -i PATH=<the unit's PATH> HOME=$HOME sh -c 'cd <workdir> && bun --version'
+```
+
+A version-manager shim reads the project's `.tool-versions` at invocation time,
+so referencing the shim (rather than a pinned install path) keeps the unit
+correct across bun upgrades.
+
+## Things worth knowing before you install
+
+- **Env loading is dotenv-relative-to-cwd, not `EnvironmentFile=`.**
+  `apps/server/src/plugins/env.ts` registers `@fastify/env` with `dotenv: true`,
+  which reads `.env` relative to `process.cwd()`. That is why the unit sets
+  `WorkingDirectory` to `apps/server` and why it duplicates nothing from `.env`.
+- **The scheduler needs no second unit.** `createScheduler()` runs cron-ish jobs
+  as timers inside the same process, so one unit covers the API, the sweeps, and
+  the scheduled pipelines.
+- **Postgres is usually a container the unit can't depend on.** Hence
+  `wait-for-postgres.sh`: it polls `pg_isready` for up to 60s (30 × 2s) before
+  `ExecStart`. On timeout the unit fails and `Restart=on-failure` retries —
+  which is what you want after a reboot where Docker is still coming up.
+- **The health endpoint is namespaced.** Routes register under `/api`, so it is
+  `/api/health`, not `/health`.
+- **`NODE_ENV` only affects log formatting here** (pretty transport vs. raw
+  JSON). Set it to whatever suits the box.
+
+## Install
+
+```bash
+# 1. Symlink the unit (a symlink keeps it in sync with the repo) or copy it
+ln -s %h/claude-assist/deploy/systemd/claude-assist-server.service \
   ~/.config/systemd/user/claude-assist-server.service
 
-# 2. Reload the user systemd instance so it picks up the new unit
+# 2. Pick the unit up
 systemctl --user daemon-reload
 
-# 3. Enable it (WantedBy=default.target — starts on next boot/login and
-#    persists thanks to lingering, same as Tana)
+# 3. Enable it (WantedBy=default.target — starts at boot/login, persists
+#    across logout thanks to lingering)
 systemctl --user enable claude-assist-server.service
 ```
 
-Do **not** `systemctl --user start` yet — see cutover order below.
+Do **not** start it yet if a hand-run server is still up — see below.
 
-## Cutover order (stop the old pane process FIRST)
+## Cutover: stop the hand-run process first
 
-Both the herdr-pane `bun src/server.ts` and the systemd unit's `bun
-src/server.ts` will bind the same port (2529) and connect to the same
-postgres — running both at once will fight over the port. Stop the old one
-before starting the new one:
+Both processes bind port 2529 and talk to the same database, so they will fight
+over the port. Stop the old one before starting the unit:
 
 ```bash
-# 1. Find and stop the herdr-pane process
+# 1. Find and stop it
 pgrep -fa 'bun.*src/server\.ts'
-kill <pid>              # or Ctrl-C in the herdr pane / close the pane
+kill <pid>
 
 # 2. Confirm the port is free
 ss -ltnp | grep :2529   # should print nothing
 
-# 3. Start the systemd unit
+# 3. Start the unit
 systemctl --user start claude-assist-server.service
 ```
 
 ## Verification
 
 ```bash
-# Unit state
 systemctl --user status claude-assist-server.service
-
-# Follow logs (journald — this is the persisted-log win over the pty pane)
 journalctl --user -u claude-assist-server -f
-
-# Health check
 curl -s http://localhost:2529/api/health
 # expect: {"status":"ok","timestamp":"..."}
 ```
 
-If it fails to start, `journalctl --user -u claude-assist-server -n 100
---no-pager` will show whether it's the `wait-for-postgres.sh` pre-start
-(postgres unreachable) or the app itself (e.g. missing/invalid `.env`
-values — `DATABASE_URL` is `required` in the `@fastify/env` schema).
+On a failure to start, `journalctl --user -u claude-assist-server -n 100
+--no-pager` tells you which half broke: `wait-for-postgres.sh` (database
+unreachable) or the app itself (most often a missing or invalid `.env` —
+`DATABASE_URL` is `required` in the `@fastify/env` schema).
 
 ## Rollback
 
 ```bash
 systemctl --user stop claude-assist-server.service
 systemctl --user disable claude-assist-server.service
-# then restart the old herdr-pane process manually:
+# then run it by hand again:
 cd ~/claude-assist/apps/server && bun src/server.ts
 ```

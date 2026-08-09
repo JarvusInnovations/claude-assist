@@ -1,6 +1,30 @@
 {
   "version": 1,
   "skills": {
+    "agent-dev-workflow": {
+      "source": "JarvusInnovations/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/agent-dev-workflow/SKILL.md",
+      "computedHash": "b28986d23c53a405ebe0d9253d43f61849e47742412d2d6fe9c82b11ae6d154f"
+    },
+    "axi-skills": {
+      "source": "JarvusInnovations/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/axi-skills/SKILL.md",
+      "computedHash": "4fb61960344ab7218697b3ccd8dd243f3d18701b3fe452c0f48437e35c4507c9"
+    },
+    "ci-quality-gates": {
+      "source": "JarvusInnovations/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/ci-quality-gates/SKILL.md",
+      "computedHash": "54c70564706320bb7621cf75eba07150e9952e527440b175f87a1add257fbbd8"
+    },
+    "jarvus-fastify": {
+      "source": "JarvusInnovations/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/jarvus-fastify/SKILL.md",
+      "computedHash": "55d1a23b3a5067efe47dcb348953bc44791f10315dcd49384ee354036dbb45dd"
+    },
     "specops": {
       "source": "JarvusInnovations/specops",
       "sourceType": "github",

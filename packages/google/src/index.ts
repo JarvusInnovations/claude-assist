@@ -90,19 +90,19 @@ export default createPlugin('google', async (fastify: FastifyInstance, options: 
 
   // Two-tier urgency collaborators (attention store + cheap-model judges).
   const attentionStore = new PgEmailAttentionStore(fastify.sql);
-  const residueJudge = config.anthropicApiKey
-    ? new EmailResidueClassifier({ apiKey: config.anthropicApiKey }, fastify.log)
+  const residueJudge = fastify.invoker?.enabled
+    ? new EmailResidueClassifier({ invoker: fastify.invoker }, fastify.log)
     : undefined;
 
   // Owner-interest opportunity evaluator for solicitation-class mail. Off unless
   // an interest-spec file is configured (instance data).
   let opportunityEvaluator: OpportunityEvaluator | undefined;
-  if (config.anthropicApiKey && config.opportunityPromptFile) {
+  if (fastify.invoker?.enabled && config.opportunityPromptFile) {
     try {
       const interestSpec = loadOpportunityPrompt(config.opportunityPromptFile);
       if (interestSpec) {
         opportunityEvaluator = new OpportunityEvaluator(
-          { apiKey: config.anthropicApiKey, interestSpec },
+          { invoker: fastify.invoker, interestSpec },
           fastify.log
         );
         fastify.log.info(
@@ -118,14 +118,14 @@ export default createPlugin('google', async (fastify: FastifyInstance, options: 
     }
   }
 
-  // Initialize Triage service (optional - requires anthropicApiKey)
+  // Initialize Triage service (optional - requires the model invoker)
   let triageService: TriageService | null = null;
-  if (config.anthropicApiKey) {
+  if (fastify.invoker?.enabled) {
     triageService = new TriageService(
       fastify.sql,
       fastify.log,
       {
-        apiKey: config.anthropicApiKey,
+        invoker: fastify.invoker,
         concurrency: config.triageConcurrency,
         disableEmailTriage: config.disableEmailTriage,
       },
@@ -140,7 +140,7 @@ export default createPlugin('google', async (fastify: FastifyInstance, options: 
         residueJudge,
         opportunityEvaluator,
         quietHours: {
-          timeZone: config.urgencyTimeZone ?? 'America/New_York',
+          timeZone: config.urgencyTimeZone ?? 'UTC',
           startHour: config.urgencyQuietStartHour ?? 22,
           endHour: config.urgencyQuietEndHour ?? 7,
         },
@@ -148,7 +148,7 @@ export default createPlugin('google', async (fastify: FastifyInstance, options: 
     );
     fastify.log.info('Triage service enabled');
   } else {
-    fastify.log.warn('anthropicApiKey not set - email triage disabled');
+    fastify.log.warn('Model invoker unavailable - email triage disabled');
   }
 
   // Executor + digest (the Gmail-mutating side; gated by disableEmailActions).
@@ -169,14 +169,14 @@ export default createPlugin('google', async (fastify: FastifyInstance, options: 
       fastify.heartbeats,
       fastify.ledger
     );
-    // Haiku-class summarizer for the digest-category content summaries (reuses
-    // the triage API key; summarizing, not judging). Absent → deterministic
-    // fallback bullets. Wrapped in a membership-keyed cache so re-assembling an
-    // unchanged pending set (every page load hits /digest/pending) costs zero
-    // model calls and doesn't rephrase-jitter the bullets.
-    const summarizer = config.anthropicApiKey
+    // Cheap-tier summarizer for the digest-category content summaries
+    // (summarizing, not judging). Absent → deterministic fallback bullets.
+    // Wrapped in a membership-keyed cache so re-assembling an unchanged pending
+    // set (every page load hits /digest/pending) costs zero model calls and
+    // doesn't rephrase-jitter the bullets.
+    const summarizer = fastify.invoker?.enabled
       ? new CachingSummarizer(
-          new AnthropicDigestSummarizer({ apiKey: config.anthropicApiKey })
+          new AnthropicDigestSummarizer({ invoker: fastify.invoker })
         )
       : undefined;
     digestService = new DigestService(fastify.sql, fastify.log, fastify.notify, {

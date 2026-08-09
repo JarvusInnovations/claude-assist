@@ -112,18 +112,20 @@ export default createPlugin('kitchen', async (fastify: FastifyInstance, options:
   const entryStore = new PgEntryStore(fastify.sql);
   const recipeStore = new PgRecipeStore(fastify.sql);
 
-  // Estimator (optional — requires anthropicApiKey; without it, entries sit
-  // in `estimating` until either a key is configured or the owner supplies
-  // a manual correction).
+  // Estimator (optional — requires the metered-model invoker; without it,
+  // entries sit in `estimating` until either the invoker is configured or the
+  // owner supplies a manual correction).
   let estimator: KitchenEstimator | null = null;
-  if (config.anthropicApiKey) {
+  if (fastify.invoker?.enabled) {
     estimator = new KitchenEstimator(
-      { apiKey: config.anthropicApiKey, model: config.estimationModel },
+      { invoker: fastify.invoker, ...(config.estimationModel ? { model: config.estimationModel } : {}) },
       fastify.log
     );
     fastify.log.info('Kitchen estimator enabled');
   } else {
-    fastify.log.warn('anthropicApiKey not set - kitchen entries will remain in estimating status');
+    fastify.log.warn(
+      'The model invoker is unavailable - kitchen entries will remain in estimating status'
+    );
   }
 
   const readSheetRecipes =
@@ -132,15 +134,21 @@ export default createPlugin('kitchen', async (fastify: FastifyInstance, options:
       : undefined;
 
   // ── Inventory (phase 2) ─────────────────────────────────────────────────────
-  // Receipt parsing runs on the cheap tier; label extraction on the strong
-  // (estimation) tier. Both require the API key — without it, receipts still
-  // post and their lines land as needs_info items, and label intake 503s.
+  // Receipt parsing runs on the cheap extract tier; label extraction on the
+  // vision tier. Both need the invoker — without it, receipts still post and
+  // their lines land as needs_info items, and label intake 503s.
   const inventoryStore = new PgInventoryStore(fastify.sql);
-  const receiptParser = config.anthropicApiKey
-    ? new KitchenReceiptParser({ apiKey: config.anthropicApiKey, model: config.receiptModel }, fastify.log)
+  const receiptParser = fastify.invoker?.enabled
+    ? new KitchenReceiptParser(
+        { invoker: fastify.invoker, ...(config.receiptModel ? { model: config.receiptModel } : {}) },
+        fastify.log
+      )
     : null;
-  const labelParser = config.anthropicApiKey
-    ? new KitchenLabelParser({ apiKey: config.anthropicApiKey, model: config.estimationModel }, fastify.log)
+  const labelParser = fastify.invoker?.enabled
+    ? new KitchenLabelParser(
+        { invoker: fastify.invoker, ...(config.estimationModel ? { model: config.estimationModel } : {}) },
+        fastify.log
+      )
     : null;
 
   // `pipeline` (KitchenPipeline) is declared here and assigned below so

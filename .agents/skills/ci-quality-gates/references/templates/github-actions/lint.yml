@@ -1,0 +1,87 @@
+name: Lint
+
+# Pre-merge lint + format + type-check gate. Fast and credential-free: it never
+# needs cloud secrets, so it runs on every PR (including forks). Path filters keep
+# it from firing on unrelated changes; ADAPT the paths to your repo's layout.
+on:
+  pull_request:
+    paths:
+      - 'pkg/**'              # ADAPT: Python package dir(s)
+      - 'services/**'         # ADAPT: TS service/package dir(s)
+      - '.github/workflows/lint.yml'
+  push:
+    branches: [develop]
+    paths:
+      - 'pkg/**'
+      - 'services/**'
+      - '.github/workflows/lint.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  # --- Python (ruff). Delete this job if the repo has no Python. -------------
+  python-lint:
+    name: Ruff (pkg)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pkg        # ADAPT: dir containing pyproject.toml
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-asdf
+      - name: Ruff lint
+        run: uv run --frozen ruff check
+      - name: Ruff format check
+        run: uv run --frozen ruff format --check
+
+  # --- TypeScript (oxc + tsc). Delete this job if the repo has no TS. --------
+  # Single-package repo: drop the matrix, set working-directory to the package,
+  # and inline the three steps. The matrix is for monorepos with several packages.
+  #
+  # PROJECT-REFERENCES MONOREPO? If packages reference each other (root tsconfig
+  # with `references`), do NOT type-check per package here — a per-package
+  # `tsc --noEmit` doesn't BUILD referenced deps, so it fails in a clean checkout
+  # when a dep's declarations don't exist yet. Drop the per-package Type check
+  # step below and add the separate root `typecheck` job at the bottom instead.
+  ts-lint:
+    name: oxc (${{ matrix.package }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: services/api          # ADAPT
+            typecheck: true
+          - package: services/worker        # ADAPT
+            typecheck: true
+    defaults:
+      run:
+        working-directory: ${{ matrix.package }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-asdf
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Lint
+        run: bun run lint
+      - name: Check formatting
+        run: bun run format:check
+      - name: Type check
+        if: ${{ matrix.typecheck }}
+        run: bun run typecheck
+
+  # --- Root type-check (PROJECT-REFERENCES MONOREPO ONLY) -------------------
+  # Use this INSTEAD of the per-package Type check step above when packages
+  # reference each other. `tsc -b` (build mode) builds referenced projects in
+  # dependency order, so cross-package types resolve in a clean checkout. The
+  # root `typecheck` script should be `tsc -b`. Delete this job if not a
+  # project-references monorepo.
+  # typecheck:
+  #   name: Type check (tsc -b)
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v6
+  #     - uses: ./.github/actions/setup-asdf   # or oven-sh/setup-bun@v2
+  #     - run: bun install --frozen-lockfile
+  #     - run: bun run typecheck                # root script = tsc -b

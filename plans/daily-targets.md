@@ -21,7 +21,7 @@ In scope: `KITCHEN_DAILY_TARGETS` config parse + boot-loud validation, the
 `targets` block on `GET /kitchen/summary` (omitted when unconfigured), the CLI
 day-summary rendering (`logged / target` + remaining per configured line), and
 tests. Out of scope: any client UI (the capture app's day budget sheet is
-specced in hari-capture `specs/screens/journal.md` and planned in Hari
+specced and planned on the instance side (a capture app screen plus the
 `plans/daily-macro-budgets.md`), and any auto-tuning of the lines.
 
 ## Implements
@@ -106,5 +106,5 @@ specced in hari-capture `specs/screens/journal.md` and planned in Hari
 
 ## Follow-ups
 
-- None. The consuming budget-sheet UI shipped in hari-capture#38 (tracked by
-  Hari `plans/daily-macro-budgets.md`).
+- None. The consuming budget-sheet UI shipped on the instance's capture app,
+  tracked by that instance's own plan.

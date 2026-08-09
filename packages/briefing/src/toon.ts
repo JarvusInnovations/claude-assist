@@ -1,6 +1,7 @@
 /**
- * Decode the TOON output of the `-axi` CLIs (`gws-axi`, `hq-axi`) into row
- * records, using the canonical `@toon-format/toon` decoder.
+ * Decode the TOON output of an `-axi` CLI — the calendar source, a configured
+ * commitments source — into row records, using the canonical
+ * `@toon-format/toon` decoder.
  *
  * The CLIs emit the reference TOON format wrapped in decoration:
  *

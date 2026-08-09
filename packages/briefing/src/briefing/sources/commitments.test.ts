@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { parseCommitments } from './commitments.js';
 
-// A full hq-axi-shaped document: leading scalars, the named tabular block, and
+// A full CLI-shaped document: leading scalars, the named tabular block, and
 // a trailing help footer. One title carries a comma, an embedded quote (`\"`)
 // and an HTML anchor — the same shape that truncated calendar rows under the
 // old hand-rolled splitter. Parsing must keep every column.
@@ -13,7 +13,7 @@ const DOC = [
   '  review-doc,"Review \\"the doc\\", then <a href=\\"https://x/y\\">reply</a>",2026-07-25,alex,dana,soft',
   '  undated,Someday thing,null,null,null,null',
   'help[1]:',
-  '  Run `hq-axi commitment list --help`',
+  '  Run `commitments-cli commitment list --help`',
 ].join('\n');
 
 describe('parseCommitments', () => {

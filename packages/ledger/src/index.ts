@@ -24,7 +24,7 @@ import {
   type LedgerPluginConfig,
 } from '@jarvus/claude-assist-core';
 import { LedgerStore } from './store.js';
-import { RULES, RULES_VERSION } from './rules.js';
+import { RULES, RULES_VERSION, compileRules } from './rules.js';
 import {
   ensureRulesVersion,
   runIncrementalDerivation,
@@ -45,6 +45,25 @@ export default createPlugin('ledger', async (fastify: FastifyInstance, options: 
 
   const store = new LedgerStore(fastify.sql);
 
+  // Instance-specific tooling enters through config, never through the
+  // committed ruleset: a public toolkit ships the mechanism, not the roster of
+  // one operator's CLIs. Extra rules run AFTER the built-ins, so a configured
+  // rule refines the tail rather than shadowing a general one.
+  const extraRules = compileRules(config.extraRules ?? [], (spec, error) => {
+    fastify.log.error({ err: error, rule: spec.name }, 'Ledger: skipping a malformed extra rule');
+  });
+  const rules = [...RULES, ...extraRules];
+  if (extraRules.length > 0) {
+    fastify.log.info({ count: extraRules.length }, 'Ledger: loaded instance extraction rules');
+  }
+
+  // Configured rules are outside the committed RULES_VERSION, so adding one
+  // classifies new calls but leaves history alone. The suffix is how an
+  // operator asks for the corpus to be replayed under the wider ruleset.
+  const rulesVersion = config.rulesVersionSuffix
+    ? `${RULES_VERSION}+${config.rulesVersionSuffix}`
+    : RULES_VERSION;
+
   // Direct-write surface — record() is guarded by callers with `fastify.ledger?.`.
   fastify.decorate('ledger', {
     record: (input) => store.recordDirect(input),
@@ -59,8 +78,8 @@ export default createPlugin('ledger', async (fastify: FastifyInstance, options: 
   // than failing startup.
   try {
     await ensureRulesVersion(store, {
-      rules: RULES,
-      rulesVersion: RULES_VERSION,
+      rules,
+      rulesVersion,
       batchSize,
       log: fastify.log,
     });
@@ -80,8 +99,8 @@ export default createPlugin('ledger', async (fastify: FastifyInstance, options: 
       runOnStartup: false,
       handler: async () => {
         const result = await runIncrementalDerivation(store, {
-          rules: RULES,
-          rulesVersion: RULES_VERSION,
+          rules,
+          rulesVersion,
           batchSize,
           log: fastify.log,
         });
@@ -94,12 +113,16 @@ export default createPlugin('ledger', async (fastify: FastifyInstance, options: 
     fastify.log.info('Ledger: scheduled derivation disabled via config');
   }
 
-  fastify.log.info({ rulesVersion: RULES_VERSION }, 'Ledger module loaded');
+  fastify.log.info({ rulesVersion }, 'Ledger module loaded');
 });
 
 // Re-export the implementation surface for tests / external use.
 export {
   RULES,
+  EXAMPLE_EXTRA_RULES,
+  SEGMENT,
+  compileRules,
+  type LedgerRuleSpec,
   RULES_VERSION,
   classifyToolCall,
   deriveAction,

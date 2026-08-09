@@ -64,7 +64,7 @@ export const COMMAND_GROUPS: CommandGroup[] = [
   {
     group: "Manage",
     commands: [
-      { usage: "outlines [<session-id>...]", summary: "generate AI outlines for sessions missing/stale ones (needs ANTHROPIC_API_KEY)" },
+      { usage: "outlines [<session-id>...]", summary: "generate AI outlines for sessions missing/stale ones (needs the server's model invoker)" },
       { usage: "outlines progress", summary: "check background outline-generation progress" },
       { usage: "sync [--force]", summary: "trigger an immediate local session sync (--force re-parses all)" },
       { usage: "share <session-id>", summary: "mint a shareable auth code for a session transcript" },

@@ -5,6 +5,8 @@ import type { Scheduler } from './scheduler.js';
 import type { NotifyDispatcher, HeartbeatRegistry } from './notify.js';
 import type { SessionSpawner } from './session-spawn.js';
 import type { Ledger } from './ledger.js';
+import type { ModelInvoker, ModelTier } from './invoker.js';
+import type { ApprovalService } from './approvals.js';
 
 /**
  * Extended Fastify instance with claude-assist decorators
@@ -37,6 +39,19 @@ declare module 'fastify' {
      * (`SESSION_SPAWN_CMD` unset), `spawn()` returns a `not_configured` record.
      */
     sessionSpawner?: SessionSpawner;
+    /**
+     * The single choke point for metered model calls. Present only when the
+     * invoker module is loaded; a module that needs a model takes it from here
+     * at registration and skips constructing its service when
+     * `invoker.enabled` is false. See `specs/modules/invoker.md`.
+     */
+    invoker?: ModelInvoker;
+    /**
+     * Human-approval gates. Present only when the approvals module is loaded;
+     * callers guard with `fastify.approvals?.…`. Never awaited — `request()`
+     * records and notifies, and the caller returns.
+     */
+    approvals?: ApprovalService;
   }
 }
 
@@ -69,6 +84,57 @@ export interface PluginOptions {
   ledgerConfig?: LedgerPluginConfig;
   /** Configuration for kitchen plugin */
   kitchenConfig?: KitchenPluginConfig;
+  /** Configuration for the invoker plugin */
+  invokerConfig?: InvokerPluginConfig;
+  /** Configuration for the approvals plugin */
+  approvalsConfig?: ApprovalsPluginConfig;
+}
+
+/**
+ * Configuration for the invoker plugin — the single metered-model choke point.
+ *
+ * Every field here is a lever on spend or on which model does which job. Model
+ * ids appear in `tierModels` and nowhere else in the system.
+ */
+export interface InvokerPluginConfig {
+  /** The one metered credential. Absent leaves the invoker disabled. */
+  anthropicApiKey?: string;
+  /** Per-tier model overrides. Unset tiers fall back to the built-in map. */
+  tierModels?: Partial<Record<ModelTier, string>>;
+  /** Per-model price overrides, USD per million tokens. */
+  prices?: Record<string, ModelPriceConfig>;
+  /** Stop all metered invocation while leaving the host healthy. */
+  killSwitch?: boolean;
+  /** Rolling-window dollar ceiling. Unset means no dollar ceiling. */
+  dailyBudgetUsd?: number;
+  /** Rolling-window token ceiling. Unset means no token ceiling. */
+  dailyBudgetTokens?: number;
+  /** Per-task dollar ceilings, keyed by task id. */
+  taskBudgetsUsd?: Record<string, number>;
+  /** Transport attempts per call, including the first. Default 3. */
+  maxAttempts?: number;
+  /** First retry delay in ms; doubles with jitter. Default 500. */
+  retryBaseMs?: number;
+  /** Default wall-clock timeout in ms. Default 120000. */
+  timeoutMs?: number;
+}
+
+/** USD per million tokens, by token class. */
+export interface ModelPriceConfig {
+  input: number;
+  output: number;
+  cacheWrite?: number;
+  cacheRead?: number;
+}
+
+/** Configuration for the approvals plugin. */
+export interface ApprovalsPluginConfig {
+  /** Default lifetime of a pending request, ms. Default 24h. */
+  defaultExpiryMs?: number;
+  /** Cron for the expiry sweep. Default every 15 minutes. */
+  expireCron?: string;
+  /** Base URL a notification links to, so a human can act on the request. */
+  baseUrl?: string;
 }
 
 /**
@@ -76,13 +142,14 @@ export interface PluginOptions {
  * estimation, recipes).
  */
 export interface KitchenPluginConfig {
-  /** Anthropic API key for the vision estimation call. */
-  anthropicApiKey?: string;
-  /** Estimation model (default: claude-fable-5 — a strong vision-capable tier). */
+  /**
+   * Pin a model for the vision estimation call, overriding the `vision` tier.
+   * Unset — the normal case — lets the invoker's tier map decide.
+   */
   estimationModel?: string;
   /**
-   * Cheap receipt-parse model (default: claude-haiku-4-5). Phase-2 receipt line
-   * extraction is mechanical, so it runs on the cheap tier.
+   * Pin a model for receipt-line extraction, overriding the `extract` tier.
+   * The work is mechanical, which is why the cheap tier is the right default.
    */
   receiptModel?: string;
   /**
@@ -160,6 +227,26 @@ export interface KitchenPluginConfig {
  * Configuration for the ledger plugin (derived audit ledger + direct writes).
  */
 export interface LedgerPluginConfig {
+  /**
+   * Instance-specific extraction rules, appended after the built-in set.
+   * The seam that keeps one operator's CLI names out of a public toolkit —
+   * see the ledger module's `EXAMPLE_EXTRA_RULES`.
+   */
+  extraRules?: Array<{
+    name: string;
+    tool: string;
+    toolPrefix?: boolean;
+    pattern: string;
+    exclude?: string;
+    actionType: string;
+    targetSystem: string;
+    summary?: string;
+  }>;
+  /**
+   * Suffix appended to the built-in `RULES_VERSION`. Bump it after changing
+   * `extraRules` to re-derive the historical corpus under the new ruleset.
+   */
+  rulesVersionSuffix?: string;
   /** Cron for the incremental derivation pass (default every 15 min). */
   deriveCron?: string;
   /** Tool-calls scanned per derivation batch (default 1000). */
@@ -180,11 +267,9 @@ export interface SlackUrgencyPluginConfig {
   roster?: string;
   /** Channel ids to watch beyond DMs. */
   watchChannels?: string[];
-  /** Anthropic API key for the Haiku residue pass. */
-  anthropicApiKey?: string;
-  /** Residue classifier model (default claude-haiku-4-5). */
+  /** Pin a model for the residue pass, overriding the `classify` tier. */
   model?: string;
-  /** IANA time zone for quiet hours (default America/New_York). */
+  /** IANA time zone for quiet hours. Unset falls back to UTC. */
   timeZone?: string;
   /** Quiet-hours window start hour 0–23 (default 22). */
   quietStartHour?: number;
@@ -211,11 +296,12 @@ export interface SlackUrgencyPluginConfig {
  * Configuration for the briefing plugin (daily briefing + meeting alerts).
  */
 export interface BriefingPluginConfig {
-  /** Anthropic API key for the join-required residue classifier. */
-  anthropicApiKey?: string;
-  /** Residue classifier model (default: claude-haiku-4-5). */
+  /**
+   * Pin a model for the join-required residue classifier, overriding the
+   * `classify` tier.
+   */
   classifierModel?: string;
-  /** IANA timezone for "today" + the briefing cron (default America/New_York). */
+  /** IANA timezone for "today" + the briefing cron. Unset falls back to UTC. */
   timeZone?: string;
   /** gws-axi binary path (default: `gws-axi` on PATH). */
   gwsAxiBin?: string;
@@ -251,7 +337,11 @@ export interface BriefingPluginConfig {
   // ── Per-meeting briefings (preps on the virtuous cycle) ──────────────────
   /** Skip the per-meeting briefing (prep) cycle. */
   disableMeetingBriefings?: boolean;
-  /** Sonnet-class prep composer model (default: claude-sonnet-5). */
+  /**
+   * Pin a model for the prep composer, overriding the `synthesize` tier.
+   * Composing a prep is judgment work, which is why it defaults to the strong
+   * tier rather than the classifier's.
+   */
   meetingPrepModel?: string;
   /**
    * Optional pluggable prior-occurrence context source: a CLI that receives
@@ -326,8 +416,6 @@ export interface SessionsPluginConfig {
   originalClaudeDir?: string;
   /** Minimum file size to process */
   minFileSize?: number;
-  /** Anthropic API key for AI features */
-  anthropicApiKey?: string;
   /** Concurrency for outline generation */
   outlineConcurrency?: number;
   /** Disable local filesystem scanning */
@@ -335,8 +423,9 @@ export interface SessionsPluginConfig {
   /** Disable AI outline generation */
   disableGenerateOutlines?: boolean;
   /**
-   * Transcript content substrings that mark a session for ingest suppression.
-   * Appended to the built-in defaults (e.g. M87 triage runner).
+   * Prompt substrings that mark a session for ingest suppression — the seam
+   * for whatever local automation floods this instance's archive. Which
+   * automation that is, is instance data; the toolkit ships no defaults.
    */
   ignoreContentMarkers?: readonly string[];
 
@@ -426,9 +515,7 @@ export interface KitchenRecipeSummary {
 export type KitchenRecipesProvider = () => Promise<KitchenRecipeSummary[]>;
 
 export interface CapturePluginConfig {
-  /** Anthropic API key for AI classification */
-  anthropicApiKey?: string;
-  /** Classifier model (default: claude-haiku-4-5) */
+  /** Pin a model for capture classification, overriding the `classify` tier. */
   classifierModel?: string;
   /** Concurrency for the classification sweep */
   concurrency?: number;
@@ -462,8 +549,6 @@ export interface GooglePluginConfig {
   clientSecret: string;
   /** OAuth redirect URI */
   redirectUri: string;
-  /** Anthropic API key for AI triage */
-  anthropicApiKey?: string;
   /** Concurrency for email triage */
   triageConcurrency?: number;
   /** Disable Gmail sync */
@@ -490,7 +575,7 @@ export interface GooglePluginConfig {
   disableEmailActions?: boolean;
   /** Disable only the urgent-alert dispatch at triage completion. */
   disableEmailAlerts?: boolean;
-  /** IANA time zone for the urgency quiet-hours window (default America/New_York). */
+  /** IANA time zone for the urgency quiet-hours window. Unset falls back to UTC. */
   urgencyTimeZone?: string;
   /** Quiet-hours window start hour 0–23 (default 22). INTERRUPTs inside it are held. */
   urgencyQuietStartHour?: number;

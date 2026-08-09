@@ -25,7 +25,19 @@ building.
 - Existing modules predate `specs/` — back-spec opportunistically when touching
   them; new modules start spec-first.
 
-Query the DAG: `.agents/skills/specops/scripts/specops next` / `… dag`.
+Start from `specs/architecture.md` (the shape and its layering rules) and
+`specs/principles.md` (the trade-offs already resolved — read these before
+proposing a design). Query the DAG:
+`.agents/skills/specops/scripts/specops next` / `… dag`. Run
+`/audit-spec-drift` to compare specs against the implementation.
+
+## House skills
+
+Vendored under `.agents/skills/` alongside specops: **jarvus-fastify**
+(backend conventions for this exact stack), **agent-dev-workflow** (worktree-
+isolated local dev), **ci-quality-gates** (pre-merge CI), **axi-skills**
+(packaging an AXI CLI inside a skill). Reach for the relevant one before
+improvising — they carry conventions this repo is expected to follow.
 
 ## Commands
 

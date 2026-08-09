@@ -21,8 +21,8 @@
  * one parse-correction retry, enum/shape validation.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import type { FastifyBaseLogger } from 'fastify';
+import type { ModelInvoker } from '@jarvus/claude-assist-core';
 
 class VerdictParseError extends Error {
   constructor(message: string) {
@@ -66,8 +66,9 @@ export interface EmailJudgeInput {
 }
 
 export interface EmailResidueConfig {
-  apiKey: string;
-  /** default: claude-haiku-4-5 */
+  /** The single metered-model choke point (specs/modules/invoker.md). */
+  invoker: ModelInvoker;
+  /** Pin a model for this call site. Prefer moving the tier instead. */
   model?: string;
   maxTokens?: number;
 }
@@ -113,53 +114,34 @@ Return ONLY a JSON object inside <verdict> tags. No markdown, no text outside th
 </response_format>`;
 
 export class EmailResidueClassifier implements EmailResidueJudge {
-  private client: Anthropic;
-  private model: string;
+  private invoker: ModelInvoker;
+  private model: string | undefined;
   private maxTokens: number;
   private log: FastifyBaseLogger;
 
   constructor(config: EmailResidueConfig, log: FastifyBaseLogger) {
-    this.client = new Anthropic({ apiKey: config.apiKey });
-    this.model = config.model ?? 'claude-haiku-4-5';
+    this.invoker = config.invoker;
+    this.model = config.model;
     this.maxTokens = config.maxTokens ?? 512;
     this.log = log;
   }
 
   async judge(input: EmailJudgeInput): Promise<EmailModelVerdict> {
-    const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
-      { role: 'user', content: this.buildPrompt(input) },
-    ];
+    // Tag extraction, the parse-correction turn, retries, timeout, and spend
+    // accounting live in the invoker; what stays here is the prompt and the
+    // shape validation, which are this module's own judgment.
+    const parsed = await this.invoker.invokeTagged<Omit<EmailModelVerdict, 'model'>>({
+      task: 'google.email-residue',
+      tier: 'classify',
+      maxTokens: this.maxTokens,
+      ...(this.model ? { model: this.model } : {}),
+      system: SYSTEM_PROMPT,
+      tag: 'verdict',
+      parse: (raw) => this.parseVerdict(raw),
+      messages: [{ role: 'user', content: this.buildPrompt(input) }],
+    });
 
-    const maxRetries = 1;
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      const response = await this.client.messages.create({
-        model: this.model,
-        max_tokens: this.maxTokens,
-        system: SYSTEM_PROMPT,
-        messages,
-      });
-      const textContent = response.content.find((c) => c.type === 'text');
-      if (!textContent || textContent.type !== 'text') {
-        throw new Error('No text response from email residue judge');
-      }
-      messages.push({ role: 'assistant', content: textContent.text });
-
-      try {
-        const parsed = this.parseVerdict(textContent.text);
-        return { ...parsed, model: this.model };
-      } catch (error) {
-        if (attempt < maxRetries && error instanceof VerdictParseError) {
-          this.log.warn({ attempt, error: error.message }, 'Email residue verdict parse failed, retrying');
-          messages.push({
-            role: 'user',
-            content: `<error>Parse failed: ${error.message}</error>\n\nReturn the corrected JSON inside <verdict> tags.`,
-          });
-        } else {
-          throw error;
-        }
-      }
-    }
-    throw new Error('Unexpected: email residue judge retry loop exited without result');
+    return { ...parsed, model: this.model ?? this.invoker.modelFor('classify') };
   }
 
   private buildPrompt(input: EmailJudgeInput): string {
@@ -182,12 +164,11 @@ ${escapeText(input.bodyText ?? input.snippet ?? '(empty)')}
 </email>`;
   }
 
-  private parseVerdict(text: string): Omit<EmailModelVerdict, 'model'> {
-    const match = text.match(/<verdict>\s*([\s\S]*?)\s*<\/verdict>/);
-    if (!match) throw new VerdictParseError('No <verdict> tags found in response');
+  /** Receives the contents of the `<verdict>` block; the invoker extracts it. */
+  private parseVerdict(raw: string): Omit<EmailModelVerdict, 'model'> {
     let parsed: Record<string, unknown>;
     try {
-      parsed = JSON.parse(match[1]!.trim());
+      parsed = JSON.parse(raw.trim());
     } catch (error) {
       throw new VerdictParseError(
         `JSON parse error: ${error instanceof Error ? error.message : String(error)}`

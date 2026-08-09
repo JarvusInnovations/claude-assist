@@ -1,0 +1,46 @@
+name: TF Validate
+
+# Infrastructure-as-code gate for OpenTofu/Terraform. fmt + validate only — NOT
+# `tofu plan`, which needs cloud state/credentials. This stays credential-free so
+# it runs on every PR. (A separate, credential-bearing plan job is a later step,
+# once the config is modularized and you have WIF/secrets wired.)
+on:
+  pull_request:
+    paths:
+      - 'tf/**'
+      - '.github/workflows/tf-validate.yml'
+  push:
+    branches: [develop]
+    paths:
+      - 'tf/**'
+      - '.github/workflows/tf-validate.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  tf-validate:
+    name: Format + validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-asdf
+
+      # fmt needs no providers/modules/credentials — run it first so a
+      # formatting nit fails fast before the slower init steps.
+      - name: Check formatting
+        run: tofu fmt -check -recursive tf/
+
+      # Uncomment if a module is pulled from a private git repo over https
+      # (repo-scoped token secret required):
+      # - name: Configure git for private module access
+      #   run: git config --global url."https://x-access-token:${{ secrets.BOT_GITHUB_TOKEN }}@github.com/".insteadOf "https://github.com/"
+
+      # validate needs providers + modules installed but no cloud/state access,
+      # so `-backend=false` keeps it credential-free. Repeat the block per root
+      # module (each self-contained module inits separately).
+      - name: Validate root module
+        working-directory: tf
+        run: |
+          tofu init -backend=false -input=false
+          tofu validate

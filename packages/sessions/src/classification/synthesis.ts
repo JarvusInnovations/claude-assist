@@ -1,6 +1,6 @@
 /**
- * Weekly synthesis (stronger model — Sonnet). Digests a week of append-only
- * classification events into (1) a structured report of proposed
+ * Weekly synthesis (the strong `synthesize` tier). Digests a week of
+ * append-only classification events into (1) a structured report of proposed
  * memory/rule/hook/skill/spec changes + ranked friction hotspots, and (2) an
  * dev-diary-style narrative of how the assistant's system evolved that week.
  *
@@ -9,8 +9,8 @@
  * of the package beats heartbeats and dispatches from index.ts/routes.ts.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import type { FastifyBaseLogger } from 'fastify';
+import type { ModelInvoker } from '@jarvus/claude-assist-core';
 import type { ClassificationStore } from './store.js';
 import type {
   ActiveSessionSummary,
@@ -19,8 +19,9 @@ import type {
 } from './types.js';
 
 export interface SynthesisConfig {
-  apiKey: string;
-  /** default: claude-sonnet-5 */
+  /** The single metered-model choke point (specs/modules/invoker.md). */
+  invoker: ModelInvoker;
+  /** Pin a model for this call site. Prefer moving the tier instead. */
   model?: string;
   maxTokens?: number;
 }
@@ -177,8 +178,8 @@ export interface NarrativeResult {
 }
 
 export class SynthesisService {
-  private client: Anthropic;
-  readonly model: string;
+  private invoker: ModelInvoker;
+  private pinnedModel: string | undefined;
   private maxTokens: number;
   private log: FastifyBaseLogger;
 
@@ -187,27 +188,41 @@ export class SynthesisService {
     config: SynthesisConfig,
     log: FastifyBaseLogger
   ) {
-    this.client = new Anthropic({ apiKey: config.apiKey });
-    this.model = config.model ?? 'claude-sonnet-5';
+    this.invoker = config.invoker;
+    this.pinnedModel = config.model;
     this.maxTokens = config.maxTokens ?? 4096;
     this.log = log;
   }
 
-  private async complete(system: string, user: string): Promise<string> {
-    const response = await this.client.messages.create({
-      model: this.model,
-      max_tokens: this.maxTokens,
+  /** Which model produced a stored report — persisted with the artifact. */
+  get model(): string {
+    return this.pinnedModel ?? this.invoker.modelFor('synthesize');
+  }
+
+  /**
+   * Plain (untagged) invocation. `invokeTagged` handles exactly one tag and
+   * treats a missing one as a parse failure worth a correction turn; the
+   * synthesis reply carries two blocks (`<report>` plus an optional `<json>`),
+   * and both callers would rather keep an untagged reply than pay to ask
+   * again. So the extraction stays here.
+   */
+  private async complete(task: string, system: string, user: string): Promise<string> {
+    const result = await this.invoker.invoke({
+      task,
+      tier: 'synthesize',
+      maxTokens: this.maxTokens,
+      ...(this.pinnedModel ? { model: this.pinnedModel } : {}),
       system,
       messages: [{ role: 'user', content: user }],
     });
-    const block = response.content.find((b) => b.type === 'text');
-    return block?.type === 'text' ? block.text : '';
+    return result.text;
   }
 
   /** Synthesize a period's events into a report + structured payload, and persist. */
   async synthesizeWeek(period: Period): Promise<SynthesisResult> {
     const events = await this.store.eventsForPeriod(period.start, period.end);
     const raw = await this.complete(
+      'sessions.synthesis',
       SYNTHESIS_SYSTEM_PROMPT,
       buildSynthesisPrompt(period, events)
     );
@@ -243,6 +258,7 @@ export class SynthesisService {
       this.store.activeSessionsForPeriod(period.start, period.end),
     ]);
     const raw = await this.complete(
+      'sessions.narrative',
       NARRATIVE_SYSTEM_PROMPT,
       buildNarrativePrompt(period, events, active)
     );

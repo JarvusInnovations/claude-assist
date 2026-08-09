@@ -1,15 +1,15 @@
-import Anthropic from '@anthropic-ai/sdk';
 import pLimit from 'p-limit';
 import type postgres from 'postgres';
 import type { FastifyBaseLogger } from 'fastify';
+import type { ModelInvoker } from '@jarvus/claude-assist-core';
 import { serializeTranscript } from './transcript.js';
 
 export interface OutlineServiceConfig {
-  /** API key for Anthropic (required) */
-  apiKey: string;
+  /** The single metered-model choke point (specs/modules/invoker.md). */
+  invoker: ModelInvoker;
   /** Concurrency for outline generation (default: 5) */
   concurrency?: number;
-  /** Model to use (default: 'claude-haiku-4-5') */
+  /** Pin a model for this call site. Prefer moving the tier instead. */
   model?: string;
   /** Max tokens for response (default: 1024) */
   maxTokens?: number;
@@ -53,7 +53,7 @@ function isEmptySession(session: SessionForOutline): boolean {
 }
 
 /**
- * Service for generating AI outlines of sessions using Claude Haiku
+ * Service for generating AI outlines of sessions.
  * Uses p-limit for concurrency control
  */
 export class OutlineService {
@@ -61,9 +61,9 @@ export class OutlineService {
    * Max characters of *serialized* transcript allowed into the outline
    * prompt. serializeTranscript() itself caps at 680K chars assuming
    * ~3.5 chars/token, but real sessions can run denser than that - one
-   * production case (d1ee9938, a long automated run) measured ~3.33
-   * chars/token, landing at 204,367 tokens against Haiku's 200K-token
-   * limit despite passing that cap, and retrying every cycle forever.
+   * production case (a long automated run) measured ~3.33 chars/token,
+   * landing at 204,367 tokens against the 200K-token context window
+   * despite passing that cap, and retrying every cycle forever.
    * This budget is deliberately much tighter, with real margin even for
    * dense code-heavy content.
    */
@@ -74,7 +74,7 @@ export class OutlineService {
    * picked up by the automatic sweeps (hourly cron + the post-sync/push
    * triggers) - a session that's still too large after capping, or fails
    * for some other persistent reason, would otherwise retry forever,
-   * paying for a failed Haiku call every cycle. `outline_attempts` is only
+   * paying for a failed model call every cycle. `outline_attempts` is only
    * reset by a successful outline generation. A manual retry that names
    * specific session ids bypasses the cap, matching a deliberate override.
    */
@@ -82,9 +82,9 @@ export class OutlineService {
 
   private sql: postgres.Sql;
   private log: FastifyBaseLogger;
-  private client: Anthropic;
+  private invoker: ModelInvoker;
   private limit: ReturnType<typeof pLimit>;
-  private model: string;
+  private model: string | undefined;
   private maxTokens: number;
   private progress: OutlineProgress;
   private disableGenerateOutlines: boolean;
@@ -96,12 +96,10 @@ export class OutlineService {
   ) {
     this.sql = sql;
     this.log = log;
-    this.model = config.model ?? 'claude-haiku-4-5';
+    this.invoker = config.invoker;
+    this.model = config.model;
     this.maxTokens = config.maxTokens ?? 1024;
     this.disableGenerateOutlines = config.disableGenerateOutlines ?? false;
-
-    // Initialize Anthropic client
-    this.client = new Anthropic({ apiKey: config.apiKey });
 
     // Initialize concurrency limiter
     this.limit = pLimit(config.concurrency ?? 5);
@@ -251,17 +249,19 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
       capped.text
     );
 
-    const response = await this.client.messages.create({
-      model: this.model,
-      max_tokens: this.maxTokens,
+    // A long transcript in, a short summary out — the extract tier. The
+    // response is free text with optional tags, so no tagged-parse retry:
+    // a missing <summary> falls back to the whole reply rather than costing
+    // a second call.
+    const result = await this.invoker.invoke({
+      task: 'sessions.outline',
+      tier: 'extract',
+      maxTokens: this.maxTokens,
+      ...(this.model ? { model: this.model } : {}),
       messages: [{ role: 'user', content: prompt }],
     });
 
-    // Extract text from response
-    const textBlock = response.content.find((block) => block.type === 'text');
-    const rawResponse = textBlock?.type === 'text' ? textBlock.text : '';
-
-    return this.parseOutlineResponse(rawResponse);
+    return this.parseOutlineResponse(result.text);
   }
 
   /**
@@ -310,7 +310,7 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
     // Find sessions needing outlines. Explicit sessionIds (a manual retry)
     // bypass the retry cap; the unforced full sweep (cron + post-sync/push
     // triggers) excludes sessions that already hit MAX_OUTLINE_ATTEMPTS so
-    // a permanently-failing session can't burn a paid Haiku call forever.
+    // a permanently-failing session can't burn a paid model call forever.
     let sessions: SessionForOutline[];
     try {
       if (sessionIds && sessionIds.length > 0) {

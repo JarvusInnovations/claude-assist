@@ -1,0 +1,37 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["react", "import", "typescript", "unicorn", "oxc"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error",
+    "perf": "error"
+  },
+  "rules": {
+    "react-hooks/rules-of-hooks": "error",
+    "react-hooks/exhaustive-deps": "error",
+    "react/react-compiler": "error",
+    "react/only-export-components": ["warn", { "allowConstantExport": true }],
+    "react/react-in-jsx-scope": "off",
+
+    "eqeqeq": ["error", "always", { "null": "ignore" }],
+    "curly": ["warn", "all"],
+    "no-use-before-define": ["error", { "functions": false, "classes": true }],
+    "require-unicode-regexp": "error",
+
+    "typescript/no-non-null-assertion": "warn",
+    "typescript/array-type": ["warn", { "default": "array" }],
+
+    "unicorn/filename-case": [
+      "warn",
+      { "cases": { "pascalCase": true, "camelCase": true, "kebabCase": true } }
+    ],
+    "unicorn/prefer-string-replace-all": "warn",
+
+    "sort-imports": ["warn", { "allowSeparatedGroups": true, "ignoreDeclarationSort": true }],
+    "import/no-duplicates": ["warn", { "prefer-inline": true }],
+    "import/consistent-type-specifier-style": ["warn", "prefer-inline"],
+    "import/first": "warn",
+    "import/newline-after-import": "warn",
+    "import/no-unassigned-import": "off"
+  }
+}

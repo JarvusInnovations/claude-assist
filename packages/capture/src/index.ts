@@ -67,17 +67,22 @@ export default createPlugin('capture', async (fastify: FastifyInstance, options:
     );
   }
 
-  // Classifier (optional - requires anthropicApiKey; without it only the
+  // Classifier (optional — needs the model invoker; without it only the
   // deterministic URL-only shortcut classifies, the rest queue up)
   let classifier: CaptureClassifier | null = null;
-  if (config.anthropicApiKey) {
+  if (fastify.invoker?.enabled) {
     classifier = new CaptureClassifier(
-      { apiKey: config.anthropicApiKey, model: config.classifierModel },
+      {
+        invoker: fastify.invoker,
+        ...(config.classifierModel ? { model: config.classifierModel } : {}),
+      },
       fastify.log
     );
     fastify.log.info('Capture classifier enabled');
   } else {
-    fastify.log.warn('anthropicApiKey not set - capture classification limited to URL-only shortcut');
+    fastify.log.warn(
+      'Model invoker unavailable — capture classification limited to the URL-only shortcut'
+    );
   }
 
   // Routing executors. The review hold and references executors are always
