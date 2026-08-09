@@ -9,6 +9,7 @@ import sessionsPlugin, {
 import googlePlugin from '@jarvus/claude-assist-google';
 import capturePlugin from '@jarvus/claude-assist-capture';
 import kitchenPlugin from '@jarvus/claude-assist-kitchen';
+import trainingPlugin from '@jarvus/claude-assist-training';
 import slackUrgencyPlugin from '@jarvus/claude-assist-slack-urgency';
 import briefingPlugin from '@jarvus/claude-assist-briefing';
 import chatPlugin, { parseContextCommands } from '@jarvus/claude-assist-chat';
@@ -499,6 +500,42 @@ await fastify.register(
       });
     } else {
       api.log.info('Kitchen module disabled');
+    }
+
+    // Training module — the weekly adaptive training loop. Registered AFTER
+    // kitchen so its activity-history seam is available to compose (kitchen
+    // owns the Strava OAuth row, and there can be only one refresh-token
+    // rotator per instance), and BEFORE briefing so `training.week_plans`
+    // exists by the time the briefing's source reads it.
+    if (fastify.config.ENABLE_TRAINING) {
+      api.log.info('Training module enabled');
+      await api.register(trainingPlugin, {
+        migrationsDir: join(__dirname, '../../../packages/training/migrations'),
+        disableMigrations: fastify.config.DISABLE_MIGRATIONS,
+        trainingConfig: {
+          timeZone: fastify.config.TRAINING_TIMEZONE ?? fastify.config.BRIEFING_TIMEZONE,
+          goalContext: fastify.config.TRAINING_GOAL_CONTEXT,
+          activityWindowDays: fastify.config.TRAINING_ACTIVITY_WINDOW_DAYS,
+          weatherApiKey: fastify.config.TRAINING_WEATHER_API_KEY,
+          weatherLocationKey: fastify.config.TRAINING_WEATHER_LOCATION_KEY,
+          weatherBaseUrl: fastify.config.TRAINING_WEATHER_BASE_URL,
+          weatherDays: fastify.config.TRAINING_WEATHER_DAYS,
+          gwsAxiBin: fastify.config.BRIEFING_GWS_AXI_BIN,
+          calendarAccount: fastify.config.BRIEFING_CALENDAR_ACCOUNT,
+          plannerModel: fastify.config.TRAINING_PLANNER_MODEL,
+          planCron: fastify.config.TRAINING_PLAN_CRON,
+          reconcileCron: fastify.config.TRAINING_RECONCILE_CRON,
+          staleAfter: fastify.config.TRAINING_STALE_AFTER,
+          disablePlanning:
+            fastify.config.DISABLE_SYNCS || fastify.config.TRAINING_DISABLE_PLANNING,
+          // Activity-history seam: the read-only provider decorated by the
+          // kitchen module (registered above). Absent → the week is planned
+          // without recent activity, and the synthesis is told so.
+          activityHistoryProvider: api.kitchenActivityHistory,
+        },
+      });
+    } else {
+      api.log.info('Training module disabled');
     }
 
     if (fastify.config.ENABLE_CAPTURE) {

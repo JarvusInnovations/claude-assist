@@ -10,6 +10,7 @@
  *   awaiting review, coverage staleness,
  *   pipeline health, yesterday's ledger actions (a narrative summary of what
  *   the assistant did on the owner's behalf — omitted entirely on a quiet day),
+ *   today's training from the active weekly plan,
  *   and links out to richer claude-assist pages. Sources that aren't live
  *   render as "not-yet-available", never failing the whole briefing.
  */
@@ -23,6 +24,7 @@ import type { CapturesSummary } from './sources/captures.js';
 import type { CoverageSummary } from './sources/coverage.js';
 import type { LedgerNarrative } from './sources/ledger.js';
 import type { KitchenSummary } from './sources/kitchen.js';
+import type { TrainingSummary } from './sources/training.js';
 
 export interface BriefingLink {
   label: string;
@@ -39,6 +41,7 @@ export interface BriefingInputs {
   coverage: CoverageSummary;
   ledger: LedgerNarrative;
   kitchen: KitchenSummary;
+  training: TrainingSummary;
   /** Base URL for links out to richer claude-assist pages (optional). */
   pageBaseUrl?: string | null;
 }
@@ -63,6 +66,7 @@ export interface Briefing {
   coverage: CoverageSummary;
   ledger: LedgerNarrative;
   kitchen: KitchenSummary;
+  training: TrainingSummary;
   links: BriefingLink[];
 }
 
@@ -100,6 +104,7 @@ export function composeBriefing(inputs: BriefingInputs): Briefing {
     coverage: inputs.coverage,
     ledger: inputs.ledger,
     kitchen: inputs.kitchen,
+    training: inputs.training,
     links,
   };
 }

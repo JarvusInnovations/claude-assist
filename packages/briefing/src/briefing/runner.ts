@@ -2,7 +2,8 @@
  * Daily-briefing runner — the scheduled orchestration.
  *
  * Gathers every content-contract section (calendar + alert plan from the shared
- * PlanProvider, open commitments, urgent email, captures, coverage), composes the
+ * PlanProvider, open commitments, urgent email, captures, coverage, today's
+ * training from the active weekly plan), composes the
  * briefing, renders it into the Tana day node (when Tana is configured), and
  * dispatches a `notice`-priority ping whose title is the 2–3 headline items and
  * whose link points at the day node. Each section degrades independently; a
@@ -21,6 +22,7 @@ import { fetchCapturesSummary } from './sources/captures.js';
 import { fetchCoverageSummary } from './sources/coverage.js';
 import { fetchLedgerNarrative } from './sources/ledger.js';
 import { fetchKitchenSummary } from './sources/kitchen.js';
+import { fetchTrainingSummary } from './sources/training.js';
 import { priorDateIso } from '../time.js';
 
 export interface BriefingRunnerDeps {
@@ -50,7 +52,7 @@ export async function runDailyBriefing(deps: BriefingRunnerDeps): Promise<Briefi
 
   // Gather the remaining sources in parallel; each returns a flagged error
   // rather than throwing, so one outage doesn't sink the briefing.
-  const [commitments, email, captures, coverage, ledger, kitchen] = await Promise.all([
+  const [commitments, email, captures, coverage, ledger, kitchen, training] = await Promise.all([
     fetchOpenCommitments({ bin: deps.commitmentsBin, args: deps.commitmentsArgs, todayIso: dateIso }),
     fetchEmailSummary(deps.sql),
     fetchCapturesSummary(deps.sql),
@@ -61,6 +63,7 @@ export async function runDailyBriefing(deps: BriefingRunnerDeps): Promise<Briefi
       timeZone: deps.timeZone,
       recipesProvider: deps.kitchenRecipesProvider,
     }),
+    fetchTrainingSummary(deps.sql, { dateIso }),
   ]);
 
   const events = dayPlan.items.map((item) => item.event);
@@ -74,6 +77,7 @@ export async function runDailyBriefing(deps: BriefingRunnerDeps): Promise<Briefi
     coverage,
     ledger,
     kitchen,
+    training,
     pageBaseUrl: deps.pageBaseUrl ?? null,
   });
 

@@ -39,6 +39,7 @@
     "@jarvus/claude-assist-session-spawn": "workspace:*",
     "@jarvus/claude-assist-sessions": "workspace:*",
     "@jarvus/claude-assist-slack-urgency": "workspace:*",
+    "@jarvus/claude-assist-training": "workspace:*",
     "fastify": "^5.7.1",
     "fastify-plugin": "^5.1.0",
     "postgres": "^3.4.8"

@@ -18,6 +18,7 @@ import type { Briefing } from './compose.js';
 import type { OpenCommitment } from './sources/commitments.js';
 import type { EmailBrief } from './sources/email.js';
 import type { LedgerActionGroup } from './sources/ledger.js';
+import type { TrainingSession } from './sources/training.js';
 import type { AlertPlanItem } from '../types.js';
 
 /** Stable marker so a per-date briefing block is found + not duplicated. */
@@ -235,6 +236,35 @@ export function renderTanaPaste(b: Briefing): string {
     }
   }
 
+  // Training — today's session from the ACTIVE weekly plan. The section is
+  // omitted entirely when no plan is active (the module isn't running, or the
+  // week is still awaiting approval), rather than rendering an empty heading.
+  if (b.training.available) {
+    lines.push('  - Training today');
+    if (b.training.today) {
+      lines.push(`    - ${trainingSessionLine(b.training.today)}`);
+      if (b.training.today.why) lines.push(`      - ${b.training.today.why}`);
+    } else {
+      lines.push('    - Nothing scheduled today');
+    }
+    if (b.training.weekSummary) {
+      lines.push(`    - Week of ${b.training.weekStart}: ${b.training.weekSummary}`);
+    }
+    if (b.training.upcoming.length > 0) {
+      lines.push('    - Coming up');
+      for (const s of b.training.upcoming) {
+        lines.push(`      - ${s.date}: ${trainingSessionLine(s)}`);
+      }
+    }
+  }
+  // An unapproved week is surfaced whether or not one is active — that line is
+  // how a forgotten async gate becomes visible without a second notification.
+  if (b.training.pendingWeekStart) {
+    lines.push(
+      `  - Training week of ${b.training.pendingWeekStart} is awaiting your approval`
+    );
+  }
+
   // Coverage / pipeline health
   lines.push('  - Pipeline health');
   if (b.coverage.error) {
@@ -311,6 +341,17 @@ function eatFirstLine(item: import('./sources/kitchen.js').EatFirstItem): string
           : `${item.daysUntil}d`;
   const openFlag = item.state === 'open' ? ' (open)' : '';
   return `${item.label}${openFlag} — eat by ${when}`;
+}
+
+function trainingSessionLine(s: TrainingSession): string {
+  const bits: string[] = [s.title];
+  const shape: string[] = [];
+  if (s.distanceMiles != null) shape.push(`${s.distanceMiles} mi`);
+  if (s.durationMinutes != null) shape.push(`${s.durationMinutes} min`);
+  if (s.venue === 'indoor') shape.push('indoor');
+  if (shape.length > 0) bits.push(`(${shape.join(', ')})`);
+  const head = bits.join(' ');
+  return s.detail ? `${head} — ${s.detail}` : head;
 }
 
 function commitmentLine(c: OpenCommitment): string {

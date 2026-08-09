@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import type { Briefing } from './compose.js';
 import { BRIEFING_MARKER, briefingHeading, extractNodeId, renderTanaPaste } from './render.js';
+import { EMPTY_TRAINING } from './sources/training.js';
 
 function sampleBriefing(over: Partial<Briefing> = {}): Briefing {
   return {
@@ -75,6 +76,7 @@ function sampleBriefing(over: Partial<Briefing> = {}): Briefing {
     coverage: { pipelines: [{ name: 'email-sync', ageHours: 30, thresholdHours: 12, ratio: 2.5, stale: true }], staleCount: 1, error: null },
     ledger: { totalCount: 0, groups: [], error: null },
     kitchen: { calories: 1450, proteinG: 95, satFatG: 12.5, pendingCount: 1, eatFirst: [], suggestions: [], error: null },
+    training: EMPTY_TRAINING,
     links: [{ label: 'Inbox', url: 'https://assist.example/inbox' }],
     ...over,
   };
@@ -255,6 +257,70 @@ describe('renderTanaPaste', () => {
       sampleBriefing({ ledger: { totalCount: 0, groups: [], error: 'ledger schema missing' } })
     );
     expect(paste2).toContain('Ledger not available: ledger schema missing');
+  });
+});
+
+describe('renderTanaPaste — training', () => {
+  const session = {
+    date: '2026-07-10',
+    kind: 'run',
+    title: 'Easy run 3 mi',
+    detail: '9:30-10:00/mi',
+    distanceMiles: 3,
+    durationMinutes: 30,
+    why: 'Only 4 mi logged last week',
+    venue: 'outdoor',
+  };
+
+  it('omits the section entirely when no week is active', () => {
+    // Absence, not an error line: an instance that does not run the training
+    // module should not see a "not available" bullet every morning.
+    const paste = renderTanaPaste(sampleBriefing());
+    expect(paste).not.toContain('Training today');
+  });
+
+  it('renders today\'s session with its shape and its reason', () => {
+    const paste = renderTanaPaste(
+      sampleBriefing({
+        training: {
+          available: true,
+          weekStart: '2026-07-06',
+          weekSummary: 'Consistency week',
+          today: session,
+          upcoming: [],
+          pendingWeekStart: null,
+          error: null,
+        },
+      })
+    );
+    expect(paste).toContain('Easy run 3 mi (3 mi, 30 min) — 9:30-10:00/mi');
+    expect(paste).toContain('Only 4 mi logged last week');
+    expect(paste).toContain('Week of 2026-07-06: Consistency week');
+  });
+
+  it('says nothing is scheduled rather than dropping the section', () => {
+    const paste = renderTanaPaste(
+      sampleBriefing({
+        training: {
+          available: true,
+          weekStart: '2026-07-06',
+          weekSummary: '',
+          today: null,
+          upcoming: [{ ...session, date: '2026-07-11' }],
+          pendingWeekStart: null,
+          error: null,
+        },
+      })
+    );
+    expect(paste).toContain('Nothing scheduled today');
+    expect(paste).toContain('2026-07-11: Easy run 3 mi');
+  });
+
+  it('surfaces an unanswered approval gate even with no active week', () => {
+    const paste = renderTanaPaste(
+      sampleBriefing({ training: { ...EMPTY_TRAINING, pendingWeekStart: '2026-07-13' } })
+    );
+    expect(paste).toContain('Training week of 2026-07-13 is awaiting your approval');
   });
 });
 

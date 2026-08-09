@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import type { AlertPlanItem, CalendarEvent } from '../types.js';
 import { buildHeadline, composeBriefing, type BriefingInputs } from './compose.js';
 import type { OpenCommitment } from './sources/commitments.js';
+import { EMPTY_TRAINING } from './sources/training.js';
 
 function mkEvent(over: Partial<CalendarEvent> = {}): CalendarEvent {
   return {
@@ -78,6 +79,7 @@ function baseInputs(over: Partial<BriefingInputs> = {}): BriefingInputs {
     },
     ledger: { totalCount: 0, groups: [], error: null },
     kitchen: { calories: 1200, proteinG: 80, satFatG: 15, pendingCount: 1, eatFirst: [], suggestions: [], error: null },
+    training: EMPTY_TRAINING,
     pageBaseUrl: 'https://assist.example',
     ...over,
   };

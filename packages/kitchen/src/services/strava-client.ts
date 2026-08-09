@@ -28,23 +28,37 @@ export interface StravaClientConfig {
   refreshTokenSeed: string;
 }
 
-/** Summary activity from GET /api/v3/athlete/activities (fields we read). */
+/**
+ * Summary activity from GET /api/v3/athlete/activities (fields we read).
+ *
+ * The list endpoint already carries distance, duration, elevation, and average
+ * heart rate — the expenditure sync ignores them (only the detail call has
+ * `calories`), but a consumer reading activity *history* needs exactly these,
+ * and a per-activity detail fetch to re-read what the list already returned
+ * would burn the rate limit for nothing.
+ */
 export interface StravaActivitySummary {
   id: number;
   name?: string;
   type?: string;
   sport_type?: string;
+  /** Meters. */
+  distance?: number;
+  /** Seconds. */
+  moving_time?: number;
+  /** Seconds. */
+  elapsed_time?: number;
+  /** Meters. */
+  total_elevation_gain?: number;
+  average_heartrate?: number;
+  /** The activity's start instant, UTC (e.g. "2026-07-20T11:00:00Z"). */
+  start_date?: string;
 }
 
 /** Detail from GET /api/v3/activities/:id — `calories` exists only here. */
 export interface StravaActivityDetail extends StravaActivitySummary {
   /** Active calories. Absent/zero ⇒ the sync skips the activity. */
   calories?: number;
-  /** Seconds. */
-  moving_time?: number;
-  average_heartrate?: number;
-  /** The activity's start instant, UTC (e.g. "2026-07-20T11:00:00Z"). */
-  start_date?: string;
 }
 
 /** Token refresh failed — the sync catches this to skip the tick, warn-only. */

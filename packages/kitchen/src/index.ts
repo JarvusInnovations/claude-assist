@@ -14,6 +14,7 @@ import type { FastifyInstance } from 'fastify';
 import type postgres from 'postgres';
 import {
   createPlugin,
+  type ActivityHistoryProvider,
   type PluginOptions,
   type Scheduler,
   type WorksheetCookSink,
@@ -34,6 +35,7 @@ import { KitchenLabelParser } from './services/label-parser.js';
 import { InventoryPipeline } from './services/inventory.js';
 import { PgConsumeStore } from './services/consume-store.js';
 import { StravaClient } from './services/strava-client.js';
+import { createActivityHistoryProvider } from './services/activity-history.js';
 import {
   StravaSync,
   isStravaSyncConfigured,
@@ -90,6 +92,13 @@ declare module 'fastify' {
      * The server reads this to configure the pages module's cook-mode seam.
      */
     kitchenCookMode?: KitchenCookModeSurface;
+    /**
+     * Read-only activity history over this module's Strava credentials, present
+     * only when they are configured. The server reads this to compose a sibling
+     * module's activity-history provider — one refresh-token rotator per
+     * instance, however many consumers there are.
+     */
+    kitchenActivityHistory?: ActivityHistoryProvider;
   }
 }
 
@@ -277,9 +286,11 @@ export default createPlugin('kitchen', async (fastify: FastifyInstance, options:
   const stravaSyncMinutes = parseStravaSyncMinutes(config.stravaSyncMinutes);
   if (!isStravaSyncConfigured(config)) {
     fastify.log.info('Strava sync off — KITCHEN_STRAVA_* credentials not fully configured');
-  } else if (config.disableStravaSync) {
-    fastify.log.info('Strava sync disabled via config');
   } else {
+    // The client is constructed whenever the credentials exist, independently of
+    // whether the expenditure SYNC is enabled: the read-only activity-history
+    // seam below is a different consumer with a different kill switch, and
+    // disabling the calorie sync should not also blind it.
     const stravaClient = new StravaClient(
       {
         clientId: config.stravaClientId!,
@@ -289,19 +300,29 @@ export default createPlugin('kitchen', async (fastify: FastifyInstance, options:
       new PgStravaOAuthStore(fastify.sql),
       fastify.log
     );
-    const stravaSync = new StravaSync(stravaClient, expenditureStore, fastify.log);
-    fastify.scheduler.register({
-      name: 'kitchen:strava-sync',
-      schedule: stravaSyncCron(stravaSyncMinutes),
-      runOnStartup: true, // first run backfills/replays the trailing week
-      handler: async () => {
-        const result = await stravaSync.tick();
-        if (result.inserted > 0 || result.skipped_no_calories > 0) {
-          fastify.log.info({ result }, 'Strava sync tick complete');
-        }
-      },
-    });
-    fastify.log.info({ minutes: stravaSyncMinutes }, 'Strava sync enabled');
+
+    // Activity-history seam: expose the read behind core's provider-agnostic
+    // contract so a sibling module can consume history without holding a second
+    // refresh token for the same OAuth app (see services/activity-history.ts).
+    fastify.decorate('kitchenActivityHistory', createActivityHistoryProvider(stravaClient));
+
+    if (config.disableStravaSync) {
+      fastify.log.info('Strava expenditure sync disabled via config (activity history still readable)');
+    } else {
+      const stravaSync = new StravaSync(stravaClient, expenditureStore, fastify.log);
+      fastify.scheduler.register({
+        name: 'kitchen:strava-sync',
+        schedule: stravaSyncCron(stravaSyncMinutes),
+        runOnStartup: true, // first run backfills/replays the trailing week
+        handler: async () => {
+          const result = await stravaSync.tick();
+          if (result.inserted > 0 || result.skipped_no_calories > 0) {
+            fastify.log.info({ result }, 'Strava sync tick complete');
+          }
+        },
+      });
+      fastify.log.info({ minutes: stravaSyncMinutes }, 'Strava sync enabled');
+    }
   }
 });
 
@@ -339,6 +360,10 @@ export {
   type StravaActivityDetail,
   type FetchLike,
 } from './services/strava-client.js';
+export {
+  createActivityHistoryProvider,
+  toActivityRecord,
+} from './services/activity-history.js';
 export {
   StravaSync,
   StravaSyncConfigError,
