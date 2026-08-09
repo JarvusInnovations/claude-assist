@@ -1,13 +1,13 @@
 /**
  * Label parser: one vision call over a package's nutrition/size panel →
  * product facts (name, shelf-life class, package size, per-100g nutrition,
- * aliases). Reading a panel accurately earns the strong tier, so it reuses
- * KITCHEN_ESTIMATION_MODEL (specs/modules/kitchen.md § Model tiering). Same
- * XML-tagged-JSON + one-retry shape as the estimator.
+ * aliases). Reading a panel accurately is open-ended visual judgment, so it
+ * runs on the vision tier (specs/modules/kitchen.md § Model tiering). Same
+ * tagged-JSON shape as the estimator.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import type { FastifyBaseLogger } from 'fastify';
+import type { InvokeContentBlock, ModelInvoker } from '@jarvus/claude-assist-core';
 import type { InventoryPhotoPart, NutritionPer100g, ParsedLabel, ShelfLifeClass } from '../inventory-types.js';
 import { SHELF_LIFE_CLASSES } from '../inventory-types.js';
 import { derivePer100gFromServing as derivePer100g } from '../nutrition-panel.js';
@@ -20,8 +20,9 @@ class LabelParseError extends Error {
 }
 
 export interface LabelParserConfig {
-  apiKey: string;
-  /** default: claude-fable-5 — the strong vision tier (reads panels accurately). */
+  /** The single metered-model choke point (specs/modules/invoker.md). */
+  invoker: ModelInvoker;
+  /** Pin a model for this call site. Prefer moving the tier instead. */
   model?: string;
   maxTokens?: number;
 }
@@ -94,27 +95,24 @@ Any value you cannot read should be null (nutrition_per_serving / nutrition_per_
 </response_format>`;
 
 export class KitchenLabelParser implements LabelParser {
-  private client: Anthropic;
-  private model: string;
+  private invoker: ModelInvoker;
+  private model: string | undefined;
   private maxTokens: number;
   private log: FastifyBaseLogger;
 
   constructor(config: LabelParserConfig, log: FastifyBaseLogger) {
-    this.client = new Anthropic({ apiKey: config.apiKey });
-    this.model = config.model ?? 'claude-fable-5';
+    this.invoker = config.invoker;
+    this.model = config.model;
     this.maxTokens = config.maxTokens ?? 1024;
     this.log = log;
   }
 
   async parse(input: LabelParseInput): Promise<ParsedLabel> {
     if (input.photos.length === 0) throw new LabelParseError('No label photos supplied');
-    const content: Anthropic.ContentBlockParam[] = input.photos.map((photo) => ({
+    const content: InvokeContentBlock[] = input.photos.map((photo) => ({
       type: 'image' as const,
-      source: {
-        type: 'base64' as const,
-        media_type: normalizeMediaType(photo.mimeType),
-        data: photo.data.toString('base64'),
-      },
+      data: photo.data.toString('base64'),
+      mediaType: photo.mimeType,
     }));
     content.push({
       type: 'text',
@@ -123,44 +121,26 @@ export class KitchenLabelParser implements LabelParser {
       }`,
     });
 
-    const messages: Anthropic.MessageParam[] = [{ role: 'user', content }];
-    const maxRetries = 1;
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      const response = await this.client.messages.create({
-        model: this.model,
-        max_tokens: this.maxTokens,
-        system: SYSTEM_PROMPT,
-        messages,
-      });
-      const textContent = response.content.find((c) => c.type === 'text');
-      if (!textContent || textContent.type !== 'text') {
-        if (response.stop_reason === 'refusal') throw new Error('Label parse refused by the model');
-        throw new Error('No text response from label parser');
-      }
-      messages.push({ role: 'assistant', content: textContent.text });
-      try {
-        return this.parseLabel(textContent.text);
-      } catch (error) {
-        if (attempt < maxRetries && error instanceof LabelParseError) {
-          this.log.warn({ attempt, error: error.message }, 'Label parse failed, requesting correction');
-          messages.push({
-            role: 'user',
-            content: `<error>Parse failed: ${error.message}</error>\n\nReturn the corrected JSON inside <label> tags.`,
-          });
-        } else {
-          throw error;
-        }
-      }
-    }
-    throw new Error('Unexpected: label parser retry loop exited without result');
+    // Tag extraction, the correction turn, retries, timeouts, and spend
+    // accounting live in the invoker; the prompt and the shape validation are
+    // this module's own judgment and stay here.
+    return this.invoker.invokeTagged<ParsedLabel>({
+      task: 'kitchen.label',
+      tier: 'vision',
+      maxTokens: this.maxTokens,
+      ...(this.model ? { model: this.model } : {}),
+      system: SYSTEM_PROMPT,
+      tag: 'label',
+      parse: (raw) => this.parseLabel(raw),
+      messages: [{ role: 'user', content }],
+    });
   }
 
+  /** Receives the contents of the `<label>` block; the invoker extracts it. */
   private parseLabel(text: string): ParsedLabel {
-    const match = text.match(/<label>\s*([\s\S]*?)\s*<\/label>/);
-    if (!match) throw new LabelParseError('No <label> tags found in response');
     let parsed: Record<string, unknown>;
     try {
-      parsed = JSON.parse(match[1]!.trim());
+      parsed = JSON.parse(text.trim());
     } catch (error) {
       throw new LabelParseError(`JSON parse error: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -297,11 +277,4 @@ export function derivePer100gFromServing(
 
 function numOrNull(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
-}
-
-type SupportedMediaType = 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
-
-function normalizeMediaType(mimeType: string): SupportedMediaType {
-  const allowed: readonly string[] = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-  return (allowed.includes(mimeType) ? mimeType : 'image/jpeg') as SupportedMediaType;
 }

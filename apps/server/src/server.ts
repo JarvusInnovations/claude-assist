@@ -330,7 +330,6 @@ await fastify.register(
         sessionsConfig: {
           originalClaudeDir: fastify.config.SESSIONS_ORIGINAL_CLAUDE_DIR,
           minFileSize: fastify.config.SESSIONS_MIN_FILE_SIZE,
-          anthropicApiKey: fastify.config.ANTHROPIC_API_KEY,
           outlineConcurrency: fastify.config.OUTLINE_CONCURRENCY,
           disableLocalIngest:
             fastify.config.DISABLE_SYNCS ||
@@ -378,7 +377,6 @@ await fastify.register(
             clientId: fastify.config.GOOGLE_CLIENT_ID,
             clientSecret: fastify.config.GOOGLE_CLIENT_SECRET,
             redirectUri: fastify.config.GOOGLE_REDIRECT_URI,
-            anthropicApiKey: fastify.config.ANTHROPIC_API_KEY,
             triageConcurrency: fastify.config.TRIAGE_CONCURRENCY,
             disableEmailSync:
               fastify.config.DISABLE_SYNCS ||
@@ -422,7 +420,6 @@ await fastify.register(
         migrationsDir: join(__dirname, '../../../packages/kitchen/migrations'),
         disableMigrations: fastify.config.DISABLE_MIGRATIONS,
         kitchenConfig: {
-          anthropicApiKey: fastify.config.ANTHROPIC_API_KEY,
           estimationModel: fastify.config.KITCHEN_ESTIMATION_MODEL,
           receiptModel: fastify.config.KITCHEN_RECEIPT_MODEL,
           planSessionModel: fastify.config.KITCHEN_PLAN_SESSION_MODEL,
@@ -453,7 +450,6 @@ await fastify.register(
         migrationsDir: join(__dirname, '../../../packages/capture/migrations'),
         disableMigrations: fastify.config.DISABLE_MIGRATIONS,
         captureConfig: {
-          anthropicApiKey: fastify.config.ANTHROPIC_API_KEY,
           classifierModel: fastify.config.CAPTURE_CLASSIFIER_MODEL,
           concurrency: fastify.config.CAPTURE_CONCURRENCY,
           disableClassification:
@@ -527,7 +523,6 @@ await fastify.register(
                   .map((c) => c.trim())
                   .filter(Boolean)
               : [],
-            anthropicApiKey: fastify.config.ANTHROPIC_API_KEY,
             model: fastify.config.SLACK_URGENCY_MODEL,
             timeZone: fastify.config.SLACK_URGENCY_TZ,
             quietStartHour: fastify.config.SLACK_URGENCY_QUIET_START,
@@ -555,7 +550,6 @@ await fastify.register(
         migrationsDir: join(__dirname, '../../../packages/briefing/migrations'),
         disableMigrations: fastify.config.DISABLE_MIGRATIONS,
         briefingConfig: {
-          anthropicApiKey: fastify.config.ANTHROPIC_API_KEY,
           classifierModel: fastify.config.CAPTURE_CLASSIFIER_MODEL,
           timeZone: fastify.config.BRIEFING_TIMEZONE,
           gwsAxiBin: fastify.config.BRIEFING_GWS_AXI_BIN,

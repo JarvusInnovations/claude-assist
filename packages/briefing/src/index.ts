@@ -35,7 +35,7 @@ import { JoinRequiredModel } from './classifier/llm.js';
 import { BriefingRenderer } from './briefing/render.js';
 import { runDailyBriefing } from './briefing/runner.js';
 import { PgMeetingPrepStore } from './meetings/prep-store.js';
-import { AnthropicPrepComposer } from './meetings/model.js';
+import { PrepComposerService } from './meetings/model.js';
 import { MeetingPrepRenderer } from './meetings/render.js';
 import { runMeetingCycle } from './meetings/cycle.js';
 
@@ -60,14 +60,17 @@ export default createPlugin('briefing', async (fastify: FastifyInstance, options
   const timeZone = config.timeZone ?? DEFAULT_TIMEZONE;
 
   // --- Join-required residue model (optional) --------------------------------
-  const model = config.anthropicApiKey
+  const model = fastify.invoker?.enabled
     ? new JoinRequiredModel(
-        { apiKey: config.anthropicApiKey, model: config.classifierModel },
+        {
+          invoker: fastify.invoker,
+          ...(config.classifierModel ? { model: config.classifierModel } : {}),
+        },
         fastify.log
       )
     : null;
   if (!model) {
-    fastify.log.warn('Briefing: anthropicApiKey not set — join classifier is deterministic-only');
+    fastify.log.warn('Briefing: model invoker unavailable — join classifier is deterministic-only');
   }
 
   // --- Shared stores + plan provider -----------------------------------------
@@ -104,15 +107,20 @@ export default createPlugin('briefing', async (fastify: FastifyInstance, options
     );
   }
 
-  // --- Meeting-prep composer (optional; Sonnet-class single invoker) ----------
-  const prepComposer = config.anthropicApiKey
-    ? new AnthropicPrepComposer(
-        { apiKey: config.anthropicApiKey, model: config.meetingPrepModel },
+  // --- Meeting-prep composer (optional; the synthesize tier) -----------------
+  const prepComposer = fastify.invoker?.enabled
+    ? new PrepComposerService(
+        {
+          invoker: fastify.invoker,
+          ...(config.meetingPrepModel ? { model: config.meetingPrepModel } : {}),
+        },
         fastify.log
       )
     : null;
   if (!prepComposer) {
-    fastify.log.warn('Briefing: anthropicApiKey not set — meeting preps use the deterministic composer');
+    fastify.log.warn(
+      'Briefing: model invoker unavailable — meeting preps use the deterministic composer'
+    );
   }
 
   // --- Heartbeats: register up-front so absence pages even before first run ---
@@ -336,7 +344,7 @@ export {
   deterministicPrep,
   type PrepInputs,
 } from './meetings/compose.js';
-export { AnthropicPrepComposer, normalizeBullets, type PrepComposer } from './meetings/model.js';
+export { PrepComposerService, normalizeBullets, type PrepComposer } from './meetings/model.js';
 export {
   MeetingPrepRenderer,
   renderPrepPaste,

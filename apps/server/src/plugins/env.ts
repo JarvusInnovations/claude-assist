@@ -50,9 +50,14 @@ const schema = {
     SESSIONS_CLASSIFICATION_LOOKBACK: { type: 'string', default: '3 days' },
     SESSIONS_CLASSIFICATION_CRON: { type: 'string' },
     SESSIONS_SYNTHESIS_CRON: { type: 'string' },
-    SESSIONS_SYNTHESIS_MODEL: { type: 'string', default: 'claude-sonnet-5' },
+    // Pin a model for weekly synthesis, overriding the `synthesize` tier.
+    // Unset — the normal case — lets MODEL_TIER_SYNTHESIZE / the built-in tier
+    // map decide, so a model swap is one edit instead of one per call site.
+    SESSIONS_SYNTHESIS_MODEL: { type: 'string' },
 
-    // AI Features (optional)
+    // The one metered credential. Read by the invoker module and nothing else:
+    // every module that needs a model reaches it through `fastify.invoker`, so
+    // spend has a single accounted-for path (specs/modules/invoker.md).
     ANTHROPIC_API_KEY: { type: 'string' },
     OUTLINE_CONCURRENCY: { type: 'number', default: 5 },
 
@@ -142,10 +147,11 @@ const schema = {
     ENABLE_KITCHEN: { type: 'boolean', default: true },
     KITCHEN_DISABLE_ESTIMATION: { type: 'boolean', default: false },
     KITCHEN_CONCURRENCY: { type: 'number', default: 3 },
-    // Vision-capable estimation model; defaults to a strong vision tier (open-ended meal estimation).
-    KITCHEN_ESTIMATION_MODEL: { type: 'string', default: 'claude-fable-5' },
-    // Cheap vision model for mechanical receipt-line extraction (phase 2).
-    KITCHEN_RECEIPT_MODEL: { type: 'string', default: 'claude-haiku-4-5' },
+    // Per-call-site model pins. Unset — the normal case — routes each call to
+    // its tier: estimation and label panels to `vision`, the mechanical
+    // receipt-line extraction to `extract`.
+    KITCHEN_ESTIMATION_MODEL: { type: 'string' },
+    KITCHEN_RECEIPT_MODEL: { type: 'string' },
     // Model for the spawned interactive meal-planning session — an INTERACTIVE
     // HUMAN session under subscription auth, unrelated to the metered models
     // above. Unset ⇒ the instance-wide SESSION_SPAWN_MODEL applies.
@@ -217,8 +223,8 @@ const schema = {
 
     // Per-meeting briefings (preps on the virtuous cycle)
     ENABLE_MEETING_BRIEFINGS: { type: 'boolean', default: true },
-    // Sonnet-class prep composer model.
-    MEETING_PREP_MODEL: { type: 'string', default: 'claude-sonnet-5' },
+    // Pin a model for the prep composer, overriding the `synthesize` tier.
+    MEETING_PREP_MODEL: { type: 'string' },
     // Optional pluggable prior-occurrence context CLI (transcripts/HQ timelines/
     // Slack). Receives occurrence metadata as JSON on stdin + --series-key/
     // --occurrence-key args; prints context text on stdout. Unset → omitted.
@@ -305,7 +311,7 @@ const schema = {
     SLACK_URGENCY_ROSTER: { type: 'string' },
     // CSV of channel ids to watch beyond DMs.
     SLACK_URGENCY_WATCH_CHANNELS: { type: 'string' },
-    // Residue classifier model (defaults to claude-haiku-4-5); reuses ANTHROPIC_API_KEY.
+    // Pin a model for the residue pass, overriding the `classify` tier.
     SLACK_URGENCY_MODEL: { type: 'string' },
     SLACK_URGENCY_TZ: { type: 'string', default: 'America/New_York' },
     SLACK_URGENCY_QUIET_START: { type: 'number', default: 22 },
@@ -356,7 +362,7 @@ declare module 'fastify' {
       SESSIONS_CLASSIFICATION_LOOKBACK: string;
       SESSIONS_CLASSIFICATION_CRON?: string;
       SESSIONS_SYNTHESIS_CRON?: string;
-      SESSIONS_SYNTHESIS_MODEL: string;
+      SESSIONS_SYNTHESIS_MODEL?: string;
 
       // AI Features
       ANTHROPIC_API_KEY?: string;
@@ -413,8 +419,8 @@ declare module 'fastify' {
       ENABLE_KITCHEN: boolean;
       KITCHEN_DISABLE_ESTIMATION: boolean;
       KITCHEN_CONCURRENCY: number;
-      KITCHEN_ESTIMATION_MODEL: string;
-      KITCHEN_RECEIPT_MODEL: string;
+      KITCHEN_ESTIMATION_MODEL?: string;
+      KITCHEN_RECEIPT_MODEL?: string;
       KITCHEN_PLAN_SESSION_MODEL?: string;
       KITCHEN_MAX_PHOTO_BYTES: number;
       KITCHEN_MAX_PHOTOS: number;
@@ -451,7 +457,7 @@ declare module 'fastify' {
 
       // Per-meeting briefings (preps)
       ENABLE_MEETING_BRIEFINGS: boolean;
-      MEETING_PREP_MODEL: string;
+      MEETING_PREP_MODEL?: string;
       MEETING_CONTEXT_BIN?: string;
       MEETING_CONTEXT_ARGS: string;
       MEETING_CRON: string;

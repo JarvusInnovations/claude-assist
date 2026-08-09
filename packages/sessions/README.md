@@ -222,14 +222,14 @@ all in `src/classification/`:
    for >48h gets a terminal (final) pass and is then flagged done.
 
 2. **Classification events** (`classification_events`, APPEND-ONLY). A cheap
-   Haiku pass over each new-message window records typed signals —
+   classify-tier pass over each new-message window records typed signals —
    `correction` (highest value), `friction`, `rule-candidate`,
    `notable-decision` — each with a seq range, one-line summary, confidence, and
    a verbatim quote. Windows usually yield nothing; the prompt is tuned for
    signal density. No window ever rewrites a prior window's events.
 
-3. **Weekly synthesis + narrative** (`synthesis_reports`). Once a week a stronger
-   model (Sonnet) digests the events into a structured report — proposed
+3. **Weekly synthesis + narrative** (`synthesis_reports`). Once a week the strong
+   synthesize tier digests the events into a structured report — proposed
    memory/rule/hook/skill/spec changes and ranked friction hotspots — plus an
    dev-diary-style narrative of how the system evolved. Both are persisted
    **and** delivered via the notify digest.

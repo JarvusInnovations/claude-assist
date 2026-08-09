@@ -28,10 +28,9 @@
  */
 
 import { createHash } from 'node:crypto';
-import Anthropic from '@anthropic-ai/sdk';
 import type postgres from 'postgres';
 import type { FastifyBaseLogger } from 'fastify';
-import type { NotifyDispatcher } from '@jarvus/claude-assist-core';
+import type { ModelInvoker, NotifyDispatcher } from '@jarvus/claude-assist-core';
 import type { EmailAnalysis, GmailAction } from '../types.js';
 import type { SenderStandingStore } from './standing.js';
 
@@ -365,12 +364,20 @@ export async function fillSummaries(
  * "what happened" bullets. It summarizes; it never re-judges classification.
  */
 export class AnthropicDigestSummarizer implements DigestSummarizer {
-  private client: Anthropic;
-  private model: string;
+  private invoker: ModelInvoker;
+  private model: string | undefined;
+  private maxTokens: number;
 
-  constructor(config: { apiKey: string; model?: string }) {
-    this.client = new Anthropic({ apiKey: config.apiKey });
-    this.model = config.model ?? 'claude-haiku-4-5';
+  constructor(config: {
+    /** The single metered-model choke point (specs/modules/invoker.md). */
+    invoker: ModelInvoker;
+    /** Pin a model for this call site. Prefer moving the tier instead. */
+    model?: string;
+    maxTokens?: number;
+  }) {
+    this.invoker = config.invoker;
+    this.model = config.model;
+    this.maxTokens = config.maxTokens ?? 512;
   }
 
   async summarize(section: string, items: DigestItem[]): Promise<string[]> {
@@ -391,16 +398,14 @@ export class AnthropicDigestSummarizer implements DigestSummarizer {
       `with "- ". No preamble.\n\nEmails:\n${lines}`;
 
     try {
-      const res = await this.client.messages.create({
-        model: this.model,
-        max_tokens: 512,
+      const res = await this.invoker.invoke({
+        task: 'google.digest',
+        tier: 'classify',
+        maxTokens: this.maxTokens,
+        ...(this.model ? { model: this.model } : {}),
         messages: [{ role: 'user', content: prompt }],
       });
-      const text = res.content
-        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-        .map((b) => b.text)
-        .join('\n');
-      const bullets = text
+      const bullets = res.text
         .split('\n')
         .map((l) => l.replace(/^[-*•]\s*/, '').trim())
         .filter(Boolean);

@@ -6,11 +6,15 @@
  * - Newsletter refinement for unsubscribe link extraction
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import pLimit from 'p-limit';
 import type postgres from 'postgres';
 import type { FastifyBaseLogger } from 'fastify';
-import type { NotifyDispatcher, HeartbeatRegistry } from '@jarvus/claude-assist-core';
+import type {
+  InvokeMessage,
+  ModelInvoker,
+  NotifyDispatcher,
+  HeartbeatRegistry,
+} from '@jarvus/claude-assist-core';
 import type {
   EmailRecord,
   GoogleAccount,
@@ -53,102 +57,77 @@ class JsonParseError extends Error {
 }
 
 /**
- * Manages a multi-turn conversation with Claude for email analysis.
- * Handles message history, API calls, and JSON parse retries internally.
+ * Manages a multi-turn conversation with the model for email analysis.
+ *
+ * The turn history is this class's own: each successful turn's validated
+ * analysis is appended as the assistant turn so a follow-up turn (the
+ * unsubscribe-link refinement) can say "return your updated analysis" and be
+ * understood. Transport retries, the parse-correction turn, timeouts, and spend
+ * accounting belong to the invoker.
  */
 class AnalysisConversation {
-  private messages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+  private messages: InvokeMessage[] = [];
   private systemPrompt: string;
-  private client: Anthropic;
-  private model: string;
+  private invoker: ModelInvoker;
+  private model: string | undefined;
   private maxTokens: number;
   private log: FastifyBaseLogger;
   private emailId: number;
 
   constructor(options: {
     systemPrompt: string;
-    client: Anthropic;
-    model: string;
+    invoker: ModelInvoker;
+    model?: string | undefined;
     maxTokens: number;
     log: FastifyBaseLogger;
     emailId: number;
   }) {
     this.systemPrompt = options.systemPrompt;
-    this.client = options.client;
+    this.invoker = options.invoker;
     this.model = options.model;
     this.maxTokens = options.maxTokens;
     this.log = options.log;
     this.emailId = options.emailId;
   }
 
-  /**
-   * Send a message and get the parsed analysis.
-   * Handles JSON parse errors internally with one retry.
-   * All responses (including failed parses) are added to history.
-   */
+  /** Send a turn and get the parsed analysis, extending the history. */
   async sendMessage(content: string): Promise<EmailAnalysis> {
     this.messages.push({ role: 'user', content });
 
-    const maxRetries = 1;
+    const analysis = await this.invoker.invokeTagged<EmailAnalysis>({
+      task: 'google.triage',
+      tier: 'extract',
+      maxTokens: this.maxTokens,
+      ...(this.model ? { model: this.model } : {}),
+      system: this.systemPrompt,
+      // The classification rubric is large, static, and re-sent on every email
+      // in every batch — the one call site where a cache breakpoint pays.
+      cacheSystem: true,
+      tag: 'analysis',
+      parse: (raw) => this.parseAnalysis(raw),
+      messages: this.messages,
+    });
 
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      const response = await this.client.messages.create({
-        model: this.model,
-        max_tokens: this.maxTokens,
-        system: this.systemPrompt,
-        messages: this.messages,
-      });
+    this.messages.push({
+      role: 'assistant',
+      content: `<analysis>\n${JSON.stringify(analysis, null, 2)}\n</analysis>`,
+    });
 
-      const textContent = response.content.find((c) => c.type === 'text');
-      if (!textContent || textContent.type !== 'text') {
-        throw new Error('No text response from AI');
-      }
-
-      // Add raw response to history before parsing
-      this.messages.push({ role: 'assistant', content: textContent.text });
-
-      try {
-        return this.parseAnalysisFromXml(textContent.text);
-      } catch (error) {
-        if (attempt < maxRetries && error instanceof JsonParseError) {
-          this.log.warn(
-            { emailId: this.emailId, attempt, error: error.message },
-            'JSON parse failed, requesting correction'
-          );
-          // Add correction request for next iteration
-          this.messages.push({
-            role: 'user',
-            content: `<error>JSON parse failed: ${error.message}</error>
-
-Please fix the JSON syntax and return the corrected analysis inside <analysis> tags.`,
-          });
-        } else {
-          throw error;
-        }
-      }
-    }
-
-    // TypeScript: unreachable, but satisfies return type
-    throw new Error('Unexpected: retry loop exited without return or throw');
+    return analysis;
   }
 
   /** Get message history for debugging/logging */
-  getHistory(): ReadonlyArray<{ role: string; content: string }> {
+  getHistory(): ReadonlyArray<InvokeMessage> {
     return this.messages;
   }
 
   /**
-   * Parse analysis JSON from XML-tagged AI response
+   * Parse + validate the analysis JSON. Receives the contents of the
+   * `<analysis>` block; the invoker extracts it and asks for a correction turn
+   * when this throws.
    */
-  private parseAnalysisFromXml(text: string): EmailAnalysis {
-    // Extract content between <analysis> tags
-    const match = text.match(/<analysis>\s*([\s\S]*?)\s*<\/analysis>/);
-
-    if (!match) {
-      throw new JsonParseError('No <analysis> tags found in response', text);
-    }
-
-    const jsonStr = match[1]!.trim();
+  private parseAnalysis(raw: string): EmailAnalysis {
+    const jsonStr = raw.trim();
 
     try {
       const parsed = JSON.parse(jsonStr);
@@ -156,7 +135,7 @@ Please fix the JSON syntax and return the corrected analysis inside <analysis> t
     } catch (error) {
       throw new JsonParseError(
         `JSON parse error: ${error instanceof Error ? error.message : String(error)}`,
-        text
+        jsonStr
       );
     }
   }
@@ -211,9 +190,9 @@ type AccountSettings = Pick<
 >;
 
 export interface TriageServiceConfig {
-  /** Anthropic API key (required) */
-  apiKey: string;
-  /** Model to use (default: 'claude-haiku-4-5') */
+  /** The single metered-model choke point (specs/modules/invoker.md). */
+  invoker: ModelInvoker;
+  /** Pin a model for this call site. Prefer moving the tier instead. */
   model?: string;
   /** Max tokens for response (default: 2048) */
   maxTokens?: number;
@@ -224,7 +203,7 @@ export interface TriageServiceConfig {
 }
 
 /**
- * Optional collaborators wired in by the plugin. Kept separate from the API-key
+ * Optional collaborators wired in by the plugin. Kept separate from the model
  * config so the service still works (rules/alerts simply no-op) when they're
  * absent — e.g. in a unit test or before the notify module is loaded.
  */
@@ -284,9 +263,9 @@ export class TriageService {
 
   private sql: postgres.Sql;
   private log: FastifyBaseLogger;
-  private client: Anthropic;
+  private invoker: ModelInvoker;
   private limit: ReturnType<typeof pLimit>;
-  private model: string;
+  private model: string | undefined;
   private maxTokens: number;
   private disableEmailTriage: boolean;
   private activeTriages = new Map<number, { startedAt: Date; total: number; processed: number }>();
@@ -313,9 +292,9 @@ export class TriageService {
   ) {
     this.sql = sql;
     this.log = log;
-    this.client = new Anthropic({ apiKey: config.apiKey });
+    this.invoker = config.invoker;
     this.limit = pLimit(config.concurrency ?? 5);
-    this.model = config.model ?? 'claude-haiku-4-5';
+    this.model = config.model;
     this.maxTokens = config.maxTokens ?? 2048;
     this.disableEmailTriage = config.disableEmailTriage ?? false;
     this.rulesService = deps.rulesService;
@@ -623,7 +602,7 @@ export class TriageService {
   ): Promise<EmailAnalysis> {
     const conversation = new AnalysisConversation({
       systemPrompt: this.buildSystemPrompt(context.settings, context.aliases),
-      client: this.client,
+      invoker: this.invoker,
       model: this.model,
       maxTokens: this.maxTokens,
       log: this.log,

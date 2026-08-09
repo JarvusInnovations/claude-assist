@@ -1,19 +1,18 @@
 /**
  * Kitchen estimator: one structured-output vision call per estimation
  * attempt (photos + note → {label, calories, macros, confidence,
- * portion_basis, excluded}). Mirrors the capture classifier's XML-tagged-JSON +
- * one-retry pattern (services/classifier.ts) rather than the SDK's
- * `output_config.format` structured-outputs feature, so the estimation
- * model stays swappable to any vision-capable model the instance
- * configures (structured outputs has a narrower supported-model list).
+ * portion_basis, excluded}). Tagged-JSON rather than the provider's
+ * structured-outputs feature, so the estimation model stays swappable to any
+ * vision-capable model the instance configures (structured outputs has a
+ * narrower supported-model list).
  *
  * The capture action is the type hint (specs/modules/kitchen.md § Estimation
  * & model tiering) — there is no separate classification call here; the
  * caller already knows this is a meal-estimation job.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import type { FastifyBaseLogger } from 'fastify';
+import type { InvokeContentBlock, ModelInvoker } from '@jarvus/claude-assist-core';
 import type { EstimateExclusion, ExclusionKind, ModelEstimate, PhotoPart } from '../types.js';
 import { EXCLUSION_KINDS } from '../types.js';
 
@@ -25,8 +24,9 @@ export class EstimateParseError extends Error {
 }
 
 export interface EstimatorConfig {
-  apiKey: string;
-  /** default: claude-fable-5 — the strongest vision tier for open-ended meal estimation. */
+  /** The single metered-model choke point (specs/modules/invoker.md). */
+  invoker: ModelInvoker;
+  /** Pin a model for this call site. Prefer moving the tier instead. */
   model?: string;
   maxTokens?: number;
 }
@@ -84,82 +84,53 @@ Any macro you truly cannot estimate should be null, not 0 — 0 means "none", no
 </response_format>`;
 
 export class KitchenEstimator implements Estimator {
-  private client: Anthropic;
-  private model: string;
+  private invoker: ModelInvoker;
+  private model: string | undefined;
   private maxTokens: number;
   private log: FastifyBaseLogger;
 
   constructor(config: EstimatorConfig, log: FastifyBaseLogger) {
-    this.client = new Anthropic({ apiKey: config.apiKey });
-    this.model = config.model ?? 'claude-fable-5';
+    this.invoker = config.invoker;
+    this.model = config.model;
     this.maxTokens = config.maxTokens ?? 1024;
     this.log = log;
   }
 
   async estimate(input: EstimateInput): Promise<ModelEstimate> {
-    const content: Anthropic.ContentBlockParam[] = input.photos.map((photo) => ({
+    const content: InvokeContentBlock[] = input.photos.map((photo) => ({
       type: 'image' as const,
-      source: {
-        type: 'base64' as const,
-        media_type: normalizeMediaType(photo.mimeType),
-        data: photo.data.toString('base64'),
-      },
+      data: photo.data.toString('base64'),
+      mediaType: photo.mimeType,
     }));
     content.push({ type: 'text', text: buildPrompt(input.note, input.photos.length) });
 
-    const messages: Anthropic.MessageParam[] = [{ role: 'user', content }];
-
-    const maxRetries = 1;
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      const response = await this.client.messages.create({
-        model: this.model,
-        max_tokens: this.maxTokens,
-        system: SYSTEM_PROMPT,
-        messages,
-      });
-
-      const textContent = response.content.find((c) => c.type === 'text');
-      if (!textContent || textContent.type !== 'text') {
-        if (response.stop_reason === 'refusal') {
-          throw new Error('Estimation refused by the model');
-        }
-        throw new Error('No text response from estimator');
-      }
-      messages.push({ role: 'assistant', content: textContent.text });
-
-      try {
-        return parseEstimateResponse(textContent.text);
-      } catch (error) {
-        if (attempt < maxRetries && error instanceof EstimateParseError) {
-          this.log.warn({ attempt, error: error.message }, 'Estimate parse failed, requesting correction');
-          messages.push({
-            role: 'user',
-            content: `<error>Parse failed: ${error.message}</error>\n\nReturn the corrected JSON inside <estimate> tags.`,
-          });
-        } else {
-          throw error;
-        }
-      }
-    }
-
-    throw new Error('Unexpected: estimator retry loop exited without result');
+    // Tag extraction, the correction turn, retries, timeouts, and spend
+    // accounting all live in the invoker; what stays here is the prompt and the
+    // shape validation, which are this module's own judgment.
+    return this.invoker.invokeTagged<ModelEstimate>({
+      task: 'kitchen.estimate',
+      tier: 'vision',
+      maxTokens: this.maxTokens,
+      ...(this.model ? { model: this.model } : {}),
+      system: SYSTEM_PROMPT,
+      tag: 'estimate',
+      parse: parseEstimateResponse,
+      messages: [{ role: 'user', content }],
+    });
   }
 }
 
 /**
- * Parse one `<estimate>` response into a `ModelEstimate`. Module-level and
- * exported because it is the estimator's whole output contract — the tests that
- * pin that contract must not have to stand up an API client to reach it.
- * Throws `EstimateParseError` for a malformed response, which is what the retry
- * loop distinguishes from a transport failure.
+ * Parse the contents of one `<estimate>` block into a `ModelEstimate`.
+ * Module-level and exported because it is the estimator's whole output
+ * contract — the tests that pin that contract must not have to stand up a model
+ * to reach it. Throws `EstimateParseError` for a malformed payload, which is
+ * what the invoker turns into a correction turn.
  */
 export function parseEstimateResponse(text: string): ModelEstimate {
-  const match = text.match(/<estimate>\s*([\s\S]*?)\s*<\/estimate>/);
-  if (!match) throw new EstimateParseError('No <estimate> tags found in response');
-
   let parsed: Record<string, unknown>;
   try {
-    parsed = JSON.parse(match[1]!.trim());
+    parsed = JSON.parse(text.trim());
   } catch (error) {
     throw new EstimateParseError(
       `JSON parse error: ${error instanceof Error ? error.message : String(error)}`
@@ -244,13 +215,6 @@ function normalizeExclusions(value: unknown): EstimateExclusion[] {
  */
 const MAX_EXCLUSIONS = 40;
 const MAX_EXCLUSION_TEXT = 200;
-
-type SupportedMediaType = 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
-
-function normalizeMediaType(mimeType: string): SupportedMediaType {
-  const allowed: readonly string[] = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-  return (allowed.includes(mimeType) ? mimeType : 'image/jpeg') as SupportedMediaType;
-}
 
 function buildPrompt(note: string | null, photoCount: number): string {
   return `<entry>

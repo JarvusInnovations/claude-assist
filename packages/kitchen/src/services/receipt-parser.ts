@@ -1,13 +1,14 @@
 /**
- * Receipt parser: one cheap-model vision call over receipt photo(s) →
- * {store, lines[]}. Mechanical OCR-ish extraction, so it runs on the cheap
- * tier (KITCHEN_RECEIPT_MODEL, default a Haiku-class id) per
- * specs/modules/kitchen.md § Model tiering. Mirrors the estimator's
- * XML-tagged-JSON + one-retry shape so any vision-capable model works.
+ * Receipt parser: one call over receipt photo(s) → {store, lines[]}. It sends
+ * images, but the job is mechanical transcription of a structured document
+ * rather than open-ended visual judgment, so it runs on the `extract` tier —
+ * the cheap tier, which is what specs/modules/kitchen.md § Model tiering asks
+ * for. Same tagged-JSON shape as the estimator, so any vision-capable model
+ * the tier resolves to works.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import type { FastifyBaseLogger } from 'fastify';
+import type { InvokeContentBlock, ModelInvoker } from '@jarvus/claude-assist-core';
 import type { InventoryPhotoPart, ParsedReceipt, ParsedReceiptLine } from '../inventory-types.js';
 
 class ReceiptParseError extends Error {
@@ -18,8 +19,9 @@ class ReceiptParseError extends Error {
 }
 
 export interface ReceiptParserConfig {
-  apiKey: string;
-  /** default: claude-haiku-4-5 — the cheap tier for mechanical extraction. */
+  /** The single metered-model choke point (specs/modules/invoker.md). */
+  invoker: ModelInvoker;
+  /** Pin a model for this call site. Prefer moving the tier instead. */
   model?: string;
   maxTokens?: number;
 }
@@ -69,14 +71,14 @@ Return ONLY a JSON object inside <receipt> tags. No markdown, no text outside th
 export const SYSTEM_PROMPT_TEXT = SYSTEM_PROMPT;
 
 export class KitchenReceiptParser implements ReceiptParser {
-  private client: Anthropic;
-  private model: string;
+  private invoker: ModelInvoker;
+  private model: string | undefined;
   private maxTokens: number;
   private log: FastifyBaseLogger;
 
   constructor(config: ReceiptParserConfig, log: FastifyBaseLogger) {
-    this.client = new Anthropic({ apiKey: config.apiKey });
-    this.model = config.model ?? 'claude-haiku-4-5';
+    this.invoker = config.invoker;
+    this.model = config.model;
     this.maxTokens = config.maxTokens ?? 2048;
     this.log = log;
   }
@@ -85,13 +87,10 @@ export class KitchenReceiptParser implements ReceiptParser {
     if (input.photos.length === 0) {
       throw new ReceiptParseError('No receipt photos supplied');
     }
-    const content: Anthropic.ContentBlockParam[] = input.photos.map((photo) => ({
+    const content: InvokeContentBlock[] = input.photos.map((photo) => ({
       type: 'image' as const,
-      source: {
-        type: 'base64' as const,
-        media_type: normalizeMediaType(photo.mimeType),
-        data: photo.data.toString('base64'),
-      },
+      data: photo.data.toString('base64'),
+      mediaType: photo.mimeType,
     }));
     content.push({
       type: 'text',
@@ -100,44 +99,26 @@ export class KitchenReceiptParser implements ReceiptParser {
       }`,
     });
 
-    const messages: Anthropic.MessageParam[] = [{ role: 'user', content }];
-    const maxRetries = 1;
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      const response = await this.client.messages.create({
-        model: this.model,
-        max_tokens: this.maxTokens,
-        system: SYSTEM_PROMPT,
-        messages,
-      });
-      const textContent = response.content.find((c) => c.type === 'text');
-      if (!textContent || textContent.type !== 'text') {
-        if (response.stop_reason === 'refusal') throw new Error('Receipt parse refused by the model');
-        throw new Error('No text response from receipt parser');
-      }
-      messages.push({ role: 'assistant', content: textContent.text });
-      try {
-        return this.parseReceipt(textContent.text, input.storeHint ?? null);
-      } catch (error) {
-        if (attempt < maxRetries && error instanceof ReceiptParseError) {
-          this.log.warn({ attempt, error: error.message }, 'Receipt parse failed, requesting correction');
-          messages.push({
-            role: 'user',
-            content: `<error>Parse failed: ${error.message}</error>\n\nReturn the corrected JSON inside <receipt> tags.`,
-          });
-        } else {
-          throw error;
-        }
-      }
-    }
-    throw new Error('Unexpected: receipt parser retry loop exited without result');
+    // Tag extraction, the correction turn, retries, timeouts, and spend
+    // accounting live in the invoker; the prompt and the shape validation are
+    // this module's own judgment and stay here.
+    return this.invoker.invokeTagged<ParsedReceipt>({
+      task: 'kitchen.receipt',
+      tier: 'extract',
+      maxTokens: this.maxTokens,
+      ...(this.model ? { model: this.model } : {}),
+      system: SYSTEM_PROMPT,
+      tag: 'receipt',
+      parse: (raw) => this.parseReceipt(raw, input.storeHint ?? null),
+      messages: [{ role: 'user', content }],
+    });
   }
 
+  /** Receives the contents of the `<receipt>` block; the invoker extracts it. */
   private parseReceipt(text: string, storeHint: string | null): ParsedReceipt {
-    const match = text.match(/<receipt>\s*([\s\S]*?)\s*<\/receipt>/);
-    if (!match) throw new ReceiptParseError('No <receipt> tags found in response');
     let parsed: Record<string, unknown>;
     try {
-      parsed = JSON.parse(match[1]!.trim());
+      parsed = JSON.parse(text.trim());
     } catch (error) {
       throw new ReceiptParseError(`JSON parse error: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -193,11 +174,4 @@ function normalizeQuantity(value: unknown): number {
   const n = typeof value === 'number' ? value : Number(value);
   if (!Number.isFinite(n) || n < 1) return 1;
   return Math.floor(n);
-}
-
-type SupportedMediaType = 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
-
-function normalizeMediaType(mimeType: string): SupportedMediaType {
-  const allowed: readonly string[] = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-  return (allowed.includes(mimeType) ? mimeType : 'image/jpeg') as SupportedMediaType;
 }

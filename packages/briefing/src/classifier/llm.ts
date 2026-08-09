@@ -1,16 +1,15 @@
 /**
- * Haiku residue pass for the join-required classifier.
+ * Cheap-tier residue pass for the join-required classifier.
  *
  * Only the genuinely ambiguous events (structurally join-worthy but soft-noise
- * flagged — see join-required.ts) reach this. Mirrors the email-triage /
- * capture-classifier API patterns: cheap model, XML-tagged JSON output, one
- * parse-correction retry, validated boolean. Absent an API key the residue
- * falls back to a conservative default (don't fire — a near-miss surfaces in
- * the daily briefing per the false-negative-backstop principle).
+ * flagged — see join-required.ts) reach this; the deterministic pre-pass is
+ * what makes the classifier affordable. With the invoker unavailable the
+ * residue falls back to a conservative default (don't fire — a near-miss
+ * surfaces in the daily briefing per the false-negative-backstop principle).
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import type { FastifyBaseLogger } from 'fastify';
+import type { ModelInvoker } from '@jarvus/claude-assist-core';
 import type { CalendarEvent, JoinClassification, VenueKind } from '../types.js';
 
 class JoinParseError extends Error {
@@ -21,8 +20,9 @@ class JoinParseError extends Error {
 }
 
 export interface JoinModelConfig {
-  apiKey: string;
-  /** default: claude-haiku-4-5 */
+  /** The single metered-model choke point (specs/modules/invoker.md). */
+  invoker: ModelInvoker;
+  /** Pin a model for this call site. Prefer moving the tier instead. */
   model?: string;
   maxTokens?: number;
 }
@@ -50,63 +50,41 @@ Return ONLY a JSON object inside <join> tags. No prose outside the tags.
 </response_format>`;
 
 export class JoinRequiredModel {
-  private client: Anthropic;
-  private model: string;
+  private invoker: ModelInvoker;
+  private model: string | undefined;
   private maxTokens: number;
   private log: FastifyBaseLogger;
 
   constructor(config: JoinModelConfig, log: FastifyBaseLogger) {
-    this.client = new Anthropic({ apiKey: config.apiKey });
-    this.model = config.model ?? 'claude-haiku-4-5';
+    this.invoker = config.invoker;
+    this.model = config.model;
     this.maxTokens = config.maxTokens ?? 512;
     this.log = log;
   }
 
   /** Resolve one ambiguous event. `venue` carries through from the pre-pass. */
   async classify(event: CalendarEvent, venue: VenueKind): Promise<JoinClassification> {
-    const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
-      { role: 'user', content: buildPrompt(event) },
-    ];
+    // Retries, the parse-correction turn, and spend accounting live in the
+    // invoker; the deterministic pre-pass upstream is what keeps this call
+    // site cheap, and it is unchanged.
+    const parsed = await this.invoker.invokeTagged<{ joinRequired: boolean; confidence: number }>({
+      task: 'briefing.join-required',
+      tier: 'classify',
+      maxTokens: this.maxTokens,
+      ...(this.model ? { model: this.model } : {}),
+      system: SYSTEM_PROMPT,
+      tag: 'join',
+      parse: parseJoin,
+      messages: [{ role: 'user', content: buildPrompt(event) }],
+    });
 
-    const maxRetries = 1;
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      const response = await this.client.messages.create({
-        model: this.model,
-        max_tokens: this.maxTokens,
-        system: SYSTEM_PROMPT,
-        messages,
-      });
-      const textContent = response.content.find((c) => c.type === 'text');
-      if (!textContent || textContent.type !== 'text') {
-        throw new Error('No text response from join classifier');
-      }
-      messages.push({ role: 'assistant', content: textContent.text });
-
-      try {
-        const parsed = parseJoin(textContent.text);
-        return {
-          joinRequired: parsed.joinRequired,
-          reason: `model:${parsed.joinRequired ? 'join' : 'noise'}`,
-          venue,
-          source: 'model',
-          confidence: parsed.confidence,
-        };
-      } catch (error) {
-        if (attempt < maxRetries && error instanceof JoinParseError) {
-          this.log.warn(
-            { eventId: event.id, attempt, error: error.message },
-            'Join classification parse failed, requesting correction'
-          );
-          messages.push({
-            role: 'user',
-            content: `<error>Parse failed: ${error.message}</error>\n\nReturn the corrected JSON inside <join> tags.`,
-          });
-        } else {
-          throw error;
-        }
-      }
-    }
-    throw new Error('Unexpected: join classifier retry loop exited without result');
+    return {
+      joinRequired: parsed.joinRequired,
+      reason: `model:${parsed.joinRequired ? 'join' : 'noise'}`,
+      venue,
+      source: 'model',
+      confidence: parsed.confidence,
+    };
   }
 }
 
@@ -122,13 +100,11 @@ ${event.description ? `<description>${event.description.slice(0, 600)}</descript
 </event>`;
 }
 
-export function parseJoin(text: string): { joinRequired: boolean; confidence: number } {
-  const match = text.match(/<join>\s*([\s\S]*?)\s*<\/join>/);
-  if (!match) throw new JoinParseError('No <join> tags found in response');
-
+/** Receives the contents of the `<join>` block; the invoker extracts it. */
+export function parseJoin(raw: string): { joinRequired: boolean; confidence: number } {
   let parsed: Record<string, unknown>;
   try {
-    parsed = JSON.parse(match[1]!.trim());
+    parsed = JSON.parse(raw.trim());
   } catch (error) {
     throw new JoinParseError(
       `JSON parse error: ${error instanceof Error ? error.message : String(error)}`

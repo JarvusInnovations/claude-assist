@@ -610,7 +610,7 @@ var COMMAND_GROUPS = [
   {
     group: "Manage",
     commands: [
-      { usage: "outlines [<session-id>...]", summary: "generate AI outlines for sessions missing/stale ones (needs ANTHROPIC_API_KEY)" },
+      { usage: "outlines [<session-id>...]", summary: "generate AI outlines for sessions missing/stale ones (needs the server's model invoker)" },
       { usage: "outlines progress", summary: "check background outline-generation progress" },
       { usage: "sync [--force]", summary: "trigger an immediate local session sync (--force re-parses all)" },
       { usage: "share <session-id>", summary: "mint a shareable auth code for a session transcript" }
@@ -693,7 +693,7 @@ function buildUrl(server, path, query) {
 function suggestForStatus(status) {
   if (status === 404) return ["Check the id \u2014 try `search` to look one up"];
   if (status === 400) return ["Check required params and value formats for this command"];
-  if (status === 503) return ["The server is up but this feature may be disabled (e.g. ANTHROPIC_API_KEY not set)"];
+  if (status === 503) return ["The server is up but this feature may be disabled (e.g. the model invoker is unavailable)"];
   return [];
 }
 async function send(method, path, opts = {}) {
@@ -1400,8 +1400,8 @@ async function machinesCommand(args) {
 var OUTLINES_HELP = `sessions-axi outlines [<session-id>...] [--json]
 sessions-axi outlines progress [--json]
 
-  Generate AI outlines for sessions missing or with stale ones (needs
-  ANTHROPIC_API_KEY on the server). With no ids, processes all pending.
+  Generate AI outlines for sessions missing or with stale ones (needs the
+  server's model invoker). With no ids, processes all pending.
   \`outlines progress\` reports background generation status.`;
 async function outlinesCommand(args) {
   const { positionals, flags } = parseArgs(args, ["json"]);
@@ -1441,7 +1441,7 @@ async function shareCommand(args) {
 }
 
 // packages/sessions/src/axi/cli.ts
-var VERSION = true ? "411b66a" : "dev";
+var VERSION = true ? "407137d" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [command] [args] [flags]
        ${CLI}                 # no args \u2192 home (recent activity + next steps)

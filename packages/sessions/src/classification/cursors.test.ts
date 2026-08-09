@@ -99,7 +99,7 @@ function makeRecordingStore() {
 function makeClassifier(events: DetectedEvent[]): { classifier: ClassificationEventClassifier; calls: number[] } {
   const calls: number[] = [];
   const classifier = {
-    model: 'claude-haiku-4-5',
+    model: 'test-classify-model',
     classifyDelta: mock(async () => {
       calls.push(1);
       return events;
@@ -161,7 +161,7 @@ describe('ClassificationService.classifyOne (via classifyBatch)', () => {
       classifyBatch(s: SessionForClassification[]): Promise<unknown>;
     }).classifyBatch([sessionRow({ cursor_last_seq: 3, cursor_last_hash: 'hashOld' })]);
 
-    expect(calls.length).toBe(0); // no delta → no Haiku call
+    expect(calls.length).toBe(0); // no delta → no model call
     expect(appended).toHaveLength(0); // append-only: nothing written
     expect(advanced).toHaveLength(1); // hash advanced so it isn't re-selected
     expect(advanced[0]!.hash).toBe('hashA');

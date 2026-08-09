@@ -4,14 +4,15 @@ import { parseClassificationEvents, buildClassificationPrompt } from './events.j
 import { ClassificationStore } from './store.js';
 import type { DetectedEvent } from './types.js';
 
+// The invoker extracts the <events> block, so these receive its CONTENTS.
 describe('parseClassificationEvents', () => {
-  it('parses a valid <events> array with all fields', () => {
-    const text = `<events>
+  it('parses a valid events array with all fields', () => {
+    const text = `
 [
   { "type": "correction", "summary": "the owner fixed the branch name", "confidence": 0.9, "quote": "no, it's develop" },
   { "type": "friction", "summary": "tofu apply failed 3x", "confidence": 0.7, "quote": "error again" }
 ]
-</events>`;
+`;
     const events = parseClassificationEvents(text);
     expect(events).toHaveLength(2);
     expect(events[0]!.type).toBe('correction');
@@ -20,15 +21,15 @@ describe('parseClassificationEvents', () => {
   });
 
   it('treats an empty array as valid (the common case)', () => {
-    expect(parseClassificationEvents('<events>\n[]\n</events>')).toEqual([]);
+    expect(parseClassificationEvents('\n[]\n')).toEqual([]);
   });
 
   it('drops unknown types and summary-less rows rather than failing the window', () => {
-    const text = `<events>[
+    const text = `[
       { "type": "bogus", "summary": "x", "confidence": 1 },
       { "type": "rule-candidate", "summary": "", "confidence": 1 },
       { "type": "notable-decision", "summary": "picked postgres", "confidence": 0.8 }
-    ]</events>`;
+    ]`;
     const events = parseClassificationEvents(text);
     expect(events).toHaveLength(1);
     expect(events[0]!.type).toBe('notable-decision');
@@ -37,14 +38,15 @@ describe('parseClassificationEvents', () => {
 
   it('clamps out-of-range confidence to a default', () => {
     const events = parseClassificationEvents(
-      '<events>[{ "type": "correction", "summary": "s", "confidence": 5 }]</events>'
+      '[{ "type": "correction", "summary": "s", "confidence": 5 }]'
     );
     expect(events[0]!.confidence).toBe(0.5);
   });
 
-  it('throws on a missing tag or malformed JSON', () => {
-    expect(() => parseClassificationEvents('no tags here')).toThrow();
-    expect(() => parseClassificationEvents('<events>{not json}</events>')).toThrow();
+  it('throws on malformed JSON or a non-array, triggering a correction turn', () => {
+    expect(() => parseClassificationEvents('no json here')).toThrow();
+    expect(() => parseClassificationEvents('{not json}')).toThrow();
+    expect(() => parseClassificationEvents('{"type":"correction"}')).toThrow();
   });
 });
 
@@ -87,7 +89,7 @@ describe('ClassificationStore.appendEvents — append-only semantics', () => {
     const { sql, queries } = recordingSql();
     const store = new ClassificationStore(sql);
 
-    await store.appendEvents('sid', 4, 9, events, 'claude-haiku-4-5');
+    await store.appendEvents('sid', 4, 9, events, 'test-classify-model');
 
     const eventQueries = queries.filter((q) => q.includes('classification_events'));
     expect(eventQueries).toHaveLength(2); // one INSERT per event
@@ -102,8 +104,8 @@ describe('ClassificationStore.appendEvents — append-only semantics', () => {
     const { sql, queries } = recordingSql();
     const store = new ClassificationStore(sql);
 
-    await store.appendEvents('sid', 0, 3, [events[0]!], 'claude-haiku-4-5');
-    await store.appendEvents('sid', 4, 9, [events[1]!], 'claude-haiku-4-5');
+    await store.appendEvents('sid', 0, 3, [events[0]!], 'test-classify-model');
+    await store.appendEvents('sid', 4, 9, [events[1]!], 'test-classify-model');
 
     const eventQueries = queries.filter((q) => q.includes('classification_events'));
     expect(eventQueries).toHaveLength(2);

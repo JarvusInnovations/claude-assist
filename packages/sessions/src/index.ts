@@ -18,7 +18,7 @@ import {
  * - Push endpoint for satellite machines
  * - Full-text search across all sessions
  * - Scheduled sync every 5 minutes
- * - AI-generated session outlines (if anthropicApiKey is provided)
+ * - AI-generated session outlines (when the model invoker is available)
  */
 export default createPlugin('sessions', async (fastify, options) => {
   const config = options.sessionsConfig ?? {};
@@ -33,29 +33,29 @@ export default createPlugin('sessions', async (fastify, options) => {
     ignoreContentMarkers: config.ignoreContentMarkers,
   });
 
-  // Initialize outline service (optional - requires anthropicApiKey)
+  // Initialize outline service (optional - requires the model invoker)
   let outlineService: OutlineService | null = null;
-  if (config.anthropicApiKey) {
+  if (fastify.invoker?.enabled) {
     outlineService = new OutlineService(fastify.sql, fastify.log, {
-      apiKey: config.anthropicApiKey,
+      invoker: fastify.invoker,
       concurrency: config.outlineConcurrency,
       disableGenerateOutlines: config.disableGenerateOutlines,
     });
     fastify.log.info('Outline service enabled');
   } else {
-    fastify.log.warn('anthropicApiKey not set - outline generation disabled');
+    fastify.log.warn('Model invoker unavailable - outline generation disabled');
   }
 
-  // Initialize classification pipeline (optional - requires anthropicApiKey).
-  // Per-session incremental cursors → append-only Haiku classification events →
-  // weekly Sonnet synthesis + timeline narrative. The self-improvement loop.
+  // Initialize classification pipeline (optional - requires the model invoker).
+  // Per-session incremental cursors → append-only classification events →
+  // weekly synthesis + timeline narrative. The self-improvement loop.
   let classificationService: ClassificationService | null = null;
   let synthesisService: SynthesisService | null = null;
   let classificationStore: ClassificationStore | null = null;
-  if (config.anthropicApiKey && !config.disableClassification) {
+  if (fastify.invoker?.enabled && !config.disableClassification) {
     classificationStore = new ClassificationStore(fastify.sql);
     const classifier = new ClassificationEventClassifier(
-      { apiKey: config.anthropicApiKey },
+      { invoker: fastify.invoker },
       fastify.log
     );
     classificationService = new ClassificationService(
@@ -70,12 +70,15 @@ export default createPlugin('sessions', async (fastify, options) => {
     );
     synthesisService = new SynthesisService(
       classificationStore,
-      { apiKey: config.anthropicApiKey, model: config.synthesisModel },
+      {
+        invoker: fastify.invoker,
+        ...(config.synthesisModel ? { model: config.synthesisModel } : {}),
+      },
       fastify.log
     );
     fastify.log.info('Classification pipeline enabled');
-  } else if (!config.anthropicApiKey) {
-    fastify.log.warn('anthropicApiKey not set - classification pipeline disabled');
+  } else if (!fastify.invoker?.enabled) {
+    fastify.log.warn('Model invoker unavailable - classification pipeline disabled');
   } else {
     fastify.log.info('Classification pipeline disabled via disableClassification config');
   }
@@ -141,7 +144,7 @@ export default createPlugin('sessions', async (fastify, options) => {
     });
   }
 
-  // Classification sweep: delta-only Haiku classification of recent sessions.
+  // Classification sweep: delta-only classification of recent sessions.
   // Runs on a modest cadence (not every 5-min sync) to keep windows dense and
   // cost bounded; a short lookback means it never touches the session backlog.
   if (classificationService) {
@@ -161,7 +164,7 @@ export default createPlugin('sessions', async (fastify, options) => {
     fastify.log.info('Classification sweep scheduled');
   }
 
-  // Weekly synthesis + timeline narrative (Sonnet). Digests the week's events
+  // Weekly synthesis + timeline narrative. Digests the week's events
   // into proposed changes + friction hotspots, and an evolution narrative;
   // both are persisted AND delivered via the notify digest.
   if (synthesisService) {

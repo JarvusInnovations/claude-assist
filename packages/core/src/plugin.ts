@@ -142,13 +142,14 @@ export interface ApprovalsPluginConfig {
  * estimation, recipes).
  */
 export interface KitchenPluginConfig {
-  /** Anthropic API key for the vision estimation call. */
-  anthropicApiKey?: string;
-  /** Estimation model (default: claude-fable-5 — a strong vision-capable tier). */
+  /**
+   * Pin a model for the vision estimation call, overriding the `vision` tier.
+   * Unset — the normal case — lets the invoker's tier map decide.
+   */
   estimationModel?: string;
   /**
-   * Cheap receipt-parse model (default: claude-haiku-4-5). Phase-2 receipt line
-   * extraction is mechanical, so it runs on the cheap tier.
+   * Pin a model for receipt-line extraction, overriding the `extract` tier.
+   * The work is mechanical, which is why the cheap tier is the right default.
    */
   receiptModel?: string;
   /**
@@ -246,11 +247,9 @@ export interface SlackUrgencyPluginConfig {
   roster?: string;
   /** Channel ids to watch beyond DMs. */
   watchChannels?: string[];
-  /** Anthropic API key for the Haiku residue pass. */
-  anthropicApiKey?: string;
-  /** Residue classifier model (default claude-haiku-4-5). */
+  /** Pin a model for the residue pass, overriding the `classify` tier. */
   model?: string;
-  /** IANA time zone for quiet hours (default America/New_York). */
+  /** IANA time zone for quiet hours. Unset falls back to UTC. */
   timeZone?: string;
   /** Quiet-hours window start hour 0–23 (default 22). */
   quietStartHour?: number;
@@ -277,11 +276,12 @@ export interface SlackUrgencyPluginConfig {
  * Configuration for the briefing plugin (daily briefing + meeting alerts).
  */
 export interface BriefingPluginConfig {
-  /** Anthropic API key for the join-required residue classifier. */
-  anthropicApiKey?: string;
-  /** Residue classifier model (default: claude-haiku-4-5). */
+  /**
+   * Pin a model for the join-required residue classifier, overriding the
+   * `classify` tier.
+   */
   classifierModel?: string;
-  /** IANA timezone for "today" + the briefing cron (default America/New_York). */
+  /** IANA timezone for "today" + the briefing cron. Unset falls back to UTC. */
   timeZone?: string;
   /** gws-axi binary path (default: `gws-axi` on PATH). */
   gwsAxiBin?: string;
@@ -317,7 +317,11 @@ export interface BriefingPluginConfig {
   // ── Per-meeting briefings (preps on the virtuous cycle) ──────────────────
   /** Skip the per-meeting briefing (prep) cycle. */
   disableMeetingBriefings?: boolean;
-  /** Sonnet-class prep composer model (default: claude-sonnet-5). */
+  /**
+   * Pin a model for the prep composer, overriding the `synthesize` tier.
+   * Composing a prep is judgment work, which is why it defaults to the strong
+   * tier rather than the classifier's.
+   */
   meetingPrepModel?: string;
   /**
    * Optional pluggable prior-occurrence context source: a CLI that receives
@@ -392,8 +396,6 @@ export interface SessionsPluginConfig {
   originalClaudeDir?: string;
   /** Minimum file size to process */
   minFileSize?: number;
-  /** Anthropic API key for AI features */
-  anthropicApiKey?: string;
   /** Concurrency for outline generation */
   outlineConcurrency?: number;
   /** Disable local filesystem scanning */
@@ -492,9 +494,7 @@ export interface KitchenRecipeSummary {
 export type KitchenRecipesProvider = () => Promise<KitchenRecipeSummary[]>;
 
 export interface CapturePluginConfig {
-  /** Anthropic API key for AI classification */
-  anthropicApiKey?: string;
-  /** Classifier model (default: claude-haiku-4-5) */
+  /** Pin a model for capture classification, overriding the `classify` tier. */
   classifierModel?: string;
   /** Concurrency for the classification sweep */
   concurrency?: number;
@@ -528,8 +528,6 @@ export interface GooglePluginConfig {
   clientSecret: string;
   /** OAuth redirect URI */
   redirectUri: string;
-  /** Anthropic API key for AI triage */
-  anthropicApiKey?: string;
   /** Concurrency for email triage */
   triageConcurrency?: number;
   /** Disable Gmail sync */
@@ -556,7 +554,7 @@ export interface GooglePluginConfig {
   disableEmailActions?: boolean;
   /** Disable only the urgent-alert dispatch at triage completion. */
   disableEmailAlerts?: boolean;
-  /** IANA time zone for the urgency quiet-hours window (default America/New_York). */
+  /** IANA time zone for the urgency quiet-hours window. Unset falls back to UTC. */
   urgencyTimeZone?: string;
   /** Quiet-hours window start hour 0–23 (default 22). INTERRUPTs inside it are held. */
   urgencyQuietStartHour?: number;

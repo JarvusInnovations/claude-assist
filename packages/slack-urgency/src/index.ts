@@ -66,12 +66,15 @@ export default createPlugin('slack-urgency', async (fastify: FastifyInstance, op
     );
   }
 
-  const classifier = config.anthropicApiKey
-    ? new ResidueClassifier({ apiKey: config.anthropicApiKey, model: config.model }, fastify.log)
+  const classifier = fastify.invoker?.enabled
+    ? new ResidueClassifier(
+        { invoker: fastify.invoker, ...(config.model ? { model: config.model } : {}) },
+        fastify.log,
+      )
     : null;
   if (!classifier) {
     fastify.log.warn(
-      'Slack urgency: ANTHROPIC_API_KEY not set — residue messages default to the digest (no model pass)'
+      'Slack urgency: the model invoker is unavailable — residue messages default to the digest (no model pass)'
     );
   }
 
