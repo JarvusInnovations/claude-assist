@@ -131,6 +131,25 @@ const schema = {
     // Absolute URL of the interactive digest page — carried in the daily digest
     // Pushover notice's button slot (e.g. https://assist.example.com/digest).
     GOOGLE_DIGEST_PAGE_URL: { type: 'string' },
+    // Tiered unsubscribe automation. OFF by default — it acts irreversibly on
+    // list memberships, and the queue it drains is fed only by the owner's
+    // explicit "queue unsubscribe" tap on the digest page.
+    GOOGLE_UNSUBSCRIBE_ENABLED: { type: 'boolean', default: false },
+    GOOGLE_UNSUBSCRIBE_CRON: { type: 'string', default: '17 * * * *' },
+    GOOGLE_UNSUBSCRIBE_REVIEW_CRON: { type: 'string', default: '0 14 * * 1' },
+    GOOGLE_UNSUBSCRIBE_MAX_PER_RUN: { type: 'number', default: 10 },
+    // Per-sender-domain rate limit: at most N executed actions per window.
+    GOOGLE_UNSUBSCRIBE_RATE_WINDOW_MINUTES: { type: 'number', default: 60 },
+    GOOGLE_UNSUBSCRIBE_RATE_MAX_PER_DOMAIN: { type: 'number', default: 3 },
+    // Tier 2 (browser-driven forms) needs a reachable browser-automation
+    // bridge; without it, tier-2 senders route to the weekly review queue.
+    GOOGLE_UNSUBSCRIBE_BROWSER_ENABLED: { type: 'boolean', default: false },
+    GOOGLE_UNSUBSCRIBE_BROWSER_BIN: { type: 'string' },
+    GOOGLE_UNSUBSCRIBE_BROWSER_TIMEOUT_MS: { type: 'number', default: 60000 },
+    GOOGLE_UNSUBSCRIBE_PROOF_DIR: {
+      type: 'string',
+      default: '/tmp/claude-assist-unsubscribe',
+    },
 
     // Capture module
     ENABLE_CAPTURE: { type: 'boolean', default: true },
@@ -415,6 +434,16 @@ declare module 'fastify' {
       GOOGLE_EMAIL_DIGEST_CRON: string;
       GOOGLE_SPAM_QUARANTINE_CRON: string;
       GOOGLE_DIGEST_PAGE_URL?: string;
+      GOOGLE_UNSUBSCRIBE_ENABLED: boolean;
+      GOOGLE_UNSUBSCRIBE_CRON: string;
+      GOOGLE_UNSUBSCRIBE_REVIEW_CRON: string;
+      GOOGLE_UNSUBSCRIBE_MAX_PER_RUN: number;
+      GOOGLE_UNSUBSCRIBE_RATE_WINDOW_MINUTES: number;
+      GOOGLE_UNSUBSCRIBE_RATE_MAX_PER_DOMAIN: number;
+      GOOGLE_UNSUBSCRIBE_BROWSER_ENABLED: boolean;
+      GOOGLE_UNSUBSCRIBE_BROWSER_BIN?: string;
+      GOOGLE_UNSUBSCRIBE_BROWSER_TIMEOUT_MS: number;
+      GOOGLE_UNSUBSCRIBE_PROOF_DIR: string;
 
       // Capture module
       ENABLE_CAPTURE: boolean;

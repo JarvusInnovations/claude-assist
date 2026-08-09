@@ -608,6 +608,42 @@ export interface GooglePluginConfig {
    * when unset.
    */
   emailDigestPageUrl?: string;
+
+  // ── Tiered unsubscribe automation ─────────────────────────────────────────
+  /**
+   * Master switch for unsubscribe automation. OFF by default: it acts
+   * irreversibly on the owner's list memberships, so it turns on by explicit
+   * choice, never by upgrade. Also requires the action layer (disabled whenever
+   * `disableEmailActions` is set).
+   */
+  unsubscribeEnabled?: boolean;
+  /** Cron for the unsubscribe cycle (default '17 * * * *' — hourly). */
+  unsubscribeCron?: string;
+  /** Cron for the tier-3 review-queue digest (default '0 14 * * 1'). */
+  unsubscribeReviewCron?: string;
+  /** Attempts worked per cycle (default 10). */
+  unsubscribeMaxPerRun?: number;
+  /** Rolling rate-limit window in minutes (default 60). */
+  unsubscribeRateWindowMinutes?: number;
+  /** Max executed unsubscribes per sender-domain per window (default 3). */
+  unsubscribeRateMaxPerDomain?: number;
+  /**
+   * Tier 2 (browser-driven forms). Needs a reachable browser-automation bridge,
+   * usually on a separate always-on host; opted into separately from tier 1
+   * because that dependency can simply be absent. Without it, tier-2 senders
+   * route to the review queue instead.
+   */
+  unsubscribeBrowserEnabled?: boolean;
+  /**
+   * The browser-automation CLI (e.g. a Chrome DevTools bridge client). Instance
+   * data — the toolkit knows the verb set (`open` / `eval` / `screenshot`), not
+   * which binary or host provides it.
+   */
+  unsubscribeBrowserBin?: string;
+  /** Per-command timeout for the browser CLI (default 60000). */
+  unsubscribeBrowserTimeoutMs?: number;
+  /** Directory tier-2 screenshots are written to; the ledger carries the path. */
+  unsubscribeProofDir?: string;
 }
 
 /**

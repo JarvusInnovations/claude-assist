@@ -445,6 +445,22 @@ await fastify.register(
             emailDigestCron: fastify.config.GOOGLE_EMAIL_DIGEST_CRON,
             spamQuarantineDigestCron: fastify.config.GOOGLE_SPAM_QUARANTINE_CRON,
             emailDigestPageUrl: fastify.config.GOOGLE_DIGEST_PAGE_URL,
+            // Unsubscribe automation rides the same DISABLE_SYNCS master
+            // switch as the rest of the outbound side.
+            unsubscribeEnabled:
+              !fastify.config.DISABLE_SYNCS && fastify.config.GOOGLE_UNSUBSCRIBE_ENABLED,
+            unsubscribeCron: fastify.config.GOOGLE_UNSUBSCRIBE_CRON,
+            unsubscribeReviewCron: fastify.config.GOOGLE_UNSUBSCRIBE_REVIEW_CRON,
+            unsubscribeMaxPerRun: fastify.config.GOOGLE_UNSUBSCRIBE_MAX_PER_RUN,
+            unsubscribeRateWindowMinutes:
+              fastify.config.GOOGLE_UNSUBSCRIBE_RATE_WINDOW_MINUTES,
+            unsubscribeRateMaxPerDomain:
+              fastify.config.GOOGLE_UNSUBSCRIBE_RATE_MAX_PER_DOMAIN,
+            unsubscribeBrowserEnabled: fastify.config.GOOGLE_UNSUBSCRIBE_BROWSER_ENABLED,
+            unsubscribeBrowserBin: fastify.config.GOOGLE_UNSUBSCRIBE_BROWSER_BIN,
+            unsubscribeBrowserTimeoutMs:
+              fastify.config.GOOGLE_UNSUBSCRIBE_BROWSER_TIMEOUT_MS,
+            unsubscribeProofDir: fastify.config.GOOGLE_UNSUBSCRIBE_PROOF_DIR,
           },
         });
       }
