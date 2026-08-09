@@ -301,6 +301,13 @@ export { fetchEmailSummary, type EmailSummary } from './briefing/sources/email.j
 export { fetchCapturesSummary, type CapturesSummary } from './briefing/sources/captures.js';
 export { fetchCoverageSummary, type CoverageSummary } from './briefing/sources/coverage.js';
 export {
+  fetchTrainingSummary,
+  parseSessions,
+  EMPTY_TRAINING,
+  type TrainingSession,
+  type TrainingSummary,
+} from './briefing/sources/training.js';
+export {
   fetchLedgerNarrative,
   groupLedgerActions,
   type LedgerActionRow,

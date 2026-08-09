@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import type { Briefing } from './compose.js';
 import { buildBriefingNotification, dayNodeLink } from './runner.js';
+import { EMPTY_TRAINING } from './sources/training.js';
 
 function sampleBriefing(over: Partial<Briefing> = {}): Briefing {
   return {
@@ -20,6 +21,7 @@ function sampleBriefing(over: Partial<Briefing> = {}): Briefing {
     coverage: { pipelines: [], staleCount: 0, error: null },
     ledger: { totalCount: 0, groups: [], error: null },
     kitchen: { calories: 0, proteinG: 0, satFatG: 0, pendingCount: 0, eatFirst: [], suggestions: [], error: null },
+    training: EMPTY_TRAINING,
     links: [],
     ...over,
   };
