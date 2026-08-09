@@ -7,6 +7,7 @@
  * - AI-powered triage using multi-turn Haiku
  * - Deterministic action layer: pre-AI rules, label/archive/spam executor,
  *   urgent-alert path, daily digest, and weekly spam-quarantine digest
+ * - Tiered unsubscribe automation over the owner-flagged sender queue
  *
  * Configuration is passed via googleConfig in plugin options.
  */
@@ -31,9 +32,17 @@ import { EmailResidueClassifier } from './services/email-residue.js';
 import { OpportunityEvaluator, loadOpportunityPrompt } from './services/opportunity.js';
 import { loadClientContacts } from './services/contacts.js';
 import { seedAccountRules, resolveSeedContent, EXAMPLE_SEED_CONTENT } from './services/seed-rules.js';
+import {
+  UnsubscribeService,
+  UnsubscribeStore,
+  GmailHeaderSource,
+  createUnsubscribeQueue,
+} from './services/unsubscribe.js';
+import { ChromeDevtoolsBrowserDriver } from './services/unsubscribe-browser.js';
 import { registerAccountRoutes } from './routes/accounts.js';
 import { registerEmailRoutes } from './routes/emails.js';
 import { registerRuleRoutes } from './routes/rules.js';
+import { registerUnsubscribeRoutes } from './routes/unsubscribe.js';
 
 // Module augmentation for fastify decorators
 declare module 'fastify' {
@@ -189,6 +198,52 @@ export default createPlugin('google', async (fastify: FastifyInstance, options: 
     fastify.log.info('Email action layer disabled via disableEmailActions config');
   }
 
+  // Tiered unsubscribe automation. Off unless BOTH the action layer is on and
+  // it is explicitly enabled — it acts destructively on the owner's list
+  // memberships, so "on by default" would be the wrong failure mode. Tier 2
+  // additionally needs a reachable browser bridge and is opted into separately.
+  let unsubscribeService: UnsubscribeService | null = null;
+  if (actionsEnabled && config.unsubscribeEnabled) {
+    const browserEnabled = Boolean(config.unsubscribeBrowserEnabled && config.unsubscribeBrowserBin);
+    unsubscribeService = new UnsubscribeService(
+      fastify.log,
+      {
+        store: new UnsubscribeStore(fastify.sql),
+        standingStore: senderStandingStore,
+        whitelistService,
+        headerSource: new GmailHeaderSource(authService),
+        queue: createUnsubscribeQueue(fastify.sql),
+        ledger: fastify.ledger,
+        notify: fastify.notify,
+        ...(browserEnabled
+          ? {
+              browser: new ChromeDevtoolsBrowserDriver({
+                bin: config.unsubscribeBrowserBin!,
+                ...(config.unsubscribeBrowserTimeoutMs
+                  ? { timeoutMs: config.unsubscribeBrowserTimeoutMs }
+                  : {}),
+              }),
+            }
+          : {}),
+      },
+      {
+        enabled: true,
+        browserEnabled,
+        maxPerRun: config.unsubscribeMaxPerRun,
+        rateWindowMinutes: config.unsubscribeRateWindowMinutes,
+        rateMaxPerDomain: config.unsubscribeRateMaxPerDomain,
+        proofDir: config.unsubscribeProofDir,
+        teamDomains: config.teamDomains,
+      }
+    );
+    fastify.log.info(
+      { browserEnabled },
+      'Unsubscribe automation enabled (tier 1 always; tier 2 needs the browser bridge)'
+    );
+  } else if (actionsEnabled) {
+    fastify.log.info('Unsubscribe automation disabled (set unsubscribeEnabled to turn it on)');
+  }
+
   // Resolve triage bootstrap seed content once: the JSON file at
   // GOOGLE_TRIAGE_SEED_FILE when set, otherwise the built-in generic examples.
   // A misconfigured file logs and falls back to examples rather than failing boot.
@@ -226,6 +281,7 @@ export default createPlugin('google', async (fastify: FastifyInstance, options: 
     refinementStore,
   });
   await fastify.register(registerRuleRoutes);
+  await fastify.register(registerUnsubscribeRoutes, { unsubscribeService });
 
   // Bootstrap triage rules + topics for every already-credentialed account
   // (idempotent — existing rows are preserved).
@@ -370,6 +426,34 @@ export default createPlugin('google', async (fastify: FastifyInstance, options: 
 
     fastify.log.info('Email digests scheduled');
   }
+
+  // Unsubscribe cycles run on a slow cadence on purpose: the queue is fed by
+  // human taps, and pacing is a feature (see the per-domain rate limit).
+  if (unsubscribeService) {
+    fastify.scheduler.register({
+      name: 'google:unsubscribe',
+      schedule: config.unsubscribeCron ?? '17 * * * *', // hourly, off the hour
+      runOnStartup: false,
+      handler: async () => {
+        const result = await unsubscribeService!.runCycle();
+        if (result.claimed > 0 || result.enqueued > 0) {
+          fastify.log.info(result, 'Unsubscribe cycle complete');
+        }
+      },
+    });
+
+    fastify.scheduler.register({
+      name: 'google:unsubscribe-review',
+      schedule: config.unsubscribeReviewCron ?? '0 14 * * 1', // Mondays, with the weekly review
+      runOnStartup: false,
+      handler: async () => {
+        const pending = await unsubscribeService!.sendReviewDigest();
+        fastify.log.info({ pending }, 'Unsubscribe review digest dispatched');
+      },
+    });
+
+    fastify.log.info('Unsubscribe automation scheduled');
+  }
 });
 
 // Re-export types for external use
@@ -386,3 +470,28 @@ export {
   CachingSummarizer,
 } from './services/digest.js';
 export { SenderStandingStore, RefinementStore } from './services/standing.js';
+export {
+  UnsubscribeService,
+  UnsubscribeStore,
+  GmailHeaderSource,
+  createUnsubscribeQueue,
+  oneClickPost,
+  type UnsubscribeAttemptRow,
+  type UnsubscribeConfig,
+  type AttemptStatus,
+} from './services/unsubscribe.js';
+export {
+  ChromeDevtoolsBrowserDriver,
+  type BrowserDriver,
+  type BrowserUnsubscribeResult,
+} from './services/unsubscribe-browser.js';
+export {
+  detectUnsubscribeMethod,
+  gateSender,
+  checkRateLimit,
+  parseListUnsubscribe,
+  senderDomain,
+  type UnsubscribeTier,
+  type UnsubscribeMethod,
+  type GateDecision,
+} from './services/unsubscribe-detect.js';
