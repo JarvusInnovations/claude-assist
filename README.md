@@ -131,6 +131,7 @@ packages/
   briefing/       # Daily briefing + meeting alerts + per-meeting preps
   capture/        # Fast idempotent capture, then classify-and-route
   kitchen/        # Consumption journal, inventory, receipts, recipes
+  training/       # Weekly adaptive training plans, gated on async approval
   notify/         # Notification dispatcher + heartbeat/coverage registry
   ledger/         # Derived audit ledger over ingested tool calls
   pages/          # Publish interactive HTML, collect structured responses
@@ -179,7 +180,8 @@ POST /api/approvals/:id/resolve     # Approve / deny / answer one
 ```
 
 Each module registers its own surface beneath `/api` as well — `/api/sessions`,
-`/api/emails`, `/api/capture`, `/api/kitchen`, `/api/ledger`, `/api/pages`. See
+`/api/emails`, `/api/capture`, `/api/kitchen`, `/api/training`, `/api/ledger`,
+`/api/pages`. See
 the module's `src/routes.ts` for its endpoints.
 
 ## Docker

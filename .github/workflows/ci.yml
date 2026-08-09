@@ -74,6 +74,12 @@ jobs:
       - name: Build kitchen
         run: bun run --filter @jarvus/claude-assist-kitchen build
 
+      # After briefing + core: training imports briefing's calendar-read
+      # boundary (the dependency runs one way — briefing reads training's
+      # schema over SQL, never by import).
+      - name: Build training
+        run: bun run --filter @jarvus/claude-assist-training build
+
       - name: Build server
         run: bun run --filter @jarvus/claude-assist-server build
 

@@ -187,6 +187,36 @@ const schema = {
     // plugin can validate boot-loudly (malformed ⇒ startup failure).
     KITCHEN_STRAVA_SYNC_MINUTES: { type: 'string' },
 
+    // Training module (weekly adaptive training loop)
+    ENABLE_TRAINING: { type: 'boolean', default: true },
+    // Skip weekly generation; reads + approval reconciliation still run.
+    TRAINING_DISABLE_PLANNING: { type: 'boolean', default: false },
+    // Timezone the plan week and the weekly cron are evaluated in. No default:
+    // unset means a UTC week, which is correct and obviously not what anyone
+    // who meant a local week wanted.
+    TRAINING_TIMEZONE: { type: 'string' },
+    // What the owner is training for, in free text (a race, a maintenance
+    // block, a return-from-injury ramp). Instance data — the toolkit ships no
+    // default and encodes no goal of its own.
+    TRAINING_GOAL_CONTEXT: { type: 'string' },
+    // Trailing activity window fed to the synthesis, in days.
+    TRAINING_ACTIVITY_WINDOW_DAYS: { type: 'number', default: 42 },
+    // Forecast provider credentials. BOTH present ⇒ the week is planned with a
+    // forecast; either absent ⇒ planned without one, stated in the prompt.
+    TRAINING_WEATHER_API_KEY: { type: 'string' },
+    TRAINING_WEATHER_LOCATION_KEY: { type: 'string' },
+    TRAINING_WEATHER_BASE_URL: { type: 'string' },
+    // Forecast horizon the account is entitled to (1 | 5 | 10 | 15).
+    TRAINING_WEATHER_DAYS: { type: 'number', default: 5 },
+    // Pin a model for the weekly synthesis, overriding the `synthesize` tier.
+    TRAINING_PLANNER_MODEL: { type: 'string' },
+    // Weekly generation cron, evaluated in TRAINING_TIMEZONE (default Sun 07:00).
+    TRAINING_PLAN_CRON: { type: 'string' },
+    // Approval-reconciliation cadence (default every 10 minutes).
+    TRAINING_RECONCILE_CRON: { type: 'string' },
+    // Coverage-ledger staleness threshold; a skipped week pages past this.
+    TRAINING_STALE_AFTER: { type: 'string', default: '9 days' },
+
     // Pages module (publish + collect interactive HTML pages)
     ENABLE_PAGES: { type: 'boolean', default: true },
     // Override for links in publish responses + notify dispatch (default:
@@ -444,6 +474,21 @@ declare module 'fastify' {
       KITCHEN_STRAVA_CLIENT_SECRET?: string;
       KITCHEN_STRAVA_REFRESH_TOKEN?: string;
       KITCHEN_STRAVA_SYNC_MINUTES?: string;
+
+      // Training module
+      ENABLE_TRAINING: boolean;
+      TRAINING_DISABLE_PLANNING: boolean;
+      TRAINING_TIMEZONE?: string;
+      TRAINING_GOAL_CONTEXT?: string;
+      TRAINING_ACTIVITY_WINDOW_DAYS: number;
+      TRAINING_WEATHER_API_KEY?: string;
+      TRAINING_WEATHER_LOCATION_KEY?: string;
+      TRAINING_WEATHER_BASE_URL?: string;
+      TRAINING_WEATHER_DAYS: number;
+      TRAINING_PLANNER_MODEL?: string;
+      TRAINING_PLAN_CRON?: string;
+      TRAINING_RECONCILE_CRON?: string;
+      TRAINING_STALE_AFTER: string;
 
       // Pages module
       ENABLE_PAGES: boolean;
