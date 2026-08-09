@@ -123,3 +123,10 @@
 !apps/admin/public/**
 !apps/admin/src/
 !apps/admin/src/**
+
+# packages/finance
+!packages/finance/package.json
+!packages/finance/tsconfig.json
+!packages/finance/src/**
+!packages/finance/migrations/
+!packages/finance/migrations/**
