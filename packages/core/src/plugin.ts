@@ -84,10 +84,84 @@ export interface PluginOptions {
   ledgerConfig?: LedgerPluginConfig;
   /** Configuration for kitchen plugin */
   kitchenConfig?: KitchenPluginConfig;
+  /** Configuration for the training plugin */
+  trainingConfig?: TrainingPluginConfig;
   /** Configuration for the invoker plugin */
   invokerConfig?: InvokerPluginConfig;
   /** Configuration for the approvals plugin */
   approvalsConfig?: ApprovalsPluginConfig;
+}
+
+/**
+ * One recorded activity from the owner's exercise history, provider-agnostic.
+ *
+ * The generic shape exists so the module that owns the provider's OAuth
+ * credentials also owns its token custody — exactly one refresh-token rotator
+ * per upstream app — while any other module can consume the history without
+ * holding a credential or importing the owning package.
+ */
+export interface ActivityHistoryRecord {
+  id: string;
+  /** The provider's sport/type string (e.g. `Run`, `Ride`). */
+  sport: string;
+  name: string;
+  /** ISO instant the activity started. */
+  startedAt: string;
+  distanceMeters: number | null;
+  movingSeconds: number | null;
+  elevationGainMeters: number | null;
+  averageHeartrate: number | null;
+}
+
+/** Activities on or after `since`, most-recent-inclusive. Throws on outage. */
+export type ActivityHistoryProvider = (since: Date) => Promise<ActivityHistoryRecord[]>;
+
+/**
+ * Configuration for the training plugin (weekly adaptive training loop).
+ */
+export interface TrainingPluginConfig {
+  /**
+   * IANA timezone the plan week and the weekly cron are evaluated in. Unset
+   * falls back to UTC — correct, and obviously wrong to anyone who meant a
+   * local week, which is the point.
+   */
+  timeZone?: string;
+  /**
+   * What the owner is training for, in free text (TRAINING_GOAL_CONTEXT): the
+   * race, the block, the constraints. Instance data — the toolkit ships no
+   * default and encodes no athlete, goal, or plan of its own.
+   */
+  goalContext?: string;
+  /**
+   * Activity-history seam. Composed by the server from whichever module owns
+   * the provider credentials. Absent ⇒ the week is planned without history,
+   * and the synthesis is told so explicitly.
+   */
+  activityHistoryProvider?: ActivityHistoryProvider;
+  /** Trailing activity window in days (default 42). */
+  activityWindowDays?: number;
+  /** Forecast API key (TRAINING_WEATHER_API_KEY). Absent ⇒ no forecast. */
+  weatherApiKey?: string;
+  /** Provider's opaque location id for the training area. */
+  weatherLocationKey?: string;
+  /** Forecast API base URL override (tests / proxies). */
+  weatherBaseUrl?: string;
+  /** Forecast horizon the account is entitled to (1 | 5 | 10 | 15). Default 5. */
+  weatherDays?: number;
+  /** gws-axi binary path for the availability read (default: `gws-axi`). */
+  gwsAxiBin?: string;
+  /** Calendar account override (default: the calendar CLI's own default). */
+  calendarAccount?: string;
+  /** Pin a model for the weekly synthesis, overriding the `synthesize` tier. */
+  plannerModel?: string;
+  /** Cron for weekly plan generation, evaluated in `timeZone`. Default `0 7 * * 0`. */
+  planCron?: string;
+  /** Cron for the approval-reconciliation pass. Default every 10 minutes. */
+  reconcileCron?: string;
+  /** Coverage-ledger staleness threshold. Default `9 days`. */
+  staleAfter?: string;
+  /** Skip the weekly generation schedule (reads + reconciliation still run). */
+  disablePlanning?: boolean;
 }
 
 /**
@@ -732,6 +806,9 @@ export function createPlugin(
       pagesConfig: opts.pagesConfig,
       ledgerConfig: opts.ledgerConfig,
       kitchenConfig: opts.kitchenConfig,
+      trainingConfig: opts.trainingConfig,
+      invokerConfig: opts.invokerConfig,
+      approvalsConfig: opts.approvalsConfig,
     };
 
     fastify.log.info(`Loading plugin: ${name}`);
