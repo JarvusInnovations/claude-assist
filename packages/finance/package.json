@@ -1,0 +1,25 @@
+{
+  "name": "@jarvus/claude-assist-finance",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "bun test src"
+  },
+  "dependencies": {
+    "@jarvus/claude-assist-core": "workspace:*",
+    "fastify": "^5.7.1",
+    "fastify-plugin": "^5.1.0",
+    "postgres": "^3.4.8"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.10",
+    "typescript": "^5.9.3"
+  }
+}
