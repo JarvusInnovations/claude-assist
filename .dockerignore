@@ -102,6 +102,13 @@
 !packages/kitchen/contracts/
 !packages/kitchen/contracts/**
 
+# packages/training
+!packages/training/package.json
+!packages/training/tsconfig.json
+!packages/training/src/**
+!packages/training/migrations/
+!packages/training/migrations/**
+
 # apps/server
 !apps/server/package.json
 !apps/server/tsconfig.json
