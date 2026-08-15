@@ -10,17 +10,19 @@
 
 import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import type { InventoryStore } from '../inventory-store.js';
+import type { RecipeStore } from '../store.js';
 import { PrepService, PrepValidationError, type PrepPublishInput } from '../services/prep.js';
 
 export interface PrepRoutesConfig {
   store: InventoryStore;
+  recipes?: RecipeStore;
 }
 
 const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 export const registerPrepRoutes: FastifyPluginAsync<PrepRoutesConfig> = async (
   fastify: FastifyInstance,
-  { store }: PrepRoutesConfig
+  { store, recipes }: PrepRoutesConfig
 ) => {
   fastify.post<{ Body: PrepPublishInput }>(
     '/kitchen/prep',
@@ -28,10 +30,11 @@ export const registerPrepRoutes: FastifyPluginAsync<PrepRoutesConfig> = async (
       schema: {
         body: {
           type: 'object',
-          required: ['slug', 'label', 'components'],
+          required: ['slug', 'label'],
           additionalProperties: false,
           properties: {
             slug: { type: 'string' },
+            recipe_ulid: { type: 'string' },
             label: { type: 'string', minLength: 1 },
             title: { type: 'string' },
             heading: { type: 'string' },
@@ -41,7 +44,6 @@ export const registerPrepRoutes: FastifyPluginAsync<PrepRoutesConfig> = async (
             digest_optin: { type: 'boolean' },
             components: {
               type: 'array',
-              minItems: 1,
               items: {
                 type: 'object',
                 required: ['quantity'],
@@ -91,7 +93,7 @@ export const registerPrepRoutes: FastifyPluginAsync<PrepRoutesConfig> = async (
       }
 
       try {
-        const result = await new PrepService(store, publisher).publish(request.body);
+        const result = await new PrepService(store, publisher, recipes).publish(request.body);
         reply.status(result.created ? 201 : 200);
         return result;
       } catch (err) {

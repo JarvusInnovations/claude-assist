@@ -87,8 +87,13 @@ The per-page nudges are capped at 3 for the same reason.
 
 ## Follow-ups
 
-- **Issue** — page titles are stored with HTML entities (`&amp;` renders literally in
-  the index and CLI output). Pre-existing data + encoding defect, unrelated to this
-  plan; needs a decision on encode-at-write vs decode-at-read before touching rows.
+- ~~**Issue** — page titles are stored with HTML entities.~~ **DONE. Decision:
+  decode-at-read, store plain.** `extractHtmlTitle` lifted the raw text of a `<title>`
+  element — encoded by definition — and stored it verbatim, while every non-HTML
+  consumer (JSON index, CLI table, notification bodies) renders plain text. Extraction
+  now decodes; the HTML renderer already escapes on output, so text is encoded exactly
+  once, at the boundary that needs it. Migration `003-decode-titles.sql` repairs
+  existing rows. Ampersand is decoded LAST in both, so a double-encoded `&amp;lt;`
+  cannot collapse into markup.
 - **None** otherwise — `publish-worksheet`, the obvious follow-up, has its own plan and
   landed alongside this one.

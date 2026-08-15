@@ -16,7 +16,8 @@
  */
 
 import type { PagePublisher } from '@jarvus/claude-assist-core';
-import type { InventoryStore } from '../inventory-store.js';
+import type { InventoryStore, } from '../inventory-store.js';
+import type { RecipeStore } from '../store.js';
 import type { NutritionPer100g } from '../inventory-types.js';
 
 /** The nine panel fields, in the order a sheet displays them. */
@@ -53,10 +54,18 @@ export interface PrepComponentRef {
 export interface PrepPublishInput {
   slug: string;
   label: string;
+  /**
+   * Seed components from a recipe's lines (§ Authoring a prep worksheet).
+   * Recipe components already carry `default_qty_g` + `per_100g` inline, so they
+   * map onto weighable rows directly — no product resolution, and nothing to
+   * skip. Explicit `components` are appended after the seeded ones, so a sheet
+   * can start from a recipe and add today's extras.
+   */
+  recipe_ulid?: string;
   title?: string;
   heading?: string;
   intro?: string;
-  components: PrepComponentRef[];
+  components?: PrepComponentRef[];
   steps?: string[];
   submit_label?: string;
   cook?: {
@@ -83,7 +92,8 @@ export interface PrepPublishResult {
 export class PrepService {
   constructor(
     private store: InventoryStore,
-    private publisher: PagePublisher
+    private publisher: PagePublisher,
+    private recipes?: RecipeStore
   ) {}
 
   /**
@@ -92,13 +102,36 @@ export class PrepService {
    * Same rule that forbids logging a meal at plan time.
    */
   async publish(input: PrepPublishInput): Promise<PrepPublishResult> {
-    if (!input.components?.length) {
-      throw new PrepValidationError('a prep worksheet needs at least one component');
-    }
-
     const components: { label: string; quantity: number; per_basis: Record<string, number>; note?: string }[] = [];
 
-    for (const ref of input.components) {
+    // Recipe lines first, so an explicit --component reads as "and also today".
+    if (input.recipe_ulid) {
+      if (!this.recipes) {
+        throw new PrepValidationError('recipe seeding is unavailable: no recipe store is configured');
+      }
+      const recipe = await this.recipes.get(input.recipe_ulid);
+      if (!recipe) throw new PrepValidationError(`recipe not found: ${input.recipe_ulid}`);
+      if (!recipe.components?.length) {
+        throw new PrepValidationError(`recipe ${recipe.name} has no components to seed a sheet from`);
+      }
+      for (const line of recipe.components) {
+        // A recipe component states its own per-100g inline, so this needs no
+        // catalog lookup — and the SAME null rule applies: an unstated field is
+        // omitted so it totals unknown, never zero.
+        const per_basis: Record<string, number> = {};
+        for (const { key } of PREP_FIELDS) {
+          const value = (line.per_100g as Record<string, unknown>)[key];
+          if (typeof value === 'number' && Number.isFinite(value)) per_basis[key] = value;
+        }
+        components.push({ label: line.label, quantity: line.default_qty_g, per_basis });
+      }
+    }
+
+    if (!input.recipe_ulid && !input.components?.length) {
+      throw new PrepValidationError('a prep worksheet needs at least one component (or --recipe to seed them)');
+    }
+
+    for (const ref of input.components ?? []) {
       if ((ref.product_ulid === undefined) === (ref.item_ulid === undefined)) {
         throw new PrepValidationError('each component needs exactly one of product_ulid or item_ulid');
       }

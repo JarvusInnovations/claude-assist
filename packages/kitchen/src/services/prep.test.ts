@@ -48,6 +48,27 @@ function fakeStore(overrides: Partial<Record<string, any>> = {}) {
   } as any;
 }
 
+function fakeRecipes(recipes: Record<string, any> = {}) {
+  return {
+    async get(ulid: string) {
+      return (
+        {
+          rec_bowl: {
+            ulid: 'rec_bowl',
+            name: 'Grain bowl',
+            components: [
+              { label: 'cooked grain', default_qty_g: 185, per_100g: { calories: 150, protein_g: 4.5, sat_fat_g: 0.2 } },
+              { label: 'dressing', default_qty_g: 30, per_100g: { calories: 400, protein_g: 0, sat_fat_g: 6, sodium_mg: 12 } },
+            ],
+          },
+          rec_empty: { ulid: 'rec_empty', name: 'Empty', components: [] },
+          ...recipes,
+        } as Record<string, any>
+      )[ulid] ?? null;
+    },
+  } as any;
+}
+
 function fakePublisher() {
   const calls: any[] = [];
   return {
@@ -192,5 +213,62 @@ describe('plannedTotals', () => {
     expect(totals.sodium_mg).toBeNull();
     expect(unknown).toContain('sodium_mg');
     expect(unknown).not.toContain('fiber_g');
+  });
+});
+
+
+describe('--recipe seeding', () => {
+  it('maps every recipe line onto a weighable row — nothing to skip', async () => {
+    const { publisher, calls } = fakePublisher();
+    const svc = new PrepService(fakeStore(), publisher, fakeRecipes());
+
+    const result = await svc.publish({ slug: 'bowl', label: 'Grain bowl', recipe_ulid: 'rec_bowl' });
+
+    const rows = calls[0].worksheet.components;
+    expect(rows).toHaveLength(2);
+    // default_qty_g becomes the planned quantity; per_100g becomes per_basis
+    // directly — recipe lines carry their own reference values inline, so this
+    // needs no catalog lookup at all.
+    expect(rows[0]).toMatchObject({ label: 'cooked grain', quantity: 185 });
+    expect(rows[0].per_basis.calories).toBe(150);
+    expect(result.planned_totals.calories).toBe(398); // 185/100*150 + 30/100*400
+  });
+
+  it('applies the SAME null rule as catalog components', async () => {
+    const { publisher } = fakePublisher();
+    const svc = new PrepService(fakeStore(), publisher, fakeRecipes());
+    const result = await svc.publish({ slug: 'bowl', label: 'Grain bowl', recipe_ulid: 'rec_bowl' });
+
+    // Only the dressing states sodium; the grain omits it → one carrier, real total.
+    expect(result.planned_totals.sodium_mg).toBe(4);
+    // Neither line states fiber → unknown, never 0.
+    expect(result.planned_totals.fiber_g).toBeNull();
+    expect(result.unknown_fields).toContain('fiber_g');
+  });
+
+  it('appends explicit components AFTER the seeded ones', async () => {
+    const { publisher, calls } = fakePublisher();
+    const svc = new PrepService(fakeStore(), publisher, fakeRecipes());
+    await svc.publish({
+      slug: 'bowl',
+      label: 'Grain bowl',
+      recipe_ulid: 'rec_bowl',
+      components: [{ product_ulid: 'prod_yogurt', quantity: 100 }],
+    });
+    const labels = calls[0].worksheet.components.map((c: any) => c.label);
+    expect(labels).toEqual(['cooked grain', 'dressing', 'Nonfat Greek yogurt']);
+  });
+
+  it('refuses a missing or componentless recipe rather than publishing an empty sheet', async () => {
+    const { publisher } = fakePublisher();
+    const svc = new PrepService(fakeStore(), publisher, fakeRecipes());
+    await expect(svc.publish({ slug: 'x', label: 'x', recipe_ulid: 'nope' })).rejects.toThrow(/recipe not found/);
+    await expect(svc.publish({ slug: 'x', label: 'x', recipe_ulid: 'rec_empty' })).rejects.toThrow(/no components/);
+  });
+
+  it('still requires SOMETHING — no recipe and no components is an error', async () => {
+    const { publisher } = fakePublisher();
+    const svc = new PrepService(fakeStore(), publisher, fakeRecipes());
+    await expect(svc.publish({ slug: 'x', label: 'x' })).rejects.toThrow(/at least one component/);
   });
 });

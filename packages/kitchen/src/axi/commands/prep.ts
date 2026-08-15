@@ -8,7 +8,8 @@ export const PREP_HELP = `kitchen-axi prep <subcommand> [args] [--json]
   publish --slug S --label T            build a prep WORKSHEET from the catalog and
        [--component <product-ulid>=<g>]…  publish it. Components resolve to the
        [--component-item <item-ulid>=<g>]…  product's stored per-100g panel, so no
-       [--label-for "<ulid>=<text>"]…      number is ever transcribed by hand
+       [--recipe <recipe-ulid>]            seed rows from a recipe's lines; explicit
+                                            components are appended after them
        [--step "<text>"]…                  instructions rendered under the table
        [--heading T] [--intro T]
        [--cook eaten|packed]               submitting the sheet IS the write
@@ -80,6 +81,7 @@ async function publishPrep(args: string[]): Promise<string> {
       "intro",
       "component",
       "component-item",
+      "recipe",
       "step",
       "cook",
       "units",
@@ -105,9 +107,10 @@ async function publishPrep(args: string[]): Promise<string> {
       return { item_ulid: ulid, quantity };
     }),
   ];
-  if (components.length === 0) {
+  const recipeUlid = typeof flags.recipe === "string" ? flags.recipe : undefined;
+  if (components.length === 0 && !recipeUlid) {
     throw new AxiError(
-      "prep publish needs at least one --component or --component-item",
+      "prep publish needs at least one --component / --component-item, or --recipe to seed them",
       "VALIDATION_ERROR",
       [PREP_HELP]
     );
@@ -140,7 +143,8 @@ async function publishPrep(args: string[]): Promise<string> {
     ...(typeof flags.heading === "string" ? { heading: flags.heading } : {}),
     ...(typeof flags.intro === "string" ? { intro: flags.intro } : {}),
     ...(typeof flags["submit-label"] === "string" ? { submit_label: flags["submit-label"] } : {}),
-    components,
+    ...(recipeUlid ? { recipe_ulid: recipeUlid } : {}),
+    ...(components.length ? { components } : {}),
     ...(asList(flags.step).length ? { steps: asList(flags.step) } : {}),
     ...(cook
       ? {

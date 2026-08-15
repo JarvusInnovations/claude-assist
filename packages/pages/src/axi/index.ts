@@ -128,7 +128,29 @@ export function parseFlags(
 export function extractHtmlTitle(html: string): string | null {
   const match = html.match(/<title[^>]*>([^<]*)<\/title>/i);
   const title = match?.[1]?.trim();
-  return title ? title : null;
+  // The <title> element's text is HTML-ENCODED in the source. A page title is
+  // stored and consumed as PLAIN TEXT — the index, the CLI table, notifications
+  // — and the HTML renderer escapes it again on output. Lifting the encoded form
+  // verbatim is what put `&amp;` in front of readers everywhere but the page.
+  return title ? decodeHtmlEntities(title) : null;
+}
+
+/**
+ * Decode the entities an authored `<title>` can legitimately carry. Deliberately
+ * NOT a general HTML parser: only the five XML predefined entities plus numeric
+ * references, which is everything a title needs and nothing that could turn
+ * stored text into markup.
+ */
+export function decodeHtmlEntities(value: string): string {
+  return value
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(parseInt(dec, 10)))
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    // Ampersand LAST: decoding it first would let `&amp;lt;` become `<`.
+    .replace(/&amp;/g, '&');
 }
 
 /** Fallback title for a slug: kebab-case → Title Case. */

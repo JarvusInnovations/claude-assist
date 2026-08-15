@@ -236,7 +236,7 @@ export default createPlugin('kitchen', async (fastify: FastifyInstance, options:
   // Prep worksheets — build a collection surface from the catalog and publish
   // it through core's PagePublisher seam (§ Authoring a prep worksheet). Reads
   // the generic `fastify.pages` decorator at request time; 503s when absent.
-  await fastify.register(registerPrepRoutes, { store: inventoryStore });
+  await fastify.register(registerPrepRoutes, { store: inventoryStore, recipes: recipeStore });
 
   // Plan-session — app-initiated warm meal-planning session. Reads the generic
   // `fastify.sessionSpawner` decorator (from the session-spawn module) at

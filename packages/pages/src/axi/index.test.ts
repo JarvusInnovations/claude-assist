@@ -101,3 +101,29 @@ describe('publish title fallbacks', () => {
     expect(titleFromSlug('design-review-v2')).toBe('Design Review V2');
   });
 });
+
+describe('extractHtmlTitle — decodes, because titles are consumed as plain text', () => {
+  it('decodes the XML predefined entities', () => {
+    expect(extractHtmlTitle('<title>Rotini, Sardines &amp; Feta</title>')).toBe('Rotini, Sardines & Feta');
+    expect(extractHtmlTitle('<title>&lt;draft&gt;</title>')).toBe('<draft>');
+    expect(extractHtmlTitle('<title>Chris&#39;s plan</title>')).toBe("Chris's plan");
+    expect(extractHtmlTitle('<title>He said &quot;go&quot;</title>')).toBe('He said "go"');
+  });
+
+  it('decodes numeric references', () => {
+    expect(extractHtmlTitle('<title>caf&#233;</title>')).toBe('café');
+    expect(extractHtmlTitle('<title>caf&#xe9;</title>')).toBe('café');
+  });
+
+  it('decodes the ampersand LAST so double-encoding never becomes markup', () => {
+    // `&amp;lt;` is a literal "&lt;" that happens to be double-encoded. Decoding
+    // & first would collapse it to "<" and invent a tag out of text.
+    expect(extractHtmlTitle('<title>&amp;lt;</title>')).toBe('&lt;');
+  });
+
+  it('leaves plain text and empty titles alone', () => {
+    expect(extractHtmlTitle('<title>Just a title</title>')).toBe('Just a title');
+    expect(extractHtmlTitle('<title>  </title>')).toBeNull();
+    expect(extractHtmlTitle('<p>no title</p>')).toBeNull();
+  });
+});

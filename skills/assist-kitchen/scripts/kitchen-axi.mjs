@@ -610,8 +610,8 @@ var COMMAND_GROUPS = [
     group: "Prep worksheets",
     commands: [
       {
-        usage: "prep publish --slug S --label T [--component <product-ulid>=<g>]\u2026 [--component-item <item-ulid>=<g>]\u2026 [--step T]\u2026 [--cook eaten|packed] [--units N] [--shelf-life C] [--source <item-ulid>[:amount]]\u2026",
-        summary: "build a prep WORKSHEET from the catalog and publish it. Components are named by ULID and resolve to the product's stored per-100g panel, so no reference number is transcribed by hand; a product with no panel is refused rather than guessed at, and a missing field contributes 'unknown' rather than zero. --cook makes submitting the sheet the write itself (eaten \u2192 one entry; packed \u2192 one conversion). Publishing writes NOTHING to the ledger"
+        usage: "prep publish --slug S --label T [--recipe <recipe-ulid>] [--component <product-ulid>=<g>]\u2026 [--component-item <item-ulid>=<g>]\u2026 [--step T]\u2026 [--cook eaten|packed] [--units N] [--shelf-life C] [--source <item-ulid>[:amount]]\u2026",
+        summary: "build a prep WORKSHEET from the catalog and publish it. Components are named by ULID and resolve to the product's stored per-100g panel, so no reference number is transcribed by hand; a product with no panel is refused rather than guessed at, and a missing field contributes 'unknown' rather than zero. --recipe seeds rows from a recipe's lines (which carry their own per-100g inline, so they need no catalog lookup). --cook makes submitting the sheet the write itself (eaten \u2192 one entry; packed \u2192 one conversion). Publishing writes NOTHING to the ledger"
       }
     ]
   },
@@ -2422,7 +2422,8 @@ var PREP_HELP = `kitchen-axi prep <subcommand> [args] [--json]
   publish --slug S --label T            build a prep WORKSHEET from the catalog and
        [--component <product-ulid>=<g>]\u2026  publish it. Components resolve to the
        [--component-item <item-ulid>=<g>]\u2026  product's stored per-100g panel, so no
-       [--label-for "<ulid>=<text>"]\u2026      number is ever transcribed by hand
+       [--recipe <recipe-ulid>]            seed rows from a recipe's lines; explicit
+                                            components are appended after them
        [--step "<text>"]\u2026                  instructions rendered under the table
        [--heading T] [--intro T]
        [--cook eaten|packed]               submitting the sheet IS the write
@@ -2489,6 +2490,7 @@ async function publishPrep(args) {
       "intro",
       "component",
       "component-item",
+      "recipe",
       "step",
       "cook",
       "units",
@@ -2512,9 +2514,10 @@ async function publishPrep(args) {
       return { item_ulid: ulid, quantity };
     })
   ];
-  if (components.length === 0) {
+  const recipeUlid = typeof flags.recipe === "string" ? flags.recipe : void 0;
+  if (components.length === 0 && !recipeUlid) {
     throw new AxiError(
-      "prep publish needs at least one --component or --component-item",
+      "prep publish needs at least one --component / --component-item, or --recipe to seed them",
       "VALIDATION_ERROR",
       [PREP_HELP]
     );
@@ -2544,7 +2547,8 @@ async function publishPrep(args) {
     ...typeof flags.heading === "string" ? { heading: flags.heading } : {},
     ...typeof flags.intro === "string" ? { intro: flags.intro } : {},
     ...typeof flags["submit-label"] === "string" ? { submit_label: flags["submit-label"] } : {},
-    components,
+    ...recipeUlid ? { recipe_ulid: recipeUlid } : {},
+    ...components.length ? { components } : {},
     ...asList(flags.step).length ? { steps: asList(flags.step) } : {},
     ...cook ? {
       cook: {
@@ -3418,7 +3422,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "deb5d80" : "dev";
+var VERSION = true ? "5ae0a17" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)

@@ -110,9 +110,12 @@ clean.
 
 ## Follow-ups
 
-- **Issue** — `--recipe <ulid>` (seed components from a recipe's lines) is specced but
-  NOT implemented. It was the least-certain part of the plan for a real reason: recipe
-  lines don't all map onto weighable components, so it needs a defined skip-and-report
-  behavior. Deliberately deferred rather than half-built.
-- **Issue** — end-to-end verification against a running server is still outstanding for
-  both this and `entry-note-review`; the instance needs migration 022 and a restart.
+- ~~**Issue** — `--recipe <ulid>` is specced but NOT implemented.~~ **DONE, and the
+  stated risk was wrong.** The plan feared "recipe lines don't all map onto weighable
+  components". They all do: a `RecipeComponent` carries `default_qty_g` and `per_100g`
+  inline, so a line becomes a row with no catalog lookup and nothing to skip — the
+  skip-and-report behavior the risk called for has no case to handle. Seeded rows come
+  first and explicit components append after, so a sheet can start from a recipe and
+  add today's extras. The same omit-a-missing-field null rule applies.
+- **Issue** — end-to-end verification against a running server; the instance needs
+  migration 022 and a restart.

@@ -84,7 +84,10 @@ function parseFlags(argv, valueFlags, boolFlags = []) {
 function extractHtmlTitle(html) {
   const match = html.match(/<title[^>]*>([^<]*)<\/title>/i);
   const title = match?.[1]?.trim();
-  return title ? title : null;
+  return title ? decodeHtmlEntities(title) : null;
+}
+function decodeHtmlEntities(value) {
+  return value.replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(parseInt(hex, 16))).replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(parseInt(dec, 10))).replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&amp;/g, "&");
 }
 function titleFromSlug(slug) {
   return slug.split("-").map((word) => word ? word[0].toUpperCase() + word.slice(1) : word).join(" ");
