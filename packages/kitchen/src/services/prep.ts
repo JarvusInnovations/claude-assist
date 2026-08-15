@@ -16,7 +16,7 @@
  */
 
 import type { PagePublisher } from '@jarvus/claude-assist-core';
-import type { InventoryStore, } from '../inventory-store.js';
+import type { InventoryStore } from '../inventory-store.js';
 import type { RecipeStore } from '../store.js';
 import type { NutritionPer100g } from '../inventory-types.js';
 
@@ -118,9 +118,13 @@ export class PrepService {
         // A recipe component states its own per-100g inline, so this needs no
         // catalog lookup — and the SAME null rule applies: an unstated field is
         // omitted so it totals unknown, never zero.
+        // Spread to a plain record rather than casting: RecipeComponentMacros
+        // has no index signature, so a direct cast is a type error under the
+        // package build's stricter settings — and spreading is honest anyway.
+        const macros: Record<string, unknown> = { ...line.per_100g };
         const per_basis: Record<string, number> = {};
         for (const { key } of PREP_FIELDS) {
-          const value = (line.per_100g as Record<string, unknown>)[key];
+          const value = macros[key];
           if (typeof value === 'number' && Number.isFinite(value)) per_basis[key] = value;
         }
         components.push({ label: line.label, quantity: line.default_qty_g, per_basis });
