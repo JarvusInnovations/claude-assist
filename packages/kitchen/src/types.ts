@@ -162,6 +162,13 @@ export interface EntryInput {
   /** Client clock; defaults to receive time when omitted. */
   logged_at?: string;
   note?: string;
+  /**
+   * The note came from a HUMAN, so the entry starts unreviewed and surfaces in
+   * `entries questions` until someone looks (§ Unreviewed entry notes). Omit for
+   * agent-composed notes — a worksheet's measured-provenance manifest is not a
+   * human statement and must not queue a question.
+   */
+  human_note?: boolean;
   /** Optional recipe reference — triggers deterministic recipe-computed macros. */
   recipe_ulid?: string;
   component_quantities?: ComponentQuantity[];
@@ -244,6 +251,12 @@ export interface EntryRecord extends NutritionFields {
   logged_at: Date;
   received_at: Date;
   note: string | null;
+  /**
+   * FALSE when a human-supplied note has not yet been reconciled against the
+   * panel (specs/modules/kitchen.md § Unreviewed entry notes) — the entries-side
+   * twin of an inventory item's `needs_info`.
+   */
+  notes_reviewed: boolean;
   label: string | null;
   source: EstimationSource | null;
   status: EntryStatus;

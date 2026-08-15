@@ -61,6 +61,9 @@ export class MemoryConsumeStore implements ConsumeStore {
       logged_at: entry.logged_at,
       received_at: now,
       note: null,
+      // A one-tap consume writes no note at all, so there is nothing for a
+      // human to have said and nothing to review.
+      notes_reviewed: true,
       label: entry.label,
       calories: entry.nutrition.calories,
       protein_g: entry.nutrition.protein_g,

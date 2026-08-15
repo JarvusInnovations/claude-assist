@@ -68,6 +68,20 @@ export const COMMAND_GROUPS: CommandGroup[] = [
         usage: `entries patch <ulid> [--note T] [--label T] ${MACRO_PANEL_USAGE} [--portion-basis T] [--multiplier M] [--at TIME]`,
         summary: "edit an entry: note/label re-queue estimation; any of the NINE macro flags sets a terminal manual override (the same panel `log` accepts — every field is correctable in place, so never delete + re-log to fix a number); --multiplier rescales the base post-hoc and --at backdates logged_at (prefer a full local timestamp with offset; a bare YYYY-MM-DD backstops to local noon that day; neither re-queues, neither changes source)",
       },
+      {
+        usage: "entries questions [--limit N]",
+        summary:
+          "entries whose HUMAN-supplied note nobody has reconciled against the computed panel — " +
+          "a condiment, a splash of oil, an extra the component list never covered. The entries-side " +
+          "twin of `inventory questions`, and part of the home view's open-question count",
+      },
+      {
+        usage: "entries review <ulid>",
+        summary:
+          "mark one note looked at. Records that a human READ it, NOT that anything changed — most " +
+          "extras are immaterial and \"seen, costs nothing\" is the honest outcome. If it DOES move " +
+          "the numbers, `patch` them first, then review",
+      },
       { usage: "entries delete <ulid>", summary: "remove an entry from all rollups" },
     ],
   },

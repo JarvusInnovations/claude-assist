@@ -649,7 +649,7 @@ describe('inventory routes', () => {
     // depleted, in one call — and idempotent replay of entry_ulid.
     const { item: openTub } = await pl.createItem({ raw_label: 'Salsa tub', shelf_life_class: 'fridge_short', acquired_at: '2026-07-01', on_hand_fraction: 1 });
     await pl.applyEvent(openTub.ulid, 'opened', { at: '2026-07-10' });
-    const { record: loggedEntry } = await e.insertIfAbsent({ ulid: generateUlid(), logged_at: new Date('2026-07-17T12:00:00Z'), note: null, recipe_ulid: null, component_quantities: null });
+    const { record: loggedEntry } = await e.insertIfAbsent({ ulid: generateUlid(), logged_at: new Date('2026-07-17T12:00:00Z'), note: null, recipe_ulid: null, component_quantities: null, notes_reviewed: true });
 
     const linked = await app.inject({
       method: 'POST',

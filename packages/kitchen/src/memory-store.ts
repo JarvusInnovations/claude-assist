@@ -34,6 +34,25 @@ import { EMPTY_NUTRITION } from './store.js';
 export class MemoryEntryStore implements EntryStore {
   readonly records = new Map<string, EntryRecord>();
 
+  async listUnreviewedNotes(limit = 50): Promise<EntryRecord[]> {
+    return [...this.records.values()]
+      .filter((r) => !r.notes_reviewed)
+      .sort((a, b) => a.logged_at.getTime() - b.logged_at.getTime())
+      .slice(0, limit)
+      .map((r) => structuredClone(r));
+  }
+
+  async countUnreviewedNotes(): Promise<number> {
+    return [...this.records.values()].filter((r) => !r.notes_reviewed).length;
+  }
+
+  async markNotesReviewed(ulid: string): Promise<boolean> {
+    const record = this.records.get(ulid);
+    if (!record || record.notes_reviewed) return false;
+    record.notes_reviewed = true;
+    return true;
+  }
+
   async insertIfAbsent(entry: NewEntry): Promise<{ record: EntryRecord; created: boolean }> {
     const existing = this.records.get(entry.ulid);
     if (existing) {
@@ -45,6 +64,7 @@ export class MemoryEntryStore implements EntryStore {
       logged_at: entry.logged_at,
       received_at: now,
       note: entry.note,
+      notes_reviewed: entry.notes_reviewed,
       label: null,
       ...EMPTY_NUTRITION,
       source: null,
@@ -133,7 +153,12 @@ export class MemoryEntryStore implements EntryStore {
     Object.assign(record, nutrition);
     record.confidence = null;
     if (extra.label !== undefined) record.label = extra.label;
-    if (extra.note !== undefined) record.note = extra.note;
+    // A note supplied on patch is the owner speaking, so it needs a look again;
+    // a macro-only patch leaves the flag alone (mirrors PgEntryStore).
+    if (extra.note !== undefined) {
+      record.note = extra.note;
+      if (extra.note.trim()) record.notes_reviewed = false;
+    }
     record.source = 'manual';
     record.status = 'estimated';
     record.last_error = null;
@@ -143,7 +168,10 @@ export class MemoryEntryStore implements EntryStore {
   async applyRequeue(ulid: string, extra: { label?: string; note?: string }): Promise<void> {
     const record = this.mustGet(ulid);
     if (extra.label !== undefined) record.label = extra.label;
-    if (extra.note !== undefined) record.note = extra.note;
+    if (extra.note !== undefined) {
+      record.note = extra.note;
+      if (extra.note.trim()) record.notes_reviewed = false;
+    }
     record.status = 'estimating';
     record.estimate_attempts = 0;
     record.last_error = null;

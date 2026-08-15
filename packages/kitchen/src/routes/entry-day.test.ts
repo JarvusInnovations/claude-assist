@@ -37,6 +37,7 @@ describe('entry rows carry owner-local `day` (§ Timezone & local-day bucketing)
       note: 'meal',
       recipe_ulid: null,
       component_quantities: null,
+      notes_reviewed: true,
     });
     await entries.applyEstimate(
       ulid,

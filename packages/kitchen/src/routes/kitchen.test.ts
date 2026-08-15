@@ -301,6 +301,7 @@ describe('kitchen routes', () => {
         note: null,
         recipe_ulid: null,
         component_quantities: null,
+      notes_reviewed: true,
       });
       await entries.applyEstimate(
         sourceUlid,
@@ -1089,6 +1090,7 @@ describe('kitchen routes', () => {
         note: null,
         recipe_ulid: null,
         component_quantities: null,
+      notes_reviewed: true,
       });
       await entries.applyEstimate(
         sourceUlid,

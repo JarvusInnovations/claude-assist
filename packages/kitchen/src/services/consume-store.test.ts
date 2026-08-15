@@ -184,7 +184,7 @@ describe('MemoryConsumeStore.linkConsumption — stated-weight consumption atomi
     const items = new MemoryInventoryStore();
     await items.insertItemIfAbsent(fractionItem());
     // The entry was ALREADY logged separately — linkConsumption never creates it.
-    const { record: preExisting } = await entries.insertIfAbsent({ ulid: ULID(20), logged_at: new Date('2026-07-17T12:00:00Z'), note: null, recipe_ulid: null, component_quantities: null });
+    const { record: preExisting } = await entries.insertIfAbsent({ ulid: ULID(20), logged_at: new Date('2026-07-17T12:00:00Z'), note: null, recipe_ulid: null, component_quantities: null, notes_reviewed: true });
     expect(preExisting.inventory_item_ulid).toBeNull();
     const store = new MemoryConsumeStore(entries, items);
 
@@ -208,7 +208,7 @@ describe('MemoryConsumeStore.linkConsumption — stated-weight consumption atomi
     const entries = new MemoryEntryStore();
     const items = new MemoryInventoryStore();
     await items.insertItemIfAbsent(fractionItem());
-    await entries.insertIfAbsent({ ulid: ULID(21), logged_at: new Date('2026-07-17T12:00:00Z'), note: null, recipe_ulid: null, component_quantities: null });
+    await entries.insertIfAbsent({ ulid: ULID(21), logged_at: new Date('2026-07-17T12:00:00Z'), note: null, recipe_ulid: null, component_quantities: null, notes_reviewed: true });
     const itemBefore = structuredClone(items.items.get(ULID(10))!);
     const entryBefore = structuredClone(entries.records.get(ULID(21))!);
 
@@ -233,7 +233,7 @@ describe('MemoryConsumeStore.linkConsumption — stated-weight consumption atomi
     const entries = new MemoryEntryStore();
     const items = new MemoryInventoryStore();
     await items.insertItemIfAbsent(fractionItem());
-    await entries.insertIfAbsent({ ulid: ULID(22), logged_at: new Date('2026-07-17T12:00:00Z'), note: null, recipe_ulid: null, component_quantities: null });
+    await entries.insertIfAbsent({ ulid: ULID(22), logged_at: new Date('2026-07-17T12:00:00Z'), note: null, recipe_ulid: null, component_quantities: null, notes_reviewed: true });
     const store = new MemoryConsumeStore(entries, items);
 
     const first = await store.linkConsumption(ULID(22), ULID(10), { state: 'open', on_hand_fraction: 0.4 });
@@ -255,7 +255,7 @@ describe('MemoryConsumeStore.linkConsumption — stated-weight consumption atomi
     const items = new MemoryInventoryStore();
     await items.insertItemIfAbsent(fractionItem());
     await items.insertItemIfAbsent(fractionItem({ ulid: ULID(11) }));
-    await entries.insertIfAbsent({ ulid: ULID(23), logged_at: new Date('2026-07-17T12:00:00Z'), note: null, recipe_ulid: null, component_quantities: null });
+    await entries.insertIfAbsent({ ulid: ULID(23), logged_at: new Date('2026-07-17T12:00:00Z'), note: null, recipe_ulid: null, component_quantities: null, notes_reviewed: true });
     const store = new MemoryConsumeStore(entries, items);
 
     await store.linkConsumption(ULID(23), ULID(10), { state: 'open', on_hand_fraction: 0.4 });

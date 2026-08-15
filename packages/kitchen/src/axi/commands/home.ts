@@ -50,6 +50,7 @@ export async function homeCommand(args: string[]): Promise<string> {
   let entries: any[] | null = null;
   let items: any[] = [];
   let questionCount = 0;
+  let noteQuestionCount = 0;
   let summary: any = null;
   let reachable = true;
 
@@ -59,22 +60,37 @@ export async function homeCommand(args: string[]): Promise<string> {
   const windowStart = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
 
   try {
-    const [entriesRes, invRes, qRes, summaryRes] = await Promise.all([
+    const [entriesRes, invRes, qRes, summaryRes, noteQRes] = await Promise.all([
       api.get("/api/kitchen/entries", { since: windowStart }),
       api.get("/api/kitchen/inventory", { limit: eatFirstN }),
       api.get("/api/kitchen/inventory/questions", { limit: 1 }),
       api.get("/api/kitchen/summary", { group: "day", since: windowStart }).catch(() => null),
+      // Unreviewed human notes on entries (specs/modules/kitchen.md § Unreviewed
+      // entry notes) join the SAME open-question total as needs-info stock: one
+      // vocabulary for "a human said something the ledger hasn't reconciled".
+      // Tolerated as null so an older server without the route still renders.
+      api.get("/api/kitchen/entries/questions", { limit: 1 }).catch(() => null),
     ]);
     entries = Array.isArray(entriesRes?.entries) ? entriesRes.entries : [];
     items = Array.isArray(invRes?.items) ? invRes.items : [];
     questionCount = typeof qRes?.count === "number" ? qRes.count : 0;
+    noteQuestionCount = typeof noteQRes?.count === "number" ? noteQRes.count : 0;
     summary = summaryRes;
   } catch {
     reachable = false;
   }
 
   if (flags.json) {
-    return rawJson({ server, today: summary?.today, summary, entries, eat_first: items, questions: questionCount });
+    return rawJson({
+      server,
+      today: summary?.today,
+      summary,
+      entries,
+      eat_first: items,
+      questions: questionCount + noteQuestionCount,
+      inventory_questions: questionCount,
+      note_questions: noteQuestionCount,
+    });
   }
 
   if (!reachable || entries === null) {
@@ -146,7 +162,7 @@ export async function homeCommand(args: string[]): Promise<string> {
       ? { burned_kcal: todayRow.expenditure_kcal }
       : {}),
     ...(typeof todayRow.net_kcal === "number" ? { est_deficit_kcal: todayRow.net_kcal } : {}),
-    open_questions: questionCount,
+    open_questions: questionCount + noteQuestionCount,
   });
 
   const blocks: string[] = [today_view];

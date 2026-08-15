@@ -595,6 +595,14 @@ var COMMAND_GROUPS = [
         usage: `entries patch <ulid> [--note T] [--label T] ${MACRO_PANEL_USAGE} [--portion-basis T] [--multiplier M] [--at TIME]`,
         summary: "edit an entry: note/label re-queue estimation; any of the NINE macro flags sets a terminal manual override (the same panel `log` accepts \u2014 every field is correctable in place, so never delete + re-log to fix a number); --multiplier rescales the base post-hoc and --at backdates logged_at (prefer a full local timestamp with offset; a bare YYYY-MM-DD backstops to local noon that day; neither re-queues, neither changes source)"
       },
+      {
+        usage: "entries questions [--limit N]",
+        summary: "entries whose HUMAN-supplied note nobody has reconciled against the computed panel \u2014 a condiment, a splash of oil, an extra the component list never covered. The entries-side twin of `inventory questions`, and part of the home view's open-question count"
+      },
+      {
+        usage: "entries review <ulid>",
+        summary: 'mark one note looked at. Records that a human READ it, NOT that anything changed \u2014 most extras are immaterial and "seen, costs nothing" is the honest outcome. If it DOES move the numbers, `patch` them first, then review'
+      },
       { usage: "entries delete <ulid>", summary: "remove an entry from all rollups" }
     ]
   },
@@ -1251,25 +1259,41 @@ async function homeCommand(args) {
   let entries = null;
   let items = [];
   let questionCount = 0;
+  let noteQuestionCount = 0;
   let summary = null;
   let reachable = true;
   const windowStart = new Date(Date.now() - 48 * 60 * 60 * 1e3).toISOString();
   try {
-    const [entriesRes, invRes, qRes, summaryRes] = await Promise.all([
+    const [entriesRes, invRes, qRes, summaryRes, noteQRes] = await Promise.all([
       api.get("/api/kitchen/entries", { since: windowStart }),
       api.get("/api/kitchen/inventory", { limit: eatFirstN }),
       api.get("/api/kitchen/inventory/questions", { limit: 1 }),
-      api.get("/api/kitchen/summary", { group: "day", since: windowStart }).catch(() => null)
+      api.get("/api/kitchen/summary", { group: "day", since: windowStart }).catch(() => null),
+      // Unreviewed human notes on entries (specs/modules/kitchen.md § Unreviewed
+      // entry notes) join the SAME open-question total as needs-info stock: one
+      // vocabulary for "a human said something the ledger hasn't reconciled".
+      // Tolerated as null so an older server without the route still renders.
+      api.get("/api/kitchen/entries/questions", { limit: 1 }).catch(() => null)
     ]);
     entries = Array.isArray(entriesRes?.entries) ? entriesRes.entries : [];
     items = Array.isArray(invRes?.items) ? invRes.items : [];
     questionCount = typeof qRes?.count === "number" ? qRes.count : 0;
+    noteQuestionCount = typeof noteQRes?.count === "number" ? noteQRes.count : 0;
     summary = summaryRes;
   } catch {
     reachable = false;
   }
   if (flags.json) {
-    return rawJson({ server, today: summary?.today, summary, entries, eat_first: items, questions: questionCount });
+    return rawJson({
+      server,
+      today: summary?.today,
+      summary,
+      entries,
+      eat_first: items,
+      questions: questionCount + noteQuestionCount,
+      inventory_questions: questionCount,
+      note_questions: noteQuestionCount
+    });
   }
   if (!reachable || entries === null) {
     return renderOutput2([
@@ -1317,7 +1341,7 @@ async function homeCommand(args) {
     // is CONTEXT, not a spend-it budget — never a "remaining to eat" figure.
     ...typeof todayRow.expenditure_kcal === "number" && todayRow.expenditure_kcal > 0 ? { burned_kcal: todayRow.expenditure_kcal } : {},
     ...typeof todayRow.net_kcal === "number" ? { est_deficit_kcal: todayRow.net_kcal } : {},
-    open_questions: questionCount
+    open_questions: questionCount + noteQuestionCount
   });
   const blocks = [today_view];
   if (items.length) {
@@ -1387,6 +1411,12 @@ var ENTRIES_HELP = `kitchen-axi entries <subcommand> [args] [--json]
                                          (terminal \u2014 ANY of the nine panel flags),
                                          --multiplier M (post-hoc rescale),
                                          or --at TIME (backdate logged_at)
+  questions [--limit N]                entries whose HUMAN note nobody has reconciled
+                                         against the panel \u2014 a condiment, a splash of
+                                         oil, an extra the components never covered
+  review <ulid>                        mark one looked at. Records that a human READ
+                                         the note, NOT that the numbers changed \u2014
+                                         correct those with 'patch' first if needed
   delete <ulid>                        remove from all rollups
 
   Macros on the wire are the BASE; effective = base \xD7 portion_multiplier. A
@@ -1452,6 +1482,10 @@ async function entriesCommand(args) {
       return logEntry(rest);
     case "patch":
       return patchEntry(rest);
+    case "questions":
+      return listNoteQuestions(rest);
+    case "review":
+      return reviewNote(rest);
     case "delete":
       return deleteEntry(rest);
     default:
@@ -1466,6 +1500,36 @@ async function listEntries(args) {
   if (flags.json) return rawJson(result);
   const entries = result?.entries ?? [];
   return renderList("entries", entries, ENTRY_ROW_SCHEMA);
+}
+async function listNoteQuestions(args) {
+  const { flags } = parseArgs(args, ["json"], ["limit"]);
+  const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", ENTRIES_HELP, { min: 1 })) : void 0;
+  const result = await api.get("/api/kitchen/entries/questions", { limit });
+  if (flags.json) return rawJson(result);
+  const entries = result?.entries ?? [];
+  if (entries.length === 0) {
+    return renderList("unreviewed_notes", [], ENTRY_ROW_SCHEMA);
+  }
+  return [
+    renderList("unreviewed_notes", entries, ENTRY_ROW_SCHEMA),
+    renderHelp([
+      "Each row's note names something the computed panel may not include",
+      "Run `kitchen-axi entries review <ulid>` once you have looked \u2014 reviewing records that you READ it, not that anything changed",
+      "If it DOES change the numbers, `kitchen-axi entries patch <ulid> --calories \u2026 --sodium \u2026` first, then review"
+    ])
+  ].join("\n");
+}
+async function reviewNote(args) {
+  const { positionals, flags } = parseArgs(args, ["json"], []);
+  const ulid = requirePositional(positionals, 0, "entry ulid", ENTRIES_HELP);
+  const entry = await api.post(`/api/kitchen/entries/${encodeURIComponent(ulid)}/review`, {});
+  if (flags.json) return rawJson(entry);
+  return [
+    renderDetail("reviewed", entry, DETAIL_SCHEMA),
+    renderHelp(
+      entry?.changed === false ? ["Already reviewed \u2014 no change (replaying a review is a safe no-op)"] : ["Panel untouched: review records that a human read the note, never that the numbers moved"]
+    )
+  ].join("\n");
 }
 async function showEntry(args) {
   const { positionals, flags } = parseArgs(args, ["json"], []);
@@ -3178,7 +3242,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "1dbb0d4" : "dev";
+var VERSION = true ? "f62a9cd" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)

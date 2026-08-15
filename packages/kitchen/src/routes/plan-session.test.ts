@@ -38,6 +38,7 @@ async function seedEstimated(
     note: null,
     recipe_ulid: null,
     component_quantities: null,
+      notes_reviewed: true,
   });
   await entries.applyEstimate(ulid, 'seeded meal', NUL_NUTRITION(macros), 'model', 'estimated');
   if (opts.multiplier !== undefined) await entries.applyPortionMultiplier(ulid, opts.multiplier);
@@ -86,7 +87,7 @@ describe('plan-session context builder', () => {
     await seedEstimated(entries, { calories: 400, protein_g: 30 }, { multiplier: 0.5 });
     // An entry still estimating must NOT count toward totals.
     const pendingUlid = generateUlid();
-    await entries.insertIfAbsent({ ulid: pendingUlid, logged_at: new Date(), note: null, recipe_ulid: null, component_quantities: null });
+    await entries.insertIfAbsent({ ulid: pendingUlid, logged_at: new Date(), note: null, recipe_ulid: null, component_quantities: null, notes_reviewed: true });
 
     const ctx = await gatherPlanningContext({ pipeline, inventory });
 

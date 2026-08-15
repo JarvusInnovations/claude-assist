@@ -29,6 +29,12 @@ export const ENTRIES_HELP = `kitchen-axi entries <subcommand> [args] [--json]
                                          (terminal — ANY of the nine panel flags),
                                          --multiplier M (post-hoc rescale),
                                          or --at TIME (backdate logged_at)
+  questions [--limit N]                entries whose HUMAN note nobody has reconciled
+                                         against the panel — a condiment, a splash of
+                                         oil, an extra the components never covered
+  review <ulid>                        mark one looked at. Records that a human READ
+                                         the note, NOT that the numbers changed —
+                                         correct those with 'patch' first if needed
   delete <ulid>                        remove from all rollups
 
   Macros on the wire are the BASE; effective = base × portion_multiplier. A
@@ -98,6 +104,10 @@ export async function entriesCommand(args: string[]): Promise<string> {
       return logEntry(rest);
     case "patch":
       return patchEntry(rest);
+    case "questions":
+      return listNoteQuestions(rest);
+    case "review":
+      return reviewNote(rest);
     case "delete":
       return deleteEntry(rest);
     default:
@@ -113,6 +123,47 @@ async function listEntries(args: string[]): Promise<string> {
   if (flags.json) return rawJson(result);
   const entries = result?.entries ?? [];
   return renderList("entries", entries, ENTRY_ROW_SCHEMA);
+}
+
+/**
+ * Entries whose HUMAN-supplied note nobody has reconciled against the panel
+ * (specs/modules/kitchen.md § Unreviewed entry notes). The entries-side twin of
+ * `inventory questions` — deliberately the same word, because it is the same
+ * idea: a human said something the ledger has not accounted for.
+ */
+async function listNoteQuestions(args: string[]): Promise<string> {
+  const { flags } = parseArgs(args, ["json"], ["limit"]);
+  const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", ENTRIES_HELP, { min: 1 })) : undefined;
+  const result = await api.get("/api/kitchen/entries/questions", { limit });
+  if (flags.json) return rawJson(result);
+  const entries = result?.entries ?? [];
+  if (entries.length === 0) {
+    return renderList("unreviewed_notes", [], ENTRY_ROW_SCHEMA);
+  }
+  return [
+    renderList("unreviewed_notes", entries, ENTRY_ROW_SCHEMA),
+    renderHelp([
+      "Each row's note names something the computed panel may not include",
+      "Run `kitchen-axi entries review <ulid>` once you have looked — reviewing records that you READ it, not that anything changed",
+      "If it DOES change the numbers, `kitchen-axi entries patch <ulid> --calories … --sodium …` first, then review",
+    ]),
+  ].join("\n");
+}
+
+/** Mark a note looked at. Touches only the flag — correcting macros is `patch`. */
+async function reviewNote(args: string[]): Promise<string> {
+  const { positionals, flags } = parseArgs(args, ["json"], []);
+  const ulid = requirePositional(positionals, 0, "entry ulid", ENTRIES_HELP);
+  const entry = await api.post(`/api/kitchen/entries/${encodeURIComponent(ulid)}/review`, {});
+  if (flags.json) return rawJson(entry);
+  return [
+    renderDetail("reviewed", entry, DETAIL_SCHEMA),
+    renderHelp(
+      entry?.changed === false
+        ? ["Already reviewed — no change (replaying a review is a safe no-op)"]
+        : ["Panel untouched: review records that a human read the note, never that the numbers moved"]
+    ),
+  ].join("\n");
 }
 
 async function showEntry(args: string[]): Promise<string> {

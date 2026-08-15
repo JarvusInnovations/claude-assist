@@ -1,5 +1,5 @@
 ---
-status: planned
+status: done
 depends: []
 specs:
   - specs/modules/kitchen.md
@@ -52,18 +52,20 @@ clear a flag.
 
 ## Validation
 
-- [ ] A cook-mode submission carrying a note produces an entry with
+- [x] A cook-mode submission carrying a note produces an entry with
       `notes_reviewed = false`; one with no note does not appear in questions.
-- [ ] `entries questions` lists exactly the unreviewed-note entries, oldest first.
-- [ ] The home view's open-question count is the sum of needs-info items and
-      unreviewed-note entries, and is non-zero on a fresh invocation after such a
-      submission.
-- [ ] `entries review <ulid>` clears the flag without touching any macro field,
+- [x] `entries questions` lists exactly the unreviewed-note entries, oldest first.
+- [~] The home view's open-question count is the sum of needs-info items and
+      unreviewed-note entries. **Implemented and type-checked, NOT verified live** —
+      the running server needs migration 022 applied and a restart first. The fetch
+      is `.catch(() => null)`-tolerant so an un-migrated server still renders.
+- [x] `entries review <ulid>` clears the flag without touching any macro field,
       `source`, or `status`.
-- [ ] `patch --note` on an existing entry re-flags it unreviewed; a macro-only `patch`
+- [x] `patch --note` on an existing entry re-flags it unreviewed; a macro-only `patch`
       does not.
-- [ ] Existing entries backfill to `notes_reviewed = true` — the migration must not
-      manufacture a backlog out of history nobody is going to review.
+- [~] Existing entries backfill to `notes_reviewed = true` — **by column DEFAULT
+      rather than an UPDATE**, so the backfill is implicit and free. Not yet run
+      against the live database.
 
 ## Risks / unknowns
 
@@ -76,8 +78,28 @@ clear a flag.
 
 ## Notes
 
-*Populated at closeout.*
+**The design's load-bearing detail only surfaced in implementation**: a cook-mode
+entry's note is *never empty*, because `measuredNote()` appends the measured-
+provenance manifest unconditionally. So the obvious rule — "a note exists, therefore
+flag it" — would have queued **every submitted sheet**, producing exactly the
+undrainable backlog this plan set out to avoid. Provenance had to be passed
+explicitly: `human_note` rides `EntryInput`, and the cook sink sets it from
+`request.note?.trim()` — the submitter's own free text, not the composed note. Two
+tests pin that distinction because it is invisible from the stored row.
+
+Backfill is by column `DEFAULT TRUE` rather than an `UPDATE` — same outcome, no table
+rewrite, and it makes "unreviewed" an explicit assertion by the ingest path rather
+than a state history can fall into.
+
+`MemoryEntryStore` and `PgEntryStore` drifted mid-implementation: the Pg patch methods
+re-flagged on a note edit and the memory ones didn't. Caught by writing the re-flag
+test against the memory store. Both now match.
+
+810 kitchen tests pass; drift gate and axi type-check clean.
 
 ## Follow-ups
 
-*Populated at closeout.*
+- **Issue** — the running server needs migration 022 applied and a restart before the
+  home-view count reports anything. Until then the surface is inert, not wrong.
+- **None** otherwise. The structured-extras input stays rejected on the reasoning in
+  § Approach; nothing about the implementation changed that judgment.

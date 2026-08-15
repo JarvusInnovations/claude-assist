@@ -44,6 +44,7 @@ describe('summary group=day + module-owned local-day (§ Timezone & local-day bu
       note: 'meal',
       recipe_ulid: null,
       component_quantities: null,
+      notes_reviewed: true,
     });
     await entries.applyEstimate(
       ulid,

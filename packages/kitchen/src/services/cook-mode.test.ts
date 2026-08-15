@@ -257,3 +257,35 @@ describe('KitchenCookMode — request validation', () => {
     await expect(cook.cook(request())).rejects.toThrow('journal unreachable');
   });
 });
+
+describe('cook mode — human note provenance (§ Unreviewed entry notes)', () => {
+  it('flags the entry unreviewed ONLY when the submitter wrote free text', async () => {
+    const withRemark = request();
+    (withRemark as any).note = 'I put 4g of tabasco on the egg';
+    const captured: any[] = [];
+    const sink = new KitchenCookMode({
+      entries: { ingest: async (input: any) => { captured.push(input); return { record: { ulid: input.ulid }, created: true }; } },
+      inventory: { convert: async () => ({ item: { ulid: 'x' }, created: true }) } as any,
+    });
+
+    await sink.cook(withRemark as any);
+    expect(captured[0].human_note).toBe(true);
+    // The stored note keeps BOTH the remark and the measured manifest.
+    expect(captured[0].note).toContain('tabasco');
+    expect(captured[0].note).toContain('worksheet:');
+  });
+
+  it('does NOT flag when only the auto-generated manifest is present', async () => {
+    const captured: any[] = [];
+    const sink = new KitchenCookMode({
+      entries: { ingest: async (input: any) => { captured.push(input); return { record: { ulid: input.ulid }, created: true }; } },
+      inventory: { convert: async () => ({ item: { ulid: 'x' }, created: true }) } as any,
+    });
+
+    await sink.cook(request() as any);
+    // The note is non-empty (the manifest is always appended), so note-presence
+    // would flag EVERY cook-mode entry. Provenance is what distinguishes them.
+    expect(captured[0].note).toContain('worksheet:');
+    expect(captured[0].human_note).toBe(false);
+  });
+});
