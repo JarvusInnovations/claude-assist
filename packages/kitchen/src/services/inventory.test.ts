@@ -1034,6 +1034,7 @@ describe('item merge (§ Item corrections)', () => {
     const { record: entry } = await entries.insertIfAbsent({
       ulid: ULID(71), logged_at: new Date('2026-07-03T12:00:00Z'), note: 'oatmeal',
       recipe_ulid: null, component_quantities: null,
+      notes_reviewed: true,
     });
     await entries.linkInventoryItem(entry.ulid, loser.ulid);
 
@@ -1152,6 +1153,7 @@ describe('item merge (§ Item corrections)', () => {
     const { record: entry } = await entries.insertIfAbsent({
       ulid: ULID(75), logged_at: new Date('2026-07-19T12:00:00Z'), note: 'B',
       recipe_ulid: null, component_quantities: null,
+      notes_reviewed: true,
     });
     await entries.linkInventoryItem(entry.ulid, loser.ulid);
 
@@ -2516,7 +2518,7 @@ describe('stated-weight consumption (§ Stated-weight consumption — eating is 
       await pipeline.applyEvent(item.ulid, 'opened', { at: '2026-07-10' });
       // The consuming entry was journaled separately (e.g. `entries log`) —
       // this endpoint never creates it.
-      const { record: loggedEntry } = await entries.insertIfAbsent({ ulid: ULID(80), logged_at: new Date('2026-07-17T12:00:00Z'), note: null, recipe_ulid: null, component_quantities: null });
+      const { record: loggedEntry } = await entries.insertIfAbsent({ ulid: ULID(80), logged_at: new Date('2026-07-17T12:00:00Z'), note: null, recipe_ulid: null, component_quantities: null, notes_reviewed: true });
       expect(loggedEntry.inventory_item_ulid).toBeNull();
 
       const result = await pipeline.consumeStatedAmount(item.ulid, { fraction: 0.3, entry_ulid: ULID(80), at: '2026-07-17' });
@@ -2533,7 +2535,7 @@ describe('stated-weight consumption (§ Stated-weight consumption — eating is 
       const { pipeline, entries } = harness();
       const { item } = await pipeline.createItem({ raw_label: 'Hummus tub', shelf_life_class: 'fridge_short', acquired_at: '2026-07-01', on_hand_fraction: 1 });
       await pipeline.applyEvent(item.ulid, 'opened', { at: '2026-07-10' });
-      await entries.insertIfAbsent({ ulid: ULID(81), logged_at: new Date('2026-07-17T12:00:00Z'), note: null, recipe_ulid: null, component_quantities: null });
+      await entries.insertIfAbsent({ ulid: ULID(81), logged_at: new Date('2026-07-17T12:00:00Z'), note: null, recipe_ulid: null, component_quantities: null, notes_reviewed: true });
 
       const first = await pipeline.consumeStatedAmount(item.ulid, { fraction: 0.3, entry_ulid: ULID(81), at: '2026-07-17' });
       expect(first!.linked).toBe(true);
@@ -2548,7 +2550,7 @@ describe('stated-weight consumption (§ Stated-weight consumption — eating is 
       const { pipeline, entries } = harness();
       const { item } = await pipeline.createItem({ raw_label: 'Hummus tub', shelf_life_class: 'fridge_short', acquired_at: '2026-07-01', on_hand_fraction: 1 });
       await pipeline.applyEvent(item.ulid, 'opened', { at: '2026-07-10' });
-      await entries.insertIfAbsent({ ulid: ULID(82), logged_at: new Date('2026-07-17T12:00:00Z'), note: null, recipe_ulid: null, component_quantities: null });
+      await entries.insertIfAbsent({ ulid: ULID(82), logged_at: new Date('2026-07-17T12:00:00Z'), note: null, recipe_ulid: null, component_quantities: null, notes_reviewed: true });
 
       const first = await pipeline.consumeStatedAmount(item.ulid, { fraction: 1, entry_ulid: ULID(82), at: '2026-07-17' });
       expect(first!.item.state).toBe('finished');
@@ -2567,7 +2569,7 @@ describe('stated-weight consumption (§ Stated-weight consumption — eating is 
       const { item: itemB } = await pipeline.createItem({ raw_label: 'Other tub', shelf_life_class: 'fridge_short', acquired_at: '2026-07-01', on_hand_fraction: 1 });
       await pipeline.applyEvent(itemA.ulid, 'opened', { at: '2026-07-10' });
       await pipeline.applyEvent(itemB.ulid, 'opened', { at: '2026-07-10' });
-      await entries.insertIfAbsent({ ulid: ULID(83), logged_at: new Date('2026-07-17T12:00:00Z'), note: null, recipe_ulid: null, component_quantities: null });
+      await entries.insertIfAbsent({ ulid: ULID(83), logged_at: new Date('2026-07-17T12:00:00Z'), note: null, recipe_ulid: null, component_quantities: null, notes_reviewed: true });
 
       await pipeline.consumeStatedAmount(itemA.ulid, { fraction: 0.2, entry_ulid: ULID(83) });
       await expect(

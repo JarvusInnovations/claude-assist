@@ -18,8 +18,26 @@ export interface PublishPageInput {
   /** Stable public identity — republishing the same slug adds a version. */
   slug: string;
   title: string;
-  /** Self-contained HTML (the pages CSP forbids external subresources). */
-  html: string;
+  /**
+   * Self-contained HTML (the pages CSP forbids external subresources).
+   * Mutually exclusive with `worksheet` — exactly one is required, mirroring
+   * the module's own HTTP contract.
+   */
+  html?: string;
+  /**
+   * A worksheet definition the pages module validates and renders itself
+   * (its § The worksheet response pattern). Typed as `unknown` deliberately:
+   * core owns the seam, not the shape, so the worksheet contract can evolve in
+   * the pages module without dragging every consumer's types along. The
+   * publisher validates and throws on a malformed definition.
+   *
+   * This is the road a DOMAIN module takes to publish a collection surface
+   * built from its own records — the mirror of the cook-mode sink, which
+   * carries a submission back the other way. Dependencies stay one-directional:
+   * a domain module may reach the pages module through this interface; the
+   * pages module never reaches into a domain.
+   */
+  worksheet?: unknown;
   /** Batch a response notification into the digest tier instead of a notice. */
   digestOptin?: boolean;
 }

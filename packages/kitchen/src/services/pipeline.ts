@@ -178,6 +178,25 @@ export class KitchenPipeline {
     this.onEntryEstimated = config.onEntryEstimated;
   }
 
+  /**
+   * Entries whose human-supplied note has not been reconciled against the panel
+   * (specs/modules/kitchen.md § Unreviewed entry notes) — the entries-side twin
+   * of the inventory needs-info queue.
+   */
+  async listUnreviewedNotes(limit?: number): Promise<EntryRecord[]> {
+    return this.entries.listUnreviewedNotes(limit);
+  }
+
+  /** Count of the above, for the home view's open-question total. */
+  async countUnreviewedNotes(): Promise<number> {
+    return this.entries.countUnreviewedNotes();
+  }
+
+  /** Mark a note looked at. Touches only that flag; correcting macros is a patch. */
+  async markNotesReviewed(ulid: string): Promise<boolean> {
+    return this.entries.markNotesReviewed(ulid);
+  }
+
   /** Endpoint-side: idempotent ingest. Photos are used for one attempt, then dropped. */
   async ingest(
     input: EntryInput,

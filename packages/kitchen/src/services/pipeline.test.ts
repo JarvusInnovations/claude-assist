@@ -889,6 +889,7 @@ describe('reselect_of clone — deterministic recent re-log (no model call)', ()
       note: null,
       recipe_ulid: null,
       component_quantities: null,
+      notes_reviewed: true,
     });
     await entries.applyEstimate(ulid, label, nutrition, source, 'estimated');
     return ulid;
@@ -1014,10 +1015,10 @@ describe('reselect_of clone — deterministic recent re-log (no model call)', ()
     const entries = new MemoryEntryStore();
     // Two entries share a label; the newer one's ULID must be the clone source.
     const older = generateUlid();
-    await entries.insertIfAbsent({ ulid: older, logged_at: new Date(Date.now() - 60_000), note: null, recipe_ulid: null, component_quantities: null });
+    await entries.insertIfAbsent({ ulid: older, logged_at: new Date(Date.now() - 60_000), note: null, recipe_ulid: null, component_quantities: null, notes_reviewed: true });
     await entries.applyEstimate(older, 'Latte', { ...SOURCE_NUTRITION, calories: 100 }, 'model', 'estimated');
     const newer = generateUlid();
-    await entries.insertIfAbsent({ ulid: newer, logged_at: new Date(), note: null, recipe_ulid: null, component_quantities: null });
+    await entries.insertIfAbsent({ ulid: newer, logged_at: new Date(), note: null, recipe_ulid: null, component_quantities: null, notes_reviewed: true });
     await entries.applyEstimate(newer, 'Latte', { ...SOURCE_NUTRITION, calories: 130 }, 'model', 'estimated');
 
     const pipeline = new KitchenPipeline(entries, new MemoryRecipeStore(), null, log);

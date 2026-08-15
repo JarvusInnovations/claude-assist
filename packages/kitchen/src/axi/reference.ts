@@ -68,7 +68,37 @@ export const COMMAND_GROUPS: CommandGroup[] = [
         usage: `entries patch <ulid> [--note T] [--label T] ${MACRO_PANEL_USAGE} [--portion-basis T] [--multiplier M] [--at TIME]`,
         summary: "edit an entry: note/label re-queue estimation; any of the NINE macro flags sets a terminal manual override (the same panel `log` accepts — every field is correctable in place, so never delete + re-log to fix a number); --multiplier rescales the base post-hoc and --at backdates logged_at (prefer a full local timestamp with offset; a bare YYYY-MM-DD backstops to local noon that day; neither re-queues, neither changes source)",
       },
+      {
+        usage: "entries questions [--limit N]",
+        summary:
+          "entries whose HUMAN-supplied note nobody has reconciled against the computed panel — " +
+          "a condiment, a splash of oil, an extra the component list never covered. The entries-side " +
+          "twin of `inventory questions`, and part of the home view's open-question count",
+      },
+      {
+        usage: "entries review <ulid>",
+        summary:
+          "mark one note looked at. Records that a human READ it, NOT that anything changed — most " +
+          "extras are immaterial and \"seen, costs nothing\" is the honest outcome. If it DOES move " +
+          "the numbers, `patch` them first, then review",
+      },
       { usage: "entries delete <ulid>", summary: "remove an entry from all rollups" },
+    ],
+  },
+  {
+    group: "Prep worksheets",
+    commands: [
+      {
+        usage:
+          "prep publish --slug S --label T [--recipe <recipe-ulid>] [--component <product-ulid>=<g>]… [--component-item <item-ulid>=<g>]… [--step T]… [--cook eaten|packed] [--units N] [--shelf-life C] [--source <item-ulid>[:amount]]…",
+        summary:
+          "build a prep WORKSHEET from the catalog and publish it. Components are named by ULID and " +
+          "resolve to the product's stored per-100g panel, so no reference number is transcribed by " +
+          "hand; a product with no panel is refused rather than guessed at, and a missing field " +
+          "contributes 'unknown' rather than zero. --recipe seeds rows from a recipe's lines (which " +
+          "carry their own per-100g inline, so they need no catalog lookup). --cook makes submitting the sheet the write itself " +
+          "(eaten → one entry; packed → one conversion). Publishing writes NOTHING to the ledger",
+      },
     ],
   },
   {

@@ -129,6 +129,9 @@ function validateEntryInput(input: unknown): { ok: true; value: EntryInput } | {
   if (obj.note !== undefined && typeof obj.note !== 'string') {
     return { ok: false, error: 'entry.note must be a string' };
   }
+  if (obj.human_note !== undefined && typeof obj.human_note !== 'boolean') {
+    return { ok: false, error: 'entry.human_note must be a boolean' };
+  }
   if (obj.recipe_ulid !== undefined && (typeof obj.recipe_ulid !== 'string' || !ULID_PATTERN.test(obj.recipe_ulid))) {
     return { ok: false, error: 'entry.recipe_ulid must be a valid ULID' };
   }
@@ -176,6 +179,7 @@ function validateEntryInput(input: unknown): { ok: true; value: EntryInput } | {
       ulid: obj.ulid,
       logged_at: obj.logged_at as string | undefined,
       note: obj.note as string | undefined,
+      human_note: obj.human_note as boolean | undefined,
       recipe_ulid: obj.recipe_ulid as string | undefined,
       component_quantities: obj.component_quantities as ComponentQuantity[] | undefined,
       reselect_of: obj.reselect_of as string | undefined,
@@ -408,6 +412,46 @@ export const registerKitchenRoutes: FastifyPluginAsync<KitchenRoutesConfig> = as
     async (request) => {
       const limit = request.query.limit ? parseInt(request.query.limit, 10) : undefined;
       return pipeline.reselect(limit);
+    }
+  );
+
+  // GET /kitchen/entries/questions - entries whose HUMAN-supplied note nobody has
+  // reconciled against the panel (specs/modules/kitchen.md § Unreviewed entry
+  // notes). Static path, same convention as /kitchen/reselect above.
+  fastify.get<{ Querystring: { limit?: string } }>(
+    '/kitchen/entries/questions',
+    {
+      schema: {
+        querystring: {
+          type: 'object',
+          additionalProperties: false,
+          properties: { limit: { type: 'string', pattern: '^[0-9]+$' } },
+        },
+      },
+    },
+    async (request) => {
+      const limit = request.query.limit ? parseInt(request.query.limit, 10) : undefined;
+      const entries = await pipeline.listUnreviewedNotes(limit);
+      return { entries: entries.map((e) => serializeEntry(e, ownerTz)), count: entries.length };
+    }
+  );
+
+  // POST /kitchen/entries/:ulid/review - mark a note looked at. Deliberately
+  // touches ONLY notes_reviewed: reviewing records that a human READ the note,
+  // never that the panel changed. Correcting the numbers is a separate PATCH.
+  fastify.post<{ Params: { ulid: string } }>(
+    '/kitchen/entries/:ulid/review',
+    async (request, reply) => {
+      const entry = await pipeline.get(request.params.ulid);
+      if (!entry) {
+        reply.status(404);
+        return { error: 'Entry not found' };
+      }
+      const changed = await pipeline.markNotesReviewed(request.params.ulid);
+      // Idempotent: re-reviewing an already-reviewed entry is a no-op, not an
+      // error — a retry must never look like a failure.
+      const updated = await pipeline.get(request.params.ulid);
+      return { ...serializeEntry(updated!, ownerTz), changed };
     }
   );
 

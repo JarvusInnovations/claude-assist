@@ -28,6 +28,15 @@ export interface NewEntry {
   note: string | null;
   recipe_ulid: string | null;
   component_quantities: ComponentQuantity[] | null;
+  /**
+   * FALSE only when a HUMAN supplied `note` and nobody has reconciled it against
+   * the panel yet (specs/modules/kitchen.md § Unreviewed entry notes). Defaults
+   * to TRUE — "nothing to review" is the resting state, and being unreviewed is
+   * an explicit assertion made by the caller that knows the note's provenance.
+   * An agent-composed note (a worksheet's measured-provenance manifest, say) is
+   * not a human statement and must never flag.
+   */
+  notes_reviewed: boolean;
 }
 
 /** Normalized insert payload for a new recipe. */
@@ -115,6 +124,24 @@ export interface EntryStore {
   applyRequeue(ulid: string, extra: { label?: string; note?: string }): Promise<void>;
 
   /**
+   * Entries whose human-supplied note nobody has reconciled against the panel
+   * (specs/modules/kitchen.md § Unreviewed entry notes), oldest first — the
+   * entries-side twin of the inventory needs-info queue.
+   */
+  listUnreviewedNotes(limit?: number): Promise<EntryRecord[]>;
+
+  /** Count of the above, for the home view's open-question total. */
+  countUnreviewedNotes(): Promise<number>;
+
+  /**
+   * Mark a note looked at. Touches ONLY that column: reviewing records that a
+   * human read the note, NOT that anything changed. Correcting the panel is a
+   * separate `patch` — conflating them would push toward pointless edits made
+   * only to clear a flag.
+   */
+  markNotesReviewed(ulid: string): Promise<boolean>;
+
+  /**
    * Set the post-hoc portion multiplier. Touches ONLY that column — no source
    * change, no status change, no re-queue (specs/modules/kitchen.md § Portion
    * multiplier). Caller has already range-validated the value.
@@ -184,7 +211,15 @@ export interface RecipeStore {
 }
 
 export function normalizeNewEntry(
-  input: { ulid: string; logged_at?: string; note?: string; recipe_ulid?: string; component_quantities?: ComponentQuantity[] },
+  input: {
+    ulid: string;
+    logged_at?: string;
+    note?: string;
+    recipe_ulid?: string;
+    component_quantities?: ComponentQuantity[];
+    /** The note was written by a human, so it needs a look (§ Unreviewed entry notes). */
+    human_note?: boolean;
+  },
   now = new Date()
 ): NewEntry {
   return {
@@ -197,6 +232,9 @@ export function normalizeNewEntry(
     note: input.note?.trim() ? input.note.trim() : null,
     recipe_ulid: input.recipe_ulid ?? null,
     component_quantities: input.component_quantities ?? null,
+    // Only a human note that actually has content flags: `human_note` on an
+    // empty note would queue a question about nothing.
+    notes_reviewed: !(input.human_note && input.note?.trim()),
   };
 }
 
@@ -248,6 +286,7 @@ export function rowToEntry(row: Record<string, unknown>): EntryRecord {
     logged_at: row.logged_at as Date,
     received_at: row.received_at as Date,
     note: (row.note as string | null) ?? null,
+    notes_reviewed: (row.notes_reviewed as boolean | undefined) ?? true,
     label: (row.label as string | null) ?? null,
     calories: parseNumeric(row.calories),
     protein_g: parseNumeric(row.protein_g),
@@ -297,11 +336,11 @@ export class PgEntryStore implements EntryStore {
   async insertIfAbsent(entry: NewEntry): Promise<{ record: EntryRecord; created: boolean }> {
     const inserted = await this.sql`
       INSERT INTO kitchen.entries
-        (ulid, logged_at, note, recipe_ulid, component_quantities, status)
+        (ulid, logged_at, note, recipe_ulid, component_quantities, status, notes_reviewed)
       VALUES (
         ${entry.ulid}, ${entry.logged_at}, ${entry.note}, ${entry.recipe_ulid},
         ${entry.component_quantities ? this.sql.json(entry.component_quantities as never) : null},
-        'estimating'
+        'estimating', ${entry.notes_reviewed}
       )
       ON CONFLICT (ulid) DO NOTHING
       RETURNING *
@@ -406,6 +445,9 @@ export class PgEntryStore implements EntryStore {
         confidence = NULL, portion_basis = ${merged.portion_basis},
         label = ${extra.label ?? current.label}, note = ${extra.note ?? current.note},
         source = 'manual', status = 'estimated',
+        -- A note supplied on patch is the owner speaking, so it needs a look
+        -- again; a macro-only patch leaves the flag alone.
+        notes_reviewed = ${extra.note?.trim() ? false : current.notes_reviewed},
         last_error = NULL, last_error_at = NULL
       WHERE ulid = ${ulid}
     `;
@@ -418,9 +460,36 @@ export class PgEntryStore implements EntryStore {
       UPDATE kitchen.entries SET
         label = ${extra.label ?? current.label}, note = ${extra.note ?? current.note},
         status = 'estimating', estimate_attempts = 0,
+        notes_reviewed = ${extra.note?.trim() ? false : current.notes_reviewed},
         last_error = NULL, last_error_at = NULL
       WHERE ulid = ${ulid}
     `;
+  }
+
+  async listUnreviewedNotes(limit = 50): Promise<EntryRecord[]> {
+    const rows = await this.sql`
+      SELECT * FROM kitchen.entries
+      WHERE notes_reviewed = FALSE
+      ORDER BY logged_at ASC
+      LIMIT ${limit}
+    `;
+    return rows.map((r: Record<string, unknown>) => rowToEntry(r));
+  }
+
+  async countUnreviewedNotes(): Promise<number> {
+    const rows = await this.sql`
+      SELECT COUNT(*)::int AS n FROM kitchen.entries WHERE notes_reviewed = FALSE
+    `;
+    return Number(rows[0]?.n ?? 0);
+  }
+
+  async markNotesReviewed(ulid: string): Promise<boolean> {
+    const rows = await this.sql`
+      UPDATE kitchen.entries SET notes_reviewed = TRUE
+      WHERE ulid = ${ulid} AND notes_reviewed = FALSE
+      RETURNING ulid
+    `;
+    return rows.length > 0;
   }
 
   async applyPortionMultiplier(ulid: string, multiplier: number): Promise<void> {

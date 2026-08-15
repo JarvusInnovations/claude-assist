@@ -595,7 +595,24 @@ var COMMAND_GROUPS = [
         usage: `entries patch <ulid> [--note T] [--label T] ${MACRO_PANEL_USAGE} [--portion-basis T] [--multiplier M] [--at TIME]`,
         summary: "edit an entry: note/label re-queue estimation; any of the NINE macro flags sets a terminal manual override (the same panel `log` accepts \u2014 every field is correctable in place, so never delete + re-log to fix a number); --multiplier rescales the base post-hoc and --at backdates logged_at (prefer a full local timestamp with offset; a bare YYYY-MM-DD backstops to local noon that day; neither re-queues, neither changes source)"
       },
+      {
+        usage: "entries questions [--limit N]",
+        summary: "entries whose HUMAN-supplied note nobody has reconciled against the computed panel \u2014 a condiment, a splash of oil, an extra the component list never covered. The entries-side twin of `inventory questions`, and part of the home view's open-question count"
+      },
+      {
+        usage: "entries review <ulid>",
+        summary: 'mark one note looked at. Records that a human READ it, NOT that anything changed \u2014 most extras are immaterial and "seen, costs nothing" is the honest outcome. If it DOES move the numbers, `patch` them first, then review'
+      },
       { usage: "entries delete <ulid>", summary: "remove an entry from all rollups" }
+    ]
+  },
+  {
+    group: "Prep worksheets",
+    commands: [
+      {
+        usage: "prep publish --slug S --label T [--recipe <recipe-ulid>] [--component <product-ulid>=<g>]\u2026 [--component-item <item-ulid>=<g>]\u2026 [--step T]\u2026 [--cook eaten|packed] [--units N] [--shelf-life C] [--source <item-ulid>[:amount]]\u2026",
+        summary: "build a prep WORKSHEET from the catalog and publish it. Components are named by ULID and resolve to the product's stored per-100g panel, so no reference number is transcribed by hand; a product with no panel is refused rather than guessed at, and a missing field contributes 'unknown' rather than zero. --recipe seeds rows from a recipe's lines (which carry their own per-100g inline, so they need no catalog lookup). --cook makes submitting the sheet the write itself (eaten \u2192 one entry; packed \u2192 one conversion). Publishing writes NOTHING to the ledger"
+      }
     ]
   },
   {
@@ -1251,25 +1268,41 @@ async function homeCommand(args) {
   let entries = null;
   let items = [];
   let questionCount = 0;
+  let noteQuestionCount = 0;
   let summary = null;
   let reachable = true;
   const windowStart = new Date(Date.now() - 48 * 60 * 60 * 1e3).toISOString();
   try {
-    const [entriesRes, invRes, qRes, summaryRes] = await Promise.all([
+    const [entriesRes, invRes, qRes, summaryRes, noteQRes] = await Promise.all([
       api.get("/api/kitchen/entries", { since: windowStart }),
       api.get("/api/kitchen/inventory", { limit: eatFirstN }),
       api.get("/api/kitchen/inventory/questions", { limit: 1 }),
-      api.get("/api/kitchen/summary", { group: "day", since: windowStart }).catch(() => null)
+      api.get("/api/kitchen/summary", { group: "day", since: windowStart }).catch(() => null),
+      // Unreviewed human notes on entries (specs/modules/kitchen.md § Unreviewed
+      // entry notes) join the SAME open-question total as needs-info stock: one
+      // vocabulary for "a human said something the ledger hasn't reconciled".
+      // Tolerated as null so an older server without the route still renders.
+      api.get("/api/kitchen/entries/questions", { limit: 1 }).catch(() => null)
     ]);
     entries = Array.isArray(entriesRes?.entries) ? entriesRes.entries : [];
     items = Array.isArray(invRes?.items) ? invRes.items : [];
     questionCount = typeof qRes?.count === "number" ? qRes.count : 0;
+    noteQuestionCount = typeof noteQRes?.count === "number" ? noteQRes.count : 0;
     summary = summaryRes;
   } catch {
     reachable = false;
   }
   if (flags.json) {
-    return rawJson({ server, today: summary?.today, summary, entries, eat_first: items, questions: questionCount });
+    return rawJson({
+      server,
+      today: summary?.today,
+      summary,
+      entries,
+      eat_first: items,
+      questions: questionCount + noteQuestionCount,
+      inventory_questions: questionCount,
+      note_questions: noteQuestionCount
+    });
   }
   if (!reachable || entries === null) {
     return renderOutput2([
@@ -1317,7 +1350,7 @@ async function homeCommand(args) {
     // is CONTEXT, not a spend-it budget — never a "remaining to eat" figure.
     ...typeof todayRow.expenditure_kcal === "number" && todayRow.expenditure_kcal > 0 ? { burned_kcal: todayRow.expenditure_kcal } : {},
     ...typeof todayRow.net_kcal === "number" ? { est_deficit_kcal: todayRow.net_kcal } : {},
-    open_questions: questionCount
+    open_questions: questionCount + noteQuestionCount
   });
   const blocks = [today_view];
   if (items.length) {
@@ -1387,6 +1420,12 @@ var ENTRIES_HELP = `kitchen-axi entries <subcommand> [args] [--json]
                                          (terminal \u2014 ANY of the nine panel flags),
                                          --multiplier M (post-hoc rescale),
                                          or --at TIME (backdate logged_at)
+  questions [--limit N]                entries whose HUMAN note nobody has reconciled
+                                         against the panel \u2014 a condiment, a splash of
+                                         oil, an extra the components never covered
+  review <ulid>                        mark one looked at. Records that a human READ
+                                         the note, NOT that the numbers changed \u2014
+                                         correct those with 'patch' first if needed
   delete <ulid>                        remove from all rollups
 
   Macros on the wire are the BASE; effective = base \xD7 portion_multiplier. A
@@ -1452,6 +1491,10 @@ async function entriesCommand(args) {
       return logEntry(rest);
     case "patch":
       return patchEntry(rest);
+    case "questions":
+      return listNoteQuestions(rest);
+    case "review":
+      return reviewNote(rest);
     case "delete":
       return deleteEntry(rest);
     default:
@@ -1466,6 +1509,36 @@ async function listEntries(args) {
   if (flags.json) return rawJson(result);
   const entries = result?.entries ?? [];
   return renderList("entries", entries, ENTRY_ROW_SCHEMA);
+}
+async function listNoteQuestions(args) {
+  const { flags } = parseArgs(args, ["json"], ["limit"]);
+  const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", ENTRIES_HELP, { min: 1 })) : void 0;
+  const result = await api.get("/api/kitchen/entries/questions", { limit });
+  if (flags.json) return rawJson(result);
+  const entries = result?.entries ?? [];
+  if (entries.length === 0) {
+    return renderList("unreviewed_notes", [], ENTRY_ROW_SCHEMA);
+  }
+  return [
+    renderList("unreviewed_notes", entries, ENTRY_ROW_SCHEMA),
+    renderHelp([
+      "Each row's note names something the computed panel may not include",
+      "Run `kitchen-axi entries review <ulid>` once you have looked \u2014 reviewing records that you READ it, not that anything changed",
+      "If it DOES change the numbers, `kitchen-axi entries patch <ulid> --calories \u2026 --sodium \u2026` first, then review"
+    ])
+  ].join("\n");
+}
+async function reviewNote(args) {
+  const { positionals, flags } = parseArgs(args, ["json"], []);
+  const ulid = requirePositional(positionals, 0, "entry ulid", ENTRIES_HELP);
+  const entry = await api.post(`/api/kitchen/entries/${encodeURIComponent(ulid)}/review`, {});
+  if (flags.json) return rawJson(entry);
+  return [
+    renderDetail("reviewed", entry, DETAIL_SCHEMA),
+    renderHelp(
+      entry?.changed === false ? ["Already reviewed \u2014 no change (replaying a review is a safe no-op)"] : ["Panel untouched: review records that a human read the note, never that the numbers moved"]
+    )
+  ].join("\n");
 }
 async function showEntry(args) {
   const { positionals, flags } = parseArgs(args, ["json"], []);
@@ -2343,6 +2416,177 @@ function assertConvertShelfLifeClass(cls) {
   }
 }
 
+// packages/kitchen/src/axi/commands/prep.ts
+var PREP_HELP = `kitchen-axi prep <subcommand> [args] [--json]
+
+  publish --slug S --label T            build a prep WORKSHEET from the catalog and
+       [--component <product-ulid>=<g>]\u2026  publish it. Components resolve to the
+       [--component-item <item-ulid>=<g>]\u2026  product's stored per-100g panel, so no
+       [--recipe <recipe-ulid>]            seed rows from a recipe's lines; explicit
+                                            components are appended after them
+       [--step "<text>"]\u2026                  instructions rendered under the table
+       [--heading T] [--intro T]
+       [--cook eaten|packed]               submitting the sheet IS the write
+       [--units N] [--shelf-life C]        (packed only) the derived item's shape
+       [--source <item-ulid>[:amount]]\u2026    (packed only) stock the batch consumes
+       [--title T] [--digest-optin]
+
+  A worksheet's per_basis blocks are reference values this module already stores.
+  Assembling them by hand re-derives numbers the catalog holds \u2014 the same
+  estimation-by-recall failure the nutrition-panel rules exist to prevent, moved
+  into the authoring path. So components are named by ULID, never by macros.
+
+  A product with NO stored panel is refused rather than guessed at: seed or scan
+  it first. A product missing ONE field contributes 'unknown' to that total, never
+  zero \u2014 the sheet reports which fields came back unknown.
+
+  PUBLISHING WRITES NOTHING TO THE LEDGER. A definition is a form awaiting a real
+  event; stock moves only when the submission lands.
+
+examples:
+  kitchen-axi prep publish --slug lunch-today --label "Grain bowl" \\
+    --component 01ABC\u2026=185 --component 01DEF\u2026=120 --cook eaten
+  kitchen-axi prep publish --slug oat-jars --label "Overnight oats" \\
+    --component-item 01GHI\u2026=240 --cook packed --units 3 --shelf-life prepared`;
+async function prepCommand(args) {
+  const sub = args[0];
+  const rest = args.slice(1);
+  switch (sub) {
+    case "publish":
+      return publishPrep(rest);
+    default:
+      throw new AxiError(`Unknown prep subcommand: ${sub}`, "VALIDATION_ERROR", [PREP_HELP]);
+  }
+}
+function parseRef(raw, flag) {
+  const eq = raw.lastIndexOf("=");
+  if (eq <= 0) {
+    throw new AxiError(`${flag} must be "<ulid>=<grams>" (got ${raw})`, "VALIDATION_ERROR", [PREP_HELP]);
+  }
+  const ulid = raw.slice(0, eq).trim();
+  const quantity = Number(raw.slice(eq + 1).trim());
+  if (!ulid || !Number.isFinite(quantity) || quantity < 0) {
+    throw new AxiError(
+      `${flag} must be "<ulid>=<grams>" with a non-negative number (got ${raw})`,
+      "VALIDATION_ERROR",
+      [PREP_HELP]
+    );
+  }
+  return { ulid, quantity };
+}
+function asList(value) {
+  if (value === void 0) return [];
+  return Array.isArray(value) ? value : [String(value)];
+}
+async function publishPrep(args) {
+  const { flags } = parseArgs(
+    args,
+    ["json", "digest-optin"],
+    [
+      "slug",
+      "label",
+      "title",
+      "heading",
+      "intro",
+      "component",
+      "component-item",
+      "recipe",
+      "step",
+      "cook",
+      "units",
+      "shelf-life",
+      "source",
+      "submit-label"
+    ]
+  );
+  const slug = typeof flags.slug === "string" ? flags.slug : void 0;
+  const label = typeof flags.label === "string" ? flags.label : void 0;
+  if (!slug || !label) {
+    throw new AxiError("prep publish needs --slug and --label", "VALIDATION_ERROR", [PREP_HELP]);
+  }
+  const components = [
+    ...asList(flags.component).map((raw) => {
+      const { ulid, quantity } = parseRef(raw, "--component");
+      return { product_ulid: ulid, quantity };
+    }),
+    ...asList(flags["component-item"]).map((raw) => {
+      const { ulid, quantity } = parseRef(raw, "--component-item");
+      return { item_ulid: ulid, quantity };
+    })
+  ];
+  const recipeUlid = typeof flags.recipe === "string" ? flags.recipe : void 0;
+  if (components.length === 0 && !recipeUlid) {
+    throw new AxiError(
+      "prep publish needs at least one --component / --component-item, or --recipe to seed them",
+      "VALIDATION_ERROR",
+      [PREP_HELP]
+    );
+  }
+  const cook = typeof flags.cook === "string" ? flags.cook : void 0;
+  if (cook !== void 0 && cook !== "eaten" && cook !== "packed") {
+    throw new AxiError(`--cook must be 'eaten' or 'packed' (got ${cook})`, "VALIDATION_ERROR", [PREP_HELP]);
+  }
+  if (cook !== "packed" && (flags.units || flags["shelf-life"] || flags.source)) {
+    throw new AxiError(
+      "--units, --shelf-life and --source apply to --cook packed only: an eaten sheet writes one entry, not stock",
+      "VALIDATION_ERROR",
+      [PREP_HELP]
+    );
+  }
+  const sources = asList(flags.source).map((raw) => {
+    const [itemUlid, amount] = raw.split(":");
+    return {
+      item_ulid: itemUlid.trim(),
+      ...amount !== void 0 ? { amount: Number(amount) } : {}
+    };
+  });
+  const body = {
+    slug,
+    label,
+    ...typeof flags.title === "string" ? { title: flags.title } : {},
+    ...typeof flags.heading === "string" ? { heading: flags.heading } : {},
+    ...typeof flags.intro === "string" ? { intro: flags.intro } : {},
+    ...typeof flags["submit-label"] === "string" ? { submit_label: flags["submit-label"] } : {},
+    ...recipeUlid ? { recipe_ulid: recipeUlid } : {},
+    ...components.length ? { components } : {},
+    ...asList(flags.step).length ? { steps: asList(flags.step) } : {},
+    ...cook ? {
+      cook: {
+        disposition: cook,
+        ...flags.units ? { units: Number(flags.units) } : {},
+        ...typeof flags["shelf-life"] === "string" ? { shelf_life_class: flags["shelf-life"] } : {},
+        ...sources.length ? { sources } : {}
+      }
+    } : {},
+    ...flags["digest-optin"] ? { digest_optin: true } : {}
+  };
+  const result = await api.post("/api/kitchen/prep", body);
+  if (flags.json) return JSON.stringify(result, null, 2);
+  const totals = result?.planned_totals ?? {};
+  const unknown = result?.unknown_fields ?? [];
+  return renderOutput2([
+    renderObject({
+      published: result.slug,
+      url: result.url,
+      created: result.created,
+      components: result.components?.length ?? 0
+    }),
+    renderObject(
+      Object.fromEntries(
+        Object.entries(totals).map(([k, v]) => [`planned_${k}`, v === null ? "unknown" : v])
+      )
+    ),
+    renderHelp([
+      "Planned quantities are DEFAULTS \u2014 the submitter's stated weights replace them",
+      "Totals above are a preview; the stored numbers are computed server-side from the definition",
+      ...unknown.length ? [
+        `UNKNOWN (no component carried these): ${unknown.join(", ")} \u2014 seed the missing product panels rather than reading the total as 0`
+      ] : [],
+      "Nothing was written to the ledger; stock moves when the sheet is submitted"
+    ])
+  ]);
+}
+
 // packages/kitchen/src/axi/commands/expenditures.ts
 var EXPENDITURE_HELP = `kitchen-axi expenditure <subcommand> [args] [--json]
 
@@ -3178,7 +3422,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "6260f40" : "dev";
+var VERSION = true ? "5ae0a17" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)
@@ -3209,7 +3453,8 @@ var COMMAND_HELP = {
   receipts: RECEIPTS_HELP,
   recipes: RECIPES_HELP,
   products: PRODUCTS_HELP,
-  lexicon: LEXICON_HELP
+  lexicon: LEXICON_HELP,
+  prep: PREP_HELP
 };
 var COMMANDS = {
   home: (args) => homeCommand(args),
@@ -3222,7 +3467,8 @@ var COMMANDS = {
   receipts: (args) => receiptsCommand(args),
   recipes: (args) => recipesCommand(args),
   products: (args) => productsCommand(args),
-  lexicon: (args) => lexiconCommand(args)
+  lexicon: (args) => lexiconCommand(args),
+  prep: (args) => prepCommand(args)
 };
 async function main(argv) {
   await runAxiCli({

@@ -44,7 +44,15 @@ export class CookModeValidationError extends Error {
 /** Only what cook mode actually calls, so tests can stand in a stub. */
 export interface CookModeEntryIngest {
   ingest(
-    input: { ulid: string; logged_at?: string; note?: string; label?: string; macros?: StatedMacros },
+    input: {
+      ulid: string;
+      logged_at?: string;
+      note?: string;
+      /** The submitter wrote free text of their own — see § Unreviewed entry notes. */
+      human_note?: boolean;
+      label?: string;
+      macros?: StatedMacros;
+    },
     photos: never[]
   ): Promise<{ record: { ulid: string }; created: boolean }>;
 }
@@ -145,6 +153,12 @@ export class KitchenCookMode implements WorksheetCookSink {
         ulid: request.ulid,
         ...(request.at ? { logged_at: request.at } : {}),
         note: measuredNote(request),
+        // The stored note ALWAYS has content (the measured-provenance manifest
+        // is appended unconditionally), so note-presence cannot distinguish a
+        // human remark — every cook-mode entry would flag. The submitter's own
+        // free text is the only human statement here, and only it queues a
+        // question (§ Unreviewed entry notes).
+        human_note: Boolean(request.note?.trim()),
         label: request.label.trim(),
         macros,
       },

@@ -467,6 +467,71 @@ empty.
 stay on the agent/CLI surface (see § Principles: *the admin UI observes*). The
 tab surfaces the backlog; acting on it happens where the acting already lives.
 
+## Agent tooling — `pages-axi` CLI + `assist-pages` skill
+
+The module ships the same agent-facing pair the sibling modules do: a
+token-efficient CLI and a hand-authored skill that bundles it, built and
+drift-guarded by the repo's `build:skills` / `check:skills` machinery.
+
+**A CLI that other sessions are expected to invoke is not shipped until it is
+bundled as a skill.** Unbundled source under `packages/` is not distribution: it
+is invisible to `which`, absent from every skill listing, and generally unrunnable
+from a calling repo's working directory because the toolchain that builds it is
+pinned only here. A capability a fresh session cannot discover does not exist,
+however complete the implementation. This section exists because that gap was real
+— the facility was `done` and validated while callers hand-rolled `curl` against
+the API and, more than once, concluded it was unavailable and built something
+lesser instead.
+
+- **`pages-axi`** (bundled per the repo's axi build): TOON output, `--json` escape
+  hatch, server from `CLAUDE_ASSIST_SERVER`. Invoked bare it prints the **home
+  view**: active pages newest-first with their unprocessed response counts — the
+  backlog signal § Principles names as a page's real status.
+- **Command surface** (each a thin veneer over one documented endpoint):
+  - `publish <file> --slug <slug> [--title] [--digest-optin]` — authored HTML.
+  - **`publish-worksheet <definition.json> --slug <slug> [--title]`** — the
+    worksheet half of `POST /api/pages`, which the CLI previously could not reach
+    at all, forcing every caller to hand-assemble the request. Validation errors
+    surface the module's own messages rather than a bare 400.
+  - `list`, `responses <slug> [--since] [--unprocessed]`,
+    `mark-processed <slug> <id> --by <name>`, `archive <slug>`.
+
+### The CLI carries no domain vocabulary
+
+**`cook_mode` passes through as opaque data inside the definition. The CLI never
+grows `--cook eaten|packed`, and never learns what a disposition means.**
+
+The module layer already holds this boundary deliberately: `cook_mode`'s consumer
+is **injected** as `worksheetCookSink` (composed by the server from the domain
+module), and this package imports nothing from any domain module. A CLI flag
+naming a domain's dispositions would reintroduce at the tooling layer exactly the
+coupling the module layer was built to avoid — and would mean every future
+domain sink forces a change here.
+
+**Domain modules wrap this CLI; this CLI never reaches up into them.** A domain
+that wants an ergonomic authoring path builds the definition from its own catalog
+and publishes it — which is strictly better than a generic flag, because the
+domain is the only layer that knows the reference values, the identifiers, and
+the units. Generic worksheet publishing is the complete obligation here.
+
+### The in-process publish seam accepts worksheets too
+
+Core's `PagePublisher` (`fastify.pages`, decorated by this module) takes **either
+authored `html` or a `worksheet` definition — exactly one**, the same rule the
+HTTP route enforces; the in-process door must not be a looser way into the same
+store. A worksheet arriving that way is validated and rendered by the **same**
+implementation the route uses, so its totals carry the same authority.
+
+`worksheet` is typed `unknown` in core deliberately: **core owns the seam, not
+the shape.** The worksheet contract can evolve here without dragging every
+consumer's types along, and a malformed definition throws rather than being
+stored.
+
+This is the counterpart to § Cook mode. A *submission* travels pages → domain
+through an injected sink; an *authoring request* travels domain → pages through
+this publisher. Both are injected by the server, neither package imports the
+other, and in both directions this module stays ignorant of what the page means.
+
 ## Principles
 
 **Local**

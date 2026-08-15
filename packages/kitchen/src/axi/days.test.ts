@@ -22,7 +22,7 @@ describe("kitchen-axi days / home render (§ Timezone & local-day bucketing)", (
 
   const seedEntry = async (loggedAt: string, calories: number, protein: number) => {
     const ulid = generateUlid();
-    await entries.insertIfAbsent({ ulid, logged_at: new Date(loggedAt), note: "meal", recipe_ulid: null, component_quantities: null });
+    await entries.insertIfAbsent({ ulid, logged_at: new Date(loggedAt), note: "meal", recipe_ulid: null, component_quantities: null, notes_reviewed: true });
     await entries.applyEstimate(
       ulid,
       "Meal",

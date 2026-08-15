@@ -79,7 +79,7 @@ describe('expenditure routes (§ Expenditure & net energy)', () => {
     await build(2300);
     // Intake: one 500-kcal entry at multiplier 0.5 → 250 effective.
     const entryUlid = generateUlid();
-    await entries.insertIfAbsent({ ulid: entryUlid, logged_at: new Date('2026-07-22T12:00:00Z'), note: 'lunch', recipe_ulid: null, component_quantities: null });
+    await entries.insertIfAbsent({ ulid: entryUlid, logged_at: new Date('2026-07-22T12:00:00Z'), note: 'lunch', recipe_ulid: null, component_quantities: null, notes_reviewed: true });
     await entries.applyEstimate(entryUlid, 'Lunch', {
       calories: 500, protein_g: 30, fat_g: 20, sat_fat_g: 5, carbs_g: 40,
       sugar_g: 5, added_sugar_g: 2, fiber_g: 6, sodium_mg: 400, confidence: 0.9, portion_basis: 'plate',
