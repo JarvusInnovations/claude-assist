@@ -3210,6 +3210,74 @@ and every seam degrades cleanly when the kitchen module is absent.
   (no cold start). Absent the provider, the briefing source falls back to a
   direct SQL read of DB-persisted recipes only.
 
+## Authoring a prep worksheet — `kitchen-axi prep`
+
+Cook mode is the *submission* half. This is the authoring half, and it belongs
+here rather than in the pages CLI: **the domain owns the reference values.**
+
+A worksheet definition for a meal is mostly per-100g panels, one block per
+component. Assembling that by hand means transcribing numbers this module already
+stores — which is the estimation-by-recall failure the § Nutrition panel rules
+exist to prevent, reappearing in the authoring path. A hand-built definition can
+also silently disagree with the catalog it was copied from.
+
+- **`kitchen-axi prep publish --slug <slug> --label <label>`**
+  - `--component <product-ulid>=<planned grams>` (repeatable) — resolves the
+    product, reads its stored panel, and derives `per_basis` **the same way a meal
+    is costed** (§ Nutrition panel: scale from the serving basis, per field).
+    A product whose panel is missing a field contributes *unknown* to that field,
+    never zero.
+  - `--component-item <item-ulid>=<grams>` — same, resolved through an inventory
+    item to its linked product, so a sheet can be written against what is actually
+    on hand.
+  - `--recipe <ulid>` — seed components from a recipe's lines.
+  - `--cook eaten` | `--cook packed [--units N] [--shelf-life <class>]
+    [--source <item-ulid>[:amount]]…` — the domain vocabulary lives **here**,
+    where it means something, and is emitted into the definition's `cook_mode`.
+  - `--step <text>` (repeatable) — instructions rendered under the table.
+- **Output**: the published page URL, plus the definition's derived totals at the
+  planned quantities so the author can sanity-check before sending it.
+- **Publishing creates nothing in the ledger.** A definition is a form awaiting a
+  real event; inventory moves only when the submission lands (§ Cook mode). This
+  is the same rule that forbids logging a meal at plan time.
+
+The pages CLI stays generic (`specs/modules/pages.md` § The CLI carries no domain
+vocabulary): this command builds a definition and publishes it through the pages
+API. Dependencies point one way — kitchen may depend on pages; pages never on
+kitchen.
+
+## Unreviewed entry notes
+
+A cook-mode submission may carry a free-text note, and that note routinely names
+something the computed panel does not account for — a condiment, a splash of oil,
+an extra the component list never anticipated. The note is preserved on the entry,
+so the *record* is honest, but the **totals silently are not**.
+
+**Structured "extras" input is the wrong fix.** Nobody reaching for a bottle stops
+to name and weigh a new component; an input built for that would be ignored, and
+the silent gap would persist behind a feature that looks like it closed it.
+
+So the module makes the gap **visible** instead of trying to prevent it:
+
+- Entries carry **`notes_reviewed`** (boolean, default `false`). An entry whose
+  note arrived from a human — a submission note, or a note supplied on `log` /
+  `patch` — starts unreviewed. An entry with no note is not unreviewed; it has
+  nothing to review.
+- **`entries questions`** lists unreviewed-note entries, mirroring
+  `inventory questions` for needs-info items. One vocabulary for "a human said
+  something the ledger hasn't reconciled", not two.
+- The **home view's open-question count includes them**, so a session opening cold
+  sees the backlog without asking for it — the same mechanism that surfaces
+  needs-info stock.
+- **`entries review <ulid>`** marks it reviewed. Correcting the panel is a
+  *separate* act (`patch` with macro flags): reviewing records that a human looked,
+  not that anything changed. Most extras are immaterial and the honest outcome is
+  "seen, costs nothing."
+
+This deliberately resolves asynchronously. The eater is not taxed at eat time —
+which is the same trade cook mode itself makes, and the reason the loop closes at
+all.
+
 ## Agent tooling — `kitchen-axi` CLI + `assist-kitchen` skill
 
 The module ships the same agent-facing tooling pair the older modules do
