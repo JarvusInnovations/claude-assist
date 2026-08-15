@@ -697,3 +697,22 @@ describe("command reference covers every product write door", () => {
     expect(PRODUCTS_HELP).toContain("--force-negligible");
   });
 });
+
+describe("prep publish — repeatable flags", () => {
+  it("collects EVERY --component, not just the last (regression)", () => {
+    // parseArgs' flag map is last-wins; a repeatable flag must be read with
+    // collectFlag off the raw argv. The first live run of `prep publish` with
+    // two --component flags built a one-component sheet and silently dropped
+    // the other, which is exactly the kind of quiet loss the module's null
+    // rules exist to prevent.
+    const args = [
+      "--slug", "x", "--label", "y",
+      "--component", "01AAA=150",
+      "--component", "01BBB=100",
+      "--step", "one",
+      "--step", "two",
+    ];
+    expect(collectFlag(args, "component")).toEqual(["01AAA=150", "01BBB=100"]);
+    expect(collectFlag(args, "step")).toEqual(["one", "two"]);
+  });
+});

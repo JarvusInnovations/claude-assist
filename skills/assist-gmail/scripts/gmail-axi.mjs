@@ -1135,7 +1135,7 @@ async function digestCommand(args) {
 }
 
 // packages/google/src/axi/gmail/cli.ts
-var VERSION = true ? "5ae0a17" : "dev";
+var VERSION = true ? "ebc763b" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [command] [args] [flags]
        ${CLI}                 # no args \u2192 home (inbox pipeline + next steps)

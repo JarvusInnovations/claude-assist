@@ -1,6 +1,6 @@
 import { api } from "../client.js";
 import { AxiError } from "axi-sdk-js";
-import { parseArgs, requirePositional } from "../args.js";
+import { parseArgs, collectFlag } from "../args.js";
 import { renderObject, renderOutput, renderHelp } from "../toon.js";
 
 export const PREP_HELP = `kitchen-axi prep <subcommand> [args] [--json]
@@ -64,12 +64,15 @@ function parseRef(raw: string, flag: string): { ulid: string; quantity: number }
   return { ulid, quantity };
 }
 
-function asList(value: unknown): string[] {
-  if (value === undefined) return [];
-  return Array.isArray(value) ? (value as string[]) : [String(value)];
-}
-
 async function publishPrep(args: string[]): Promise<string> {
+  // REPEATABLE flags must be read with collectFlag off the raw argv: parseArgs'
+  // flag map is last-wins, so `--component a --component b` silently keeps only
+  // `b`. This is the same helper `entries log` uses for its own --component.
+  const componentArgs = collectFlag(args, "component");
+  const componentItemArgs = collectFlag(args, "component-item");
+  const stepArgs = collectFlag(args, "step");
+  const sourceArgs = collectFlag(args, "source");
+
   const { flags } = parseArgs(
     args,
     ["json", "digest-optin"],
@@ -98,11 +101,11 @@ async function publishPrep(args: string[]): Promise<string> {
   }
 
   const components = [
-    ...asList(flags.component).map((raw) => {
+    ...componentArgs.map((raw) => {
       const { ulid, quantity } = parseRef(raw, "--component");
       return { product_ulid: ulid, quantity };
     }),
-    ...asList(flags["component-item"]).map((raw) => {
+    ...componentItemArgs.map((raw) => {
       const { ulid, quantity } = parseRef(raw, "--component-item");
       return { item_ulid: ulid, quantity };
     }),
@@ -120,7 +123,7 @@ async function publishPrep(args: string[]): Promise<string> {
   if (cook !== undefined && cook !== "eaten" && cook !== "packed") {
     throw new AxiError(`--cook must be 'eaten' or 'packed' (got ${cook})`, "VALIDATION_ERROR", [PREP_HELP]);
   }
-  if (cook !== "packed" && (flags.units || flags["shelf-life"] || flags.source)) {
+  if (cook !== "packed" && (flags.units || flags["shelf-life"] || sourceArgs.length)) {
     throw new AxiError(
       "--units, --shelf-life and --source apply to --cook packed only: an eaten sheet writes one entry, not stock",
       "VALIDATION_ERROR",
@@ -128,7 +131,7 @@ async function publishPrep(args: string[]): Promise<string> {
     );
   }
 
-  const sources = asList(flags.source).map((raw) => {
+  const sources = sourceArgs.map((raw) => {
     const [itemUlid, amount] = raw.split(":");
     return {
       item_ulid: itemUlid!.trim(),
@@ -145,7 +148,7 @@ async function publishPrep(args: string[]): Promise<string> {
     ...(typeof flags["submit-label"] === "string" ? { submit_label: flags["submit-label"] } : {}),
     ...(recipeUlid ? { recipe_ulid: recipeUlid } : {}),
     ...(components.length ? { components } : {}),
-    ...(asList(flags.step).length ? { steps: asList(flags.step) } : {}),
+    ...(stepArgs.length ? { steps: stepArgs } : {}),
     ...(cook
       ? {
           cook: {
