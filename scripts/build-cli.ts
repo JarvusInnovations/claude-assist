@@ -26,6 +26,7 @@ const TARGETS: Target[] = [
   { entry: "packages/google/src/axi/bin-gmail.ts", outfile: "skills/assist-gmail/scripts/gmail-axi.mjs" },
   { entry: "packages/google/src/axi/bin-google.ts", outfile: "skills/assist-google-setup/scripts/google-axi.mjs" },
   { entry: "packages/kitchen/src/axi/bin.ts", outfile: "skills/assist-kitchen/scripts/kitchen-axi.mjs" },
+  { entry: "packages/pages/src/axi/bin.ts", outfile: "skills/assist-pages/scripts/pages-axi.mjs" },
 ];
 
 const check = process.argv.includes("--check");

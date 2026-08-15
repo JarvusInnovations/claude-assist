@@ -10,7 +10,7 @@ import {
   parseFlags,
   extractHtmlTitle,
   titleFromSlug,
-} from './axi.js';
+} from './index.js';
 
 describe('resolveServer', () => {
   it('defaults to localhost and strips trailing slashes from the env override', () => {

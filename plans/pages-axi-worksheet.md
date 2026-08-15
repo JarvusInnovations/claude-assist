@@ -1,5 +1,5 @@
 ---
-status: planned
+status: done
 depends: [assist-pages-skill]
 specs:
   - specs/modules/pages.md
@@ -47,16 +47,16 @@ domain knows its own reference values and identifiers.
 
 ## Validation
 
-- [ ] A worksheet definition file publishes and returns a stable URL; the rendered
+- [x] A worksheet definition file publishes and returns a stable URL; the rendered
       page collects quantities and computes totals server-side.
-- [ ] Republishing the same slug adds a version and retains the prior definition
+- [x] Republishing the same slug adds a version and retains the prior definition
       (definitions hang off the version, per § Data model).
-- [ ] A definition with an invalid field key / unknown key / out-of-bounds quantity
+- [x] A definition with an invalid field key / unknown key / out-of-bounds quantity
       fails with the module's own validation message, not a generic HTTP error.
-- [ ] A definition carrying `cook_mode` publishes and functions **without the CLI
+- [x] A definition carrying `cook_mode` publishes and functions **without the CLI
       containing any domain-specific token** — verifiable by grep over the CLI source
       for disposition names.
-- [ ] `--help` documents the command; the generated SKILL.md reference includes it.
+- [x] `--help` documents the command; the generated SKILL.md reference includes it.
 
 ## Risks / unknowns
 
@@ -67,8 +67,30 @@ domain knows its own reference values and identifiers.
 
 ## Notes
 
-*Populated at closeout.*
+Landed with `assist-pages-skill` in one commit (see that plan's Notes for why).
+
+**Verified against a live server across all four paths**, not just the happy one:
+
+| case | result |
+| --- | --- |
+| valid definition | published, `worksheet: true`, version 119 |
+| republish same slug | version 120, `created: false` — same URL |
+| malformed JSON | CLI-side failure quoting the expected shape |
+| invalid definition | `worksheet.fields[0].key must match ^[a-z][a-z0-9_]*$` — **the module's own message**, verbatim |
+
+That last row is the one worth keeping: a bare `400` would have sent the author to the
+spec, and the whole reason hand-assembly was painful is that nothing told you what was
+wrong with what you wrote.
+
+**The boundary held.** The CLI contains no disposition token — `cook_mode` is parsed
+only as part of the surrounding JSON and forwarded untouched. Grep the source for
+`eaten`/`packed` and there are no hits.
+
+`-` reads the definition from stdin, which makes a domain wrapper able to pipe rather
+than write a temp file.
 
 ## Follow-ups
 
-*Populated at closeout.*
+- **Tracked as** `kitchen-prep-sheets` — the ergonomic authoring path. This command is
+  deliberately the generic floor, not the everyday interface; hand-authoring a
+  definition remains verbose by design.
