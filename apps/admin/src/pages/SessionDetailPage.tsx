@@ -1,6 +1,6 @@
 import { useParams, Link } from "react-router";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { ArrowLeft, Sparkles, FileText, Clock, Hash } from "lucide-react";
+import { ArrowLeft, Sparkles, FileText, Clock, Hash, Activity } from "lucide-react";
 import { toast } from "sonner";
 import { ShareDialog } from "@/components/ShareDialog";
 
@@ -125,7 +125,7 @@ export function SessionDetailPage() {
       </div>
 
       {/* Session Metadata */}
-      <div className="grid gap-4 md:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-4 lg:grid-cols-5">
         <Card>
           <CardContent className="pt-4">
             <div className="flex items-center gap-2 text-sm text-muted-foreground mb-1">
@@ -134,6 +134,19 @@ export function SessionDetailPage() {
             </div>
             <p className="font-medium">
               {new Date(session.started_at).toLocaleString()}
+            </p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-4">
+            <div className="flex items-center gap-2 text-sm text-muted-foreground mb-1">
+              <Activity className="h-4 w-4" />
+              Last activity
+            </div>
+            <p className="font-medium">
+              {session.ended_at
+                ? new Date(session.ended_at).toLocaleString()
+                : "—"}
             </p>
           </CardContent>
         </Card>

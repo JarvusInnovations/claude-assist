@@ -317,6 +317,7 @@ export function SessionsPage() {
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-[100px]">Started</TableHead>
+                  <TableHead className="w-[100px]">Last activity</TableHead>
                   <TableHead>Project</TableHead>
                   <TableHead className="w-[150px]">Branch</TableHead>
                   <TableHead className="w-[140px]">Size</TableHead>
@@ -329,6 +330,16 @@ export function SessionsPage() {
                     <TableCell className="text-sm text-muted-foreground">
                       {new Date(session.started_at).toLocaleDateString()}{" "}
                       {new Date(session.started_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                    </TableCell>
+                    <TableCell className="text-sm text-muted-foreground">
+                      {session.ended_at ? (
+                        <span title={new Date(session.ended_at).toLocaleString()}>
+                          {new Date(session.ended_at).toLocaleDateString()}{" "}
+                          {new Date(session.ended_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                        </span>
+                      ) : (
+                        "—"
+                      )}
                     </TableCell>
                     <TableCell className="max-w-0">
                       <Link
