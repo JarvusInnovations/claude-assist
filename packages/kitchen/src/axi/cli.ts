@@ -5,6 +5,7 @@ import { homeCommand, HOME_HELP } from "./commands/home.js";
 import { entriesCommand, ENTRIES_HELP } from "./commands/entries.js";
 import { daysCommand, DAYS_HELP } from "./commands/days.js";
 import { inventoryCommand, INVENTORY_HELP } from "./commands/inventory.js";
+import { prepCommand, PREP_HELP } from "./commands/prep.js";
 import { expenditureCommand, EXPENDITURE_HELP } from "./commands/expenditures.js";
 import { weighInsCommand, weightCommand, WEIGH_INS_HELP, WEIGHT_HELP } from "./commands/weigh-ins.js";
 import { receiptsCommand, RECEIPTS_HELP } from "./commands/receipts.js";
@@ -48,6 +49,7 @@ const COMMAND_HELP: Record<string, string> = {
   recipes: RECIPES_HELP,
   products: PRODUCTS_HELP,
   lexicon: LEXICON_HELP,
+  prep: PREP_HELP,
 };
 
 const COMMANDS: Record<string, AxiCliCommand<undefined>> = {
@@ -62,6 +64,7 @@ const COMMANDS: Record<string, AxiCliCommand<undefined>> = {
   recipes: (args) => recipesCommand(args),
   products: (args) => productsCommand(args),
   lexicon: (args) => lexiconCommand(args),
+  prep: (args) => prepCommand(args),
 };
 
 export async function main(argv?: string[]): Promise<void> {

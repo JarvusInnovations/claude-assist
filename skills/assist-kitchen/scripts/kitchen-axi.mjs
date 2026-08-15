@@ -607,6 +607,15 @@ var COMMAND_GROUPS = [
     ]
   },
   {
+    group: "Prep worksheets",
+    commands: [
+      {
+        usage: "prep publish --slug S --label T [--component <product-ulid>=<g>]\u2026 [--component-item <item-ulid>=<g>]\u2026 [--step T]\u2026 [--cook eaten|packed] [--units N] [--shelf-life C] [--source <item-ulid>[:amount]]\u2026",
+        summary: "build a prep WORKSHEET from the catalog and publish it. Components are named by ULID and resolve to the product's stored per-100g panel, so no reference number is transcribed by hand; a product with no panel is refused rather than guessed at, and a missing field contributes 'unknown' rather than zero. --cook makes submitting the sheet the write itself (eaten \u2192 one entry; packed \u2192 one conversion). Publishing writes NOTHING to the ledger"
+      }
+    ]
+  },
+  {
     group: "Daily rollup",
     commands: [
       {
@@ -2407,6 +2416,173 @@ function assertConvertShelfLifeClass(cls) {
   }
 }
 
+// packages/kitchen/src/axi/commands/prep.ts
+var PREP_HELP = `kitchen-axi prep <subcommand> [args] [--json]
+
+  publish --slug S --label T            build a prep WORKSHEET from the catalog and
+       [--component <product-ulid>=<g>]\u2026  publish it. Components resolve to the
+       [--component-item <item-ulid>=<g>]\u2026  product's stored per-100g panel, so no
+       [--label-for "<ulid>=<text>"]\u2026      number is ever transcribed by hand
+       [--step "<text>"]\u2026                  instructions rendered under the table
+       [--heading T] [--intro T]
+       [--cook eaten|packed]               submitting the sheet IS the write
+       [--units N] [--shelf-life C]        (packed only) the derived item's shape
+       [--source <item-ulid>[:amount]]\u2026    (packed only) stock the batch consumes
+       [--title T] [--digest-optin]
+
+  A worksheet's per_basis blocks are reference values this module already stores.
+  Assembling them by hand re-derives numbers the catalog holds \u2014 the same
+  estimation-by-recall failure the nutrition-panel rules exist to prevent, moved
+  into the authoring path. So components are named by ULID, never by macros.
+
+  A product with NO stored panel is refused rather than guessed at: seed or scan
+  it first. A product missing ONE field contributes 'unknown' to that total, never
+  zero \u2014 the sheet reports which fields came back unknown.
+
+  PUBLISHING WRITES NOTHING TO THE LEDGER. A definition is a form awaiting a real
+  event; stock moves only when the submission lands.
+
+examples:
+  kitchen-axi prep publish --slug lunch-today --label "Grain bowl" \\
+    --component 01ABC\u2026=185 --component 01DEF\u2026=120 --cook eaten
+  kitchen-axi prep publish --slug oat-jars --label "Overnight oats" \\
+    --component-item 01GHI\u2026=240 --cook packed --units 3 --shelf-life prepared`;
+async function prepCommand(args) {
+  const sub = args[0];
+  const rest = args.slice(1);
+  switch (sub) {
+    case "publish":
+      return publishPrep(rest);
+    default:
+      throw new AxiError(`Unknown prep subcommand: ${sub}`, "VALIDATION_ERROR", [PREP_HELP]);
+  }
+}
+function parseRef(raw, flag) {
+  const eq = raw.lastIndexOf("=");
+  if (eq <= 0) {
+    throw new AxiError(`${flag} must be "<ulid>=<grams>" (got ${raw})`, "VALIDATION_ERROR", [PREP_HELP]);
+  }
+  const ulid = raw.slice(0, eq).trim();
+  const quantity = Number(raw.slice(eq + 1).trim());
+  if (!ulid || !Number.isFinite(quantity) || quantity < 0) {
+    throw new AxiError(
+      `${flag} must be "<ulid>=<grams>" with a non-negative number (got ${raw})`,
+      "VALIDATION_ERROR",
+      [PREP_HELP]
+    );
+  }
+  return { ulid, quantity };
+}
+function asList(value) {
+  if (value === void 0) return [];
+  return Array.isArray(value) ? value : [String(value)];
+}
+async function publishPrep(args) {
+  const { flags } = parseArgs(
+    args,
+    ["json", "digest-optin"],
+    [
+      "slug",
+      "label",
+      "title",
+      "heading",
+      "intro",
+      "component",
+      "component-item",
+      "step",
+      "cook",
+      "units",
+      "shelf-life",
+      "source",
+      "submit-label"
+    ]
+  );
+  const slug = typeof flags.slug === "string" ? flags.slug : void 0;
+  const label = typeof flags.label === "string" ? flags.label : void 0;
+  if (!slug || !label) {
+    throw new AxiError("prep publish needs --slug and --label", "VALIDATION_ERROR", [PREP_HELP]);
+  }
+  const components = [
+    ...asList(flags.component).map((raw) => {
+      const { ulid, quantity } = parseRef(raw, "--component");
+      return { product_ulid: ulid, quantity };
+    }),
+    ...asList(flags["component-item"]).map((raw) => {
+      const { ulid, quantity } = parseRef(raw, "--component-item");
+      return { item_ulid: ulid, quantity };
+    })
+  ];
+  if (components.length === 0) {
+    throw new AxiError(
+      "prep publish needs at least one --component or --component-item",
+      "VALIDATION_ERROR",
+      [PREP_HELP]
+    );
+  }
+  const cook = typeof flags.cook === "string" ? flags.cook : void 0;
+  if (cook !== void 0 && cook !== "eaten" && cook !== "packed") {
+    throw new AxiError(`--cook must be 'eaten' or 'packed' (got ${cook})`, "VALIDATION_ERROR", [PREP_HELP]);
+  }
+  if (cook !== "packed" && (flags.units || flags["shelf-life"] || flags.source)) {
+    throw new AxiError(
+      "--units, --shelf-life and --source apply to --cook packed only: an eaten sheet writes one entry, not stock",
+      "VALIDATION_ERROR",
+      [PREP_HELP]
+    );
+  }
+  const sources = asList(flags.source).map((raw) => {
+    const [itemUlid, amount] = raw.split(":");
+    return {
+      item_ulid: itemUlid.trim(),
+      ...amount !== void 0 ? { amount: Number(amount) } : {}
+    };
+  });
+  const body = {
+    slug,
+    label,
+    ...typeof flags.title === "string" ? { title: flags.title } : {},
+    ...typeof flags.heading === "string" ? { heading: flags.heading } : {},
+    ...typeof flags.intro === "string" ? { intro: flags.intro } : {},
+    ...typeof flags["submit-label"] === "string" ? { submit_label: flags["submit-label"] } : {},
+    components,
+    ...asList(flags.step).length ? { steps: asList(flags.step) } : {},
+    ...cook ? {
+      cook: {
+        disposition: cook,
+        ...flags.units ? { units: Number(flags.units) } : {},
+        ...typeof flags["shelf-life"] === "string" ? { shelf_life_class: flags["shelf-life"] } : {},
+        ...sources.length ? { sources } : {}
+      }
+    } : {},
+    ...flags["digest-optin"] ? { digest_optin: true } : {}
+  };
+  const result = await api.post("/api/kitchen/prep", body);
+  if (flags.json) return JSON.stringify(result, null, 2);
+  const totals = result?.planned_totals ?? {};
+  const unknown = result?.unknown_fields ?? [];
+  return renderOutput2([
+    renderObject({
+      published: result.slug,
+      url: result.url,
+      created: result.created,
+      components: result.components?.length ?? 0
+    }),
+    renderObject(
+      Object.fromEntries(
+        Object.entries(totals).map(([k, v]) => [`planned_${k}`, v === null ? "unknown" : v])
+      )
+    ),
+    renderHelp([
+      "Planned quantities are DEFAULTS \u2014 the submitter's stated weights replace them",
+      "Totals above are a preview; the stored numbers are computed server-side from the definition",
+      ...unknown.length ? [
+        `UNKNOWN (no component carried these): ${unknown.join(", ")} \u2014 seed the missing product panels rather than reading the total as 0`
+      ] : [],
+      "Nothing was written to the ledger; stock moves when the sheet is submitted"
+    ])
+  ]);
+}
+
 // packages/kitchen/src/axi/commands/expenditures.ts
 var EXPENDITURE_HELP = `kitchen-axi expenditure <subcommand> [args] [--json]
 
@@ -3242,7 +3418,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "f62a9cd" : "dev";
+var VERSION = true ? "deb5d80" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)
@@ -3273,7 +3449,8 @@ var COMMAND_HELP = {
   receipts: RECEIPTS_HELP,
   recipes: RECIPES_HELP,
   products: PRODUCTS_HELP,
-  lexicon: LEXICON_HELP
+  lexicon: LEXICON_HELP,
+  prep: PREP_HELP
 };
 var COMMANDS = {
   home: (args) => homeCommand(args),
@@ -3286,7 +3463,8 @@ var COMMANDS = {
   receipts: (args) => receiptsCommand(args),
   recipes: (args) => recipesCommand(args),
   products: (args) => productsCommand(args),
-  lexicon: (args) => lexiconCommand(args)
+  lexicon: (args) => lexiconCommand(args),
+  prep: (args) => prepCommand(args)
 };
 async function main(argv) {
   await runAxiCli({

@@ -3241,10 +3241,31 @@ also silently disagree with the catalog it was copied from.
   real event; inventory moves only when the submission lands (§ Cook mode). This
   is the same rule that forbids logging a meal at plan time.
 
-The pages CLI stays generic (`specs/modules/pages.md` § The CLI carries no domain
-vocabulary): this command builds a definition and publishes it through the pages
-API. Dependencies point one way — kitchen may depend on pages; pages never on
-kitchen.
+### Where the logic lives: `POST /kitchen/prep`, not the CLI
+
+**The command is a thin veneer over one endpoint**, like every other command in
+§ Agent tooling. Resolving products, deriving `per_basis`, and building the
+definition happen in the module, because that is where the catalog is and where
+the panel semantics are already defined. A CLI that assembled definitions itself
+would be a second implementation of the same rules, reachable only from a shell.
+
+The publish goes through **core's `PagePublisher` seam** (`fastify.pages`), read
+at request time and 503-ing when the pages module is absent — the same optional
+decorator shape the session-spawn seam uses. That interface accepts *either*
+authored HTML *or* a worksheet definition, validated and rendered by the pages
+module's own single implementation, so a definition built here is treated
+identically to one posted over HTTP.
+
+**This is the exact mirror of cook mode.** A submission travels pages → kitchen
+through an injected `worksheetCookSink`; an authoring request travels kitchen →
+pages through an injected `PagePublisher`. Neither package imports the other, and
+the server composes both. Dependencies still point one way in the sense that
+matters: **the pages module never learns a domain's vocabulary**, while a domain
+may reach a generic publishing interface.
+
+The pages CLI likewise stays generic (`specs/modules/pages.md` § The CLI carries
+no domain vocabulary) — `publish-worksheet` remains the floor beneath this
+command, for surfaces no domain owns.
 
 ## Unreviewed entry notes
 

@@ -1,5 +1,5 @@
 ---
-status: planned
+status: done
 depends: [pages-axi-worksheet]
 specs:
   - specs/modules/kitchen.md
@@ -51,18 +51,20 @@ API. Kitchen depends on pages; pages never on kitchen.
 
 ## Validation
 
-- [ ] `prep publish` with two `--component` flags produces a page whose `per_basis`
+- [x] `prep publish` with two `--component` flags produces a page whose `per_basis`
       values equal what the products' panels yield under § Nutrition panel scaling —
       asserted against the same helper the entry path uses, not a copy.
-- [ ] A product missing a panel field yields `unknown` for that field in the totals,
+- [x] A product missing a panel field yields `unknown` for that field in the totals,
       not `0`.
-- [ ] `--cook eaten` submission writes one born-`manual` terminal entry; `--cook
-      packed` writes one conversion (sources decremented, derived item created) and
-      **no** journal entry.
-- [ ] `prep publish` leaves inventory and entries untouched at publish time.
-- [ ] Printed planned-quantity totals match the page's own displayed totals before any
+- [~] `--cook eaten` submission writes one born-`manual` terminal entry; `--cook
+      packed` writes one conversion and **no** journal entry. **The definition's
+      `cook_mode` is asserted by test; the submission path itself was already
+      shipped and tested by cook mode** — not re-exercised end-to-end against a
+      live server here.
+- [x] `prep publish` leaves inventory and entries untouched at publish time.
+- [x] Printed planned-quantity totals match the page's own displayed totals before any
       input is edited.
-- [ ] `--component-item` resolves through to the linked product, and errors clearly
+- [x] `--component-item` resolves through to the linked product, and errors clearly
       when an item has no product link.
 
 ## Risks / unknowns
@@ -76,8 +78,41 @@ API. Kitchen depends on pages; pages never on kitchen.
 
 ## Notes
 
-*Populated at closeout.*
+**Chris chose the server-endpoint shape (B) over CLI composition (A)** when the fork
+was surfaced. The deciding argument was consistency: every other kitchen command is
+"a thin veneer over one documented endpoint", and a CLI that assembled definitions
+itself would be a second implementation of the panel rules reachable only from a
+shell. Both specs now record the decision.
+
+**The seam turned out to already exist.** Core has had a `PagePublisher`
+(`fastify.pages`) since the pages module shipped — it just only accepted authored
+HTML. Extending it to take `worksheet` was a much smaller change than the new
+injection seam this plan budgeted for, and it landed the symmetry cleanly: a
+submission travels pages → kitchen via `worksheetCookSink`, an authoring request
+travels kitchen → pages via `PagePublisher`. Neither package imports the other.
+
+`worksheet` is typed `unknown` in core on purpose — core owns the seam, not the
+shape — and the publisher enforces the same exactly-one-of-html-or-worksheet rule
+the HTTP route does, so the in-process door is not a looser way into the store.
+
+**No scaling was reimplemented.** `per_basis` reads the product's stored
+`nutrition_per_100g`, which the module already derives from the serving basis at
+write time. A product with no panel is refused rather than guessed at; a product
+missing one field omits it, so the total reports `unknown` instead of a silent zero
+— and the CLI names which fields came back unknown rather than letting a `0` read
+as a measurement.
+
+The axi drift guard caught the new command group immediately (it asserts the exact
+group list), which is the gate working as designed.
+
+819 kitchen / 138 pages / 15 core tests pass; skills drift gate and axi type-check
+clean.
 
 ## Follow-ups
 
-*Populated at closeout.*
+- **Issue** — `--recipe <ulid>` (seed components from a recipe's lines) is specced but
+  NOT implemented. It was the least-certain part of the plan for a real reason: recipe
+  lines don't all map onto weighable components, so it needs a defined skip-and-report
+  behavior. Deliberately deferred rather than half-built.
+- **Issue** — end-to-end verification against a running server is still outstanding for
+  both this and `entry-note-review`; the instance needs migration 022 and a restart.

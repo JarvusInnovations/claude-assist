@@ -43,6 +43,7 @@ import {
   stravaSyncCron,
 } from './services/strava-sync.js';
 import { registerInventoryRoutes } from './routes/inventory.js';
+import { registerPrepRoutes } from './routes/prep.js';
 import { KitchenCookMode } from './services/cook-mode.js';
 import type { EventResolution } from './inventory-types.js';
 import type { RecipeRecord } from './types.js';
@@ -231,6 +232,11 @@ export default createPlugin('kitchen', async (fastify: FastifyInstance, options:
     maxPhotoBytes: config.maxPhotoBytes,
     maxPhotos: config.maxPhotos,
   });
+
+  // Prep worksheets — build a collection surface from the catalog and publish
+  // it through core's PagePublisher seam (§ Authoring a prep worksheet). Reads
+  // the generic `fastify.pages` decorator at request time; 503s when absent.
+  await fastify.register(registerPrepRoutes, { store: inventoryStore });
 
   // Plan-session — app-initiated warm meal-planning session. Reads the generic
   // `fastify.sessionSpawner` decorator (from the session-spawn module) at
@@ -476,3 +482,5 @@ export {
   type LabelParseInput,
 } from './services/label-parser.js';
 export { registerInventoryRoutes, type InventoryRoutesConfig } from './routes/inventory.js';
+export { registerPrepRoutes, type PrepRoutesConfig } from './routes/prep.js';
+export { PrepService, PrepValidationError, plannedTotals, PREP_FIELDS, type PrepPublishInput, type PrepPublishResult } from './services/prep.js';

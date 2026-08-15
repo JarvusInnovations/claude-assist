@@ -204,6 +204,10 @@ in doubt, read the spec.
 - `scripts/kitchen-axi entries review <ulid>` — mark one note looked at. Records that a human READ it, NOT that anything changed — most extras are immaterial and "seen, costs nothing" is the honest outcome. If it DOES move the numbers, `patch` them first, then review
 - `scripts/kitchen-axi entries delete <ulid>` — remove an entry from all rollups
 
+### Prep worksheets
+
+- `scripts/kitchen-axi prep publish --slug S --label T [--component <product-ulid>=<g>]… [--component-item <item-ulid>=<g>]… [--step T]… [--cook eaten|packed] [--units N] [--shelf-life C] [--source <item-ulid>[:amount]]…` — build a prep WORKSHEET from the catalog and publish it. Components are named by ULID and resolve to the product's stored per-100g panel, so no reference number is transcribed by hand; a product with no panel is refused rather than guessed at, and a missing field contributes 'unknown' rather than zero. --cook makes submitting the sheet the write itself (eaten → one entry; packed → one conversion). Publishing writes NOTHING to the ledger
+
 ### Daily rollup
 
 - `scripts/kitchen-axi days [--since <n|date>]` — per-owner-local-day rollup: one row per day (nine-field panel + calories + net line when a TDEE base is set), bucketed by the instance's OWNER timezone SERVER-SIDE. --since is a day count (7 / 7d) or a date; default last 7 days. USE THIS for any multi-day or weekly total — never list entries and hand-sum them by timestamp (UTC-vs-local mis-bucketing is the exact footgun this retires; group only by the `day` field)

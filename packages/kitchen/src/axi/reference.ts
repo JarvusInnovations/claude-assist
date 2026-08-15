@@ -86,6 +86,21 @@ export const COMMAND_GROUPS: CommandGroup[] = [
     ],
   },
   {
+    group: "Prep worksheets",
+    commands: [
+      {
+        usage:
+          "prep publish --slug S --label T [--component <product-ulid>=<g>]… [--component-item <item-ulid>=<g>]… [--step T]… [--cook eaten|packed] [--units N] [--shelf-life C] [--source <item-ulid>[:amount]]…",
+        summary:
+          "build a prep WORKSHEET from the catalog and publish it. Components are named by ULID and " +
+          "resolve to the product's stored per-100g panel, so no reference number is transcribed by " +
+          "hand; a product with no panel is refused rather than guessed at, and a missing field " +
+          "contributes 'unknown' rather than zero. --cook makes submitting the sheet the write itself " +
+          "(eaten → one entry; packed → one conversion). Publishing writes NOTHING to the ledger",
+      },
+    ],
+  },
+  {
     group: "Daily rollup",
     commands: [
       {

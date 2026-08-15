@@ -510,10 +510,27 @@ domain sink forces a change here.
 
 **Domain modules wrap this CLI; this CLI never reaches up into them.** A domain
 that wants an ergonomic authoring path builds the definition from its own catalog
-and publishes through the pages API — which is strictly better than a generic
-flag, because the domain is the only layer that knows the reference values, the
-identifiers, and the units. Generic worksheet publishing is the complete
-obligation here.
+and publishes it — which is strictly better than a generic flag, because the
+domain is the only layer that knows the reference values, the identifiers, and
+the units. Generic worksheet publishing is the complete obligation here.
+
+### The in-process publish seam accepts worksheets too
+
+Core's `PagePublisher` (`fastify.pages`, decorated by this module) takes **either
+authored `html` or a `worksheet` definition — exactly one**, the same rule the
+HTTP route enforces; the in-process door must not be a looser way into the same
+store. A worksheet arriving that way is validated and rendered by the **same**
+implementation the route uses, so its totals carry the same authority.
+
+`worksheet` is typed `unknown` in core deliberately: **core owns the seam, not
+the shape.** The worksheet contract can evolve here without dragging every
+consumer's types along, and a malformed definition throws rather than being
+stored.
+
+This is the counterpart to § Cook mode. A *submission* travels pages → domain
+through an injected sink; an *authoring request* travels domain → pages through
+this publisher. Both are injected by the server, neither package imports the
+other, and in both directions this module stays ignorant of what the page means.
 
 ## Principles
 
