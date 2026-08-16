@@ -716,3 +716,15 @@ describe("prep publish — repeatable flags", () => {
     expect(collectFlag(args, "step")).toEqual(["one", "two"]);
   });
 });
+
+describe("prep publish — packed macro provenance", () => {
+  it("exposes --yields-recipe so a packed batch is not born unusable", () => {
+    // A derived item with no recipe_ulid can never be one-tap consumed nor named
+    // as a sheet component: its macros live nowhere. The service and spec both
+    // supported this from the start; only the CLI flag was missing, so every
+    // batch published through the CLI produced a dead-end item.
+    const prep = COMMAND_GROUPS.find((g) => g.group === "Prep worksheets")!.commands[0]!;
+    expect(prep.usage).toContain("--yields-recipe");
+    expect(prep.summary).toContain("macro provenance");
+  });
+});

@@ -15,6 +15,11 @@ export const PREP_HELP = `kitchen-axi prep <subcommand> [args] [--json]
        [--heading T] [--intro T]
        [--cook eaten|packed]               submitting the sheet IS the write
        [--units N] [--shelf-life C]        (packed only) the derived item's shape
+       [--yields-recipe <recipe-ulid>]     (packed only) macro provenance for the
+                                            batch. WITHOUT it the derived item can
+                                            never be one-tap consumed or named as a
+                                            sheet component — its macros live
+                                            nowhere
        [--source <item-ulid>[:amount]]…    (packed only) stock the batch consumes
        [--title T] [--digest-optin]
 
@@ -88,6 +93,7 @@ async function publishPrep(args: string[]): Promise<string> {
       "component-item",
       "component-unit",
       "recipe",
+      "yields-recipe",
       "step",
       "cook",
       "units",
@@ -133,9 +139,10 @@ async function publishPrep(args: string[]): Promise<string> {
   if (cook !== undefined && cook !== "eaten" && cook !== "packed") {
     throw new AxiError(`--cook must be 'eaten' or 'packed' (got ${cook})`, "VALIDATION_ERROR", [PREP_HELP]);
   }
-  if (cook !== "packed" && (flags.units || flags["shelf-life"] || sourceArgs.length)) {
+  const yieldsRecipe = typeof flags["yields-recipe"] === "string" ? flags["yields-recipe"] : undefined;
+  if (cook !== "packed" && (flags.units || flags["shelf-life"] || sourceArgs.length || yieldsRecipe)) {
     throw new AxiError(
-      "--units, --shelf-life and --source apply to --cook packed only: an eaten sheet writes one entry, not stock",
+      "--units, --shelf-life, --source and --yields-recipe apply to --cook packed only: an eaten sheet writes one entry, not stock",
       "VALIDATION_ERROR",
       [PREP_HELP]
     );
@@ -165,6 +172,7 @@ async function publishPrep(args: string[]): Promise<string> {
             disposition: cook,
             ...(flags.units ? { units: Number(flags.units) } : {}),
             ...(typeof flags["shelf-life"] === "string" ? { shelf_life_class: flags["shelf-life"] } : {}),
+            ...(yieldsRecipe ? { recipe_ulid: yieldsRecipe } : {}),
             ...(sources.length ? { sources } : {}),
           },
         }

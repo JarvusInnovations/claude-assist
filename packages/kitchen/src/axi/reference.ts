@@ -90,14 +90,17 @@ export const COMMAND_GROUPS: CommandGroup[] = [
     commands: [
       {
         usage:
-          "prep publish --slug S --label T [--recipe <recipe-ulid>] [--component <product-ulid>=<g>]… [--component-item <item-ulid>=<g>]… [--component-unit <item-ulid>=<n>]… [--step T]… [--cook eaten|packed] [--units N] [--shelf-life C] [--source <item-ulid>[:amount]]…",
+          "prep publish --slug S --label T [--recipe <recipe-ulid>] [--component <product-ulid>=<g>]… [--component-item <item-ulid>=<g>]… [--component-unit <item-ulid>=<n>]… [--step T]… [--cook eaten|packed] [--units N] [--shelf-life C] [--yields-recipe <recipe-ulid>] [--source <item-ulid>[:amount]]…",
         summary:
           "build a prep WORKSHEET from the catalog and publish it. Components are named by ULID and " +
           "resolve to the product's stored per-100g panel, so no reference number is transcribed by " +
           "hand; a product with no panel is refused rather than guessed at, and a missing field " +
           "contributes 'unknown' rather than zero. An EATEN sheet decrements the items its components name when submitted, so name stock with --component-item (grams) or --component-unit (whole units for counted stock). --recipe seeds rows from a recipe's lines (which " +
           "carry their own per-100g inline, so they need no catalog lookup). --cook makes submitting the sheet the write itself " +
-          "(eaten → one entry; packed → one conversion). Publishing writes NOTHING to the ledger",
+          "(eaten → one entry; packed → one conversion). On a packed sheet, --yields-recipe " +
+          "sets the batch's macro provenance — WITHOUT it the derived item can never be one-tap " +
+          "consumed or named as a component, because its macros live nowhere. Publishing writes " +
+          "NOTHING to the ledger",
       },
     ],
   },
