@@ -177,6 +177,40 @@ export class MemoryInventoryStore implements InventoryStore {
     return map;
   }
 
+  private storeAliases = new Map<string, string>();
+
+  async getStoreAlias(rawStore: string): Promise<string | null> {
+    return this.storeAliases.get(rawStore) ?? null;
+  }
+
+  async upsertStoreAlias(rawStore: string, resolvedStore: string): Promise<void> {
+    this.storeAliases.set(rawStore, resolvedStore);
+  }
+
+  async rekeyStore(fromStore: string, toStore: string): Promise<{ lexicon: number; items: number }> {
+    let lexicon = 0;
+    for (const [k, l] of [...this.lexicon.entries()]) {
+      if (l.store !== fromStore) continue;
+      // The map is keyed by (store, line), so the row must be re-inserted under
+      // the new key rather than mutated in place.
+      this.lexicon.delete(k);
+      const targetKey = this.lexKey(toStore, l.line_text);
+      if (!this.lexicon.has(targetKey)) {
+        this.lexicon.set(targetKey, { ...l, store: toStore });
+        lexicon += 1;
+      }
+    }
+    let items = 0;
+    for (const i of this.items.values()) {
+      if (i.store === fromStore) {
+        i.store = toStore;
+        items += 1;
+      }
+    }
+    await this.upsertStoreAlias(fromStore, toStore);
+    return { lexicon, items };
+  }
+
   async listKnownStores(): Promise<string[]> {
     const stores = new Set<string>();
     for (const l of this.lexicon.values()) if (l.store) stores.add(l.store);

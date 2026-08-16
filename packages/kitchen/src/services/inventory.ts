@@ -427,6 +427,14 @@ export class InventoryPipeline {
         storeHint: batch.store,
         knownStores,
       });
+
+      // Record the resolution so the same raw string is never re-resolved
+      // (§ Receipt-line matching). Re-resolving costs a model call and, worse,
+      // is non-deterministic: the same string could land differently on two
+      // runs, re-fragmenting exactly what the roster exists to unify.
+      if (parsed.store && batch.store && parsed.store !== batch.store) {
+        await this.store.upsertStoreAlias(batch.store, parsed.store);
+      }
       // Precedence: an explicit meta store overrides the header extraction.
       const store = batch.store ?? parsed.store;
       // Persist the resolution back onto the batch when it wasn't meta-supplied:
@@ -1314,6 +1322,28 @@ export class InventoryPipeline {
       package_size: null,
       shelf_life_class: null,
     });
+  }
+
+  /**
+   * Fold one store string into another: re-point its lexicon rows and items,
+   * then record the alias so the old string resolves onto the survivor.
+   *
+   * An OPERATOR action, never automatic. Deciding two strings are one store is
+   * a judgment — a chain and its small-format sibling share a name and stock
+   * different things — and the merge is not reversible, so it is not something
+   * a migration or a model gets to do unattended.
+   */
+  async mergeStores(fromStore: string, toStore: string): Promise<{ lexicon: number; items: number }> {
+    if (!fromStore.trim() || !toStore.trim()) {
+      throw new Error('both a source and a target store are required');
+    }
+    if (fromStore === toStore) return { lexicon: 0, items: 0 };
+    return this.store.rekeyStore(fromStore, toStore);
+  }
+
+  /** Every store string seen, for the roster and for operator review. */
+  async listStores(): Promise<string[]> {
+    return this.store.listKnownStores();
   }
 
   // ── Conversions (prep transforms) ────────────────────────────────────────────

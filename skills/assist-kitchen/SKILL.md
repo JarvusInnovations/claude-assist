@@ -204,6 +204,11 @@ in doubt, read the spec.
 - `scripts/kitchen-axi entries review <ulid>` — mark one note looked at. Records that a human READ it, NOT that anything changed — most extras are immaterial and "seen, costs nothing" is the honest outcome. If it DOES move the numbers, `patch` them first, then review
 - `scripts/kitchen-axi entries delete <ulid>` — remove an entry from all rollups
 
+### Stores
+
+- `scripts/kitchen-axi stores list` — every store string seen, from the lexicon and inventory items
+- `scripts/kitchen-axi stores merge <from> --into <to>` — fold one store spelling into another: re-points its lexicon rows and items, then records the alias so the old string resolves onto the survivor. A store accumulates spellings and the lexicon keys on the string, so mappings under one can never match receipts printing another. NOT REVERSIBLE — sharing a word is not enough, and when unsure leave them apart
+
 ### Prep worksheets
 
 - `scripts/kitchen-axi prep publish --slug S --label T [--recipe <recipe-ulid>] [--component <product-ulid>=<g>]… [--component-item <item-ulid>=<g>]… [--component-unit <item-ulid>=<n>]… [--step T]… [--cook eaten|packed] [--units N] [--shelf-life C] [--yields-recipe <recipe-ulid>] [--source <item-ulid>[:amount]]…` — build a prep WORKSHEET from the catalog and publish it. Components are named by ULID and resolve to the product's stored per-100g panel, so no reference number is transcribed by hand; a product with no panel is refused rather than guessed at, and a missing field contributes 'unknown' rather than zero. An EATEN sheet decrements the items its components name when submitted, so name stock with --component-item (grams) or --component-unit (whole units for counted stock). --recipe seeds rows from a recipe's lines (which carry their own per-100g inline, so they need no catalog lookup). --cook makes submitting the sheet the write itself (eaten → one entry; packed → one conversion). On a packed sheet, --yields-recipe sets the batch's macro provenance — WITHOUT it the derived item can never be one-tap consumed or named as a component, because its macros live nowhere. Publishing writes NOTHING to the ledger

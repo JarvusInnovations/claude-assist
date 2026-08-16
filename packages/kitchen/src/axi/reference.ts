@@ -86,6 +86,20 @@ export const COMMAND_GROUPS: CommandGroup[] = [
     ],
   },
   {
+    group: "Stores",
+    commands: [
+      { usage: "stores list", summary: "every store string seen, from the lexicon and inventory items" },
+      {
+        usage: "stores merge <from> --into <to>",
+        summary:
+          "fold one store spelling into another: re-points its lexicon rows and items, then records the " +
+          "alias so the old string resolves onto the survivor. A store accumulates spellings and the lexicon " +
+          "keys on the string, so mappings under one can never match receipts printing another. NOT " +
+          "REVERSIBLE — sharing a word is not enough, and when unsure leave them apart",
+      },
+    ],
+  },
+  {
     group: "Prep worksheets",
     commands: [
       {

@@ -62,10 +62,12 @@ learning wrongly *and having no way back*.
       **The roster reaches the parser and the prompt states the rule with the
       dangerous cases named; the resolution itself is model behaviour and is not
       unit-testable.** Needs observation on real receipts.
-- [ ] A resolved store string is stored, and a second receipt carrying it makes
-      no model call. **NOT BUILT** — see Follow-ups.
-- [ ] The migration re-keys existing spellings onto resolved stores without
-      losing a product mapping or a skip marker. **NOT BUILT** — see Follow-ups.
+- [x] A resolved store string is stored (`kitchen.store_aliases`), so the same
+      raw string is never re-resolved.
+- [x] Existing spellings are re-keyed WITHOUT a migration — `stores merge` is an
+      operator command, because deciding two strings are one merchant is a
+      judgment and the merge is not reversible. A mapping the target already
+      holds wins; the source duplicate is dropped rather than stranded.
 - [x] Re-attaching a different product to the same line overwrites the mapping
       rather than adding a second (the existing `UNIQUE(store, line_text)` upsert).
 - [x] `--unlink-product` leaves no mapping asserting the removed link — the row
@@ -119,12 +121,12 @@ on real receipts.
 
 ## Follow-ups
 
-- **Issue** — persist the raw→resolved store mapping so a known string resolves
-  without a model call. Cheap now that the roster exists, and the guard against
-  the model answering differently on two runs.
-- **Issue** — the existing spellings are still fragmented (roughly nine strings
-  for about five stores on the instance this was written for). Re-keying needs a
-  per-store judgment, so it wants an operator command rather than a migration:
-  the wrong merge is unrecoverable.
+- ~~**Issue** — persist the raw→resolved store mapping.~~ **DONE** — migration
+  023, written when a receipt resolves a merchant to a name other than the one
+  it arrived with.
+- ~~**Issue** — existing spellings are fragmented.~~ **DONE as an operator
+  command** (`kitchen-axi stores list` / `stores merge <from> --into <to>`)
+  rather than a migration, on the reasoning in Risks: the merge is not
+  reversible and a chain shares a name with its small-format sibling.
 - **Deferred to plan** — `receipt-match-candidates` for anything the exact
   lookup still misses.

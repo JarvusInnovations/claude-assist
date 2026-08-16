@@ -89,3 +89,43 @@ describe('the store roster reaches the parser', () => {
     expect(roster).toContain('Corner Market');
   });
 });
+
+describe('store aliases and merging', () => {
+  it('folds one spelling into another, moving lexicon rows and items', async () => {
+    const { store, pipeline } = build();
+    const product = await store.insertProduct({
+      ulid: generateUlid(), name: 'Widget', shelf_life_class: 'pantry',
+    } as any);
+    await store.upsertLexicon({
+      ulid: generateUlid(), store: 'EXAMPLE GROCER', line_text: 'SB WIDGET',
+      product_ulid: product.ulid, package_size: null, shelf_life_class: null,
+    });
+    await pipeline.createItem({ raw_label: 'SB WIDGET', store: 'EXAMPLE GROCER', acquired_at: '2026-01-05' });
+
+    const moved = await pipeline.mergeStores('EXAMPLE GROCER', 'Example Grocer');
+    expect(moved).toEqual({ lexicon: 1, items: 1 });
+
+    // The mapping now answers under the surviving spelling.
+    expect((await store.getLexicon('Example Grocer', 'SB WIDGET'))?.product_ulid).toBe(product.ulid);
+    // And the old string resolves onto the survivor, so a receipt printing it lands on one key.
+    expect(await store.getStoreAlias('EXAMPLE GROCER')).toBe('Example Grocer');
+  });
+
+  it('keeps the target mapping when both spellings map the same line', async () => {
+    const { store, pipeline } = build();
+    const [a, b] = [await store.insertProduct({ ulid: generateUlid(), name: 'A' } as any),
+                    await store.insertProduct({ ulid: generateUlid(), name: 'B' } as any)];
+    await store.upsertLexicon({ ulid: generateUlid(), store: 'OLD', line_text: 'LINE', product_ulid: a.ulid } as any);
+    await store.upsertLexicon({ ulid: generateUlid(), store: 'New', line_text: 'LINE', product_ulid: b.ulid } as any);
+
+    await pipeline.mergeStores('OLD', 'New');
+    // Re-keying must never clobber a mapping the target already asserts.
+    expect((await store.getLexicon('New', 'LINE'))?.product_ulid).toBe(b.ulid);
+    expect(await store.getLexicon('OLD', 'LINE')).toBeNull();
+  });
+
+  it('refuses nothing and does nothing when the two names are the same', async () => {
+    const { pipeline } = build();
+    expect(await pipeline.mergeStores('Same', 'Same')).toEqual({ lexicon: 0, items: 0 });
+  });
+});

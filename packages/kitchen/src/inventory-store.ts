@@ -273,6 +273,12 @@ export interface InventoryStore {
    * resolves onto an existing name rather than a new spelling.
    */
   listKnownStores(): Promise<string[]>;
+  /** The store a raw string already resolved to, or null if never seen. */
+  getStoreAlias(rawStore: string): Promise<string | null>;
+  /** Record a resolution so the same raw string is never re-resolved. */
+  upsertStoreAlias(rawStore: string, resolvedStore: string): Promise<void>;
+  /** Re-point every lexicon row and item from one store string onto another. */
+  rekeyStore(fromStore: string, toStore: string): Promise<{ lexicon: number; items: number }>;
   listLexicon(filter: { store?: string; limit?: number }): Promise<LexiconRecord[]>;
 
   // Items
@@ -799,6 +805,45 @@ export class PgInventoryStore implements InventoryStore {
       ORDER BY store
     `;
     return rows.map((r: Record<string, unknown>) => r.store as string);
+  }
+
+  async getStoreAlias(rawStore: string): Promise<string | null> {
+    const rows = await this.sql`
+      SELECT resolved_store FROM kitchen.store_aliases WHERE raw_store = ${rawStore}
+    `;
+    return (rows[0]?.resolved_store as string | undefined) ?? null;
+  }
+
+  async upsertStoreAlias(rawStore: string, resolvedStore: string): Promise<void> {
+    await this.sql`
+      INSERT INTO kitchen.store_aliases (raw_store, resolved_store)
+      VALUES (${rawStore}, ${resolvedStore})
+      ON CONFLICT (raw_store) DO UPDATE
+        SET resolved_store = EXCLUDED.resolved_store, updated_at = now()
+    `;
+  }
+
+  async rekeyStore(fromStore: string, toStore: string): Promise<{ lexicon: number; items: number }> {
+    // A lexicon row already under the target key wins: re-keying must never
+    // clobber a mapping the target store already asserts.
+    const lex = await this.sql`
+      UPDATE kitchen.receipt_lexicon l SET store = ${toStore}
+      WHERE l.store = ${fromStore}
+        AND NOT EXISTS (
+          SELECT 1 FROM kitchen.receipt_lexicon t
+          WHERE t.store = ${toStore} AND t.line_text = l.line_text
+        )
+      RETURNING l.ulid
+    `;
+    const items = await this.sql`
+      UPDATE kitchen.inventory_items SET store = ${toStore}
+      WHERE store = ${fromStore} RETURNING ulid
+    `;
+    // Whatever could not move was a duplicate of a mapping the target already
+    // had; drop it rather than leaving it stranded under a dead key.
+    await this.sql`DELETE FROM kitchen.receipt_lexicon WHERE store = ${fromStore}`;
+    await this.upsertStoreAlias(fromStore, toStore);
+    return { lexicon: lex.length, items: items.length };
   }
 
   async listLexicon(filter: { store?: string; limit?: number }): Promise<LexiconRecord[]> {

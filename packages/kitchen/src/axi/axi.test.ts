@@ -349,7 +349,7 @@ describe("macro-panel flag parity between entries log and entries patch", () => 
 describe("command reference (single source of truth)", () => {
   it("covers every spec-listed command group", () => {
     const groups = COMMAND_GROUPS.map((g) => g.group);
-    expect(groups).toEqual(["Entries", "Prep worksheets", "Daily rollup", "Expenditure", "Weigh-ins", "Inventory", "Receipts", "Recipes", "Products & lexicon"]);
+    expect(groups).toEqual(["Entries", "Stores", "Prep worksheets", "Daily rollup", "Expenditure", "Weigh-ins", "Inventory", "Receipts", "Recipes", "Products & lexicon"]);
   });
 
   it("renders the reference as text and markdown from the same source", () => {
