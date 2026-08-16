@@ -1535,9 +1535,35 @@ ever produce. Observed live: a store with mappings split across two spellings,
 including one line duplicated under both because the first entry could never
 match.
 
-**A canonical store key is therefore derived on both write and lookup**:
-case-folded, whitespace-collapsed, punctuation-stripped. The display string is
-retained for humans; matching uses the canonical form only.
+**Store identity is RESOLVED BY MODEL against the known roster, not computed
+from the string.** String normalization cannot do this job and the obvious
+fallback is actively dangerous. Case-folding reconciles `SPROUTS FARMERS MARKET`
+with `Sprouts Farmers Market`, but not with the bare `Sprouts` an operator
+types — different token sets. Reaching for substring or token overlap to close
+that gap merges a standalone `Farmers market` into `Sprouts Farmers Market`,
+which are unrelated stores, and a small-format `<Chain> <Format> Market` into its
+full-size `<Chain>` sibling, which stock different products at different prices.
+
+Receipts are already parsed by a model, so store resolution rides the same
+capability: **given the receipt's store text, the optional operator-supplied
+store name, and the FULL ROSTER of known stores, the model returns either a match
+to an existing store or a normalized name for a new one.** A model distinguishes
+"the same retailer written shorter" from "a different retailer sharing a word";
+a normalizer cannot.
+
+**The resolution is then LEARNED, so the model is consulted once per novel
+string.** A raw store string maps to a resolved store exactly as a receipt line
+maps to a product, for the same reason: an unrecorded resolution is re-derived
+forever, and re-deriving with a model is both slower and non-deterministic. Every
+later receipt carrying that string resolves from the stored mapping without a
+model call.
+
+**A wrong store resolution is recoverable and must be correctable**, unlike a
+wrong product mapping which corrupts panels and stock. The failure mode is a
+fragmented lexicon — mappings stranded under a store nothing matches — which is
+visible as unmatched lines rather than as silently wrong numbers. That asymmetry
+is why store resolution may lean on a model where product identity still refuses
+to guess.
 
 **2. Only the label-scan path teaches the lexicon.** `writeLexiconLine` runs
 from a label resolve, and the non-inventory dismissal writes a skip marker.

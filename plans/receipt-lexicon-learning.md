@@ -13,10 +13,14 @@ issues: [199]
 The two silent defects that make receipt matching miss lines it has already
 solved. No UI, no scoring — this is the half that needs neither.
 
-- **Canonical store key.** Derive `store_key` (case-folded, whitespace-collapsed,
-  punctuation-stripped) on both lexicon write and lookup. Retain the display
-  string. Migration backfills existing rows and **merges rows that collapse to
-  the same key**, preferring the most recently updated mapping.
+- **Model-resolved store identity.** At receipt parse, the model is given the
+  receipt's store text, the optional operator-supplied store name, and the full
+  roster of known stores, and returns either a match or a normalized new name.
+  The raw string → store mapping is then STORED, so the model is consulted once
+  per novel string and every later receipt resolves without a model call.
+- **Migration** resolves the existing store strings the same way — a one-time
+  pass over the distinct values — and re-keys lexicon rows and items onto the
+  resolved stores.
 - **Learn on every attachment.** Every path that attaches a product to an item
   carrying a `store` and a `raw_label` upserts the `(store_key, line_text)`
   mapping — not just the label-scan path. Notably `recount --product-ulid`.
@@ -53,10 +57,12 @@ learning wrongly *and having no way back*.
 
 - [ ] A line resolved via `recount --product-ulid` produces a lexicon mapping;
       a second receipt carrying that line matches automatically.
-- [ ] A mapping written from an item whose store string differs in case or
-      punctuation from the receipt's store still matches.
-- [ ] The migration collapses existing duplicate spellings into one row per
-      canonical key without losing a product mapping or a skip marker.
+- [ ] A bare store name and the full printed header resolve to the SAME store,
+      while a similarly-worded but unrelated store resolves to a DIFFERENT one.
+- [ ] A resolved store string is stored, and a second receipt carrying it makes
+      no model call.
+- [ ] The migration re-keys existing spellings onto resolved stores without
+      losing a product mapping or a skip marker.
 - [ ] Re-attaching a different product to the same line overwrites the mapping
       rather than adding a second.
 - [ ] `--unlink-product` leaves no mapping asserting the removed link.
@@ -67,10 +73,14 @@ learning wrongly *and having no way back*.
 
 ## Risks / unknowns
 
-- **Punctuation-stripping could collapse two genuinely different stores** (e.g.
-  a chain and its market-format sibling differing only by a suffix). Mitigation:
-  strip conservatively, and treat a collapse that merges rows with *different*
-  product mappings as a signal to report rather than silently pick a winner.
+- **A model resolution is non-deterministic**, so the same string could resolve
+  differently on two runs. Storing the mapping is what contains this: the model
+  answers once, and the answer is then a fact rather than a recomputation. A
+  wrong answer is correctable and its failure mode is a fragmented lexicon —
+  visible as unmatched lines, not as silently wrong numbers.
+- **The roster must be passed in full.** A truncated roster makes a match
+  impossible to find and invites the model to mint a duplicate store, which is
+  the exact fragmentation this fixes.
 - **Learning cements mistakes at machine speed.** Every future receipt inherits a
   wrong mapping until someone notices. The upsert makes it correctable but does
   not make it visible — worth watching whether a corrections surface is needed.
