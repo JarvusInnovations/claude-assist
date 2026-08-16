@@ -38,6 +38,7 @@ function fakeStore(overrides: Partial<Record<string, any>> = {}) {
     item_unlinked: { ulid: 'item_unlinked', product_ulid: null },
     ...(overrides.items ?? {}),
   };
+  const derivations: Record<string, any> = { ...(overrides.derivations ?? {}) };
   return {
     async getProduct(ulid: string) {
       return products[ulid] ?? null;
@@ -45,7 +46,40 @@ function fakeStore(overrides: Partial<Record<string, any>> = {}) {
     async getItem(ulid: string) {
       return items[ulid] ?? null;
     },
+    async getDerivationsByDerivedItemUlids(ulids: string[]) {
+      const map = new Map<string, any>();
+      for (const ulid of ulids) if (derivations[ulid]) map.set(ulid, derivations[ulid]);
+      return map;
+    },
   } as any;
+}
+
+/**
+ * A `resolveRecipe` function, as `PrepService`'s fourth constructor argument
+ * — deliberately a bare function, not a `RecipeStore`, since it stands in
+ * for the merged (sheet + pushed + promoted) resolver `consume` uses
+ * (§ A derived component resolves through its recipe, not a product), never
+ * the DB-only `RecipeStore` `fakeRecipes` above stands in for.
+ */
+function fakeResolveRecipe(recipes: Record<string, any> = {}) {
+  const all: Record<string, any> = {
+    rec_egg: {
+      ulid: 'rec_egg',
+      name: 'Hard-boiled egg',
+      components: [{ label: 'egg', default_qty_g: 50, per_100g: { calories: 155, protein_g: 12.6, sat_fat_g: 3.3 } }],
+    },
+    rec_jar: {
+      ulid: 'rec_jar',
+      name: 'Overnight oats jar',
+      components: [
+        { label: 'oats', default_qty_g: 80, per_100g: { calories: 389, protein_g: 16.9, sat_fat_g: 1.9 } },
+        { label: 'yogurt', default_qty_g: 100, per_100g: { calories: 59, protein_g: 10.3, sat_fat_g: 0.1 } },
+      ],
+    },
+    rec_empty2: { ulid: 'rec_empty2', name: 'Empty', components: [] },
+    ...recipes,
+  };
+  return async (ulid: string) => all[ulid] ?? null;
 }
 
 function fakeRecipes(recipes: Record<string, any> = {}) {
@@ -327,5 +361,132 @@ describe('consume bindings (§ Eaten sheets decrement their sources)', () => {
       components: [{ item_ulid: 'item_linked', quantity: 100 }],
     });
     expect(calls[0].worksheet.cook_mode.consumes).toBeUndefined();
+  });
+});
+
+describe('a derived component resolves through its recipe (claude-assist#199)', () => {
+  it('resolves per_basis from the recipe for a counted derived item, matching a real macro figure', async () => {
+    const { publisher, calls } = fakePublisher();
+    const store = fakeStore({
+      items: {
+        item_egg_jar: { ulid: 'item_egg_jar', product_ulid: null, units_total: 3, raw_label: 'Hard-boiled egg jar' },
+      },
+      derivations: { item_egg_jar: { recipe_ulid: 'rec_egg' } },
+    });
+    const svc = new PrepService(store, publisher, undefined, fakeResolveRecipe());
+
+    const result = await svc.publish({
+      slug: 'eggs',
+      label: 'Hard-boiled eggs',
+      cook: { disposition: 'eaten' },
+      components: [{ item_ulid: 'item_egg_jar', quantity: 2, counted: true }],
+    });
+
+    // One egg's recipe totals 50/100*155 = 77.5 kcal, 50/100*12.6 = 6.3 g
+    // protein — the SAME numbers computeRecipeMacros gives a direct
+    // recipe-logged entry (and consume's own derived-item channel). The
+    // worksheet's per_basis is that total * 100 (basis fixed at 100), so 2
+    // units on the sheet doubles it back out: 155 kcal, 12.6 g protein.
+    expect(calls[0].worksheet.components[0].per_basis.calories).toBe(7750);
+    expect(calls[0].worksheet.components[0].per_basis.protein_g).toBe(630);
+    expect(result.planned_totals.calories).toBe(155);
+    expect(result.planned_totals.protein_g).toBe(12.6);
+    expect(calls[0].worksheet.components[0].label).toBe('Hard-boiled egg jar');
+    expect(calls[0].worksheet.cook_mode.consumes[0]).toMatchObject({
+      model: 'counted',
+      item_ulid: 'item_egg_jar',
+    });
+  });
+
+  it('sums each recipe component at its OWN default_qty_g, not a shared quantity', async () => {
+    const { publisher, calls } = fakePublisher();
+    const store = fakeStore({
+      items: { item_jar: { ulid: 'item_jar', product_ulid: null, units_total: 3, raw_label: 'Oat jar' } },
+      derivations: { item_jar: { recipe_ulid: 'rec_jar' } },
+    });
+    const svc = new PrepService(store, publisher, undefined, fakeResolveRecipe());
+
+    const result = await svc.publish({
+      slug: 'jars',
+      label: 'Oat jars',
+      components: [{ item_ulid: 'item_jar', quantity: 1, counted: true }],
+    });
+
+    // 80/100*389 + 100/100*59 = 311.2 + 59 = 370.2 kcal — each ingredient at
+    // its OWN default_qty_g (80 g oats, 100 g yogurt), not both scaled by a
+    // single shared quantity. per_basis is the exact total * 100.
+    expect(calls[0].worksheet.components[0].per_basis.calories).toBe(37020);
+    // 80/100*16.9 + 100/100*10.3 = 13.52 + 10.3 = 23.82 -> round1 -> 23.8.
+    expect(result.planned_totals.protein_g).toBe(23.8);
+  });
+
+  it('REFUSES a derived item referenced with --component-item (grams) instead of --component-unit', async () => {
+    const { publisher } = fakePublisher();
+    const store = fakeStore({
+      items: { item_egg_jar: { ulid: 'item_egg_jar', product_ulid: null, units_total: 3 } },
+      derivations: { item_egg_jar: { recipe_ulid: 'rec_egg' } },
+    });
+    const svc = new PrepService(store, publisher, undefined, fakeResolveRecipe());
+    await expect(
+      svc.publish({ slug: 'x', label: 'x', components: [{ item_ulid: 'item_egg_jar', quantity: 50 }] })
+    ).rejects.toThrow(/referenced as counted/);
+  });
+
+  it('REFUSES a fraction-modeled derived item even when referenced as counted', async () => {
+    const { publisher } = fakePublisher();
+    const store = fakeStore({
+      items: { item_quinoa: { ulid: 'item_quinoa', product_ulid: null, units_total: null } },
+    });
+    const svc = new PrepService(store, publisher, undefined, fakeResolveRecipe());
+    await expect(
+      svc.publish({ slug: 'x', label: 'x', components: [{ item_ulid: 'item_quinoa', quantity: 1, counted: true }] })
+    ).rejects.toThrow(/not a counted item/);
+  });
+
+  it('REFUSES a counted derived item whose derivation carries no recipe_ulid', async () => {
+    const { publisher } = fakePublisher();
+    // No `derivations` entry at all — never converted, or the row is missing.
+    const store = fakeStore({ items: { item_mystery: { ulid: 'item_mystery', product_ulid: null, units_total: 2 } } });
+    const svc = new PrepService(store, publisher, undefined, fakeResolveRecipe());
+    await expect(
+      svc.publish({ slug: 'x', label: 'x', components: [{ item_ulid: 'item_mystery', quantity: 1, counted: true }] })
+    ).rejects.toThrow(/no recipe provenance/);
+  });
+
+  it('REFUSES when the linked recipe is missing or has no components', async () => {
+    const { publisher } = fakePublisher();
+    const store = fakeStore({
+      items: {
+        item_bad: { ulid: 'item_bad', product_ulid: null, units_total: 1 },
+        item_emptyrecipe: { ulid: 'item_emptyrecipe', product_ulid: null, units_total: 1 },
+      },
+      derivations: {
+        item_bad: { recipe_ulid: 'rec_missing' },
+        item_emptyrecipe: { recipe_ulid: 'rec_empty2' },
+      },
+    });
+    const svc = new PrepService(store, publisher, undefined, fakeResolveRecipe());
+    await expect(
+      svc.publish({ slug: 'x', label: 'x', components: [{ item_ulid: 'item_bad', quantity: 1, counted: true }] })
+    ).rejects.toThrow(/was not found or has no components/);
+    await expect(
+      svc.publish({
+        slug: 'x',
+        label: 'x',
+        components: [{ item_ulid: 'item_emptyrecipe', quantity: 1, counted: true }],
+      })
+    ).rejects.toThrow(/was not found or has no components/);
+  });
+
+  it('REFUSES when no recipe resolver is configured', async () => {
+    const { publisher } = fakePublisher();
+    const store = fakeStore({
+      items: { item_egg_jar: { ulid: 'item_egg_jar', product_ulid: null, units_total: 3 } },
+      derivations: { item_egg_jar: { recipe_ulid: 'rec_egg' } },
+    });
+    const svc = new PrepService(store, publisher); // no resolveRecipe injected
+    await expect(
+      svc.publish({ slug: 'x', label: 'x', components: [{ item_ulid: 'item_egg_jar', quantity: 1, counted: true }] })
+    ).rejects.toThrow(/no recipe resolver/);
   });
 });
