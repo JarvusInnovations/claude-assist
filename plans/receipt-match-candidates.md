@@ -16,8 +16,9 @@ expose them so a caller can offer a pick instead of demanding a fresh label scan
 - **Scoring** over three independent signals: line-text similarity against known
   lines for the canonical store, product name/alias similarity, and price
   proximity to that product's own price history at that store.
-- **Threshold policy**: auto-attach above a high-confidence bar; below it, leave
-  the item `needs_info` exactly as today and expose the ranked candidates.
+- **No auto-attach at any score.** An exact lexicon hit remains the only
+  automatic attachment — it replays a human decision rather than making one.
+  Everything else stays `needs_info` and exposes its ranked candidates.
 - **Read API**: candidates for an unmatched line, computed on demand.
 - **Capture-app picker**: surface candidates on an unmatched line with a
   "none of these — scan new item" escape.
@@ -55,12 +56,12 @@ match — which is worse than the scan it was meant to save.
 ## Validation
 
 - [ ] A re-worded line for a familiar product ranks that product first.
-- [ ] A genuinely new SKU in a familiar category returns candidates but none
-      above the auto-attach threshold.
+- [ ] No path attaches a product from a score. Grep the resolution path: the
+      only automatic attachment is an exact lexicon hit.
 - [ ] Two unrelated products at the same price do not rank each other; price
       alone never promotes a textually implausible candidate.
-- [ ] Below threshold, the item still lands `needs_info` — behavior unchanged
-      from today for anything the module is not confident about.
+- [ ] Every non-exact line lands `needs_info` — behavior unchanged from today
+      for anything not already decided by a human.
 - [ ] Candidates recompute after a price or catalog change rather than serving a
       stale set.
 - [ ] Choosing a candidate teaches the lexicon (via `receipt-lexicon-learning`),
@@ -70,9 +71,10 @@ match — which is worse than the scan it was meant to save.
 
 ## Risks / unknowns
 
-- **Thresholds cannot be tuned without data.** Ship with a conservative bar and
-  the expectation of revisiting it; too low silently corrupts panels, prices and
-  (since eaten sheets decrement) stock.
+- **Ranking quality is now a UX concern, not a correctness one.** With no
+  auto-attach, a bad ranking costs a scroll rather than a corrupted panel. That
+  lowers the stakes enough to ship without tuning data — which the threshold
+  design could not do.
 - **Similarity on abbreviated receipt text is hard.** Store lines are truncated
   and inconsistently abbreviated; token overlap may perform poorly on exactly the
   short lines that need it most.

@@ -1602,12 +1602,26 @@ unrelated items at the same price say nothing. It is a tie-breaker among
 textually plausible candidates and must never promote a candidate the text does
 not already support.
 
-**Above a high confidence threshold the module may auto-attach; below it, it must
-not.** A below-threshold line keeps today's honest behavior — an item with
-`needs_info` — and additionally exposes its ranked candidates so a caller can
-offer a pick. Silently choosing a plausible-but-wrong product is worse than
-asking: it corrupts a panel, a price series, and (since eaten sheets decrement)
-stock itself.
+**Scores rank the picker. They never decide.** There is no confidence threshold
+above which the module attaches a product on its own, because there is no score
+at which a guess becomes a fact.
+
+**The ONLY automatic product attachment is an exact lexicon hit — and that is not
+a guess, it is replaying a decision a human already made.** Everything else lands
+`needs_info` with its ranked candidates exposed, and identity is settled in the
+app: a ranked list plus an explicit *none of these — scan it* option.
+
+This is deliberately stricter than store resolution, which does lean on a model
+(§ above). The asymmetry is blast radius. A wrong store fragments the lexicon and
+shows up as unmatched lines — annoying, visible, recoverable. A wrong product
+silently corrupts a nutrition panel, a price series, and — since an eaten sheet
+decrements what it names — physical stock counts. Nothing about a plausible
+ranking distinguishes those two outcomes, so the ranking is not allowed to cause
+the second one.
+
+It also disposes of a problem the threshold design carried: a confidence bar
+cannot be tuned without data, and every value chosen before that data exists is
+a guess about how often to guess.
 
 **The candidates are a read, not a state.** They are computed on demand from the
 line and the catalog, never stored — a stored candidate list would go stale the
