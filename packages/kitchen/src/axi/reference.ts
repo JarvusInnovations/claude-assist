@@ -178,6 +178,15 @@ export const COMMAND_GROUPS: CommandGroup[] = [
         summary: "fold a DUPLICATE item (two records, ONE physical package) into a survivor: fills only the survivor's EMPTY identity fields, relinks its entries/receipt line/conversions, then retires it as dismissed. Quantities are never summed and the survivor keeps its OWN clock — use this, not dismiss, whenever either record has history",
       },
       { usage: 'inventory remark "<free text>" [--at DATE]', summary: "free-text event resolver — matches a remark to an item and infers opened/finished/tossed; prints matched/unmatched honestly (unmatched is normal, not an error)" },
+      {
+        usage: "inventory candidates <ulid> [--limit N]",
+        summary:
+          "ranked candidate products for an item whose receipt line never matched exactly, scored on " +
+          "line-text similarity, product-name similarity and price agreement. SUGGESTIONS ONLY — nothing " +
+          "is attached by a score; the only automatic attachment is an exact lexicon hit, which replays a " +
+          "human decision rather than making one. A null price signal means there was nothing to compare, " +
+          "not that the prices disagree",
+      },
       { usage: "inventory questions [--limit N]", summary: "open needs-info items as one-time questions" },
       {
         usage: "inventory waste [--since DATE] [--until DATE] [--limit N]",

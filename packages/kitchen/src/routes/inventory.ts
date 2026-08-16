@@ -123,6 +123,26 @@ export const registerInventoryRoutes: FastifyPluginAsync<InventoryRoutesConfig> 
 
   // ── Receipts ────────────────────────────────────────────────────────────────
 
+  // GET /kitchen/inventory/:ulid/candidates — ranked products for a line that
+  // never matched exactly. A READ: nothing here attaches anything.
+  fastify.get<{ Params: { ulid: string }; Querystring: { limit?: string } }>(
+    '/kitchen/inventory/:ulid/candidates',
+    {
+      schema: {
+        querystring: {
+          type: 'object',
+          additionalProperties: false,
+          properties: { limit: { type: 'string', pattern: '^[0-9]+$' } },
+        },
+      },
+    },
+    async (request) => {
+      const limit = request.query.limit ? parseInt(request.query.limit, 10) : undefined;
+      const candidates = await inventory.lineCandidates(request.params.ulid, limit);
+      return { candidates, count: candidates.length };
+    }
+  );
+
   // GET /kitchen/stores — every store string seen (roster + operator review).
   fastify.get('/kitchen/stores', async () => {
     const stores = await inventory.listStores();

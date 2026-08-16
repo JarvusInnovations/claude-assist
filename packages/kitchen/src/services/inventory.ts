@@ -10,6 +10,7 @@
  * error.
  */
 
+import { rankCandidates, type LineCandidate } from './line-candidates.js';
 import type { FastifyBaseLogger } from 'fastify';
 import type {
   BatchLineView,
@@ -1339,6 +1340,42 @@ export class InventoryPipeline {
     }
     if (fromStore === toStore) return { lexicon: 0, items: 0 };
     return this.store.rekeyStore(fromStore, toStore);
+  }
+
+  /**
+   * Ranked candidate products for an item whose line never matched exactly
+   * (§ Near-miss candidates). A READ — computed on demand, never stored: a
+   * stored list goes stale the moment a product or price changes, and once
+   * written down is indistinguishable from a decision.
+   *
+   * Returns candidates ONLY. Nothing here attaches anything; identity is
+   * settled by a human choosing, or by an exact lexicon hit replaying a choice
+   * already made.
+   */
+  async lineCandidates(itemUlid: string, limit?: number): Promise<LineCandidate[]> {
+    const item = await this.store.getItem(itemUlid);
+    if (!item || !item.raw_label) return [];
+
+    const [products, knownLines] = await Promise.all([
+      this.store.listProducts({ limit: 500 }),
+      this.store.listLexicon(item.store ? { store: item.store, limit: 500 } : { limit: 500 }),
+    ]);
+
+    const [priceHistory, priceCents] = await Promise.all([
+      this.store.listPricesByProduct(item.store ?? undefined),
+      this.store.getBatchLinePrice(itemUlid),
+    ]);
+
+    return rankCandidates({
+      lineText: normalizeLine(item.raw_label),
+      priceCents,
+      products: products.map((p) => ({ ulid: p.ulid, name: p.name, aliases: p.aliases })),
+      knownLines: knownLines
+        .filter((l) => l.product_ulid)
+        .map((l) => ({ line_text: l.line_text, product_ulid: l.product_ulid! })),
+      priceHistory,
+      ...(limit ? { limit } : {}),
+    });
   }
 
   /** Every store string seen, for the roster and for operator review. */
