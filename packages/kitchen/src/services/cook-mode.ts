@@ -166,7 +166,7 @@ export class KitchenCookMode implements WorksheetCookSink {
    * Inventory is deliberately NOT decremented here. Cook mode maps each
    * disposition to exactly ONE atomic write, so there is no "entry landed,
    * decrement failed" half-state to explain: depletion for an eaten meal
-   * happens through the existing depletion matcher, and for a prepped item
+   * happens through the eaten-decrement bindings below, and for a prepped item
    * through `consume` at eat time.
    */
   private async logEaten(request: WorksheetCookRequest): Promise<WorksheetCookOutcome> {

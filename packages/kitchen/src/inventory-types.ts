@@ -584,7 +584,7 @@ export interface DismissResolution {
  * a real dependent of `kitchen.inventory_items`:
  *
  * - `entries` — `kitchen.entries.inventory_item_ulid`, the consumption entries
- *   the depletion matcher (or a `consume` tap) attributed to the loser.
+ *   a consumption (an `eat`/`consume` tap) attributed to the loser.
  * - `batch_lines` — `kitchen.purchase_batch_lines.inventory_item_ulid`, the
  *   receipt line whose representative unit the loser was.
  * - `derivations` — `kitchen.inventory_derivations.derived_item_ulid`, the

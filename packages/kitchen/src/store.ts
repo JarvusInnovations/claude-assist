@@ -162,7 +162,7 @@ export interface EntryStore {
   /** Recent/frequent logged items for the reselect strip, most-recent first. */
   recentLabels(limit: number): Promise<RecentEntrySummary[]>;
 
-  /** Phase 2: link an entry to the inventory item the depletion matcher decremented. */
+  /** Link an entry to the inventory item its consumption decremented. */
   linkInventoryItem(entryUlid: string, itemUlid: string): Promise<void>;
 
   /**
