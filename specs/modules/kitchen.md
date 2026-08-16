@@ -3267,6 +3267,64 @@ The pages CLI likewise stays generic (`specs/modules/pages.md` § The CLI carrie
 no domain vocabulary) — `publish-worksheet` remains the floor beneath this
 command, for surfaces no domain owns.
 
+## Eaten sheets decrement their sources
+
+**There is no depletion matcher.** Several comments in this module cite one —
+including cook mode's own justification for not decrementing — but none was ever
+built, and no scheduled task runs it. The consequence is that **eating has never
+subtracted anything**: purchases add to inventory and meals do not remove from
+it, so every quantity drifts high at a rate proportional to how much the owner
+actually cooks. Two live instances of the same defect: a frozen-fruit bag read
+24% on the day it was emptied, and a 6-egg batch read 6 after one was eaten.
+
+A cook-mode **`eaten`** submission therefore decrements the stock its components
+name, mirroring what `packed` already does with `sources`. The sheet is the only
+artifact that knows *both* what was eaten and how much, at the moment it is
+known — so it is the only place the loop can close without asking the owner to
+remember anything.
+
+### The basis rule: refuse, never infer
+
+A component decrements only when its item carries an honest basis:
+
+| item model | sheet collects | decrement | basis required |
+| --- | --- | --- | --- |
+| divisible (fraction) | grams | `grams / net_content_g` -> fraction | product `net_content_g` |
+| **counted** | **units** | integer units | product `unit_edible_g` (for the panel) |
+
+**A counted component is stated in UNITS, not grams.** One egg, one can, one
+link. That removes the conversion entirely on the decrement side, and it is how
+a human describes the food anyway. Its *panel* still needs a mass, which is
+`units * unit_edible_g` — the same gate that already governs one-tap consume.
+
+**Never derive a missing basis.** `unit_edible_g` remains STATED-only: a net
+weight divided by a count can be wrong in either direction (drained vs packed
+weight, shell vs edible), and a plausible wrong denominator is worse than none —
+it is the batch-yield failure (§ Conversions) in a new place.
+
+### An unapplied decrement is VISIBLE, never silent
+
+When the basis is missing, the decrement does not happen and **the submission
+says so**. The intended decrement is recorded against the entry and surfaced
+through the same question queue as § Unreviewed entry notes.
+
+This is the module's standing preference: a gap the owner can see beats a gap
+papered over. Silently skipping would reproduce exactly the drift this section
+exists to remove, while *looking* like it had been fixed.
+
+### The entry is authoritative; decrements are not allowed to block it
+
+Cook mode's one-write-per-disposition rule is relaxed here in one direction
+only: the journal entry lands **first and unconditionally**, and decrements are
+applied after. A decrement that fails — missing basis, an item since closed, a
+concurrent edit — is reported, never rolled back onto the meal.
+
+Rationale is `specs/diet-journal.md` § Principles: **logging must beat
+not-logging.** A meal that refused to record because a fruit bag had no net
+weight would be a strictly worse ledger than one that records the meal and flags
+the unapplied decrement. Inventory is reconcilable after the fact; an unlogged
+meal is gone.
+
 ## Unreviewed entry notes
 
 A cook-mode submission may carry a free-text note, and that note routinely names
