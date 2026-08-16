@@ -1,9 +1,10 @@
 ---
-status: in-progress
+status: done
 depends: [kitchen-prep-sheets, eaten-decrements]
 specs:
   - specs/modules/kitchen.md
 issues: [199]
+pr: 201
 ---
 
 # Plan: a counted derived component resolves its panel through its recipe
