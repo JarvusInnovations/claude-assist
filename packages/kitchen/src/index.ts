@@ -264,7 +264,18 @@ export default createPlugin('kitchen', async (fastify: FastifyInstance, options:
   // conversion when packed — keyed on the submission's ULID for idempotency.
   fastify.decorate(
     'kitchenCookMode',
-    new KitchenCookMode({ entries: pipeline, inventory }) satisfies KitchenCookModeSurface
+    new KitchenCookMode({
+      entries: pipeline,
+      inventory,
+      // Eaten sheets decrement what they name (§ Eaten sheets decrement their
+      // sources). Both verbs are existing inventory operations — no second
+      // depletion implementation.
+      depleter: {
+        consumeStated: (itemUlid, input) => inventory.consumeStatedAmount(itemUlid, input),
+        finishUnit: (itemUlid, input) =>
+          inventory.applyEvent(itemUlid, 'finished-unit', input.at ? { at: input.at } : {}),
+      },
+    }) satisfies KitchenCookModeSurface
   );
 
   if (!config.disableEstimation) {

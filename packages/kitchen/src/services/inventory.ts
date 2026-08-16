@@ -315,7 +315,7 @@ export interface InventoryPipelineConfig {
   now?: () => Date;
 }
 
-/** The minimal entry shape the depletion matcher needs (avoids importing EntryRecord). */
+/** The minimal entry shape stated-weight consumption needs (avoids importing EntryRecord). */
 export interface DepletableEntry {
   ulid: string;
   label: string | null;

@@ -271,7 +271,12 @@ export interface EntryRecord extends NutritionFields {
    * (specs/modules/kitchen.md § Portion multiplier).
    */
   portion_multiplier: number;
-  /** Phase 2: the inventory item this entry depleted (set by the depletion matcher). */
+  /**
+   * The inventory item this entry depleted. Set by a stated-weight consumption
+   * — an `eat` call, or an eaten sheet's decrement bindings (§ Eaten sheets
+   * decrement their sources). There is no background matcher: nothing infers
+   * which stock a meal came off.
+   */
   inventory_item_ulid: string | null;
   /**
    * Non-food lines the estimator dropped rather than estimating

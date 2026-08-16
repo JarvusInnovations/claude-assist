@@ -8,6 +8,7 @@ export const PREP_HELP = `kitchen-axi prep <subcommand> [args] [--json]
   publish --slug S --label T            build a prep WORKSHEET from the catalog and
        [--component <product-ulid>=<g>]…  publish it. Components resolve to the
        [--component-item <item-ulid>=<g>]…  product's stored per-100g panel, so no
+       [--component-unit <item-ulid>=<n>]…  COUNTED stock, in whole units
        [--recipe <recipe-ulid>]            seed rows from a recipe's lines; explicit
                                             components are appended after them
        [--step "<text>"]…                  instructions rendered under the table
@@ -70,6 +71,7 @@ async function publishPrep(args: string[]): Promise<string> {
   // `b`. This is the same helper `entries log` uses for its own --component.
   const componentArgs = collectFlag(args, "component");
   const componentItemArgs = collectFlag(args, "component-item");
+  const componentUnitArgs = collectFlag(args, "component-unit");
   const stepArgs = collectFlag(args, "step");
   const sourceArgs = collectFlag(args, "source");
 
@@ -84,6 +86,7 @@ async function publishPrep(args: string[]): Promise<string> {
       "intro",
       "component",
       "component-item",
+      "component-unit",
       "recipe",
       "step",
       "cook",
@@ -108,6 +111,13 @@ async function publishPrep(args: string[]): Promise<string> {
     ...componentItemArgs.map((raw) => {
       const { ulid, quantity } = parseRef(raw, "--component-item");
       return { item_ulid: ulid, quantity };
+    }),
+    // Counted stock is quantified in UNITS — one egg, one can, one link. No
+    // grams-to-units conversion on the decrement side, and it is how a person
+    // describes the food anyway.
+    ...componentUnitArgs.map((raw) => {
+      const { ulid, quantity } = parseRef(raw, "--component-unit");
+      return { item_ulid: ulid, quantity, counted: true };
     }),
   ];
   const recipeUlid = typeof flags.recipe === "string" ? flags.recipe : undefined;

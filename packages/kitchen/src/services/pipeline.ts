@@ -197,6 +197,20 @@ export class KitchenPipeline {
     return this.entries.markNotesReviewed(ulid);
   }
 
+  /**
+   * Record decrements a cook-mode submission could not apply, so they surface
+   * in the entries question queue (§ Eaten sheets decrement their sources).
+   * Written as a human-visible note because that is the surface a person
+   * actually reads, and flagged unreviewed so it is not silently absorbed.
+   */
+  async flagUnappliedDecrements(ulid: string, unapplied: string[]): Promise<void> {
+    const current = await this.entries.get(ulid);
+    if (!current) return;
+    const notice = `UNAPPLIED INVENTORY DECREMENTS (stock was NOT reduced):\n- ${unapplied.join('\n- ')}`;
+    const note = current.note ? `${current.note}\n\n${notice}` : notice;
+    await this.entries.applyManualOverride(ulid, {}, { note });
+  }
+
   /** Endpoint-side: idempotent ingest. Photos are used for one attempt, then dropped. */
   async ingest(
     input: EntryInput,

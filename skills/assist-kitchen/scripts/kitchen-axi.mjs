@@ -610,8 +610,8 @@ var COMMAND_GROUPS = [
     group: "Prep worksheets",
     commands: [
       {
-        usage: "prep publish --slug S --label T [--recipe <recipe-ulid>] [--component <product-ulid>=<g>]\u2026 [--component-item <item-ulid>=<g>]\u2026 [--step T]\u2026 [--cook eaten|packed] [--units N] [--shelf-life C] [--source <item-ulid>[:amount]]\u2026",
-        summary: "build a prep WORKSHEET from the catalog and publish it. Components are named by ULID and resolve to the product's stored per-100g panel, so no reference number is transcribed by hand; a product with no panel is refused rather than guessed at, and a missing field contributes 'unknown' rather than zero. --recipe seeds rows from a recipe's lines (which carry their own per-100g inline, so they need no catalog lookup). --cook makes submitting the sheet the write itself (eaten \u2192 one entry; packed \u2192 one conversion). Publishing writes NOTHING to the ledger"
+        usage: "prep publish --slug S --label T [--recipe <recipe-ulid>] [--component <product-ulid>=<g>]\u2026 [--component-item <item-ulid>=<g>]\u2026 [--component-unit <item-ulid>=<n>]\u2026 [--step T]\u2026 [--cook eaten|packed] [--units N] [--shelf-life C] [--source <item-ulid>[:amount]]\u2026",
+        summary: "build a prep WORKSHEET from the catalog and publish it. Components are named by ULID and resolve to the product's stored per-100g panel, so no reference number is transcribed by hand; a product with no panel is refused rather than guessed at, and a missing field contributes 'unknown' rather than zero. An EATEN sheet decrements the items its components name when submitted, so name stock with --component-item (grams) or --component-unit (whole units for counted stock). --recipe seeds rows from a recipe's lines (which carry their own per-100g inline, so they need no catalog lookup). --cook makes submitting the sheet the write itself (eaten \u2192 one entry; packed \u2192 one conversion). Publishing writes NOTHING to the ledger"
       }
     ]
   },
@@ -2422,6 +2422,7 @@ var PREP_HELP = `kitchen-axi prep <subcommand> [args] [--json]
   publish --slug S --label T            build a prep WORKSHEET from the catalog and
        [--component <product-ulid>=<g>]\u2026  publish it. Components resolve to the
        [--component-item <item-ulid>=<g>]\u2026  product's stored per-100g panel, so no
+       [--component-unit <item-ulid>=<n>]\u2026  COUNTED stock, in whole units
        [--recipe <recipe-ulid>]            seed rows from a recipe's lines; explicit
                                             components are appended after them
        [--step "<text>"]\u2026                  instructions rendered under the table
@@ -2477,6 +2478,7 @@ function parseRef(raw, flag) {
 async function publishPrep(args) {
   const componentArgs = collectFlag(args, "component");
   const componentItemArgs = collectFlag(args, "component-item");
+  const componentUnitArgs = collectFlag(args, "component-unit");
   const stepArgs = collectFlag(args, "step");
   const sourceArgs = collectFlag(args, "source");
   const { flags } = parseArgs(
@@ -2490,6 +2492,7 @@ async function publishPrep(args) {
       "intro",
       "component",
       "component-item",
+      "component-unit",
       "recipe",
       "step",
       "cook",
@@ -2512,6 +2515,13 @@ async function publishPrep(args) {
     ...componentItemArgs.map((raw) => {
       const { ulid, quantity } = parseRef(raw, "--component-item");
       return { item_ulid: ulid, quantity };
+    }),
+    // Counted stock is quantified in UNITS — one egg, one can, one link. No
+    // grams-to-units conversion on the decrement side, and it is how a person
+    // describes the food anyway.
+    ...componentUnitArgs.map((raw) => {
+      const { ulid, quantity } = parseRef(raw, "--component-unit");
+      return { item_ulid: ulid, quantity, counted: true };
     })
   ];
   const recipeUlid = typeof flags.recipe === "string" ? flags.recipe : void 0;
@@ -3422,7 +3432,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "ebc763b" : "dev";
+var VERSION = true ? "a38bfa4" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)

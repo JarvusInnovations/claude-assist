@@ -130,6 +130,9 @@ function toCookRequest(
     if (directive.recipe_ulid !== undefined) request.packed.recipe_ulid = directive.recipe_ulid;
     if (directive.sources !== undefined) request.packed.sources = directive.sources;
   }
+  if (directive.disposition === 'eaten' && directive.consumes !== undefined) {
+    request.consumes = directive.consumes;
+  }
   return request;
 }
 

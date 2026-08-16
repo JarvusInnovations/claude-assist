@@ -289,3 +289,89 @@ describe('cook mode — human note provenance (§ Unreviewed entry notes)', () =
     expect(captured[0].human_note).toBe(false);
   });
 });
+
+describe('eaten sheets decrement their sources (§ Eaten sheets decrement)', () => {
+  const build = (over: any = {}) => {
+    const calls: any = { stated: [], units: [], flagged: [] };
+    const sink = new KitchenCookMode({
+      entries: {
+        ingest: async (input: any) => ({ record: { ulid: input.ulid }, created: true }),
+        flagUnappliedDecrements: async (ulid: string, unapplied: string[]) => {
+          calls.flagged.push({ ulid, unapplied });
+        },
+      },
+      inventory: { convert: async () => ({ derived: { ulid: 'x' }, created: true }) } as any,
+      depleter: {
+        consumeStated: async (itemUlid: string, input: any) => {
+          if (over.statedThrows) throw new Error(over.statedThrows);
+          calls.stated.push({ itemUlid, ...input });
+        },
+        finishUnit: async (itemUlid: string) => {
+          calls.units.push(itemUlid);
+        },
+      },
+    });
+    return { sink, calls };
+  };
+
+  const req = (over: any = {}) => ({
+    ...(request() as any),
+    disposition: 'eaten',
+    components: [
+      { label: 'yogurt', quantity: 186 },
+      { label: 'egg', quantity: 1 },
+    ],
+    consumes: [
+      { component: 'yogurt', item_ulid: 'item_yog', model: 'divisible' },
+      { component: 'egg', item_ulid: 'item_egg', model: 'counted' },
+    ],
+    ...over,
+  });
+
+  it('decrements at the SUBMITTED quantity, not the planned one', async () => {
+    const { sink, calls } = build();
+    await sink.cook(req() as any);
+    // 186 is what the human weighed — the sheet's default is irrelevant here.
+    expect(calls.stated).toHaveLength(1);
+    expect(calls.stated[0]).toMatchObject({ itemUlid: 'item_yog', amount_g: 186 });
+    // And it links to the entry, so the depletion reads as consumption.
+    expect(calls.stated[0].entry_ulid).toBe((req() as any).ulid);
+  });
+
+  it('takes whole units off a counted item, one call per unit', async () => {
+    const { sink, calls } = build();
+    await sink.cook(req({ components: [{ label: 'egg', quantity: 3 }], consumes: [{ component: 'egg', item_ulid: 'item_egg', model: 'counted' }] }) as any);
+    expect(calls.units).toEqual(['item_egg', 'item_egg', 'item_egg']);
+  });
+
+  it('REPORTS a refused decrement instead of swallowing it', async () => {
+    // The commonest cause is the module refusing to guess a mass basis. That
+    // refusal is correct; making it visible is the point.
+    const { sink, calls } = build({ statedThrows: 'net_content_g is required' });
+    await sink.cook(req() as any);
+    expect(calls.flagged).toHaveLength(1);
+    expect(calls.flagged[0].unapplied[0]).toContain('yogurt');
+    expect(calls.flagged[0].unapplied[0]).toContain('net_content_g');
+  });
+
+  it('logs the meal even when every decrement fails', async () => {
+    const { sink } = build({ statedThrows: 'nope' });
+    const outcome = await sink.cook(req() as any);
+    // Logging must beat not-logging: inventory is reconcilable, a lost meal is not.
+    expect(outcome).toMatchObject({ kind: 'entry', created: true });
+  });
+
+  it('skips a zero quantity without reporting it as a failure', async () => {
+    const { sink, calls } = build();
+    await sink.cook(req({ components: [{ label: 'yogurt', quantity: 0 }], consumes: [{ component: 'yogurt', item_ulid: 'item_yog', model: 'divisible' }] }) as any);
+    expect(calls.stated).toHaveLength(0);
+    expect(calls.flagged).toHaveLength(0);
+  });
+
+  it('decrements nothing when the sheet carries no bindings', async () => {
+    const { sink, calls } = build();
+    await sink.cook(req({ consumes: undefined }) as any);
+    expect(calls.stated).toHaveLength(0);
+    expect(calls.units).toHaveLength(0);
+  });
+});

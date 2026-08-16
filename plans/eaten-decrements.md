@@ -1,5 +1,5 @@
 ---
-status: planned
+status: done
 depends: []
 specs:
   - specs/modules/kitchen.md
@@ -61,20 +61,25 @@ one-directional and stated in the spec so it is not read as license generally.
 
 ## Validation
 
-- [ ] An `eaten` submission whose components name divisible items decrements each
+- [x] An `eaten` submission whose components name divisible items decrements each
       by `grams / net_content_g`; the item's `on_hand_fraction` moves by the
       stated amount and the depletion records as consumption (not a recount).
-- [ ] A counted component decrements whole units, and a counted item reaching
+- [x] A counted component decrements whole units, and a counted item reaching
       zero closes as `finished` (consumed), never `tossed`.
-- [ ] A component naming a product but no item decrements nothing.
-- [ ] A divisible item whose product lacks `net_content_g` is NOT decremented,
-      and the shortfall surfaces in the entries question queue.
-- [ ] A counted item whose product lacks `unit_edible_g` is refused at publish
+- [x] A component naming a product but no item decrements nothing.
+- [x] A divisible item whose product lacks `net_content_g` is NOT decremented,
+      and the shortfall surfaces in the entries question queue. (The module's
+      existing refusal to guess a mass basis IS the signal — the catch reports
+      it rather than a second check re-deriving the same condition.)
+- [x] A counted item whose product lacks `unit_edible_g` is refused at publish
       time (the panel cannot be computed) rather than at submit time.
-- [ ] The journal entry exists even when every decrement fails.
-- [ ] Replaying a submission (same `submission_key`) neither double-logs nor
-      double-decrements.
-- [ ] No comment in the module still claims a depletion matcher exists.
+- [x] The journal entry exists even when every decrement fails.
+- [~] Replaying a submission (same `submission_key`) neither double-logs nor
+      double-decrements. **Entry idempotency is enforced** (decrements run only
+      on `created`), and `consumeStatedAmount` carries its own `entry_ulid`
+      replay guard. The counted path relies on `created` alone — not separately
+      exercised against a live replay.
+- [x] No comment in the module still claims a depletion matcher exists.
 
 ## Risks / unknowns
 
@@ -94,8 +99,38 @@ one-directional and stated in the spec so it is not read as license generally.
 
 ## Notes
 
-*Populated at closeout.*
+**The seam already existed in the other direction.** `packed` had `sources`;
+`eaten` needed the same idea bound differently — by component LABEL rather than a
+fixed amount, so the decrement follows the quantity the human states at submit
+time rather than the planned default. `request.components` already carried the
+submitted quantities, so the sink resolves each binding against them.
+
+**Two existing refusals became the implementation.** `consumeStatedAmount`
+already 400s without `net_content_g`, and `unit_edible_g` was already
+STATED-only. Rather than re-deriving those conditions, the catch around the
+depleter reports whatever the module refused — so the "unapplied" path is the
+existing guard made visible instead of a parallel rule that could drift from it.
+
+**The counted per-basis arithmetic was wrong first time**, caught by the test
+that asserted a real macro figure rather than just a shape: the worksheet
+computes `quantity / basis * per_basis` with `basis = 100`, so scaling a
+per-100g panel by `unit_edible_g / 100` divides by 100 twice. It must be
+`per100g * unit_edible_g`. Worth naming — a shape-only assertion would have
+passed a sheet that under-reported every counted component by 100x.
+
+**Live confirmation of the refuse-don't-infer rule**, from the instance this was
+written for: an egg product carries `net_content_g: 681` for 12 eggs. Deriving a
+per-unit basis gives 56.75 g — the IN-SHELL weight. The edible mass is ~50 g.
+Net-over-count would have been wrong by exactly the shell, which is the
+"wrong in either direction" case the spec names.
 
 ## Follow-ups
 
-*Populated at closeout.*
+- **Issue** — non-sheet meals (restaurant, ad-hoc free text) still decrement
+  nothing. Out of scope by design, but it means the loop closes only for
+  cooked-at-home food, and the ledger will still drift on everything else.
+- **Issue** — an item opened BEFORE tracking began has a fraction that never
+  corresponded to `net_content_g`, so its grams-to-fraction decrement is
+  proportionally wrong. Flagged as a risk in this plan; unaddressed.
+- **None** on the counted path: `unit_edible_g` is now set on the products that
+  lacked it, stated from the USDA large-egg standard rather than derived.

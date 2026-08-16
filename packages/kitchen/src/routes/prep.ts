@@ -52,6 +52,7 @@ export const registerPrepRoutes: FastifyPluginAsync<PrepRoutesConfig> = async (
                   product_ulid: { type: 'string' },
                   item_ulid: { type: 'string' },
                   quantity: { type: 'number', minimum: 0 },
+                  counted: { type: 'boolean' },
                   label: { type: 'string' },
                   note: { type: 'string' },
                 },

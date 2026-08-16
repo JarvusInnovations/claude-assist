@@ -272,3 +272,60 @@ describe('--recipe seeding', () => {
     await expect(svc.publish({ slug: 'x', label: 'x' })).rejects.toThrow(/at least one component/);
   });
 });
+
+describe('consume bindings (§ Eaten sheets decrement their sources)', () => {
+  const withUnit = () =>
+    fakeStore({
+      products: {
+        prod_egg: { ulid: 'prod_egg', name: 'Large eggs', nutrition_per_100g: { calories: 155, protein_g: 12.6 }, unit_edible_g: 50 },
+        prod_nounit: { ulid: 'prod_nounit', name: 'Canned thing', nutrition_per_100g: { calories: 100 }, unit_edible_g: null },
+      },
+      items: { item_egg: { ulid: 'item_egg', product_ulid: 'prod_egg' }, item_can: { ulid: 'item_can', product_ulid: 'prod_nounit' } },
+    });
+
+  it('binds only ITEMS — a bare product is a catalog row, not stock', async () => {
+    const { publisher, calls } = fakePublisher();
+    const svc = new PrepService(fakeStore(), publisher);
+    await svc.publish({
+      slug: 'x', label: 'x', cook: { disposition: 'eaten' },
+      components: [
+        { item_ulid: 'item_linked', quantity: 100 },
+        { product_ulid: 'prod_yogurt', quantity: 50 },
+      ],
+    });
+    const consumes = calls[0].worksheet.cook_mode.consumes;
+    expect(consumes).toHaveLength(1);
+    expect(consumes[0]).toMatchObject({ item_ulid: 'item_linked', model: 'divisible' });
+  });
+
+  it('states counted bindings and scales the panel by unit mass', async () => {
+    const { publisher, calls } = fakePublisher();
+    const svc = new PrepService(withUnit(), publisher);
+    const result = await svc.publish({
+      slug: 'x', label: 'x', cook: { disposition: 'eaten' },
+      components: [{ item_ulid: 'item_egg', quantity: 2, counted: true }],
+    });
+    expect(calls[0].worksheet.cook_mode.consumes[0]).toMatchObject({ model: 'counted' });
+    // 2 units x 50 g x 155/100 = 155 kcal — the human counts eggs, the panel
+    // still comes out in real macros.
+    expect(result.planned_totals.calories).toBe(155);
+  });
+
+  it('REFUSES a counted component with no unit_edible_g rather than deriving one', async () => {
+    const { publisher } = fakePublisher();
+    const svc = new PrepService(withUnit(), publisher);
+    await expect(
+      svc.publish({ slug: 'x', label: 'x', components: [{ item_ulid: 'item_can', quantity: 1, counted: true }] })
+    ).rejects.toThrow(/unit_edible_g/);
+  });
+
+  it('emits no bindings on a packed sheet — that shape states inputs as sources', async () => {
+    const { publisher, calls } = fakePublisher();
+    const svc = new PrepService(fakeStore(), publisher);
+    await svc.publish({
+      slug: 'x', label: 'x', cook: { disposition: 'packed', units: 3 },
+      components: [{ item_ulid: 'item_linked', quantity: 100 }],
+    });
+    expect(calls[0].worksheet.cook_mode.consumes).toBeUndefined();
+  });
+});

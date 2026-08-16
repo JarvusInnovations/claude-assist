@@ -461,3 +461,43 @@ describe('renderWorksheetHtml', () => {
     );
   });
 });
+
+describe('cook_mode.consumes (eaten decrements)', () => {
+  const base = (cook: any) => ({
+    kind: 'worksheet', version: 1,
+    fields: [{ key: 'calories', label: 'Calories' }],
+    components: [{ label: 'yogurt', quantity: 100, per_basis: { calories: 50 } }],
+    cook_mode: cook,
+  });
+
+  it('accepts a well-formed binding on an eaten sheet', () => {
+    const d = validateWorksheetDefinition(base({
+      disposition: 'eaten', label: 'meal',
+      consumes: [{ component: 'yogurt', item_ulid: '01ABC', model: 'divisible' }],
+    }));
+    expect(d.cook_mode!.consumes).toHaveLength(1);
+  });
+
+  it('REJECTS a binding naming a component that does not exist', () => {
+    // A binding that matches nothing would decrement nothing — the silent skip
+    // the feature exists to remove. Caught at publish, where it is fixable.
+    expect(() => validateWorksheetDefinition(base({
+      disposition: 'eaten', label: 'meal',
+      consumes: [{ component: 'granola', item_ulid: '01ABC', model: 'divisible' }],
+    }))).toThrow(/not in components/);
+  });
+
+  it('rejects an unknown model', () => {
+    expect(() => validateWorksheetDefinition(base({
+      disposition: 'eaten', label: 'meal',
+      consumes: [{ component: 'yogurt', item_ulid: '01ABC', model: 'weighed' }],
+    }))).toThrow(/divisible/);
+  });
+
+  it('rejects consumes on a packed sheet — that shape uses sources', () => {
+    expect(() => validateWorksheetDefinition(base({
+      disposition: 'packed', label: 'batch',
+      consumes: [{ component: 'yogurt', item_ulid: '01ABC', model: 'divisible' }],
+    }))).toThrow(/only to disposition 'eaten'/);
+  });
+});
