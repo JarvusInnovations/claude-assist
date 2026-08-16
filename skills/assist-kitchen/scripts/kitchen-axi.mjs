@@ -2484,6 +2484,13 @@ var PREP_HELP = `kitchen-axi prep <subcommand> [args] [--json]
                                             sheet component \u2014 its macros live
                                             nowhere
        [--source <item-ulid>[:amount]]\u2026    (packed only) stock the batch consumes
+                                            at a FIXED amount \u2014 for inputs the
+                                            sheet does not weigh. A source that
+                                            IS a component binds automatically
+                                            and follows the submitted weight
+       [--components-per batch|unit]       (packed only) do the component
+                                            quantities describe ONE unit or the
+                                            whole batch? default batch
        [--title T] [--digest-optin]
 
   A worksheet's per_basis blocks are reference values this module already stores.
@@ -2554,7 +2561,8 @@ async function publishPrep(args) {
       "units",
       "shelf-life",
       "source",
-      "submit-label"
+      "submit-label",
+      "components-per"
     ]
   );
   const slug = typeof flags.slug === "string" ? flags.slug : void 0;
@@ -2592,9 +2600,24 @@ async function publishPrep(args) {
     throw new AxiError(`--cook must be 'eaten' or 'packed' (got ${cook})`, "VALIDATION_ERROR", [PREP_HELP]);
   }
   const yieldsRecipe = typeof flags["yields-recipe"] === "string" ? flags["yields-recipe"] : void 0;
-  if (cook !== "packed" && (flags.units || flags["shelf-life"] || sourceArgs.length || yieldsRecipe)) {
+  const componentsPer = typeof flags["components-per"] === "string" ? flags["components-per"] : void 0;
+  if (componentsPer !== void 0 && componentsPer !== "batch" && componentsPer !== "unit") {
     throw new AxiError(
-      "--units, --shelf-life, --source and --yields-recipe apply to --cook packed only: an eaten sheet writes one entry, not stock",
+      `--components-per must be 'batch' or 'unit' (got ${componentsPer})`,
+      "VALIDATION_ERROR",
+      [PREP_HELP]
+    );
+  }
+  if (cook !== "packed" && (flags.units || flags["shelf-life"] || sourceArgs.length || yieldsRecipe || componentsPer)) {
+    throw new AxiError(
+      "--units, --shelf-life, --source, --yields-recipe and --components-per apply to --cook packed only: an eaten sheet writes one entry, not stock",
+      "VALIDATION_ERROR",
+      [PREP_HELP]
+    );
+  }
+  if (componentsPer === "unit" && !flags.units) {
+    throw new AxiError(
+      "--components-per unit needs --units: it means each component is ONE unit's worth, so the batch consumes that much times the unit count",
       "VALIDATION_ERROR",
       [PREP_HELP]
     );
@@ -2622,7 +2645,8 @@ async function publishPrep(args) {
         ...flags.units ? { units: Number(flags.units) } : {},
         ...typeof flags["shelf-life"] === "string" ? { shelf_life_class: flags["shelf-life"] } : {},
         ...yieldsRecipe ? { recipe_ulid: yieldsRecipe } : {},
-        ...sources.length ? { sources } : {}
+        ...sources.length ? { sources } : {},
+        ...componentsPer ? { components_per: componentsPer } : {}
       }
     } : {},
     ...flags["digest-optin"] ? { digest_optin: true } : {}
@@ -3563,7 +3587,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "e5e1f8f" : "dev";
+var VERSION = true ? "2163176" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)
