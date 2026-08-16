@@ -11,18 +11,27 @@
 import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import type { InventoryStore } from '../inventory-store.js';
 import type { RecipeStore } from '../store.js';
+import type { RecipeRecord } from '../types.js';
 import { PrepService, PrepValidationError, type PrepPublishInput } from '../services/prep.js';
 
 export interface PrepRoutesConfig {
   store: InventoryStore;
   recipes?: RecipeStore;
+  /**
+   * Resolves a derived component's recipe across the merged (sheet + pushed
+   * + promoted) universe — the same resolver `consume` uses
+   * (§ Authoring a prep worksheet § A derived component resolves through its
+   * recipe, not a product). Absent → a sheet naming a derived item is
+   * refused rather than resolved through a narrower lookup.
+   */
+  resolveRecipe?: (recipeUlid: string) => Promise<RecipeRecord | null>;
 }
 
 const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 export const registerPrepRoutes: FastifyPluginAsync<PrepRoutesConfig> = async (
   fastify: FastifyInstance,
-  { store, recipes }: PrepRoutesConfig
+  { store, recipes, resolveRecipe }: PrepRoutesConfig
 ) => {
   fastify.post<{ Body: PrepPublishInput }>(
     '/kitchen/prep',
@@ -94,7 +103,7 @@ export const registerPrepRoutes: FastifyPluginAsync<PrepRoutesConfig> = async (
       }
 
       try {
-        const result = await new PrepService(store, publisher, recipes).publish(request.body);
+        const result = await new PrepService(store, publisher, recipes, resolveRecipe).publish(request.body);
         reply.status(result.created ? 201 : 200);
         return result;
       } catch (err) {

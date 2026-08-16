@@ -170,6 +170,19 @@ export default createPlugin('kitchen', async (fastify: FastifyInstance, options:
   // constructed, so the forward reference is safe.
   let pipeline: KitchenPipeline;
 
+  // Macro inheritance for a derived item's provenance recipe, across the SAME
+  // merged (sheet + pushed + promoted) universe the reselect strip serves —
+  // shared by consume() and prep-worksheet derived-item resolution
+  // (claude-assist#199) so the two surfaces can never disagree about which
+  // recipes are usable for the same item. Defined here (before `pipeline` is
+  // assigned) as a closure rather than a direct call: `inventory` below has a
+  // genuine construction-order dependency on it, `pipeline` doesn't exist
+  // yet, and the closure is only invoked later, at request time.
+  const resolveMergedRecipe = async (recipeUlid: string): Promise<RecipeRecord | null> => {
+    const all = await pipeline.listAllRecipes();
+    return all.find((r) => r.ulid === recipeUlid) ?? null;
+  };
+
   const inventory = new InventoryPipeline(inventoryStore, receiptParser, labelParser, fastify.log, {
     // Same resolved zone the entries/expenditure/weigh-in routes bucket by, so
     // an item's dates and the journal entry for the same act agree on the day.
@@ -180,13 +193,7 @@ export default createPlugin('kitchen', async (fastify: FastifyInstance, options:
     // Atomic entry+deplete write for consume() (claude-assist#110) — see
     // services/consume-store.ts for why this crosses into kitchen.entries.
     consumeStore: new PgConsumeStore(fastify.sql),
-    // Macro inheritance for consume(): resolve a derived item's provenance
-    // recipe across the SAME merged (sheet + pushed + promoted) universe the
-    // reselect strip serves.
-    resolveRecipe: async (recipeUlid) => {
-      const all = await pipeline.listAllRecipes();
-      return all.find((r) => r.ulid === recipeUlid) ?? null;
-    },
+    resolveRecipe: resolveMergedRecipe,
   });
 
   pipeline = new KitchenPipeline(entryStore, recipeStore, estimator, fastify.log, {
@@ -236,7 +243,11 @@ export default createPlugin('kitchen', async (fastify: FastifyInstance, options:
   // Prep worksheets — build a collection surface from the catalog and publish
   // it through core's PagePublisher seam (§ Authoring a prep worksheet). Reads
   // the generic `fastify.pages` decorator at request time; 503s when absent.
-  await fastify.register(registerPrepRoutes, { store: inventoryStore, recipes: recipeStore });
+  await fastify.register(registerPrepRoutes, {
+    store: inventoryStore,
+    recipes: recipeStore,
+    resolveRecipe: resolveMergedRecipe,
+  });
 
   // Plan-session — app-initiated warm meal-planning session. Reads the generic
   // `fastify.sessionSpawner` decorator (from the session-spawn module) at
