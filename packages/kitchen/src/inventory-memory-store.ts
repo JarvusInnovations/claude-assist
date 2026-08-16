@@ -177,6 +177,13 @@ export class MemoryInventoryStore implements InventoryStore {
     return map;
   }
 
+  async listKnownStores(): Promise<string[]> {
+    const stores = new Set<string>();
+    for (const l of this.lexicon.values()) if (l.store) stores.add(l.store);
+    for (const i of this.items.values()) if (i.store) stores.add(i.store);
+    return [...stores].sort();
+  }
+
   async upsertLexicon(lexicon: NewLexicon): Promise<LexiconRecord> {
     const key = this.lexKey(lexicon.store, lexicon.line_text);
     const existing = this.lexicon.get(key);

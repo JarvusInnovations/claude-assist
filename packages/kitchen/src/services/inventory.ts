@@ -417,7 +417,16 @@ export class InventoryPipeline {
       return;
     }
     try {
-      const parsed = await this.receiptParser.parse({ photos, storeHint: batch.store });
+      // The roster goes in FULL (§ Receipt-line matching): the model resolves
+      // this receipt's merchant against the stores already known, so a store
+      // written shorter on one receipt than another lands on ONE key instead of
+      // fragmenting its lexicon and price history across spellings.
+      const knownStores = await this.store.listKnownStores();
+      const parsed = await this.receiptParser.parse({
+        photos,
+        storeHint: batch.store,
+        knownStores,
+      });
       // Precedence: an explicit meta store overrides the header extraction.
       const store = batch.store ?? parsed.store;
       // Persist the resolution back onto the batch when it wasn't meta-supplied:
@@ -1264,7 +1273,47 @@ export class InventoryPipeline {
       eat_by: eatBy,
       notes: item.notes ? `${item.notes}\n${summary}` : summary,
     });
+
+    // ── Learn the mapping (§ Receipt-line matching: learn from every
+    //    resolution). Attaching a product ANY way — not just via a label scan —
+    //    teaches the lexicon, or a line resolved by hand stays unmatched on
+    //    every future receipt. Observed live: an identical line from the same
+    //    store, resolved to the same product two weeks earlier, came back
+    //    unmatched because only the label path taught anything. ──
+    if (updated && productUlid !== item.product_ulid) {
+      if (productUlid && linkedProduct) {
+        await this.writeLexiconLine(updated, linkedProduct, linkedProduct.package_size ?? null);
+      } else if (productUlid === null) {
+        // Un-attaching must clear what the attachment taught, or the lexicon
+        // keeps asserting a link the item no longer makes.
+        await this.clearLexiconLine(updated);
+      }
+    }
+
     return updated ? this.viewOf(updated) : null;
+  }
+
+  /**
+   * Drop a learned mapping when its item's product link is removed. Scoped to
+   * mappings that actually assert a product — a non-inventory skip marker is a
+   * separate decision and is left alone.
+   */
+  private async clearLexiconLine(item: InventoryItemRecord): Promise<void> {
+    if (!item.store || !item.raw_label) return;
+    const existing = await this.store.getLexicon(item.store, normalizeLine(item.raw_label));
+    if (!existing || existing.product_ulid === null) return;
+    // No delete verb exists, and inventing one to erase history would be the
+    // wrong shape anyway: the lexicon is monotonic in intent (§ Data model).
+    // Overwriting with a null product retracts the CLAIM while keeping the row,
+    // so a later resolution upserts over it normally.
+    await this.store.upsertLexicon({
+      ulid: existing.ulid,
+      store: item.store,
+      line_text: normalizeLine(item.raw_label),
+      product_ulid: null,
+      package_size: null,
+      shelf_life_class: null,
+    });
   }
 
   // ── Conversions (prep transforms) ────────────────────────────────────────────

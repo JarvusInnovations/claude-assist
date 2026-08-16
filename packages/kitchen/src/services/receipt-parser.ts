@@ -30,6 +30,16 @@ export interface ReceiptParseInput {
   photos: InventoryPhotoPart[];
   /** Store hint from the receipt POST (when the client already knows it). */
   storeHint?: string | null;
+  /**
+   * Every store already known to this instance. The model resolves the receipt
+   * against this roster and returns an EXISTING name when it is the same store
+   * (§ Receipt-line matching: store identity is resolved by model).
+   *
+   * Must be passed in FULL. A truncated roster makes a match impossible to find
+   * and invites the model to mint a duplicate store, which is the exact
+   * fragmentation the roster exists to prevent.
+   */
+  knownStores?: string[];
 }
 
 /** The pipeline depends on this narrow interface; tests inject a fake. */
@@ -42,7 +52,12 @@ You transcribe a grocery/store receipt photo into its purchased line items for a
 </role>
 
 <instructions>
-1. STORE: Return the merchant name printed in the receipt header — the logo or first header line — trimmed to just the brand. DROP the street address, city/state/ZIP, phone number, store number (e.g. "#1234"), slogan, and website; KEEP the printed casing. The goal is a short, stable name that will be identical across receipts from the same store. Return null if no store name is discernible.
+1. STORE: Identify the merchant, then resolve it against <known_stores> if that list is provided.
+   a. Read the merchant name from the receipt header — the logo or first header line — trimmed to just the brand. DROP the street address, city/state/ZIP, phone number, store number (e.g. "#1234"), slogan, and website. A <store_hint>, when present, is an operator-supplied name for the SAME store and is authoritative about WHICH merchant it is.
+   b. If <known_stores> contains an entry that is THE SAME MERCHANT — including when the receipt prints a longer or shorter form of it, or different casing — return that entry EXACTLY AS LISTED. Matching an existing entry is strongly preferred: a duplicate entry for one store silently splits its purchase history.
+   c. Only when no entry is the same merchant, return a new short, stable name in the receipt's printed casing.
+   d. BE PRECISE ABOUT WHAT "SAME MERCHANT" MEANS. Sharing a word is not enough. A standalone market and a supermarket chain whose name happens to contain "market" are DIFFERENT merchants. A chain's small-format store (e.g. "<Chain> <Format> Market") is a DIFFERENT merchant from the full-size "<Chain>". When genuinely unsure, return the new name rather than collapsing two merchants into one — a split history is recoverable, a merged one is not.
+   e. Return null if no store name is discernible and no hint is given.
 2. LINES: List every purchased PRODUCT line, in order. Copy the printed item text verbatim (keep the store's abbreviations/truncations — they are the lexicon key).
 3. QUANTITY: When a line represents more than one physical unit — a "N @ price" marker line above/beside the item, a "N x" prefix, or a quantity column — set that line's "quantity" to N (an integer ≥ 1) and DO NOT emit the bare "N @ price" marker as its own line. Default quantity is 1; omit it or use 1 for single units.
 4. PRICE: Set each line's "price_cents" to the line's PRINTED EXTENDED price — the amount actually paid for that line's units, exactly as printed, converted to integer cents (e.g. "$7.98" -> 798). For a multi-unit line this is the printed line total, NOT the per-unit price from a "N @ price" marker. Transcribe only; never compute a price from quantity × unit price yourself. Null when the price is unreadable or the line prints none.
@@ -94,9 +109,12 @@ export class KitchenReceiptParser implements ReceiptParser {
     }));
     content.push({
       type: 'text',
-      text: `<receipt_photos count="${input.photos.length}"/>${
-        input.storeHint ? `\n<store_hint>${input.storeHint}</store_hint>` : ''
-      }`,
+      text:
+        `<receipt_photos count="${input.photos.length}"/>` +
+        (input.storeHint ? `\n<store_hint>${input.storeHint}</store_hint>` : '') +
+        (input.knownStores?.length
+          ? `\n<known_stores>\n${input.knownStores.map((n) => `- ${n}`).join('\n')}\n</known_stores>`
+          : ''),
     });
 
     // Tag extraction, the correction turn, retries, timeouts, and spend

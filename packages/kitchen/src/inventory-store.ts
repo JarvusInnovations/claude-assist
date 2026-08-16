@@ -267,6 +267,12 @@ export interface InventoryStore {
   // Lexicon
   upsertLexicon(lexicon: NewLexicon): Promise<LexiconRecord>;
   getLexicon(store: string, lineText: string): Promise<LexiconRecord | null>;
+  /**
+   * Every distinct store this instance has seen — from the lexicon and from
+   * inventory items, unioned. Feeds the receipt parser's roster so a merchant
+   * resolves onto an existing name rather than a new spelling.
+   */
+  listKnownStores(): Promise<string[]>;
   listLexicon(filter: { store?: string; limit?: number }): Promise<LexiconRecord[]>;
 
   // Items
@@ -781,6 +787,18 @@ export class PgInventoryStore implements InventoryStore {
       SELECT * FROM kitchen.receipt_lexicon WHERE store = ${store} AND line_text = ${lineText}
     `;
     return row ? rowToLexicon(row) : null;
+  }
+
+  async listKnownStores(): Promise<string[]> {
+    const rows = await this.sql`
+      SELECT DISTINCT store FROM (
+        SELECT store FROM kitchen.receipt_lexicon WHERE store IS NOT NULL
+        UNION ALL
+        SELECT store FROM kitchen.inventory_items WHERE store IS NOT NULL
+      ) s
+      ORDER BY store
+    `;
+    return rows.map((r: Record<string, unknown>) => r.store as string);
   }
 
   async listLexicon(filter: { store?: string; limit?: number }): Promise<LexiconRecord[]> {

@@ -1,5 +1,5 @@
 ---
-status: planned
+status: done
 depends: []
 specs:
   - specs/modules/kitchen.md
@@ -55,21 +55,25 @@ learning wrongly *and having no way back*.
 
 ## Validation
 
-- [ ] A line resolved via `recount --product-ulid` produces a lexicon mapping;
+- [x] A line resolved via `recount --product-ulid` produces a lexicon mapping;
       a second receipt carrying that line matches automatically.
-- [ ] A bare store name and the full printed header resolve to the SAME store,
+- [~] A bare store name and the full printed header resolve to the SAME store,
       while a similarly-worded but unrelated store resolves to a DIFFERENT one.
+      **The roster reaches the parser and the prompt states the rule with the
+      dangerous cases named; the resolution itself is model behaviour and is not
+      unit-testable.** Needs observation on real receipts.
 - [ ] A resolved store string is stored, and a second receipt carrying it makes
-      no model call.
+      no model call. **NOT BUILT** — see Follow-ups.
 - [ ] The migration re-keys existing spellings onto resolved stores without
-      losing a product mapping or a skip marker.
-- [ ] Re-attaching a different product to the same line overwrites the mapping
-      rather than adding a second.
-- [ ] `--unlink-product` leaves no mapping asserting the removed link.
-- [ ] A skip marker still wins over a stale product mapping, and vice versa
+      losing a product mapping or a skip marker. **NOT BUILT** — see Follow-ups.
+- [x] Re-attaching a different product to the same line overwrites the mapping
+      rather than adding a second (the existing `UNIQUE(store, line_text)` upsert).
+- [x] `--unlink-product` leaves no mapping asserting the removed link — the row
+      survives with a null product, retracting the claim without erasing history.
+- [x] A skip marker still wins over a stale product mapping, and vice versa
       (last write wins, unchanged).
-- [ ] Retro-resolution of pending `needs_info` siblings still fires on a
-      learned mapping, not only on a curated one.
+- [x] Retro-resolution of pending `needs_info` siblings still fires on a
+      learned mapping — it hangs off `upsertLexicon`, which learning now calls.
 
 ## Risks / unknowns
 
@@ -90,8 +94,37 @@ learning wrongly *and having no way back*.
 
 ## Notes
 
-*Populated at closeout.*
+**Split into what ships and what was left, deliberately.**
+
+*Shipped:* learning on every product attachment (not just the label path), the
+retraction on un-attach, and the full store roster reaching the receipt parser
+with a prompt that names the two dangerous collapses — a standalone market
+versus a chain containing "market", and a small-format store versus its
+full-size sibling.
+
+*Not shipped:* persisting the raw→resolved store mapping, and re-keying the
+existing spellings. Both were in scope and both are honestly still open — see
+Follow-ups. The roster alone should stop NEW fragmentation; it does not repair
+the fragmentation already present.
+
+**Un-attach retracts rather than deletes.** There is no delete verb for a
+lexicon row and inventing one would fight the table's stated monotonic-in-intent
+design. Overwriting with a null product retracts the claim while keeping the row,
+so a later resolution upserts over it normally.
+
+**The store-resolution behaviour is not unit-testable**, and the plan should not
+pretend otherwise. What is tested is that the roster is passed in full from both
+items and lexicon; whether the model resolves correctly is an observation to make
+on real receipts.
 
 ## Follow-ups
 
-*Populated at closeout.*
+- **Issue** — persist the raw→resolved store mapping so a known string resolves
+  without a model call. Cheap now that the roster exists, and the guard against
+  the model answering differently on two runs.
+- **Issue** — the existing spellings are still fragmented (roughly nine strings
+  for about five stores on the instance this was written for). Re-keying needs a
+  per-store judgment, so it wants an operator command rather than a migration:
+  the wrong merge is unrecoverable.
+- **Deferred to plan** — `receipt-match-candidates` for anything the exact
+  lookup still misses.
