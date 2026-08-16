@@ -610,8 +610,8 @@ var COMMAND_GROUPS = [
     group: "Prep worksheets",
     commands: [
       {
-        usage: "prep publish --slug S --label T [--recipe <recipe-ulid>] [--component <product-ulid>=<g>]\u2026 [--component-item <item-ulid>=<g>]\u2026 [--component-unit <item-ulid>=<n>]\u2026 [--step T]\u2026 [--cook eaten|packed] [--units N] [--shelf-life C] [--source <item-ulid>[:amount]]\u2026",
-        summary: "build a prep WORKSHEET from the catalog and publish it. Components are named by ULID and resolve to the product's stored per-100g panel, so no reference number is transcribed by hand; a product with no panel is refused rather than guessed at, and a missing field contributes 'unknown' rather than zero. An EATEN sheet decrements the items its components name when submitted, so name stock with --component-item (grams) or --component-unit (whole units for counted stock). --recipe seeds rows from a recipe's lines (which carry their own per-100g inline, so they need no catalog lookup). --cook makes submitting the sheet the write itself (eaten \u2192 one entry; packed \u2192 one conversion). Publishing writes NOTHING to the ledger"
+        usage: "prep publish --slug S --label T [--recipe <recipe-ulid>] [--component <product-ulid>=<g>]\u2026 [--component-item <item-ulid>=<g>]\u2026 [--component-unit <item-ulid>=<n>]\u2026 [--step T]\u2026 [--cook eaten|packed] [--units N] [--shelf-life C] [--yields-recipe <recipe-ulid>] [--source <item-ulid>[:amount]]\u2026",
+        summary: "build a prep WORKSHEET from the catalog and publish it. Components are named by ULID and resolve to the product's stored per-100g panel, so no reference number is transcribed by hand; a product with no panel is refused rather than guessed at, and a missing field contributes 'unknown' rather than zero. An EATEN sheet decrements the items its components name when submitted, so name stock with --component-item (grams) or --component-unit (whole units for counted stock). --recipe seeds rows from a recipe's lines (which carry their own per-100g inline, so they need no catalog lookup). --cook makes submitting the sheet the write itself (eaten \u2192 one entry; packed \u2192 one conversion). On a packed sheet, --yields-recipe sets the batch's macro provenance \u2014 WITHOUT it the derived item can never be one-tap consumed or named as a component, because its macros live nowhere. Publishing writes NOTHING to the ledger"
       }
     ]
   },
@@ -2429,6 +2429,11 @@ var PREP_HELP = `kitchen-axi prep <subcommand> [args] [--json]
        [--heading T] [--intro T]
        [--cook eaten|packed]               submitting the sheet IS the write
        [--units N] [--shelf-life C]        (packed only) the derived item's shape
+       [--yields-recipe <recipe-ulid>]     (packed only) macro provenance for the
+                                            batch. WITHOUT it the derived item can
+                                            never be one-tap consumed or named as a
+                                            sheet component \u2014 its macros live
+                                            nowhere
        [--source <item-ulid>[:amount]]\u2026    (packed only) stock the batch consumes
        [--title T] [--digest-optin]
 
@@ -2494,6 +2499,7 @@ async function publishPrep(args) {
       "component-item",
       "component-unit",
       "recipe",
+      "yields-recipe",
       "step",
       "cook",
       "units",
@@ -2536,9 +2542,10 @@ async function publishPrep(args) {
   if (cook !== void 0 && cook !== "eaten" && cook !== "packed") {
     throw new AxiError(`--cook must be 'eaten' or 'packed' (got ${cook})`, "VALIDATION_ERROR", [PREP_HELP]);
   }
-  if (cook !== "packed" && (flags.units || flags["shelf-life"] || sourceArgs.length)) {
+  const yieldsRecipe = typeof flags["yields-recipe"] === "string" ? flags["yields-recipe"] : void 0;
+  if (cook !== "packed" && (flags.units || flags["shelf-life"] || sourceArgs.length || yieldsRecipe)) {
     throw new AxiError(
-      "--units, --shelf-life and --source apply to --cook packed only: an eaten sheet writes one entry, not stock",
+      "--units, --shelf-life, --source and --yields-recipe apply to --cook packed only: an eaten sheet writes one entry, not stock",
       "VALIDATION_ERROR",
       [PREP_HELP]
     );
@@ -2565,6 +2572,7 @@ async function publishPrep(args) {
         disposition: cook,
         ...flags.units ? { units: Number(flags.units) } : {},
         ...typeof flags["shelf-life"] === "string" ? { shelf_life_class: flags["shelf-life"] } : {},
+        ...yieldsRecipe ? { recipe_ulid: yieldsRecipe } : {},
         ...sources.length ? { sources } : {}
       }
     } : {},
@@ -3432,7 +3440,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "a38bfa4" : "dev";
+var VERSION = true ? "76bda54" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)
