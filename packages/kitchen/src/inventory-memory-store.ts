@@ -179,6 +179,22 @@ export class MemoryInventoryStore implements InventoryStore {
 
   private storeAliases = new Map<string, string>();
 
+  async listPricesByProduct(): Promise<Map<string, number[]>> {
+    const out = new Map<string, number[]>();
+    for (const l of this.lines.values()) {
+      if (!l.product_ulid || l.price_cents == null) continue;
+      out.set(l.product_ulid, [...(out.get(l.product_ulid) ?? []), l.price_cents]);
+    }
+    return out;
+  }
+
+  async getBatchLinePrice(itemUlid: string): Promise<number | null> {
+    for (const l of this.lines.values()) {
+      if (l.inventory_item_ulid === itemUlid) return l.price_cents ?? null;
+    }
+    return null;
+  }
+
   async getStoreAlias(rawStore: string): Promise<string | null> {
     return this.storeAliases.get(rawStore) ?? null;
   }

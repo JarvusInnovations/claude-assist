@@ -1,5 +1,5 @@
 ---
-status: planned
+status: done
 depends: [receipt-lexicon-learning]
 specs:
   - specs/modules/kitchen.md
@@ -55,19 +55,19 @@ match — which is worse than the scan it was meant to save.
 
 ## Validation
 
-- [ ] A re-worded line for a familiar product ranks that product first.
-- [ ] No path attaches a product from a score. Grep the resolution path: the
-      only automatic attachment is an exact lexicon hit.
-- [ ] Two unrelated products at the same price do not rank each other; price
-      alone never promotes a textually implausible candidate.
-- [ ] Every non-exact line lands `needs_info` — behavior unchanged from today
-      for anything not already decided by a human.
-- [ ] Candidates recompute after a price or catalog change rather than serving a
-      stale set.
-- [ ] Choosing a candidate teaches the lexicon (via `receipt-lexicon-learning`),
-      so the same line matches exactly next time.
-- [ ] "None of these" is reachable in one action and leaves the item in exactly
-      the state it would have been without the picker.
+- [x] A re-worded line for a familiar product ranks that product first.
+- [x] No path attaches a product from a score — the module exposes no threshold
+      and no attach verb; the only automatic attachment remains an exact lexicon hit.
+- [x] Two unrelated products at the same price do not rank each other; price
+      scales only what text already found, so a zero-text candidate stays zero.
+- [x] Every non-exact line lands `needs_info` — unchanged; candidates are an
+      additional read, not a change to resolution.
+- [x] Candidates recompute on every call — nothing is stored.
+- [x] Choosing a candidate goes through `recount --product-ulid`, which teaches
+      the lexicon, so the same line matches exactly next time.
+- [~] "None of these" is reachable in one action. **API-side only** — the CLI
+      simply does not attach, which is the correct no-op. The APP affordance is
+      not built (see Follow-ups).
 
 ## Risks / unknowns
 
@@ -84,8 +84,33 @@ match — which is worse than the scan it was meant to save.
 
 ## Notes
 
-*Populated at closeout.*
+**The scoring module contains no threshold, deliberately.** Removing auto-attach
+turned ranking quality from a correctness property into a UX one, which is what
+made this shippable without tuning data — the earlier threshold design could not
+have been.
+
+**Character trigrams over tokens.** Receipt lines are truncated and
+abbreviation-heavy, where token overlap performs worst exactly when it is needed
+most. Dice over trigrams handles the abbreviated-vs-spelled-out case that
+motivated the plan.
+
+**Price scales; it never adds.** The combined score multiplies the text score by
+a factor in 0.9–1.1, so a candidate with no textual support cannot be promoted
+however well its price agrees. Two unrelated items at one price say nothing, and
+a test pins that.
+
+**A missing price reports `null`, never `0`.** Zero would read as disagreement
+rather than absence, and the CLI prints `n/a` for the same reason.
+
+**A known line for this store outweighs a catalog name** (×1.15), because it is
+evidence about how THIS store prints THIS product rather than about what the
+product is called.
 
 ## Follow-ups
 
-*Populated at closeout.*
+- **Issue** — the capture-app picker is not built. The API returns ranked
+  candidates with per-signal breakdown; the app affordance (list + "none of
+  these — scan it") is a client change requiring an app build to install.
+- **Unknown, worth measuring before investing in the UI** — how often near-misses
+  actually occur now that learning and store resolution are fixed. If the answer
+  is "rarely", the API alone may be sufficient and the picker not worth building.

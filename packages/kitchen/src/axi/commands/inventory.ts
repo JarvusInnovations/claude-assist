@@ -42,6 +42,8 @@ export const INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json
   merge <ulid> --into <ulid>                fold a DUPLICATE item into a survivor:
                                              relink its dependents, then retire it
   remark "<free text>" [--at DATE]          free-text event resolver (honest match)
+  candidates <ulid> [--limit N]         ranked products for an unmatched line —
+                                          suggestions only, nothing auto-attaches
   questions [--limit N]                     open needs-info items as questions
   waste [--since DATE] [--until DATE] [--limit N]
                                              the COSTED toss log: what was thrown
@@ -336,6 +338,8 @@ export async function inventoryCommand(args: string[]): Promise<string> {
       return mergeItem(rest);
     case "remark":
       return remark(rest);
+    case "candidates":
+      return lineCandidates(rest);
     case "questions":
       return questions(rest);
     case "waste":
@@ -838,4 +842,36 @@ export function assertConvertShelfLifeClass(cls: unknown): void {
       [INVENTORY_HELP]
     );
   }
+}
+
+/**
+ * Ranked products for an unmatched line. Suggestions only — identity is settled
+ * by choosing one, never by a score (§ Near-miss candidates).
+ */
+async function lineCandidates(args: string[]): Promise<string> {
+  const { positionals, flags } = parseArgs(args, ["json"], ["limit"]);
+  const ulid = requirePositional(positionals, 0, "item ulid", INVENTORY_HELP);
+  const limit = typeof flags.limit === "string" ? flags.limit : undefined;
+  const result = await api.get(`/api/kitchen/inventory/${encodeURIComponent(ulid)}/candidates`, { limit });
+  if (flags.json) return rawJson(result);
+  const rows = (result?.candidates ?? []).map((c: any) => ({
+    product: c.product_name,
+    score: c.score,
+    line_sim: c.signals.line,
+    name_sim: c.signals.name,
+    price: c.signals.price === null ? "n/a" : c.signals.price,
+    product_ulid: c.product_ulid,
+  }));
+  return renderOutput([
+    renderList("candidates", rows, [
+      field("product"), field("score"), field("line_sim"), field("name_sim"),
+      field("price"), field("product_ulid"),
+    ]),
+    renderHelp([
+      "Suggestions, never decisions — nothing is attached by a score",
+      "Attach one with `kitchen-axi inventory recount <item> --product-ulid <product>` (which also teaches the lexicon)",
+      "price 'n/a' means there was no price to compare, NOT that the prices disagree",
+      "None of these? Scan the label instead — a wrong product corrupts a panel, a price series and stock",
+    ]),
+  ]);
 }

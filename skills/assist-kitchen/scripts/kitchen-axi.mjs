@@ -685,6 +685,10 @@ var COMMAND_GROUPS = [
         summary: "fold a DUPLICATE item (two records, ONE physical package) into a survivor: fills only the survivor's EMPTY identity fields, relinks its entries/receipt line/conversions, then retires it as dismissed. Quantities are never summed and the survivor keeps its OWN clock \u2014 use this, not dismiss, whenever either record has history"
       },
       { usage: 'inventory remark "<free text>" [--at DATE]', summary: "free-text event resolver \u2014 matches a remark to an item and infers opened/finished/tossed; prints matched/unmatched honestly (unmatched is normal, not an error)" },
+      {
+        usage: "inventory candidates <ulid> [--limit N]",
+        summary: "ranked candidate products for an item whose receipt line never matched exactly, scored on line-text similarity, product-name similarity and price agreement. SUGGESTIONS ONLY \u2014 nothing is attached by a score; the only automatic attachment is an exact lexicon hit, which replays a human decision rather than making one. A null price signal means there was nothing to compare, not that the prices disagree"
+      },
       { usage: "inventory questions [--limit N]", summary: "open needs-info items as one-time questions" },
       {
         usage: "inventory waste [--since DATE] [--until DATE] [--limit N]",
@@ -1749,6 +1753,8 @@ var INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json]
   merge <ulid> --into <ulid>                fold a DUPLICATE item into a survivor:
                                              relink its dependents, then retire it
   remark "<free text>" [--at DATE]          free-text event resolver (honest match)
+  candidates <ulid> [--limit N]         ranked products for an unmatched line \u2014
+                                          suggestions only, nothing auto-attaches
   questions [--limit N]                     open needs-info items as questions
   waste [--since DATE] [--until DATE] [--limit N]
                                              the COSTED toss log: what was thrown
@@ -2032,6 +2038,8 @@ async function inventoryCommand(args) {
       return mergeItem(rest);
     case "remark":
       return remark(rest);
+    case "candidates":
+      return lineCandidates(rest);
     case "questions":
       return questions(rest);
     case "waste":
@@ -2424,6 +2432,37 @@ function assertConvertShelfLifeClass(cls) {
       [INVENTORY_HELP]
     );
   }
+}
+async function lineCandidates(args) {
+  const { positionals, flags } = parseArgs(args, ["json"], ["limit"]);
+  const ulid = requirePositional(positionals, 0, "item ulid", INVENTORY_HELP);
+  const limit = typeof flags.limit === "string" ? flags.limit : void 0;
+  const result = await api.get(`/api/kitchen/inventory/${encodeURIComponent(ulid)}/candidates`, { limit });
+  if (flags.json) return rawJson(result);
+  const rows = (result?.candidates ?? []).map((c) => ({
+    product: c.product_name,
+    score: c.score,
+    line_sim: c.signals.line,
+    name_sim: c.signals.name,
+    price: c.signals.price === null ? "n/a" : c.signals.price,
+    product_ulid: c.product_ulid
+  }));
+  return renderOutput2([
+    renderList("candidates", rows, [
+      field("product"),
+      field("score"),
+      field("line_sim"),
+      field("name_sim"),
+      field("price"),
+      field("product_ulid")
+    ]),
+    renderHelp([
+      "Suggestions, never decisions \u2014 nothing is attached by a score",
+      "Attach one with `kitchen-axi inventory recount <item> --product-ulid <product>` (which also teaches the lexicon)",
+      "price 'n/a' means there was no price to compare, NOT that the prices disagree",
+      "None of these? Scan the label instead \u2014 a wrong product corrupts a panel, a price series and stock"
+    ])
+  ]);
 }
 
 // packages/kitchen/src/axi/commands/prep.ts
@@ -3524,7 +3563,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "f03fb57" : "dev";
+var VERSION = true ? "e5e1f8f" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)

@@ -243,6 +243,10 @@ export interface InventoryStore {
   updateProduct(ulid: string, patch: ProductPatch): Promise<ProductRecord | null>;
   /** Live products only — archived rows are off every listing and match path. */
   listProducts(filter: { q?: string; limit?: number }): Promise<ProductRecord[]>;
+  /** Observed line prices per product at a store, for the candidate price signal. */
+  listPricesByProduct(store?: string): Promise<Map<string, number[]>>;
+  /** The receipt line an item came from, when it came from one. */
+  getBatchLinePrice(itemUlid: string): Promise<number | null>;
   /**
    * Live products whose name normalizes (case-folded, whitespace-collapsed,
    * trimmed) to `normalized` — the name key for the `POST /products` upsert and
@@ -661,6 +665,34 @@ export class PgInventoryStore implements InventoryStore {
       RETURNING *
     `;
     return row ? rowToProduct(row) : null;
+  }
+
+  async listPricesByProduct(store?: string): Promise<Map<string, number[]>> {
+    const rows = store
+      ? await this.sql`
+          SELECT l.product_ulid, l.price_cents FROM kitchen.purchase_batch_lines l
+          JOIN kitchen.purchase_batches b ON b.ulid = l.batch_ulid
+          WHERE l.product_ulid IS NOT NULL AND l.price_cents IS NOT NULL AND b.store = ${store}
+        `
+      : await this.sql`
+          SELECT product_ulid, price_cents FROM kitchen.purchase_batch_lines
+          WHERE product_ulid IS NOT NULL AND price_cents IS NOT NULL
+        `;
+    const out = new Map<string, number[]>();
+    for (const r of rows as Record<string, unknown>[]) {
+      const k = r.product_ulid as string;
+      out.set(k, [...(out.get(k) ?? []), Number(r.price_cents)]);
+    }
+    return out;
+  }
+
+  async getBatchLinePrice(itemUlid: string): Promise<number | null> {
+    const rows = await this.sql`
+      SELECT price_cents FROM kitchen.purchase_batch_lines
+      WHERE inventory_item_ulid = ${itemUlid} LIMIT 1
+    `;
+    const v = rows[0]?.price_cents;
+    return v == null ? null : Number(v);
   }
 
   async listProducts(filter: { q?: string; limit?: number }): Promise<ProductRecord[]> {
