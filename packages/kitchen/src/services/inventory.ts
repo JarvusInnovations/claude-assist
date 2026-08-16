@@ -1486,7 +1486,37 @@ export class InventoryPipeline {
       if (isTerminal(item.state)) {
         throw new InvalidTransitionError(item.state, 'finished'); // a terminal item has nothing left to spend
       }
-      const { update, consumed, kind } = this.planConversionDecrement(item, src.amount, at);
+      // A gram-denominated source is resolved against the product's mass basis
+      // HERE rather than by the caller, so there is exactly one refusal path
+      // for a missing basis (§ The basis rule: refuse, never infer). Counted
+      // sources decrement in whole units and never take this branch.
+      let amount = src.amount;
+      if (src.amount_g !== undefined) {
+        if (src.amount !== undefined) {
+          throw new ConversionValidationError(
+            `convert source ${src.item_ulid}: pass amount OR amount_g, never both`
+          );
+        }
+        if (!(src.amount_g > 0)) {
+          throw new ConversionValidationError(
+            `convert source ${src.item_ulid}: amount_g must be a positive number`
+          );
+        }
+        if (item.units_total != null) {
+          throw new ConversionValidationError(
+            `convert source ${src.item_ulid} is counted — decrement it in whole units via amount, not amount_g`
+          );
+        }
+        const product = item.product_ulid ? await this.store.getProduct(item.product_ulid) : null;
+        if (!product?.net_content_g) {
+          throw new ConversionValidationError(
+            `convert source ${src.item_ulid} has no mass basis (linked product's net_content_g) — ` +
+              `state the decrement as a fraction via amount, or give the product a net content`
+          );
+        }
+        amount = src.amount_g / product.net_content_g;
+      }
+      const { update, consumed, kind } = this.planConversionDecrement(item, amount, at);
       sourceWrites.push({ item_ulid: item.ulid, update });
       projected.set(item.ulid, applyItemStateUpdate(item, update));
       provenance.push({ item_ulid: item.ulid, amount: consumed, amount_kind: kind });

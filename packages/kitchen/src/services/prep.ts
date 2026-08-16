@@ -84,6 +84,11 @@ export interface PrepPublishInput {
     shelf_life_class?: string;
     recipe_ulid?: string;
     sources?: { item_ulid: string; amount?: number }[];
+    /**
+     * Do the component quantities describe ONE unit of the batch, or the whole
+     * batch? Defaults to `batch`. Only meaningful alongside `units`.
+     */
+    components_per?: 'batch' | 'unit';
   };
   digest_optin?: boolean;
 }
@@ -292,11 +297,17 @@ export class PrepService {
               ...(input.cook.shelf_life_class ? { shelf_life_class: input.cook.shelf_life_class } : {}),
               ...(input.cook.recipe_ulid ? { recipe_ulid: input.cook.recipe_ulid } : {}),
               ...(input.cook.sources?.length ? { sources: input.cook.sources } : {}),
-              // An eaten sheet decrements what it names; a packed one already
-              // states its inputs as `sources`.
-              ...(input.cook.disposition === 'eaten' && consumes.length
-                ? { consumes }
-                : {}),
+              // BOTH dispositions bind their components to stock. An eaten
+              // sheet decrements what it names; a packed one's explicit
+              // `sources` are frozen at publish and so cannot follow the
+              // corrected weights the sheet exists to collect — a binding can
+              // (§ A packed batch's sources follow the submitted weights).
+              ...(consumes.length ? { consumes } : {}),
+              // Whether the component quantities describe ONE unit or the whole
+              // batch. Stated, never inferred: `units: 3` means the whole pot on
+              // a farro sheet and one jar of three on an oat sheet, and nothing
+              // in the quantities tells them apart.
+              ...(input.cook.components_per ? { components_per: input.cook.components_per } : {}),
             },
           }
         : {}),

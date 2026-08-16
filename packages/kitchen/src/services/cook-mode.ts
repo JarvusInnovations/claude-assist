@@ -80,7 +80,7 @@ export interface CookModeDepleter {
 
 export interface CookModeConverter {
   convert(input: {
-    sources?: { item_ulid: string; amount?: number }[];
+    sources?: { item_ulid: string; amount?: number; amount_g?: number }[];
     derived: {
       ulid?: string;
       name: string;
@@ -258,6 +258,57 @@ export class KitchenCookMode implements WorksheetCookSink {
   }
 
   /**
+   * Turn a packed sheet's component bindings into concrete conversion sources,
+   * merged with the explicit ones (§ A packed batch's sources follow the
+   * submitted weights).
+   *
+   * Resolved BEFORE the conversion is planned, not applied after it, so the
+   * decrements and the derived item stay one transaction. That is the whole
+   * difference from `eaten`, where depletion follows an already-authoritative
+   * entry and is allowed to fail loudly instead.
+   *
+   * **A binding beats an explicit source for the same item.** Naming an item
+   * both ways is an authoring mistake with a right answer — the measured
+   * quantity — and applying both would decrement twice while looking correct,
+   * which is the exact failure mode this change exists to remove.
+   */
+  private resolvePackedSources(
+    request: WorksheetCookRequest
+  ): { item_ulid: string; amount?: number; amount_g?: number }[] {
+    const packed = request.packed ?? {};
+    // A per-unit sheet states ONE unit's build and yields `units` of them, so
+    // the batch consumes that much times over. `batch` (the default) already
+    // describes the whole thing.
+    const multiplier =
+      packed.components_per === 'unit' && packed.units && packed.units > 0 ? packed.units : 1;
+
+    const quantities = new Map<string, number>(
+      request.components.map((c) => [c.label, c.quantity] as [string, number])
+    );
+
+    const bound = new Map<string, { item_ulid: string; amount?: number; amount_g?: number }>();
+    for (const bind of request.consumes ?? []) {
+      const quantity = quantities.get(bind.component);
+      // A binding with no submitted quantity is silently skipped rather than
+      // guessed at: the published amount is exactly the stale number this
+      // resolution exists to stop trusting.
+      if (quantity === undefined || quantity <= 0) continue;
+      const total = quantity * multiplier;
+      bound.set(
+        bind.item_ulid,
+        bind.model === 'counted'
+          ? // Whole units only — a fractional unit is not a thing you can spend
+            // off a counted item, and rounding one would invent stock movement.
+            { item_ulid: bind.item_ulid, amount: Math.round(total) }
+          : { item_ulid: bind.item_ulid, amount_g: total }
+      );
+    }
+
+    const explicit = (packed.sources ?? []).filter((s) => !bound.has(s.item_ulid));
+    return [...bound.values(), ...explicit];
+  }
+
+  /**
    * A packed batch is a CONVERSION: sources decremented, one derived item
    * created carrying the recipe that fixes its macros, and NOTHING posted to the
    * journal. The batch is logged when it is eaten, at whatever share is actually
@@ -277,8 +328,10 @@ export class KitchenCookMode implements WorksheetCookSink {
     // eaten sheet, even though a conversion stores no macros itself.
     totalsToStatedMacros(request.totals);
 
+    const sources = this.resolvePackedSources(request);
+
     const { derived, created } = await this.config.inventory.convert({
-      ...(packed.sources && packed.sources.length > 0 ? { sources: packed.sources } : {}),
+      ...(sources.length > 0 ? { sources } : {}),
       derived: {
         ulid: request.ulid,
         name: request.label.trim(),

@@ -85,6 +85,7 @@ export const registerPrepRoutes: FastifyPluginAsync<PrepRoutesConfig> = async (
                     properties: { item_ulid: { type: 'string' }, amount: { type: 'number' } },
                   },
                 },
+                components_per: { type: 'string', enum: ['batch', 'unit'] },
               },
             },
           },

@@ -402,6 +402,35 @@ describe('inventory routes', () => {
     expect(terminalRes.statusCode).toBe(409);
   });
 
+  it('POST /kitchen/inventory/convert resolves a gram-denominated source against the product net content, and REFUSES when there is no basis', async () => {
+    const { product: oats } = await pipeline.upsertProduct({ name: 'Bulk oats', shelf_life_class: 'pantry', net_content_g: 200 });
+    const jar = await pipeline.createItem({ raw_label: 'Bulk oats', shelf_life_class: 'pantry', acquired_at: '2026-07-01', product_ulid: oats.ulid });
+
+    // 50 g off a 200 g jar is a quarter — the caller states mass, the service
+    // does the division, so there is one refusal path rather than two.
+    const res = await fastify.inject({
+      method: 'POST',
+      url: '/kitchen/inventory/convert',
+      payload: {
+        sources: [{ item_ulid: jar.item.ulid, amount_g: 50 }],
+        derived: { name: 'Oat jars', units_total: 3 },
+        at: '2026-07-10',
+      },
+    });
+    expect(res.statusCode).toBe(201);
+    expect(res.json().sources[0].on_hand_fraction).toBeCloseTo(0.75, 5);
+
+    // No linked product, so no mass basis: refused, never estimated.
+    const loose = await pipeline.createItem({ raw_label: 'Loose flour', shelf_life_class: 'pantry', acquired_at: '2026-07-01' });
+    const refused = await fastify.inject({
+      method: 'POST',
+      url: '/kitchen/inventory/convert',
+      payload: { sources: [{ item_ulid: loose.item.ulid, amount_g: 50 }], derived: { name: 'X' } },
+    });
+    expect(refused.statusCode).toBe(400);
+    expect(refused.json().error).toMatch(/mass basis/i);
+  });
+
   it('POST /kitchen/inventory/convert is source-less ("I made this") when sources omitted — creates a recipe-linked derived item, decrements nothing', async () => {
     const recipeUlid = generateUlid();
     const res = await fastify.inject({

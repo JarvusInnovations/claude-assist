@@ -494,10 +494,28 @@ describe('cook_mode.consumes (eaten decrements)', () => {
     }))).toThrow(/divisible/);
   });
 
-  it('rejects consumes on a packed sheet — that shape uses sources', () => {
-    expect(() => validateWorksheetDefinition(base({
+  it('accepts consumes on a packed sheet — a binding follows the submitted weight, a source cannot', () => {
+    const def = validateWorksheetDefinition(base({
       disposition: 'packed', label: 'batch',
       consumes: [{ component: 'yogurt', item_ulid: '01ABC', model: 'divisible' }],
-    }))).toThrow(/only to disposition 'eaten'/);
+    }));
+    expect(def.cook_mode!.consumes).toHaveLength(1);
+  });
+
+  it('accepts components_per on a packed sheet and rejects any other value', () => {
+    const def = validateWorksheetDefinition(base({
+      disposition: 'packed', label: 'batch', units: 3, components_per: 'unit',
+    }));
+    expect(def.cook_mode!.components_per).toBe('unit');
+
+    expect(() => validateWorksheetDefinition(base({
+      disposition: 'packed', label: 'batch', components_per: 'each',
+    }))).toThrow(/'batch' or 'unit'/);
+  });
+
+  it('rejects components_per on an eaten sheet — it describes a batch that does not exist', () => {
+    expect(() => validateWorksheetDefinition(base({
+      disposition: 'eaten', label: 'meal', components_per: 'unit',
+    }))).toThrow(/only to disposition 'packed'/);
   });
 });

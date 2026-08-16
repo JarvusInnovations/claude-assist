@@ -353,14 +353,32 @@ describe('consume bindings (§ Eaten sheets decrement their sources)', () => {
     ).rejects.toThrow(/unit_edible_g/);
   });
 
-  it('emits no bindings on a packed sheet — that shape states inputs as sources', async () => {
+  it('emits bindings on a packed sheet too — a source fixed at publish cannot follow the submitted weight', async () => {
     const { publisher, calls } = fakePublisher();
     const svc = new PrepService(fakeStore(), publisher);
     await svc.publish({
       slug: 'x', label: 'x', cook: { disposition: 'packed', units: 3 },
       components: [{ item_ulid: 'item_linked', quantity: 100 }],
     });
-    expect(calls[0].worksheet.cook_mode.consumes).toBeUndefined();
+    expect(calls[0].worksheet.cook_mode.consumes).toEqual([
+      { component: expect.any(String), item_ulid: 'item_linked', model: 'divisible' },
+    ]);
+  });
+
+  it('carries components_per through only when stated — the default reading is per-batch', async () => {
+    const { publisher, calls } = fakePublisher();
+    const svc = new PrepService(fakeStore(), publisher);
+    await svc.publish({
+      slug: 'x', label: 'x', cook: { disposition: 'packed', units: 3, components_per: 'unit' },
+      components: [{ item_ulid: 'item_linked', quantity: 100 }],
+    });
+    expect(calls[0].worksheet.cook_mode.components_per).toBe('unit');
+
+    await svc.publish({
+      slug: 'y', label: 'y', cook: { disposition: 'packed', units: 3 },
+      components: [{ item_ulid: 'item_linked', quantity: 100 }],
+    });
+    expect(calls[1].worksheet.cook_mode.components_per).toBeUndefined();
   });
 });
 

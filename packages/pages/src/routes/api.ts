@@ -129,8 +129,14 @@ function toCookRequest(
     }
     if (directive.recipe_ulid !== undefined) request.packed.recipe_ulid = directive.recipe_ulid;
     if (directive.sources !== undefined) request.packed.sources = directive.sources;
+    if (directive.components_per !== undefined) {
+      request.packed.components_per = directive.components_per;
+    }
   }
-  if (directive.disposition === 'eaten' && directive.consumes !== undefined) {
+  // Carried on BOTH dispositions: an eaten sheet decrements what it names, and
+  // a packed one's bindings are what let its decrement follow the submitted
+  // weights rather than the amounts frozen at publish.
+  if (directive.consumes !== undefined) {
     request.consumes = directive.consumes;
   }
   return request;

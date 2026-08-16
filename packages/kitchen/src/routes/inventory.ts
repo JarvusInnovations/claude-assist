@@ -953,6 +953,10 @@ const CONVERT_SOURCE_SCHEMA = {
   properties: {
     item_ulid: { type: 'string', pattern: ULID_PATTERN.source },
     amount: { type: 'number', minimum: 0 },
+    // Grams, for a caller that measured mass rather than a share. Resolved
+    // against the source product's net content, and refused when that basis is
+    // missing rather than guessed at (§ The basis rule: refuse, never infer).
+    amount_g: { type: 'number', exclusiveMinimum: 0 },
   },
 } as const;
 

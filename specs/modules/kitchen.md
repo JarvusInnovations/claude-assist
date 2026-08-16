@@ -1521,6 +1521,7 @@ All tables instance-agnostic empty schema, ULID keys, `kitchen` schema
   match is scoped to open `needs_info` items only), so the questions queue
   holds only genuinely-unanswered identities, never ones a later mapping
   already answered.
+
 ### Receipt-line matching: normalize the key, learn from every resolution
 
 Matching a receipt line is an exact lookup on `(store, line_text)`. Two defects
@@ -3243,15 +3244,22 @@ on it (`POST /entries` already was; `convert` gained the opt-in
 resubmission over a flaky mobile network therefore cannot double-log or
 double-decrement, and reports `created: false`.
 
-**Exactly one atomic write per submission — no straddling.** Cook mode
-deliberately does **not** compose two domain writes, so there is no
-"entry landed, decrement failed" half-state to reconcile. In particular an
-`eaten` submission does **not** decrement inventory: depletion for an eaten meal
-already happens through the existing depletion matcher
-(§ Depletion matcher, best-effort by design), and for a prepped item through
-`consume` at eat time. A `packed` submission's several writes are one
-transaction already (§ Conversions § Atomicity). What the caller sees when a
-write fails, and what the ledger holds, is stated in
+**One authoritative write per submission; decrements never roll it back.** Cook
+mode does not compose two domain writes as equals, so there is no "entry landed,
+decrement failed" half-state to reconcile. The two dispositions reach that
+guarantee differently, and the difference is not incidental:
+
+- **`packed` is genuinely one write.** The conversion decrements every source
+  and creates the derived item in a single transaction
+  (§ Conversions § Atomicity). Nothing is partially applied.
+- **`eaten` is one write plus best-effort depletion.** The entry lands first and
+  is authoritative (§ Eaten sheets decrement their sources); the bindings then
+  decrement, and a binding that cannot apply is *reported*, never allowed to
+  fail the entry. A meal that refused to record because a bag lacked a net
+  weight would be a strictly worse ledger than one that records and flags the
+  gap.
+
+What the caller sees when a write fails, and what the ledger holds, is stated in
 `specs/modules/pages.md` § Cook mode § Order of writes.
 
 **Measured weights on a packed batch are provenance, not macros.** The derived
@@ -3423,19 +3431,59 @@ command, for surfaces no domain owns.
 
 ## Eaten sheets decrement their sources
 
-**There is no depletion matcher.** Several comments in this module cite one —
-including cook mode's own justification for not decrementing — but none was ever
-built, and no scheduled task runs it. The consequence is that **eating has never
-subtracted anything**: purchases add to inventory and meals do not remove from
-it, so every quantity drifts high at a rate proportional to how much the owner
-actually cooks. Two live instances of the same defect: a frozen-fruit bag read
-24% on the day it was emptied, and a 6-egg batch read 6 after one was eaten.
+**The depletion matcher exists, but it never sees a stated panel.** An earlier
+revision of this section claimed no matcher had ever been built. That was wrong:
+§ Depletion matcher is real and wired, and it decrements on-hand stock for
+entries that reach terminal `estimated` *through the estimation pipeline*.
+
+What it never sees is a **directly-stated** entry. A worksheet submission is born
+`manual` and terminal with no estimation pass — deliberately, so nothing can land
+later and clobber the numbers the cook watched add up (§ Cook mode). No
+estimation job means the `onEntryEstimated` hook never fires, so the one path
+that could have depleted stock is the one path a measured meal structurally
+cannot take. **The most precisely-known meals were the only ones that subtracted
+nothing.**
+
+The consequence is the same either way: quantities drift high at a rate
+proportional to how much the owner actually cooks. Two live instances — a
+frozen-fruit bag read 24% on the day it was emptied, and a 6-egg batch read 6
+after one was eaten.
 
 A cook-mode **`eaten`** submission therefore decrements the stock its components
-name, mirroring what `packed` already does with `sources`. The sheet is the only
-artifact that knows *both* what was eaten and how much, at the moment it is
-known — so it is the only place the loop can close without asking the owner to
-remember anything.
+name. The sheet is the only artifact that knows *both* what was eaten and how
+much, at the moment it is known — so it is the only place the loop can close
+without asking the owner to remember anything.
+
+### A packed batch's sources follow the submitted weights
+
+`packed` accepts an explicit `sources` list, fixed when the sheet is published.
+For a source that is *also* a component — the usual case, since a batch cooks
+the very stock it decrements — that is wrong by construction. **The sheet exists
+to collect corrected weights, and a publish-time amount cannot see them.** A
+sheet whose intro says "correct the dry weight if your cup isn't 200 g" will
+faithfully record 220 g in the panel and still decrement 200 g from the bag.
+
+So a packed sheet binds its sources the same way an eaten one does: **a
+component-bound source decrements the quantity the human actually submitted.**
+Explicit `sources` remain, unchanged, for inputs that are genuinely not
+components — water, a splash of oil, anything the sheet does not weigh.
+
+This stays exactly one atomic write. The bindings are resolved into concrete
+source amounts *before* the conversion is planned, so the decrement and the
+derived item still land in one transaction — unlike `eaten`, where depletion
+follows the entry and is best-effort.
+
+**A sheet must declare whether its components describe one unit or the whole
+batch.** A farro sheet weighs the whole pot and yields three portions; an
+oat-jar sheet weighs one jar and yields three jars. Identical `units: 3`,
+opposite decrements — 200 g of farro once, versus 40 g of oats three times.
+Nothing in the component quantities distinguishes them, so the sheet states it
+(`components_per: 'batch' | 'unit'`, defaulting to `batch`) and the decrement is
+`quantity x units` only when the sheet says `unit`.
+
+Inferring this would be the batch-yield failure again: a per-unit sheet silently
+read as per-batch under-decrements by exactly the unit count, which is precisely
+the drift this whole section removes.
 
 ### The basis rule: refuse, never infer
 
