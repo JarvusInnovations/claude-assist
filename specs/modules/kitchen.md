@@ -3230,6 +3230,10 @@ also silently disagree with the catalog it was copied from.
   - `--component-item <item-ulid>=<grams>` — same, resolved through an inventory
     item to its linked product, so a sheet can be written against what is actually
     on hand.
+  - `--component-unit <item-ulid>=<units>` — the counted form: the item is
+    quantified in whole UNITS rather than grams (§ Eaten sheets decrement their
+    sources § The basis rule), and the panel is scaled per unit rather than per
+    gram. Below extends this to items with no linked product.
   - `--recipe <ulid>` — seed components from a recipe's lines.
   - `--cook eaten` | `--cook packed [--units N] [--shelf-life <class>]
     [--source <item-ulid>[:amount]]…` — the domain vocabulary lives **here**,
@@ -3240,6 +3244,49 @@ also silently disagree with the catalog it was copied from.
 - **Publishing creates nothing in the ledger.** A definition is a form awaiting a
   real event; inventory moves only when the submission lands (§ Cook mode). This
   is the same rule that forbids logging a meal at plan time.
+
+### A derived component resolves through its recipe, not a product
+
+`--component-item` / `--component-unit` first try to resolve through the named
+item's linked `product_ulid`, above. An item carrying **no product** is not
+automatically unusable: a **derived** item — the output of a `packed` batch
+(§ Conversions) — has no product *by construction* (§ Conversions: "It has no
+`product_ulid`"), and its macros live instead in its `derived_from.recipe_ulid`
+provenance, the same channel § Consume from inventory § Eligibility reads to
+make a derived item one-tap consumable. A sheet component resolves through
+that channel rather than refusing outright, so the loop this section exists to
+close reaches prepped stock too — hard-boiled eggs, a jar from a batch — not
+only purchased stock (claude-assist#199).
+
+- **Only a COUNTED derived item resolves this way.** The per-unit recipe
+  contract (§ Consume from inventory § Macro inheritance) guarantees a
+  counted item's linked recipe describes exactly **one sealed unit** — the
+  same basis a counted sheet component needs, computed the identical way
+  (`computeRecipeMacros`, no quantity override, so every ingredient
+  contributes its own `default_qty_g`) so the sheet and `consume` can never
+  disagree about what one unit of the batch costs. A component naming such an
+  item must be `--component-unit` (`counted: true`); `--component-item`
+  (grams) against a derived item is refused rather than resolved, because a
+  derived item carries no product and therefore no `net_content_g` to divide
+  a stated gram amount by — the same refusal `consumeStatedAmount` would hit
+  at submit time, surfaced earlier, at publish time, instead.
+- **A fraction-modeled derived item's recipe describes the WHOLE BATCH**, not
+  one unit (§ Consume from inventory § Macro inheritance) — there is no
+  absolute per-100g basis to anchor a sheet's stated-grams model to, and a
+  sheet has no analog of `consume`'s single all-or-nothing tap. Such an item
+  is refused, same as one with no recipe at all: **refuse, never infer**
+  extends here exactly as § The basis rule states it for purchased stock.
+- The recipe is resolved across the **same merged (sheet + pushed + promoted)
+  universe** `consume` reads (§ Consume from inventory § Eligibility) — a
+  DB-only lookup here could accept or refuse a recipe differently than
+  `consume` does for the very same item, and the two surfaces must agree on
+  what counts as a usable one.
+- `per_basis` for a resolved unit is the recipe's computed total **× 100**:
+  the worksheet's basis is fixed at 100 regardless of what a component
+  measures in, so `quantity/100 * per_basis` must equal `quantity * (one
+  unit's total)` for `quantity` units — unlike a product's per-100g panel,
+  the recipe total needs no further scaling by a per-unit mass, because it
+  already *is* one unit's whole macros.
 
 ### Where the logic lives: `POST /kitchen/prep`, not the CLI
 
