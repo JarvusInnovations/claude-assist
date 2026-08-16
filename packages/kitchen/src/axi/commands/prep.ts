@@ -21,6 +21,13 @@ export const PREP_HELP = `kitchen-axi prep <subcommand> [args] [--json]
                                             sheet component — its macros live
                                             nowhere
        [--source <item-ulid>[:amount]]…    (packed only) stock the batch consumes
+                                            at a FIXED amount — for inputs the
+                                            sheet does not weigh. A source that
+                                            IS a component binds automatically
+                                            and follows the submitted weight
+       [--components-per batch|unit]       (packed only) do the component
+                                            quantities describe ONE unit or the
+                                            whole batch? default batch
        [--title T] [--digest-optin]
 
   A worksheet's per_basis blocks are reference values this module already stores.
@@ -100,6 +107,7 @@ async function publishPrep(args: string[]): Promise<string> {
       "shelf-life",
       "source",
       "submit-label",
+      "components-per",
     ]
   );
 
@@ -140,9 +148,30 @@ async function publishPrep(args: string[]): Promise<string> {
     throw new AxiError(`--cook must be 'eaten' or 'packed' (got ${cook})`, "VALIDATION_ERROR", [PREP_HELP]);
   }
   const yieldsRecipe = typeof flags["yields-recipe"] === "string" ? flags["yields-recipe"] : undefined;
-  if (cook !== "packed" && (flags.units || flags["shelf-life"] || sourceArgs.length || yieldsRecipe)) {
+  const componentsPer =
+    typeof flags["components-per"] === "string" ? flags["components-per"] : undefined;
+  if (componentsPer !== undefined && componentsPer !== "batch" && componentsPer !== "unit") {
     throw new AxiError(
-      "--units, --shelf-life, --source and --yields-recipe apply to --cook packed only: an eaten sheet writes one entry, not stock",
+      `--components-per must be 'batch' or 'unit' (got ${componentsPer})`,
+      "VALIDATION_ERROR",
+      [PREP_HELP]
+    );
+  }
+  if (
+    cook !== "packed" &&
+    (flags.units || flags["shelf-life"] || sourceArgs.length || yieldsRecipe || componentsPer)
+  ) {
+    throw new AxiError(
+      "--units, --shelf-life, --source, --yields-recipe and --components-per apply to --cook packed only: an eaten sheet writes one entry, not stock",
+      "VALIDATION_ERROR",
+      [PREP_HELP]
+    );
+  }
+  // A per-unit sheet without a unit count has nothing to multiply by, and the
+  // silent reading (x1) is exactly the under-decrement this flag exists to stop.
+  if (componentsPer === "unit" && !flags.units) {
+    throw new AxiError(
+      "--components-per unit needs --units: it means each component is ONE unit's worth, so the batch consumes that much times the unit count",
       "VALIDATION_ERROR",
       [PREP_HELP]
     );
@@ -174,6 +203,7 @@ async function publishPrep(args: string[]): Promise<string> {
             ...(typeof flags["shelf-life"] === "string" ? { shelf_life_class: flags["shelf-life"] } : {}),
             ...(yieldsRecipe ? { recipe_ulid: yieldsRecipe } : {}),
             ...(sources.length ? { sources } : {}),
+            ...(componentsPer ? { components_per: componentsPer } : {}),
           },
         }
       : {}),

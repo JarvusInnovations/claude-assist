@@ -757,6 +757,18 @@ export interface ReconcileInput {
 export interface ConversionSourceInput {
   item_ulid: string;
   amount?: number;
+  /**
+   * A decrement stated in GRAMS instead of the item's own on-hand model, for a
+   * caller that measured mass rather than a share — a cook-mode sheet binding a
+   * source to a weighed component (§ A packed batch's sources follow the
+   * submitted weights).
+   *
+   * Resolved against the source product's `net_content_g` when planning the
+   * decrement, and REFUSED when that basis is absent rather than guessed at
+   * (§ The basis rule: refuse, never infer). Mutually exclusive with `amount`;
+   * meaningless on a counted item, which decrements in whole units.
+   */
+  amount_g?: number;
 }
 
 /** The new item a conversion creates. Exactly one of on_hand_fraction/units_total applies. */

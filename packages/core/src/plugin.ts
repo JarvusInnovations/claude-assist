@@ -863,9 +863,11 @@ export interface WorksheetCookRequest {
   /** The submitter's free-text remark, if any. */
   note?: string;
   /**
-   * `eaten` only — component↔stock bindings to decrement, carried through from
-   * the published directive. The sink resolves each binding's SUBMITTED
-   * quantity from `components`.
+   * Component↔stock bindings to decrement, carried through from the published
+   * directive. The sink resolves each binding's SUBMITTED quantity from
+   * `components` — which is the whole point, on BOTH dispositions: an amount
+   * fixed when the sheet was published cannot follow the weights the sheet
+   * exists to collect.
    */
   consumes?: WorksheetConsumeBinding[];
   /** `packed` only — describes the derived item and what it was made from. */
@@ -873,7 +875,19 @@ export interface WorksheetCookRequest {
     units?: number;
     shelf_life_class?: string;
     recipe_ulid?: string;
+    /**
+     * Decrements fixed at publish time, for inputs the sheet does NOT weigh —
+     * water, a splash of oil. A source that is also a component should be bound
+     * through `consumes` instead, so it follows what was actually measured.
+     */
     sources?: { item_ulid: string; amount?: number }[];
+    /**
+     * Do the component quantities describe ONE unit of the batch or the whole
+     * batch? Defaults to `batch`. A per-unit sheet's decrement is
+     * `quantity × units`; nothing in the quantities themselves distinguishes
+     * the two, so it is stated rather than inferred.
+     */
+    components_per?: 'batch' | 'unit';
   };
 }
 

@@ -91,9 +91,15 @@ export interface WorksheetCookDirective {
   /** `packed` only: tracked stock this batch is made from (decremented). */
   sources?: { item_ulid: string; amount?: number }[];
   /**
-   * `eaten` only: binds components to the tracked stock they came off, so the
-   * submission decrements what was actually eaten (kitchen § Eaten sheets
-   * decrement their sources).
+   * `packed` only: whether the component quantities describe ONE unit of the
+   * batch or the whole batch. Default `batch`. Opaque here — this module
+   * validates the value and passes it on; what it multiplies is the sink's
+   * business.
+   */
+  components_per?: 'batch' | 'unit';
+  /**
+   * Binds components to the tracked stock they came off, so the submission
+   * decrements what was actually stated. Valid on BOTH dispositions.
    *
    * Bound by component LABEL rather than a fixed amount, because the amount
    * that matters is the one the human states at submit time — a planned
@@ -215,7 +221,16 @@ function validateCookDirective(raw: unknown): WorksheetCookDirective {
   const obj = asRecord(raw, 'cook_mode');
   rejectUnknownKeys(
     obj,
-    ['disposition', 'label', 'units', 'shelf_life_class', 'recipe_ulid', 'sources', 'consumes'],
+    [
+      'disposition',
+      'label',
+      'units',
+      'shelf_life_class',
+      'recipe_ulid',
+      'sources',
+      'consumes',
+      'components_per',
+    ],
     'cook_mode'
   );
 
@@ -233,7 +248,7 @@ function validateCookDirective(raw: unknown): WorksheetCookDirective {
   // The `packed` extras describe an inventory conversion. Rejecting them on an
   // `eaten` sheet is the point: an eaten meal has no derived item to give a
   // shelf life or a unit count to, so accepting them would silently drop them.
-  const packedOnly = ['units', 'shelf_life_class', 'recipe_ulid', 'sources'].filter(
+  const packedOnly = ['units', 'shelf_life_class', 'recipe_ulid', 'sources', 'components_per'].filter(
     (k) => obj[k] !== undefined
   );
   if (directive.disposition === 'eaten' && packedOnly.length > 0) {
@@ -242,12 +257,12 @@ function validateCookDirective(raw: unknown): WorksheetCookDirective {
     );
   }
 
-  // The mirror of the rule above: `consumes` describes what an EATEN meal took
-  // off the shelf. A packed batch already states its inputs as `sources`, so
-  // accepting both would be two ways to say one thing.
-  if (directive.disposition === 'packed' && obj.consumes !== undefined) {
-    throw new WorksheetValidationError("cook_mode.consumes applies only to disposition 'eaten'");
-  }
+  // `consumes` is valid on BOTH dispositions. It used to be rejected here on a
+  // packed sheet, on the reasoning that `sources` already stated a batch's
+  // inputs — but a source fixed when the sheet was published cannot follow the
+  // corrected weights the sheet exists to collect, so the two are not
+  // equivalent ways to say one thing. A binding says "decrement what was
+  // measured"; a source says "decrement this much regardless".
 
   if (obj.consumes !== undefined) {
     if (!Array.isArray(obj.consumes)) {
@@ -286,6 +301,12 @@ function validateCookDirective(raw: unknown): WorksheetCookDirective {
   }
   if (obj.recipe_ulid !== undefined) {
     directive.recipe_ulid = requireNonEmptyString(obj.recipe_ulid, 'cook_mode.recipe_ulid', 26);
+  }
+  if (obj.components_per !== undefined) {
+    if (obj.components_per !== 'batch' && obj.components_per !== 'unit') {
+      throw new WorksheetValidationError("cook_mode.components_per must be 'batch' or 'unit'");
+    }
+    directive.components_per = obj.components_per;
   }
   if (obj.sources !== undefined) {
     if (!Array.isArray(obj.sources)) {
