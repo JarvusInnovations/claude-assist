@@ -71,24 +71,33 @@ export default createPlugin('ledger', async (fastify: FastifyInstance, options: 
 
   await fastify.register(registerLedgerRoutes, { store });
 
-  // Boot: detect a ruleset-version change and re-derive loudly. On a truly fresh
-  // database this is a no-op (the cursor is just initialized); on a version bump
-  // over an existing corpus it replays every tool call. Wrapped so a not-yet-
-  // migrated sessions schema on first boot degrades to a logged warning rather
-  // than failing startup.
-  try {
-    await ensureRulesVersion(store, {
-      rules,
-      rulesVersion,
-      batchSize,
-      log: fastify.log,
+  // Boot: detect a ruleset-version change and re-derive — DETACHED, never
+  // awaited inside plugin registration.
+  //
+  // The comment this replaces claimed the check was "a no-op on a truly fresh
+  // database". That is true of a fresh DATABASE and false of the case that
+  // actually occurs: a fresh ledger schema over an existing corpus, which is
+  // what happens the first time this module is added to a running instance.
+  // There it replays every tool call — and fastify's default pluginTimeout is
+  // 10s, so on any real corpus the plugin times out, systemd restarts, and the
+  // server crash-loops while deriving a partial batch each attempt. Observed
+  // live: the whole host down, every module unavailable, while the ledger
+  // filled a few hundred rows at a time.
+  //
+  // Detaching is the fix rather than a larger timeout, because boot latency
+  // must not scale with corpus size. The work is already resumable via its
+  // cursor and the scheduled job would pick it up regardless; running it here
+  // only makes the backfill start sooner.
+  void ensureRulesVersion(store, { rules, rulesVersion, batchSize, log: fastify.log })
+    .then((outcome) => {
+      if (outcome) fastify.log.info({ outcome }, 'Ledger: boot rules-version check complete');
+    })
+    .catch((err: unknown) => {
+      fastify.log.error(
+        { err },
+        'Ledger: boot rules-version check failed (sessions schema not ready?) — derivation will retry on schedule',
+      );
     });
-  } catch (err) {
-    fastify.log.error(
-      { err },
-      'Ledger: boot rules-version check failed (sessions schema not ready?) — derivation will retry on schedule',
-    );
-  }
 
   // Scheduled incremental derivation. Extraction lag equals ingestion lag, so a
   // modest cadence is fine; the backfill of an initialized ledger happens here.
