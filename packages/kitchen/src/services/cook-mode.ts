@@ -55,6 +55,27 @@ export interface CookModeEntryIngest {
     },
     photos: never[]
   ): Promise<{ record: { ulid: string }; created: boolean }>;
+  /**
+   * Record decrements that could not be applied, so they surface in the
+   * entries question queue rather than vanishing.
+   */
+  flagUnappliedDecrements?(ulid: string, unapplied: string[]): Promise<void>;
+}
+
+/**
+ * The depletion seam for an EATEN sheet (§ Eaten sheets decrement their
+ * sources). Deliberately two narrow verbs rather than the inventory service:
+ * cook mode should be able to state what it wants without reaching into
+ * inventory's surface.
+ */
+export interface CookModeDepleter {
+  /** Divisible item, stated mass. Throws when the product has no mass basis. */
+  consumeStated(
+    itemUlid: string,
+    input: { amount_g: number; entry_ulid: string; at?: string }
+  ): Promise<unknown>;
+  /** Counted item, one whole unit. Called once per unit. */
+  finishUnit(itemUlid: string, input: { at?: string }): Promise<unknown>;
 }
 
 export interface CookModeConverter {
@@ -115,6 +136,8 @@ export function measuredNote(request: WorksheetCookRequest): string {
 export interface CookModeConfig {
   entries: CookModeEntryIngest;
   inventory: CookModeConverter;
+  /** Absent → decrements are all reported unapplied rather than attempted. */
+  depleter?: CookModeDepleter;
 }
 
 /**
@@ -164,7 +187,74 @@ export class KitchenCookMode implements WorksheetCookSink {
       },
       []
     );
+
+    // Decrements run AFTER the entry, and never roll it back
+    // (§ The entry is authoritative). A meal that refused to record because a
+    // bag lacked a net weight would be a strictly worse ledger than one that
+    // records and flags the gap.
+    if (created && request.consumes?.length) {
+      const unapplied = await this.applyConsumes(request, record.ulid);
+      if (unapplied.length > 0) {
+        // Surfaced, never swallowed: an invisible skip would reproduce exactly
+        // the drift this feature removes while looking fixed.
+        await this.config.entries.flagUnappliedDecrements?.(record.ulid, unapplied);
+      }
+    }
+
     return { kind: 'entry', ulid: record.ulid, created };
+  }
+
+  /**
+   * Apply each binding at its SUBMITTED quantity. Returns human-readable
+   * descriptions of the ones that could not be applied.
+   */
+  private async applyConsumes(
+    request: WorksheetCookRequest,
+    entryUlid: string
+  ): Promise<string[]> {
+    const unapplied: string[] = [];
+    const quantities = new Map<string, number>(
+      request.components.map((c) => [c.label, c.quantity] as [string, number])
+    );
+
+    for (const bind of request.consumes ?? []) {
+      const quantity = quantities.get(bind.component);
+      if (quantity === undefined) {
+        unapplied.push(`${bind.component}: no submitted quantity`);
+        continue;
+      }
+      if (quantity <= 0) continue; // Nothing eaten, nothing to take off.
+      if (!this.config.depleter) {
+        unapplied.push(`${bind.component}: no depleter configured`);
+        continue;
+      }
+
+      try {
+        if (bind.model === 'counted') {
+          // Whole units only — a fractional unit is not a thing you can eat
+          // off a counted item, and rounding one would invent stock movement.
+          const units = Math.round(quantity);
+          for (let i = 0; i < units; i++) {
+            await this.config.depleter.finishUnit(bind.item_ulid, {
+              ...(request.at ? { at: request.at } : {}),
+            });
+          }
+        } else {
+          await this.config.depleter.consumeStated(bind.item_ulid, {
+            amount_g: quantity,
+            entry_ulid: entryUlid,
+            ...(request.at ? { at: request.at } : {}),
+          });
+        }
+      } catch (err) {
+        // The commonest cause is the module's own refusal to guess a mass
+        // basis. That refusal is correct; reporting it is this code's job.
+        unapplied.push(
+          `${bind.component} (${bind.item_ulid}): ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+    return unapplied;
   }
 
   /**

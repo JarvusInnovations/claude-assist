@@ -90,6 +90,18 @@ export interface WorksheetCookDirective {
   recipe_ulid?: string;
   /** `packed` only: tracked stock this batch is made from (decremented). */
   sources?: { item_ulid: string; amount?: number }[];
+  /**
+   * `eaten` only: binds components to the tracked stock they came off, so the
+   * submission decrements what was actually eaten (kitchen § Eaten sheets
+   * decrement their sources).
+   *
+   * Bound by component LABEL rather than a fixed amount, because the amount
+   * that matters is the one the human states at submit time — a planned
+   * quantity is a default, never a claim. Opaque here: this module validates
+   * the shape and that each label exists, and knows nothing of what a
+   * decrement means.
+   */
+  consumes?: { component: string; item_ulid: string; model: 'divisible' | 'counted' }[];
 }
 
 export interface WorksheetDefinition {
@@ -203,7 +215,7 @@ function validateCookDirective(raw: unknown): WorksheetCookDirective {
   const obj = asRecord(raw, 'cook_mode');
   rejectUnknownKeys(
     obj,
-    ['disposition', 'label', 'units', 'shelf_life_class', 'recipe_ulid', 'sources'],
+    ['disposition', 'label', 'units', 'shelf_life_class', 'recipe_ulid', 'sources', 'consumes'],
     'cook_mode'
   );
 
@@ -228,6 +240,34 @@ function validateCookDirective(raw: unknown): WorksheetCookDirective {
     throw new WorksheetValidationError(
       `cook_mode.${packedOnly[0]} applies only to disposition 'packed'`
     );
+  }
+
+  // The mirror of the rule above: `consumes` describes what an EATEN meal took
+  // off the shelf. A packed batch already states its inputs as `sources`, so
+  // accepting both would be two ways to say one thing.
+  if (directive.disposition === 'packed' && obj.consumes !== undefined) {
+    throw new WorksheetValidationError("cook_mode.consumes applies only to disposition 'eaten'");
+  }
+
+  if (obj.consumes !== undefined) {
+    if (!Array.isArray(obj.consumes)) {
+      throw new WorksheetValidationError('cook_mode.consumes must be an array');
+    }
+    directive.consumes = obj.consumes.map((raw, i) => {
+      const bind = asRecord(raw, `cook_mode.consumes[${i}]`);
+      rejectUnknownKeys(bind, ['component', 'item_ulid', 'model'], `cook_mode.consumes[${i}]`);
+      const model = bind.model;
+      if (model !== 'divisible' && model !== 'counted') {
+        throw new WorksheetValidationError(
+          `cook_mode.consumes[${i}].model must be 'divisible' or 'counted'`
+        );
+      }
+      return {
+        component: requireNonEmptyString(bind.component, `cook_mode.consumes[${i}].component`, 200),
+        item_ulid: requireNonEmptyString(bind.item_ulid, `cook_mode.consumes[${i}].item_ulid`, 26),
+        model,
+      };
+    });
   }
 
   if (obj.units !== undefined) {
@@ -413,7 +453,19 @@ export function validateWorksheetDefinition(raw: unknown): WorksheetDefinition {
   if (submitLabel !== undefined) definition.submit_label = submitLabel;
   const noteLabel = optionalString(obj.note_label, 'worksheet.note_label', 120);
   if (noteLabel !== undefined) definition.note_label = noteLabel;
-  if (obj.cook_mode !== undefined) definition.cook_mode = validateCookDirective(obj.cook_mode);
+  if (obj.cook_mode !== undefined) {
+    definition.cook_mode = validateCookDirective(obj.cook_mode);
+    // A binding that names no component would silently decrement nothing —
+    // the exact silent-skip this feature exists to remove. Caught at PUBLISH
+    // time, where the author can still fix it, rather than at submit time.
+    for (const bind of definition.cook_mode.consumes ?? []) {
+      if (!definition.components.some((c) => c.label === bind.component)) {
+        throw new WorksheetValidationError(
+          `cook_mode.consumes names component "${bind.component}", which is not in components`
+        );
+      }
+    }
+  }
 
   return definition;
 }

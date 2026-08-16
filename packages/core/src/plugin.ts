@@ -828,6 +828,19 @@ export type WorksheetCookDisposition = 'eaten' | 'packed';
  * declared field keys; validating them against a real nutrition panel is the
  * SINK's job, because that is where the domain lives.
  */
+/** One component <-> stock binding for an `eaten` sheet. */
+export interface WorksheetConsumeBinding {
+  /** Must match a component's `label` exactly. */
+  component: string;
+  item_ulid: string;
+  /**
+   * How the item is quantified. `divisible` reads the component quantity as a
+   * mass and needs the product's `net_content_g`; `counted` reads it as whole
+   * units. Stated by the publisher — never inferred from the number itself.
+   */
+  model: 'divisible' | 'counted';
+}
+
 export interface WorksheetCookRequest {
   /**
    * The client-supplied idempotency key — the submitted worksheet's
@@ -849,6 +862,12 @@ export interface WorksheetCookRequest {
   at?: string;
   /** The submitter's free-text remark, if any. */
   note?: string;
+  /**
+   * `eaten` only — component↔stock bindings to decrement, carried through from
+   * the published directive. The sink resolves each binding's SUBMITTED
+   * quantity from `components`.
+   */
+  consumes?: WorksheetConsumeBinding[];
   /** `packed` only — describes the derived item and what it was made from. */
   packed?: {
     units?: number;

@@ -44,8 +44,16 @@ export interface PrepComponentRef {
   /** One of these two identifies the food. */
   product_ulid?: string;
   item_ulid?: string;
-  /** Planned quantity in grams — a DEFAULT for the sheet, never a claim. */
+  /**
+   * Planned quantity — a DEFAULT for the sheet, never a claim. Grams for a
+   * divisible item; whole UNITS when `counted` (§ The basis rule).
+   */
   quantity: number;
+  /**
+   * The item is counted, so `quantity` is units and its panel mass is
+   * `units * unit_edible_g`. Stated, never inferred from the number.
+   */
+  counted?: boolean;
   /** Overrides the product name on the row. */
   label?: string;
   note?: string;
@@ -103,6 +111,7 @@ export class PrepService {
    */
   async publish(input: PrepPublishInput): Promise<PrepPublishResult> {
     const components: { label: string; quantity: number; per_basis: Record<string, number>; note?: string }[] = [];
+    const consumes: { component: string; item_ulid: string; model: 'divisible' | 'counted' }[] = [];
 
     // Recipe lines first, so an explicit --component reads as "and also today".
     if (input.recipe_ulid) {
@@ -176,12 +185,47 @@ export class PrepService {
         if (typeof value === 'number' && Number.isFinite(value)) per_basis[key] = value;
       }
 
+      // A counted component is quantified in UNITS, so its per-basis has to be
+      // restated per unit. The worksheet computes `quantity / basis * per_basis`
+      // with basis 100, so for `quantity` = units the per-basis must be
+      // `per100g * unit_edible_g`:
+      //
+      //   units/100 * (per100g * unitGrams) == units * unitGrams/100 * per100g
+      //
+      // i.e. NOT divided by 100 again — the basis already does that. One basis
+      // for the whole definition, and the human counts eggs instead of weighing
+      // them.
+      if (ref.counted) {
+        const unitGrams = product.unit_edible_g;
+        if (typeof unitGrams !== 'number' || !Number.isFinite(unitGrams) || unitGrams <= 0) {
+          throw new PrepValidationError(
+            `${product.name} is used as a counted component but has no unit_edible_g — ` +
+              `state the edible mass of one unit on the product. It is never derived from a ` +
+              `net weight over a count: shell-vs-edible and packed-vs-drained make that wrong ` +
+              `in either direction`
+          );
+        }
+        for (const key of Object.keys(per_basis)) {
+          per_basis[key] = per_basis[key]! * unitGrams;
+        }
+      }
+
       components.push({
         label: ref.label ?? product.name,
         quantity: ref.quantity,
         per_basis,
         ...(ref.note ? { note: ref.note } : {}),
       });
+
+      // Bind the component to its stock so an eaten submission decrements what
+      // was actually stated. Only an ITEM is stock — a product is a catalog row.
+      if (ref.item_ulid) {
+        consumes.push({
+          component: ref.label ?? product.name,
+          item_ulid: ref.item_ulid,
+          model: ref.counted ? 'counted' : 'divisible',
+        });
+      }
     }
 
     const worksheet = {
@@ -209,6 +253,11 @@ export class PrepService {
               ...(input.cook.shelf_life_class ? { shelf_life_class: input.cook.shelf_life_class } : {}),
               ...(input.cook.recipe_ulid ? { recipe_ulid: input.cook.recipe_ulid } : {}),
               ...(input.cook.sources?.length ? { sources: input.cook.sources } : {}),
+              // An eaten sheet decrements what it names; a packed one already
+              // states its inputs as `sources`.
+              ...(input.cook.disposition === 'eaten' && consumes.length
+                ? { consumes }
+                : {}),
             },
           }
         : {}),
