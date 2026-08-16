@@ -1521,6 +1521,73 @@ All tables instance-agnostic empty schema, ULID keys, `kitchen` schema
   match is scoped to open `needs_info` items only), so the questions queue
   holds only genuinely-unanswered identities, never ones a later mapping
   already answered.
+### Receipt-line matching: normalize the key, learn from every resolution
+
+Matching a receipt line is an exact lookup on `(store, line_text)`. Two defects
+make that miss lines the system has **already resolved**, and both are silent.
+
+**1. `line_text` is normalized; `store` is not.** The lexicon key uses the store
+string verbatim as written by whichever path created the row, while a receipt
+carries the store as printed. One retailer routinely appears in three forms —
+the receipt header, the shorter name an operator types, and a title-cased
+variant — so a mapping written from an item can key on a string no receipt will
+ever produce. Observed live: a store with mappings split across two spellings,
+including one line duplicated under both because the first entry could never
+match.
+
+**A canonical store key is therefore derived on both write and lookup**:
+case-folded, whitespace-collapsed, punctuation-stripped. The display string is
+retained for humans; matching uses the canonical form only.
+
+**2. Only the label-scan path teaches the lexicon.** `writeLexiconLine` runs
+from a label resolve, and the non-inventory dismissal writes a skip marker.
+**Attaching a product any other way — notably `recount --product-ulid`, which is
+how an agent resolves an unmatched line — writes nothing.** So a line resolved by
+hand stays unmatched on every future receipt, forever. Observed live: an
+identical line from the same store, resolved to the same product two weeks
+earlier, came back `unmatched`.
+
+**Every path that attaches a product to an item with a `store` and a `raw_label`
+therefore upserts the mapping.** The lexicon becomes derived from use rather than
+hand-curated, and curation (`POST /lexicon`) becomes a correction surface rather
+than the primary one.
+
+**Learning must stay correctable, because it can cement a mistake.** A wrong
+resolution teaches a wrong mapping and every later receipt inherits it. The
+existing `UNIQUE(store, line_text)` upsert is what makes this safe — re-attaching
+a different product overwrites the mapping, so fixing the item fixes the future.
+An attachment that is later undone must clear or overwrite the line it taught.
+
+### Near-miss candidates: rank, offer, never silently guess
+
+An exact miss is not evidence the line is unknown — it may be a re-worded line,
+a new size, or a sibling SKU. When exact lookup fails, the module ranks candidate
+products and returns them **with their scores** rather than choosing.
+
+Three independent signals, none sufficient alone:
+
+- **Line-text similarity** against known lines for that canonical store.
+- **Product name / alias similarity** against the catalog.
+- **Price proximity** to that product's own price history *at that store*
+  (`products prices`, compared on normalized unit price).
+
+**Price corroborates; it never decides.** Prices move, sales exist, and two
+unrelated items at the same price say nothing. It is a tie-breaker among
+textually plausible candidates and must never promote a candidate the text does
+not already support.
+
+**Above a high confidence threshold the module may auto-attach; below it, it must
+not.** A below-threshold line keeps today's honest behavior — an item with
+`needs_info` — and additionally exposes its ranked candidates so a caller can
+offer a pick. Silently choosing a plausible-but-wrong product is worse than
+asking: it corrupts a panel, a price series, and (since eaten sheets decrement)
+stock itself.
+
+**The candidates are a read, not a state.** They are computed on demand from the
+line and the catalog, never stored — a stored candidate list would go stale the
+moment a product or price changed, and would be indistinguishable from a decision
+once written down.
+
 - **`kitchen.inventory_items`** — one physical unit: `ulid`, `product_ulid`
   (nullable — null while `needs_info`), `raw_label` (text — the receipt line or
   display name when no product; nullable), `store` (nullable), `batch_ulid`
