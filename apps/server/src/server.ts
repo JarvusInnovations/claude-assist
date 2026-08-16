@@ -231,8 +231,23 @@ const fastify = Fastify({
 await fastify.register(envPlugin);
 
 
-// Create postgres connection using validated config
-const sql = postgres(fastify.config.DATABASE_URL);
+// Create postgres connection using validated config.
+//
+// `max` MUST exceed the number of scheduled tasks that can overlap.
+// `withAdvisoryLock` (core/locks.ts) reserves a pool connection for the WHOLE
+// duration of a task, because a session-scoped advisory lock has to acquire and
+// release on the same connection. So N concurrent tasks hold N connections
+// before doing any work, and each task body then needs a further connection of
+// its own.
+//
+// At postgres.js's default max of 10 and ten schedulable tasks, that deadlocks
+// the entire server: every connection is held by a lock-holder, every task body
+// blocks waiting for a connection its own lock-holder is occupying, no task ever
+// returns, and no lock is ever released. Observed live — `/api/health` kept
+// answering while every database-backed route hung forever, twice.
+const sql = postgres(fastify.config.DATABASE_URL, {
+  max: Number(process.env.DATABASE_POOL_MAX ?? 30),
+});
 
 // Decorate Fastify instance
 fastify.decorate('sql', sql);
