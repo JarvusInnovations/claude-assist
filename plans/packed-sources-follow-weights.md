@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 depends: []
 specs:
   - specs/modules/kitchen.md
@@ -66,6 +66,8 @@ the data distinguishes them.
 - [x] The conversion remains ONE atomic write: a refused source leaves no
       earlier source spent and no derived item created.
 - [ ] Replay of the same submission ULID neither re-decrements nor re-creates.
+      *(Inherited from `convert`'s existing idempotency on `derived.ulid`; not
+      re-tested here, so left unticked rather than assumed.)*
 
 ## Risks / unknowns
 
@@ -96,3 +98,14 @@ for model-estimated entries.
 
 The lesson worth keeping: "I cannot find it" became "it was never built" without
 a grep. The corrected text is in the spec; the code comments are corrected here.
+
+## Follow-ups
+
+- **Issue #210** — a store cannot be removed from the roster, and a retracted
+  lexicon row or a dismissed item still contributes one. Now that the roster is
+  LLM prompt context for store resolution, junk in it is noise in a prompt.
+- **First real use got `components_per` wrong.** The egg sheet was published as
+  `unit` with a 4-egg component and `units: 4`, which would have decremented
+  16. The flag makes the ambiguity statable but does nothing to catch a wrong
+  statement — a sanity check (does `quantity x units` exceed what the source
+  holds?) would have caught it at publish rather than at submit.
