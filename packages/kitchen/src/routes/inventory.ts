@@ -123,6 +123,37 @@ export const registerInventoryRoutes: FastifyPluginAsync<InventoryRoutesConfig> 
 
   // ── Receipts ────────────────────────────────────────────────────────────────
 
+  // GET /kitchen/stores — every store string seen (roster + operator review).
+  fastify.get('/kitchen/stores', async () => {
+    const stores = await inventory.listStores();
+    return { stores, count: stores.length };
+  });
+
+  // POST /kitchen/stores/merge — fold one store string into another. Operator
+  // action: the judgment is not one a model or a migration may make unattended.
+  fastify.post<{ Body: { from: string; to: string } }>(
+    '/kitchen/stores/merge',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          required: ['from', 'to'],
+          additionalProperties: false,
+          properties: { from: { type: 'string' }, to: { type: 'string' } },
+        },
+      },
+    },
+    async (request, reply) => {
+      try {
+        const result = await inventory.mergeStores(request.body.from, request.body.to);
+        return { from: request.body.from, to: request.body.to, ...result };
+      } catch (err) {
+        reply.status(400);
+        return { error: (err as Error).message };
+      }
+    }
+  );
+
   fastify.post('/kitchen/receipts', async (request, reply) => {
     if (!request.isMultipart()) {
       reply.status(400);
