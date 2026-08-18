@@ -298,13 +298,11 @@ function parseNumeric(value: unknown): number | null {
 }
 
 /**
- * Exported so `services/consume-store.ts` (claude-assist#110's atomic
- * entry+deplete write, which crosses into `kitchen.entries` from the
- * inventory side of the module) can map a raw entries row without
- * duplicating this mapping — the two stores must never drift on what an
- * entries row means.
+ * Map a `kitchen.entry_consumptions` row. Exported for the same reason
+ * `rowToEntry` below is — `services/consume-store.ts` writes and reads this
+ * table from the inventory side and must not carry a second copy of the
+ * mapping.
  */
-/** Map a `kitchen.entry_consumptions` row. */
 export function rowToEntryConsumption(row: Record<string, unknown>): EntryConsumptionRecord {
   return {
     entry_ulid: row.entry_ulid as string,
@@ -315,6 +313,13 @@ export function rowToEntryConsumption(row: Record<string, unknown>): EntryConsum
   };
 }
 
+/**
+ * Exported so `services/consume-store.ts` (claude-assist#110's atomic
+ * entry+deplete write, which crosses into `kitchen.entries` from the
+ * inventory side of the module) can map a raw entries row without
+ * duplicating this mapping — the two stores must never drift on what an
+ * entries row means.
+ */
 export function rowToEntry(row: Record<string, unknown>): EntryRecord {
   return {
     ulid: row.ulid as string,
