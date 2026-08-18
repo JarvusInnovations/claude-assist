@@ -160,3 +160,59 @@ describe('expenditure routes (§ Expenditure & net energy)', () => {
     expect(res.statusCode).toBe(400);
   });
 });
+
+// § Skip visibility (claude-assist#214) — Strava activities the sync will
+// never import, surfaced live from the (optional) `stravaSync` dependency.
+describe('GET /kitchen/expenditures/skipped (§ Skip visibility)', () => {
+  let fastify: FastifyInstance;
+
+  afterEach(async () => {
+    await fastify.close();
+  });
+
+  it('an absent stravaSync (Strava not configured) reports an empty list, not an error', async () => {
+    fastify = Fastify({ logger: false });
+    await fastify.register(registerExpenditureRoutes, {
+      store: new MemoryExpenditureStore(),
+      entries: new MemoryEntryStore(),
+    });
+    await fastify.ready();
+
+    const res = await fastify.inject({ method: 'GET', url: '/kitchen/expenditures/skipped' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ skipped: [], count: 0 });
+  });
+
+  it('surfaces the live sync skip list with owner-local day fields, never a stored row', async () => {
+    fastify = Fastify({ logger: false });
+    const stravaSync = {
+      getSkipped: () => [
+        { activity_id: 1010, label: 'Pool Swim', occurred_at: new Date('2026-07-25T14:00:00Z') },
+        { activity_id: 1011, label: 'Unknown Start', occurred_at: null },
+      ],
+    };
+    await fastify.register(registerExpenditureRoutes, {
+      store: new MemoryExpenditureStore(),
+      entries: new MemoryEntryStore(),
+      stravaSync,
+    });
+    await fastify.ready();
+
+    const res = await fastify.inject({ method: 'GET', url: '/kitchen/expenditures/skipped' });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.count).toBe(2);
+    expect(body.skipped[0]).toMatchObject({
+      activity_id: 1010,
+      label: 'Pool Swim',
+      occurred_at: '2026-07-25T14:00:00.000Z',
+    });
+    expect(typeof body.skipped[0].day).toBe('string');
+    expect(typeof body.skipped[0].occurred_local).toBe('string');
+    // No ulid/kcal — this is never a stored expenditure row.
+    expect('ulid' in body.skipped[0]).toBe(false);
+    expect('kcal' in body.skipped[0]).toBe(false);
+    // A null start instant reports null day/local fields rather than guessing.
+    expect(body.skipped[1]).toMatchObject({ activity_id: 1011, occurred_at: null, day: null, occurred_local: null });
+  });
+});

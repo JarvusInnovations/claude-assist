@@ -132,9 +132,9 @@ export const COMMAND_GROUPS: CommandGroup[] = [
     commands: [
       {
         usage: 'expenditure log "<label>" --kcal N [--duration M] [--avg-hr H] [--at TIME] [--source S] [--ulid U]',
-        summary: "record a stated burn (active calories — a device said it or you did; never model-estimated); feeds the daily net line, which is context, not a spend-it budget; --at defaults to now — prefer a full local timestamp with offset, a bare YYYY-MM-DD backstops to local noon that day. STRAVA ACTIVITIES SYNC THEMSELVES (a scheduled server feed pulls the trailing week every ~30 min, idempotently) — NEVER manually log or import a Strava/Garmin workout; this verb is only for burns that never reach Strava",
+        summary: "record a stated burn (active calories — a device said it or you did; never model-estimated); feeds the daily net line, which is context, not a spend-it budget; --at defaults to now — prefer a full local timestamp with offset, a bare YYYY-MM-DD backstops to local noon that day. STRAVA ACTIVITIES SYNC THEMSELVES (a scheduled server feed pulls the trailing week every ~30 min, idempotently) — never manually log a burn the feed will also import. But the feed only imports an activity with a calorie value; one with none is skipped forever (never retried, never written as 0) — and most manually-entered Strava activities have exactly no calorie value, so THOSE are yours to state here. Check `expenditure list --include-skipped` for what the feed is sitting on",
       },
-      { usage: "expenditure list [--since DATE] [--limit N]", summary: "recent expenditures, newest first" },
+      { usage: "expenditure list [--since DATE] [--limit N] [--include-skipped]", summary: "recent expenditures, newest first; --include-skipped also lists Strava activities the sync will never import (no calorie value)" },
       { usage: "expenditure delete <ulid>", summary: "remove an expenditure from all rollups" },
     ],
   },
