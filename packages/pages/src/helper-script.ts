@@ -110,21 +110,31 @@ export const HELPER_SCRIPT = `(function () {
     return out.slice(0, 26);
   }
 
-  function draftKey(slug) {
-    return 'pages-worksheet:' + slug;
+  // Scoped to (slug, instance) rather than slug alone: the same slug's HTML
+  // is re-rendered on every publish, and each render carries a fresh
+  // \`data-pw-instance\` token (worksheet.ts renderInstanceToken). Keying on
+  // that too means a republish — which is how a sheet gets corrected — always
+  // starts a fresh submission, while a reload of the SAME rendered page still
+  // finds its draft and retries the SAME submission key. Without the
+  // instance, a republished sheet would come up pre-filled with the prior
+  // run's quantities and reuse its submission_key, so the next submit is
+  // treated as an idempotent replay and writes nothing while still showing
+  // "✓ Recorded".
+  function draftKey(slug, instance) {
+    return 'pages-worksheet:' + slug + ':' + instance;
   }
 
-  function readDraft(slug) {
+  function readDraft(slug, instance) {
     try {
-      return JSON.parse(window.localStorage.getItem(draftKey(slug)) || 'null') || null;
+      return JSON.parse(window.localStorage.getItem(draftKey(slug, instance)) || 'null') || null;
     } catch (e) {
       return null;
     }
   }
 
-  function writeDraft(slug, draft) {
+  function writeDraft(slug, instance, draft) {
     try {
-      window.localStorage.setItem(draftKey(slug), JSON.stringify(draft));
+      window.localStorage.setItem(draftKey(slug, instance), JSON.stringify(draft));
     } catch (e) {
       /* private mode / quota — the worksheet still works, it just won't survive a reload */
     }
@@ -135,6 +145,11 @@ export const HELPER_SCRIPT = `(function () {
     if (!node) return;
     var def = JSON.parse(node.textContent);
     var slug = currentSlug() || 'unknown';
+    // Falls back to a fixed label rather than the slug alone when a page
+    // rendered before this instance token existed is still being served —
+    // that just means its one in-flight draft (if any) won't be found under
+    // the new key, which is the same as a reload after clearing storage.
+    var instance = node.getAttribute('data-pw-instance') || 'legacy';
     var basis = def.basis || 100;
     var inputs = [].slice.call(document.querySelectorAll('[data-pw-label]'));
     var statusEl = document.getElementById('pw-status');
@@ -142,9 +157,11 @@ export const HELPER_SCRIPT = `(function () {
     var noteEl = document.getElementById('pw-note');
     var restoreEl = document.getElementById('pw-restore');
 
-    // The submission key survives reloads: a page that comes back after the
-    // network dropped must retry the SAME submission, not open a second one.
-    var draft = readDraft(slug) || {};
+    // The submission key survives reloads OF THE SAME PUBLISHED INSTANCE: a
+    // page that comes back after the network dropped must retry the SAME
+    // submission, not open a second one. A republish renders a NEW instance,
+    // so it never sees this draft — it starts fresh (§ Idempotency).
+    var draft = readDraft(slug, instance) || {};
     var key = draft.submission_key || ulid();
 
     function quantities() {
@@ -232,7 +249,7 @@ export const HELPER_SCRIPT = `(function () {
         quantities: quantities(),
         note: (noteEl && noteEl.value) || undefined,
       };
-      writeDraft(slug, { submission_key: key, quantities: payload.quantities });
+      writeDraft(slug, instance, { submission_key: key, quantities: payload.quantities });
 
       pagesRespond(payload)
         .then(function (result) {
@@ -259,7 +276,7 @@ export const HELPER_SCRIPT = `(function () {
     inputs.forEach(function (input) {
       input.addEventListener('input', function () {
         recompute();
-        writeDraft(slug, { submission_key: key, quantities: quantities() });
+        writeDraft(slug, instance, { submission_key: key, quantities: quantities() });
       });
     });
     if (submitEl) submitEl.addEventListener('click', submit);

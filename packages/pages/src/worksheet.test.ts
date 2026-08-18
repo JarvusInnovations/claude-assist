@@ -426,15 +426,30 @@ describe('renderWorksheetHtml', () => {
   });
 
   it('embeds the definition as JSON and loads the shared helper', () => {
-    expect(html).toContain('<script type="application/json" id="pw-definition">');
     expect(html).toContain('<script src="/pages/_helper.js"></script>');
     expect(html).toContain('window.pagesWorksheetInit()');
 
     const embedded = html.match(
-      /<script type="application\/json" id="pw-definition">(.*?)<\/script>/s
+      /<script type="application\/json" id="pw-definition"[^>]*>(.*?)<\/script>/s
     )?.[1];
     expect(embedded).toBeTruthy();
     expect(JSON.parse(embedded!)).toEqual(definition as unknown as WorksheetDefinition);
+  });
+
+  it('carries a fresh data-pw-instance token on the definition element, distinct per render', () => {
+    const match = html.match(/<script type="application\/json" id="pw-definition" data-pw-instance="([^"]+)">/);
+    expect(match?.[1]).toBeTruthy();
+
+    // A republish is a second render call — even of the identical definition —
+    // and must mint a DIFFERENT instance token, because the client-side draft
+    // that would otherwise resurrect the prior submission's key and quantities
+    // is scoped to (slug, instance) (see specs/modules/pages.md § Idempotency).
+    const secondHtml = renderWorksheetHtml(definition, 'Prep — grain bowl');
+    const secondMatch = secondHtml.match(
+      /<script type="application\/json" id="pw-definition" data-pw-instance="([^"]+)">/
+    );
+    expect(secondMatch?.[1]).toBeTruthy();
+    expect(secondMatch?.[1]).not.toBe(match?.[1]);
   });
 
   it('escapes a label that would otherwise close the JSON block or inject markup', () => {
@@ -454,7 +469,7 @@ describe('renderWorksheetHtml', () => {
     expect(rendered).not.toContain('</script><img');
     // The JSON block still parses, so the runtime still gets its definition.
     const embedded = rendered.match(
-      /<script type="application\/json" id="pw-definition">(.*?)<\/script>/s
+      /<script type="application\/json" id="pw-definition"[^>]*>(.*?)<\/script>/s
     )?.[1];
     expect(JSON.parse(embedded!).components[0].label).toBe(
       '</script><img src=x onerror=alert(1)>'

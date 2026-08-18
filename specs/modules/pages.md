@@ -241,6 +241,14 @@ no arithmetic** — that is the entire point. Every rendered string is
 HTML-escaped, and the embedded JSON escapes `<`, so a hostile component label
 can neither inject markup nor close the script block early.
 
+The definition's `<script id="pw-definition">` also carries a
+**`data-pw-instance`** attribute: an opaque token minted fresh on every render
+call, distinct from the fixed `version` field inside the JSON (that is the
+wire-protocol version, the same on every worksheet ever published). It exists
+solely to scope the client-side draft below to *this rendered instance* — a
+republish renders a new instance even when the definition is byte-identical to
+the one it replaces.
+
 ### Idempotency
 
 A submission carries a client-generated **`submission_key`, a ULID**, stable
@@ -257,6 +265,23 @@ A *deliberate* second submission — the submitter tapping "Submit again" after 
 success — mints a **fresh** key, because that is a second real event. A retry
 after a **failure** reuses the key, because that is one event, twice attempted.
 The runtime distinguishes them; nothing else has to.
+
+**The client-side draft that carries the key across a reload is keyed on
+`(slug, instance)`, not slug alone.** The runtime persists `{ submission_key,
+quantities }` in `localStorage` under a key built from both the slug and the
+current page's `data-pw-instance` token, and reads it back the same way on
+load. Slug-alone was the original design and it under-scoped: republishing is
+how a sheet gets *corrected* — new components, new steps, new bindings — and a
+slug survives its own republish, so a slug-keyed draft did too. The republished
+page came up pre-filled with the previous run's quantities *and* its
+`submission_key`; the next tap of "Submit" was then indistinguishable from a
+retry of that old submission, so cook mode's idempotency (correctly) wrote
+**nothing**, while the confirmation panel still read "✓ Recorded" — a slug that
+was ever republished could record only once, ever. Scoping to the instance
+keeps the retry-after-network-drop guarantee (a reload of the *same* rendered
+page still finds its draft) while making a republish start every submission
+fresh, with empty inputs and a new key — exactly like a slug served for the
+first time.
 
 ### What the submitter sees
 
@@ -286,6 +311,11 @@ Unchanged, and still honored. On load the runtime offers — never silently
 applies — a restore: unsent local edits first, otherwise the last **submitted**
 quantities read back through `pagesLastResponse()`. Because a resubmission
 appends, that read-back is always the newest row and history is never rewritten.
+
+A republish has no unsent local edits (§ Idempotency — the draft is
+instance-scoped, and the new instance has none), so it always falls to the
+`pagesLastResponse()` branch: an *explicit*, submitter-chosen restore of the
+last submitted numbers, never a silent pre-fill of them.
 
 ## Cook mode
 
