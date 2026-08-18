@@ -3341,10 +3341,13 @@ also silently disagree with the catalog it was copied from.
     product, reads its stored panel, and derives `per_basis` **the same way a meal
     is costed** (§ Nutrition panel: scale from the serving basis, per field).
     A product whose panel is missing a field contributes *unknown* to that field,
-    never zero.
+    never zero. **A product is a catalog row, not stock** — this form does not
+    bind to inventory, so on a `--cook` sheet it is marked accordingly
+    (§ An unbound component is VISIBLE, never indistinguishable).
   - `--component-item <item-ulid>=<grams>` — same, resolved through an inventory
     item to its linked product, so a sheet can be written against what is actually
-    on hand.
+    on hand, **and binds the component to that item's stock** for `--cook`
+    (§ Eaten sheets decrement their sources).
   - `--component-unit <item-ulid>=<units>` — the counted form: the item is
     quantified in whole UNITS rather than grams (§ Eaten sheets decrement their
     sources § The basis rule), and the panel is scaled per unit rather than per
@@ -3503,6 +3506,42 @@ a human describes the food anyway. Its *panel* still needs a mass, which is
 weight divided by a count can be wrong in either direction (drained vs packed
 weight, shell vs edible), and a plausible wrong denominator is worse than none —
 it is the batch-yield failure (§ Conversions) in a new place.
+
+### An unbound component is VISIBLE, never indistinguishable
+
+`--component <product-ulid>` and `--component-item <item-ulid>` accept nearly
+identical syntax and render as the same kind of row, but only the second binds
+to stock — a product is a catalog row, not stock, so a `--component` row has no
+`consumes` binding to decrement in the first place (§ The basis rule above only
+governs a binding whose *basis* is missing; this is the row with no binding at
+all). Both forms were accepted on a `--cook eaten` sheet with no distinction at
+publish time, and the two resulting sheets were **indistinguishable** — same
+table, same submit, same "logged" confirmation — which is exactly how a real
+sheet logged a correct journal entry and moved no stock at all, an error caught
+only days later by hand-counting the physical items (claude-assist#207).
+
+**The gap is made visible, not refused.** Refusing a `--component` row on a
+`--cook` sheet would be defensible by the same logic that refuses a product
+with no stored panel rather than guessing one (§ Authoring a prep worksheet
+above) — except it would also refuse two cases that are not errors:
+
+- **Eating something that genuinely is not tracked as stock** — a restaurant
+  meal, a gift, a sample — where the product record exists (so the panel is
+  real, not recalled) but there is no item to bind to and never will be.
+- **Every `--recipe`-seeded row**, which carries its `per_100g` inline from the
+  recipe with no product or item reference at all (§ Authoring a prep worksheet)
+  — refusing "no binding" would refuse every recipe-seeded `--cook eaten` sheet
+  that has ever worked, not just the one this section is about.
+
+So the module extends the doctrine § An unapplied decrement is VISIBLE, never
+silent already establishes for a binding with no basis, one step earlier: a
+`--component` row on a `--cook` sheet carries a note — rendered directly under
+its label on the page itself, the same place any other component note renders
+— stating that it is not tracked in stock and will not decrement. The CLI
+reply names the same rows under `untracked_components`, so the author sees it
+at publish time, not by hand-counting stock days later. A `--component-item` /
+`--component-unit` row, and every recipe-seeded row, carries no such note —
+only a component that *could* have bound and didn't gets marked.
 
 ### An unapplied decrement is VISIBLE, never silent
 
