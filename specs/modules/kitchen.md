@@ -331,7 +331,9 @@ burn.
 
 **API**: `POST /kitchen/expenditures` (idempotent on ulid, returns the bare
 row, `201`/`200` replay), `GET /kitchen/expenditures?since&limit` →
-`{ expenditures, count }`, `DELETE /kitchen/expenditures/:ulid`.
+`{ expenditures, count }`, `DELETE /kitchen/expenditures/:ulid`,
+`GET /kitchen/expenditures/skipped` → `{ skipped, count, tz }` (§ Skip
+visibility, below the Strava sync contract).
 
 **The net line.** The daily rollup gains: `expenditure_kcal` (sum of the
 day's expenditure rows), `tdee_base_kcal` (instance-configured
@@ -429,7 +431,8 @@ there) and inserts an expenditure row:
   `occurred_at` = the activity's start instant, `source: 'strava'`.
 - An activity with no calorie value is **skipped with a log line** — a burn
   is a stated number, never a written 0 (absent ≠ zero, same doctrine as
-  the nutrition panel).
+  the nutrition panel). This is a *permanent* skip, not a deferral — see
+  § Skip visibility below for what that means and how it surfaces.
 
 **Idempotency IS the watermark.** The sync keeps no cursor: the 7-day
 window plus seeded-ulid replays are the resume semantics. A tick that dies
@@ -443,10 +446,38 @@ overlaps a synced activity's time span. An overlap is surfaced as a warning
 log for owner judgment (stated-burns doctrine: the module records; the
 owner arbitrates duplicates).
 
+**Skip visibility (claude-assist#214).** A calorie-less activity is not
+merely skipped *this tick* — the trailing-window relist re-evaluates it on
+every future tick too and reaches the same answer, so it is never
+imported, permanently. That refusal is correct (a written 0 asserts
+"burned nothing," which is worse than an absent row), but read at the
+verb boundary it can sound like it forbids logging the activity by hand.
+It does not: **an activity Strava reports with no calorie value is the
+owner's to state, via `expenditure log`, exactly because the feed will
+never state it.** This matters most for manually-entered Strava
+activities — Strava's manual-entry form has no calories field, and
+without HR or power data Strava computes none — so the activity most
+likely to need a stated burn (a pool swim, a gym session, anything a
+device missed) is exactly the one the feed will never produce.
+
+A permanent, silent skip is otherwise indistinguishable from "hasn't
+synced yet" without reading server logs, so the sync keeps a live skip
+list: `StravaSync.getSkipped()` returns the *current tick's* skipped
+activities (activity id, label, start instant) — rebuilt fresh on every
+successful run, not accumulated, so an activity that ages out of the
+trailing 7-day window (or finally carries a calorie value) simply stops
+appearing. Nothing is persisted for it; there is no new table, and a
+failed tick (e.g. token refresh) leaves the prior list in place rather
+than clearing it. `GET /kitchen/expenditures/skipped` and
+`expenditure list --include-skipped` read this live list, so a permanent
+skip is answerable from the CLI in one call instead of a log search.
+
 **Anti-scope.** Unchanged from § Expenditure & net energy: just enough burn
 to compute the balance — no routes, laps, splits, gear, or kudos. Strava
 remains the exercise system of record; this feed carries numbers, not
-activities.
+activities. Also out of scope here: linking a manually-stated burn back to
+the Strava activity it corresponds to (an optional `--strava-activity-id`
+on `expenditure log`) — tracked as a follow-up, not built by this section.
 
 ## Timezone & local-day bucketing (module-owned, not caller-owned)
 

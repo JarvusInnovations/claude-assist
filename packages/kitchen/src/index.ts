@@ -217,6 +217,12 @@ export default createPlugin('kitchen', async (fastify: FastifyInstance, options:
   // Expenditure & net energy (§ Expenditure & net energy, claude-assist#121).
   // Daily targets (§ Daily targets) parse once here at init — malformed config
   // throws and fails boot, never a silent drop.
+  //
+  // `stravaSyncHolder` exists because the StravaSync instance (built further
+  // down, only when Strava is configured) doesn't exist yet at this
+  // registration call — a plain indirection cell instead of reordering the
+  // whole plugin body around the Strava block's credential gating.
+  const stravaSyncHolder: { current?: StravaSync } = {};
   const expenditureStore = new PgExpenditureStore(fastify.sql);
   await fastify.register(registerExpenditureRoutes, {
     store: expenditureStore,
@@ -224,6 +230,7 @@ export default createPlugin('kitchen', async (fastify: FastifyInstance, options:
     tdeeBase: config.tdeeBase,
     dailyTargets: parseDailyTargets(config.dailyTargets),
     ownerTz,
+    stravaSync: { getSkipped: () => stravaSyncHolder.current?.getSkipped() ?? [] },
   });
 
   // Weigh-ins (§ Weigh-ins — scale data via the capture app). Read-time
@@ -338,6 +345,7 @@ export default createPlugin('kitchen', async (fastify: FastifyInstance, options:
       fastify.log.info('Strava expenditure sync disabled via config (activity history still readable)');
     } else {
       const stravaSync = new StravaSync(stravaClient, expenditureStore, fastify.log);
+      stravaSyncHolder.current = stravaSync;
       fastify.scheduler.register({
         name: 'kitchen:strava-sync',
         schedule: stravaSyncCron(stravaSyncMinutes),
@@ -399,6 +407,7 @@ export {
   parseStravaSyncMinutes,
   stravaSyncCron,
   type StravaSyncTickResult,
+  type StravaSkippedActivity,
 } from './services/strava-sync.js';
 export {
   registerWeighInRoutes,

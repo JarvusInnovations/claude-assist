@@ -11,6 +11,13 @@
  * Cross-source rule: the sync only ever inserts its own seeded rows. An
  * overlap with an existing non-strava (manual/garmin) row is surfaced as a
  * warning log for owner judgment — never deleted, merged, or edited.
+ *
+ * Skip visibility: an activity with no calorie value is never inserted (a
+ * burn is a stated number, never a written 0) — and never will be, since a
+ * calorie-less activity re-evaluates to the same answer on every future
+ * tick too. `getSkipped()` exposes the current tick's skip list (rebuilt
+ * fresh each run, no separate storage) so a caller can tell "this will
+ * never arrive" apart from "hasn't synced yet" without reading server logs.
  */
 
 import type { FastifyBaseLogger } from 'fastify';
@@ -80,12 +87,40 @@ export interface StravaSyncTickResult {
   refresh_failed: boolean;
 }
 
+/**
+ * A Strava activity the sync saw and will never import (§ Strava activity
+ * sync — skip visibility). Not a stored row — there is nothing to store, the
+ * whole point is that the ledger has no row for it — so this is a plain
+ * value, not an `ExpenditureRecord`.
+ */
+export interface StravaSkippedActivity {
+  activity_id: number;
+  label: string;
+  /** The activity's own start instant, when Strava reported one. */
+  occurred_at: Date | null;
+}
+
 export class StravaSync {
+  /**
+   * The most recent tick's skip list — rebuilt from scratch every successful
+   * run (never accumulated), so it always reflects exactly what the current
+   * trailing-7-day window contains. An activity ages out on its own once it
+   * falls outside that window, the same idempotency-is-the-watermark design
+   * as insertion. A failed tick (token refresh error) leaves the prior list
+   * in place rather than clearing it — stale-but-true beats blank.
+   */
+  private skipped: StravaSkippedActivity[] = [];
+
   constructor(
     private readonly client: StravaClient,
     private readonly expenditures: ExpenditureStore,
     private readonly log: FastifyBaseLogger
   ) {}
+
+  /** The current skip list — see `skipped` above. Read-only snapshot. */
+  getSkipped(): StravaSkippedActivity[] {
+    return [...this.skipped];
+  }
 
   /**
    * One sync pass. A StravaRefreshError anywhere in the pass skips the rest
@@ -120,13 +155,25 @@ export class StravaSync {
 
     let inserted = 0;
     let skippedNoCalories = 0;
+    const skippedThisRun: StravaSkippedActivity[] = [];
     for (const { activity, ulid } of unseen) {
       const detail = await this.client.getActivity(activity.id);
 
       // A burn is a stated number, never a written 0 (absent ≠ zero, same
-      // doctrine as the nutrition panel).
+      // doctrine as the nutrition panel). This activity will never be
+      // imported by any future tick either — the trailing-window relist
+      // re-evaluates it every time and reaches the same answer — so it is
+      // recorded in the skip list (§ Skip visibility) for `expenditure list
+      // --include-skipped` to surface, rather than left to a server log only.
       if (typeof detail.calories !== 'number' || !(detail.calories > 0)) {
         skippedNoCalories += 1;
+        const label = (detail.name ?? activity.name ?? '').trim() || detail.sport_type || detail.type || 'Activity';
+        const startDate = detail.start_date ? new Date(detail.start_date) : null;
+        skippedThisRun.push({
+          activity_id: activity.id,
+          label,
+          occurred_at: startDate && !Number.isNaN(startDate.getTime()) ? startDate : null,
+        });
         this.log.info(
           { activity_id: activity.id, name: detail.name ?? activity.name },
           'Strava activity carries no calorie value — skipped (never written as 0)'
@@ -165,6 +212,8 @@ export class StravaSync {
       inserted += 1;
       await this.warnOverlaps(record);
     }
+
+    this.skipped = skippedThisRun;
 
     return {
       listed: activities.length,

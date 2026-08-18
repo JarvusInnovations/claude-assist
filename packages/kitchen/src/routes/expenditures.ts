@@ -24,6 +24,17 @@ import type { DailyTargets } from '../daily-targets.js';
 import { localDay, localDisplay, localToday, resolveOwnerTz, type OwnerTz } from '../zoned.js';
 import { NUTRITION_FIELD_KEYS } from '../types.js';
 import type { EntryRecord } from '../types.js';
+import type { StravaSkippedActivity } from '../services/strava-sync.js';
+
+/**
+ * The read seam onto the live Strava sync's skip list (§ Skip visibility).
+ * Narrower than `StravaSync` itself — routes never need the sync's write
+ * path — and optional: a caller without Strava configured (or tests) simply
+ * omits it, and `/kitchen/expenditures/skipped` reports an empty list.
+ */
+export interface StravaSkipSource {
+  getSkipped(): StravaSkippedActivity[];
+}
 
 export interface ExpenditureRoutesConfig {
   store: ExpenditureStore;
@@ -38,6 +49,8 @@ export interface ExpenditureRoutesConfig {
    * Optional so tests can omit it; absent ⇒ UTC fallback.
    */
   ownerTz?: OwnerTz;
+  /** See `StravaSkipSource`. Absent ⇒ Strava isn't configured; skip list is empty. */
+  stravaSync?: StravaSkipSource;
 }
 
 const EXPENDITURE_SOURCES = ['strava', 'health_connect', 'garmin', 'manual'] as const;
@@ -224,7 +237,7 @@ export const registerExpenditureRoutes: FastifyPluginAsync<ExpenditureRoutesConf
   // specs/modules/kitchen.md § Request validation is strict, not permissive
   installStrictValidation(fastify);
 
-  const { store, entries, tdeeBase, dailyTargets } = config;
+  const { store, entries, tdeeBase, dailyTargets, stravaSync } = config;
   const ownerTz = config.ownerTz ?? resolveOwnerTz();
 
   // Day-grouped summary (`group=day`). The window defaults to the trailing 7
@@ -304,6 +317,23 @@ export const registerExpenditureRoutes: FastifyPluginAsync<ExpenditureRoutesConf
       return { expenditures: rows.map((r) => toView(r, ownerTz)), count: rows.length, tz: ownerTz.note };
     }
   );
+
+  // GET /kitchen/expenditures/skipped - Strava activities the sync saw and
+  // will never import (§ Skip visibility). Static path ahead of the `:ulid`
+  // routes below, same convention as /kitchen/entries/questions. Never
+  // stored — read straight from the live sync's current tick, so an absent
+  // `stravaSync` (Strava not configured, or a test) is simply an empty list,
+  // not an error.
+  fastify.get('/kitchen/expenditures/skipped', async () => {
+    const skipped = (stravaSync?.getSkipped() ?? []).map((a) => ({
+      activity_id: a.activity_id,
+      label: a.label,
+      occurred_at: a.occurred_at ? a.occurred_at.toISOString() : null,
+      day: a.occurred_at ? localDay(a.occurred_at, ownerTz.zone) : null,
+      occurred_local: a.occurred_at ? localDisplay(a.occurred_at, ownerTz.zone) : null,
+    }));
+    return { skipped, count: skipped.length, tz: ownerTz.note };
+  });
 
   fastify.delete<{ Params: { ulid: string } }>(
     '/kitchen/expenditures/:ulid',

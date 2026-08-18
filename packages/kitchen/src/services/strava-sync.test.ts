@@ -365,6 +365,108 @@ describe('pull contract (unseen-only, seeded ulids, stated numbers)', () => {
   });
 });
 
+// ── Skip visibility (claude-assist#214) ─────────────────────────────────────
+
+describe('getSkipped (live skip list, not stored)', () => {
+  it('starts empty before any tick', () => {
+    const { sync } = makeSync(stravaRoutes({ activities: [] }));
+    expect(sync.getSkipped()).toEqual([]);
+  });
+
+  it('a skipped activity appears with its id, label, and start instant', async () => {
+    const { sync } = makeSync(
+      stravaRoutes({
+        activities: [{ id: 1004, name: 'Walk With No Meter', sport_type: 'Walk' }],
+        details: {
+          1004: { id: 1004, name: 'Walk With No Meter', sport_type: 'Walk', moving_time: 600, start_date: '2026-07-23T09:00:00Z' },
+        },
+      })
+    );
+    await sync.tick();
+    expect(sync.getSkipped()).toEqual([
+      { activity_id: 1004, label: 'Walk With No Meter', occurred_at: new Date('2026-07-23T09:00:00Z') },
+    ]);
+  });
+
+  it('a blank/absent name falls back to sport type, same as an inserted row', async () => {
+    const { sync } = makeSync(
+      stravaRoutes({
+        activities: [{ id: 1006, sport_type: 'Swim' }],
+        details: { 1006: { id: 1006, sport_type: 'Swim', start_date: '2026-07-24T08:00:00Z' } },
+      })
+    );
+    await sync.tick();
+    expect(sync.getSkipped()).toEqual([
+      { activity_id: 1006, label: 'Swim', occurred_at: new Date('2026-07-24T08:00:00Z') },
+    ]);
+  });
+
+  it('an insert is never also a skip', async () => {
+    const { sync } = makeSync(
+      stravaRoutes({ activities: [RIDE_SUMMARY], details: { 1001: RIDE_DETAIL } })
+    );
+    await sync.tick();
+    expect(sync.getSkipped()).toEqual([]);
+  });
+
+  it('rebuilds fresh each tick — an activity dropped from the next list disappears', async () => {
+    // A mutable route: first tick's list carries the no-calorie activity,
+    // second tick's list is empty — e.g. it aged out of the trailing window.
+    let activities: Array<Record<string, unknown>> = [
+      { id: 1007, name: 'Aging Out', sport_type: 'Run' },
+    ];
+    const details = {
+      1007: { id: 1007, name: 'Aging Out', sport_type: 'Run', start_date: '2026-07-10T08:00:00Z' },
+    };
+    const counter = { n: 0 };
+    const route: Route = (url) => stravaRoutes({ tokenCounter: counter, activities, details })(url);
+    const { sync } = makeSync(route);
+
+    await sync.tick();
+    expect(sync.getSkipped()).toHaveLength(1);
+
+    activities = []; // simulate the activity aging out of the trailing window
+    await sync.tick();
+    expect(sync.getSkipped()).toEqual([]);
+  });
+
+  it('a failed tick (token refresh error) leaves the prior skip list in place', async () => {
+    // First tick succeeds and records a skip; the SECOND token refresh
+    // fails (the stored access token is forced to expire between ticks).
+    let tokenCalls = 0;
+    const route: Route = (url) => {
+      if (url.endsWith('/oauth/token')) {
+        tokenCalls += 1;
+        if (tokenCalls === 1) return { body: tokenResponse(1) };
+        return { status: 400, body: { message: 'Bad Request' } };
+      }
+      if (url.includes('/athlete/activities')) {
+        return { body: [{ id: 1008, name: 'Kept On Failure', sport_type: 'Row' }] };
+      }
+      const detailMatch = url.match(/\/api\/v3\/activities\/(\d+)$/);
+      if (detailMatch && Number(detailMatch[1]) === 1008) {
+        return {
+          body: { id: 1008, name: 'Kept On Failure', sport_type: 'Row', start_date: '2026-07-11T08:00:00Z' },
+        };
+      }
+      return undefined;
+    };
+    const { sync, oauth } = makeSync(route);
+
+    await sync.tick();
+    expect(sync.getSkipped()).toHaveLength(1);
+
+    // Expire the stored access token so the next tick must refresh — and
+    // the mocked token endpoint now 400s.
+    const state = await oauth.get();
+    await oauth.save({ ...state!, expires_at: new Date(Date.now() - 1000) });
+
+    const result = await sync.tick();
+    expect(result.refresh_failed).toBe(true);
+    expect(sync.getSkipped()).toHaveLength(1); // unchanged from the earlier successful tick
+  });
+});
+
 // ── Cross-source rule ────────────────────────────────────────────────────────
 
 describe('cross-source rule (warn-only overlap surfacing)', () => {
