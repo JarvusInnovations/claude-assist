@@ -4,7 +4,7 @@ depends: [stated-weight-consume, packed-sources-follow-weights]
 specs:
   - specs/modules/kitchen.md
 issues: [215]
-pr:
+pr: 221
 ---
 
 # Plan: a meal consumes MANY items — `entry_consumptions` replaces the single link column
