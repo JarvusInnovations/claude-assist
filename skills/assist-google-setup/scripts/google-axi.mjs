@@ -1133,7 +1133,7 @@ async function removeAlias(args) {
 }
 
 // packages/google/src/axi/google/cli.ts
-var VERSION = true ? "2163176" : "dev";
+var VERSION = true ? "e3619c3" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [command] [args] [flags]
        ${CLI}                 # no args \u2192 home (accounts + auth status)

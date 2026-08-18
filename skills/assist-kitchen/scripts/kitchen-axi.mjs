@@ -704,7 +704,7 @@ var COMMAND_GROUPS = [
       },
       {
         usage: "inventory eat <item-ulid> [--grams N|--fraction F] [--entry-ulid ENTRY_ULID] [--at DATE]",
-        summary: "STATED-WEIGHT CONSUMPTION: a KNOWN weight or fraction eaten off an open DIVISIBLE item \u2014 a consumption, never a recount. Fraction-modeled items only (400 on a counted one \u2014 use finished-unit/consume there). Exactly one of --grams/--fraction; --grams needs the linked product's net_content_g and is REFUSED (400) without one, never guessed \u2014 pass --fraction instead. Reaching/passing zero goes terminal 'finished' (consumed, never tossed); a positive remainder stays open. --entry-ulid links an ALREADY-LOGGED consuming entry atomically with the deplete, and doubles as the idempotency key for a retry"
+        summary: "STATED-WEIGHT CONSUMPTION: a KNOWN weight or fraction eaten off an open DIVISIBLE item \u2014 a consumption, never a recount. Fraction-modeled items only (400 on a counted one \u2014 use finished-unit/consume there). Exactly one of --grams/--fraction; --grams needs the linked product's net_content_g and is REFUSED (400) without one, never guessed \u2014 pass --fraction instead. Reaching/passing zero goes terminal 'finished' (consumed, never tossed); a positive remainder stays open. --entry-ulid links an ALREADY-LOGGED consuming entry atomically with the deplete; the idempotency key is the (entry, item) PAIR, so a retry of the same pair is a safe no-op while the SAME entry against another item is the meal's next component and applies normally"
       }
     ]
   },
@@ -3635,7 +3635,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "197cae9" : "dev";
+var VERSION = true ? "e3619c3" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)
