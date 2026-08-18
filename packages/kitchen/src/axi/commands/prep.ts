@@ -39,6 +39,14 @@ export const PREP_HELP = `kitchen-axi prep <subcommand> [args] [--json]
   it first. A product missing ONE field contributes 'unknown' to that total, never
   zero — the sheet reports which fields came back unknown.
 
+  On a --cook sheet, --component (a product) does NOT bind to stock — only
+  --component-item/--component-unit do, because a product is a catalog row, not
+  stock. Submitting will NOT decrement a --component row; the sheet marks it
+  "not tracked in stock" so this is visible on the page, not just in the reply
+  below. That's fine for food that genuinely isn't tracked stock; for on-hand
+  stock, use --component-item/--component-unit so the submission actually moves
+  inventory.
+
   PUBLISHING WRITES NOTHING TO THE LEDGER. A definition is a form awaiting a real
   event; stock moves only when the submission lands.
 
@@ -215,6 +223,7 @@ async function publishPrep(args: string[]): Promise<string> {
 
   const totals = result?.planned_totals ?? {};
   const unknown: string[] = result?.unknown_fields ?? [];
+  const untracked: string[] = result?.untracked_components ?? [];
 
   return renderOutput([
     renderObject({
@@ -234,6 +243,13 @@ async function publishPrep(args: string[]): Promise<string> {
       ...(unknown.length
         ? [
             `UNKNOWN (no component carried these): ${unknown.join(", ")} — seed the missing product panels rather than reading the total as 0`,
+          ]
+        : []),
+      ...(untracked.length
+        ? [
+            `NOT TRACKED IN STOCK (--component, not --component-item/--component-unit): ${untracked.join(", ")} — ` +
+              `submitting will NOT decrement these, and the sheet itself now says so. If this food IS on-hand stock, ` +
+              `republish with --component-item/--component-unit instead so the submission actually decrements it.`,
           ]
         : []),
       "Nothing was written to the ledger; stock moves when the sheet is submitted",

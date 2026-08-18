@@ -35,6 +35,14 @@ export const PREP_FIELDS: { key: keyof NutritionPer100g; label: string; unit?: s
   { key: 'sodium_mg', label: 'Sodium', unit: 'mg', precision: 0 },
 ];
 
+/**
+ * Rendered on the component row itself (§ pages.md § The rendered document —
+ * a component `note` renders directly under its label), so the gap is
+ * visible on the page a human actually reads, not only in the stored JSON
+ * (claude-assist#207).
+ */
+export const UNTRACKED_COMPONENT_NOTE = 'not tracked in stock — will NOT decrement inventory when submitted';
+
 export class PrepValidationError extends Error {
   constructor(message: string) {
     super(message);
@@ -102,6 +110,15 @@ export interface PrepPublishResult {
   components: { label: string; quantity: number; per_basis: Record<string, number> }[];
   /** Fields no component carried — null totals, surfaced rather than hidden. */
   unknown_fields: string[];
+  /**
+   * Labels of components bound by `--component` (a product, not an item) on a
+   * `--cook` sheet — claude-assist#207. A product is a catalog row, not stock,
+   * so cook mode's `consumes` bindings (§ Eaten sheets decrement their
+   * sources) skip it; the component will NOT decrement anything when the
+   * sheet is submitted. Surfaced here so the author sees it at publish time,
+   * not days later by hand-counting stock.
+   */
+  untracked_components: string[];
 }
 
 export class PrepService {
@@ -130,6 +147,10 @@ export class PrepService {
   async publish(input: PrepPublishInput): Promise<PrepPublishResult> {
     const components: { label: string; quantity: number; per_basis: Record<string, number>; note?: string }[] = [];
     const consumes: { component: string; item_ulid: string; model: 'divisible' | 'counted' }[] = [];
+    // Labels of --component (product-only) rows on a --cook sheet — see
+    // `untracked_components` on the result and the note appended below
+    // (claude-assist#207).
+    const untracked: string[] = [];
 
     // Recipe lines first, so an explicit --component reads as "and also today".
     if (input.recipe_ulid) {
@@ -254,11 +275,25 @@ export class PrepService {
         label = ref.label ?? product.name;
       }
 
+      // A `--component` (product, not item) row on a `--cook` sheet cannot
+      // bind to stock — a product is a catalog row, not stock (claude-assist#207).
+      // Refusing outright would break a legitimate case (eating something not
+      // tracked as stock at all — a gift, a restaurant meal), and every
+      // `--recipe`-seeded row has the identical property by construction, so
+      // "no binding" cannot mean "invalid". Instead the gap is made VISIBLE on
+      // the sheet itself, the same doctrine § An unapplied decrement is
+      // VISIBLE, never silent already applies to a binding whose basis is
+      // missing — extended here to a component with no binding at all, so the
+      // two `--component*` forms never again produce indistinguishable sheets.
+      const untrackedNote = input.cook && !ref.item_ulid ? UNTRACKED_COMPONENT_NOTE : undefined;
+      const note = untrackedNote ? (ref.note ? `${ref.note} (${untrackedNote})` : untrackedNote) : ref.note;
+      if (untrackedNote) untracked.push(label);
+
       components.push({
         label,
         quantity: ref.quantity,
         per_basis,
-        ...(ref.note ? { note: ref.note } : {}),
+        ...(note ? { note } : {}),
       });
 
       // Bind the component to its stock so an eaten submission decrements what
@@ -329,6 +364,7 @@ export class PrepService {
       planned_totals: totals,
       components: components.map(({ label, quantity, per_basis }) => ({ label, quantity, per_basis })),
       unknown_fields: unknown,
+      untracked_components: untracked,
     };
   }
 

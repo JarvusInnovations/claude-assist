@@ -320,7 +320,7 @@ describe('consume bindings (§ Eaten sheets decrement their sources)', () => {
   it('binds only ITEMS — a bare product is a catalog row, not stock', async () => {
     const { publisher, calls } = fakePublisher();
     const svc = new PrepService(fakeStore(), publisher);
-    await svc.publish({
+    const result = await svc.publish({
       slug: 'x', label: 'x', cook: { disposition: 'eaten' },
       components: [
         { item_ulid: 'item_linked', quantity: 100 },
@@ -330,6 +330,47 @@ describe('consume bindings (§ Eaten sheets decrement their sources)', () => {
     const consumes = calls[0].worksheet.cook_mode.consumes;
     expect(consumes).toHaveLength(1);
     expect(consumes[0]).toMatchObject({ item_ulid: 'item_linked', model: 'divisible' });
+
+    // claude-assist#207: the unbound (product-only) row must be VISIBLY
+    // marked on the sheet itself — never look identical to the bound row.
+    const rows = calls[0].worksheet.components;
+    expect(rows[0].note).toBeUndefined(); // item-bound: nothing to warn about
+    expect(rows[1].note).toMatch(/not tracked in stock/);
+    expect(result.untracked_components).toEqual(['Nonfat Greek yogurt']);
+  });
+
+  it('does NOT mark a product-only component on a sheet with no --cook — nothing was promised', async () => {
+    const { publisher, calls } = fakePublisher();
+    const svc = new PrepService(fakeStore(), publisher);
+    const result = await svc.publish({
+      slug: 'x', label: 'x',
+      components: [{ product_ulid: 'prod_yogurt', quantity: 50 }],
+    });
+    expect(calls[0].worksheet.components[0].note).toBeUndefined();
+    expect(result.untracked_components).toEqual([]);
+  });
+
+  it('appends the untracked warning to an existing component note rather than replacing it', async () => {
+    const { publisher, calls } = fakePublisher();
+    const svc = new PrepService(fakeStore(), publisher);
+    await svc.publish({
+      slug: 'x', label: 'x', cook: { disposition: 'eaten' },
+      components: [{ product_ulid: 'prod_yogurt', quantity: 50, note: 'a gift, not our stock' }],
+    });
+    const note: string = calls[0].worksheet.components[0].note;
+    expect(note).toContain('a gift, not our stock');
+    expect(note).toMatch(/not tracked in stock/);
+  });
+
+  it('marks an unbound component on a packed sheet the same way — packed components can decrement too', async () => {
+    const { publisher, calls } = fakePublisher();
+    const svc = new PrepService(fakeStore(), publisher);
+    const result = await svc.publish({
+      slug: 'x', label: 'x', cook: { disposition: 'packed', units: 2 },
+      components: [{ product_ulid: 'prod_yogurt', quantity: 50 }],
+    });
+    expect(calls[0].worksheet.components[0].note).toMatch(/not tracked in stock/);
+    expect(result.untracked_components).toEqual(['Nonfat Greek yogurt']);
   });
 
   it('states counted bindings and scales the panel by unit mass', async () => {
