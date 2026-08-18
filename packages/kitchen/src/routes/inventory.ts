@@ -51,7 +51,6 @@ import {
   ProductConflictError,
   ProductValidationError,
   ReconcileValidationError,
-  StatedConsumeConflictError,
   StatedConsumeNotConfiguredError,
   StatedConsumeValidationError,
   type InventoryPipeline,
@@ -646,10 +645,6 @@ export const registerInventoryRoutes: FastifyPluginAsync<InventoryRoutesConfig> 
         return result;
       } catch (err) {
         if (err instanceof InvalidTransitionError) {
-          reply.status(409);
-          return { error: err.message };
-        }
-        if (err instanceof StatedConsumeConflictError) {
           reply.status(409);
           return { error: err.message };
         }

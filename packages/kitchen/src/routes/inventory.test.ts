@@ -699,15 +699,19 @@ describe('inventory routes', () => {
     expect(replay.json().linked).toBe(false);
     expect(replay.json().item.on_hand_fraction).toBe(0.6); // not depleted again
 
-    // 409: entry_ulid already linked to a DIFFERENT item.
+    // A SECOND item under the same entry_ulid is the meal's next component,
+    // not a conflict — it applies (claude-assist#215). The idempotency key is
+    // the (entry, item) pair, so only a repeat of the SAME pair is a replay.
     const { item: anotherTub } = await pl.createItem({ raw_label: 'Guac tub', shelf_life_class: 'fridge_short', acquired_at: '2026-07-01', on_hand_fraction: 1 });
     await pl.applyEvent(anotherTub.ulid, 'opened', { at: '2026-07-10' });
-    const conflict = await app.inject({
+    const secondComponent = await app.inject({
       method: 'POST',
       url: `/kitchen/inventory/${anotherTub.ulid}/consumed`,
       payload: { fraction: 0.1, entry_ulid: loggedEntry.ulid },
     });
-    expect(conflict.statusCode).toBe(409);
+    expect(secondComponent.statusCode).toBe(200);
+    expect(secondComponent.json().linked).toBe(true);
+    expect(secondComponent.json().item.on_hand_fraction).toBe(0.9);
 
     // 400: entry_ulid names an entry that doesn't exist.
     const unknownEntry = await app.inject({

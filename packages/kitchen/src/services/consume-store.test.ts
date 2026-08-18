@@ -3,9 +3,14 @@ import { MemoryEntryStore } from '../memory-store.js';
 import { MemoryInventoryStore } from '../inventory-memory-store.js';
 import { MemoryConsumeStore } from './consume-memory-store.js';
 import type { ConsumeEntryWrite } from './consume-store.js';
+import type { ConsumptionAmount } from '../types.js';
 import type { NewItem } from '../inventory-store.js';
 
 const ULID = (n: number) => `01J${String(n).padStart(23, '0')}`.toUpperCase();
+
+/** The applied decrement recorded on the `(entry, item)` row. */
+const UNITS = (amount: number): ConsumptionAmount => ({ amount, amount_kind: 'units' });
+const FRACTION = (amount: number): ConsumptionAmount => ({ amount, amount_kind: 'fraction' });
 
 function countedItem(overrides: Partial<NewItem> = {}): NewItem {
   return {
@@ -79,11 +84,12 @@ describe('MemoryConsumeStore — atomic entry+deplete write (claude-assist#110)'
     await items.insertItemIfAbsent(countedItem());
     const store = new MemoryConsumeStore(entries, items);
 
-    const result = await store.consume(entryWrite(), ULID(1), {
-      state: 'stocked',
-      opened_at: null,
-      units_remaining: 2,
-    });
+    const result = await store.consume(
+      entryWrite(),
+      ULID(1),
+      { state: 'stocked', opened_at: null, units_remaining: 2 },
+      UNITS(1)
+    );
 
     expect(result.created).toBe(true);
     expect(result.entry.calories).toBe(300);
@@ -112,7 +118,7 @@ describe('MemoryConsumeStore — atomic entry+deplete write (claude-assist#110)'
     });
 
     await expect(
-      store.consume(entryWrite(), ULID(1), { state: 'stocked', opened_at: null, units_remaining: 2 })
+      store.consume(entryWrite(), ULID(1), { state: 'stocked', opened_at: null, units_remaining: 2 }, UNITS(1))
     ).rejects.toThrow('simulated failure');
 
     // Neither side committed: no entry row, and the item is byte-for-byte
@@ -128,14 +134,14 @@ describe('MemoryConsumeStore — atomic entry+deplete write (claude-assist#110)'
     const store = new MemoryConsumeStore(entries, items);
 
     const write = entryWrite();
-    const first = await store.consume(write, ULID(1), { state: 'stocked', opened_at: null, units_remaining: 2 });
+    const first = await store.consume(write, ULID(1), { state: 'stocked', opened_at: null, units_remaining: 2 }, UNITS(1));
     expect(first.created).toBe(true);
     expect(first.item.units_remaining).toBe(2);
 
     // Replay with the SAME entry ulid and a (deliberately different, to
     // prove it's ignored) item update — a genuine double-apply would show up
     // as units_remaining dropping to 1 or the update taking effect.
-    const second = await store.consume(write, ULID(1), { state: 'finished', closed_at: new Date(), units_remaining: 0 });
+    const second = await store.consume(write, ULID(1), { state: 'finished', closed_at: new Date(), units_remaining: 0 }, UNITS(1));
     expect(second.created).toBe(false);
     expect(second.entry).toEqual(first.entry);
     expect(second.item.units_remaining).toBe(2); // unchanged — NOT re-applied
@@ -151,7 +157,7 @@ describe('MemoryConsumeStore — atomic entry+deplete write (claude-assist#110)'
     const store = new MemoryConsumeStore(entries, items);
 
     expect(await store.peekEntry(ULID(2))).toBeNull();
-    await store.consume(entryWrite(), ULID(1), { state: 'stocked', opened_at: null, units_remaining: 2 });
+    await store.consume(entryWrite(), ULID(1), { state: 'stocked', opened_at: null, units_remaining: 2 }, UNITS(1));
     const peeked = await store.peekEntry(ULID(2));
     expect(peeked?.ulid).toBe(ULID(2));
     expect(peeked?.calories).toBe(300);
@@ -168,7 +174,8 @@ describe('MemoryConsumeStore — atomic entry+deplete write (claude-assist#110)'
     const result = await store.consume(
       entryWrite({ ulid: ULID(4), inventory_item_ulid: ULID(3) }),
       ULID(3),
-      { state: 'finished', closed_at: new Date('2026-07-17'), on_hand_fraction: 0 }
+      { state: 'finished', closed_at: new Date('2026-07-17'), on_hand_fraction: 0 },
+      FRACTION(1)
     );
 
     expect(result.created).toBe(true);
@@ -188,11 +195,12 @@ describe('MemoryConsumeStore.linkConsumption — stated-weight consumption atomi
     expect(preExisting.inventory_item_ulid).toBeNull();
     const store = new MemoryConsumeStore(entries, items);
 
-    const result = await store.linkConsumption(ULID(20), ULID(10), {
-      state: 'open',
-      on_hand_fraction: 0.4,
-      notes: 'consumed 0.2 2026-07-17',
-    });
+    const result = await store.linkConsumption(
+      ULID(20),
+      ULID(10),
+      { state: 'open', on_hand_fraction: 0.4, notes: 'consumed 0.2 2026-07-17' },
+      FRACTION(0.2)
+    );
 
     expect(result.linked).toBe(true);
     expect(result.entry.inventory_item_ulid).toBe(ULID(10));
@@ -219,7 +227,7 @@ describe('MemoryConsumeStore.linkConsumption — stated-weight consumption atomi
     });
 
     await expect(
-      store.linkConsumption(ULID(21), ULID(10), { state: 'open', on_hand_fraction: 0.4 })
+      store.linkConsumption(ULID(21), ULID(10), { state: 'open', on_hand_fraction: 0.4 }, FRACTION(0.2))
     ).rejects.toThrow('simulated failure');
 
     // Neither side committed: the entry is NOT linked, and the item is
@@ -236,32 +244,75 @@ describe('MemoryConsumeStore.linkConsumption — stated-weight consumption atomi
     await entries.insertIfAbsent({ ulid: ULID(22), logged_at: new Date('2026-07-17T12:00:00Z'), note: null, recipe_ulid: null, component_quantities: null, notes_reviewed: true });
     const store = new MemoryConsumeStore(entries, items);
 
-    const first = await store.linkConsumption(ULID(22), ULID(10), { state: 'open', on_hand_fraction: 0.4 });
+    const first = await store.linkConsumption(ULID(22), ULID(10), { state: 'open', on_hand_fraction: 0.4 }, FRACTION(0.2));
     expect(first.linked).toBe(true);
     expect(first.item.on_hand_fraction).toBe(0.4);
 
     // Replay with the SAME entry ulid and a (deliberately different, to prove
     // it's ignored) item update — a genuine double-apply would show up as
     // on_hand_fraction dropping further.
-    const second = await store.linkConsumption(ULID(22), ULID(10), { state: 'finished', closed_at: new Date(), on_hand_fraction: 0 });
+    const second = await store.linkConsumption(ULID(22), ULID(10), { state: 'finished', closed_at: new Date(), on_hand_fraction: 0 }, FRACTION(0.4));
     expect(second.linked).toBe(false);
     expect(second.entry).toEqual(first.entry);
     expect(second.item.on_hand_fraction).toBe(0.4); // unchanged — NOT re-applied
     expect(second.item.state).toBe('open');
   });
 
-  it('throws on an entry already linked to a DIFFERENT item (a genuine conflict, not a replay)', async () => {
+  it('ONE entry depletes MANY items — a second item is the next component, not a conflict (claude-assist#215)', async () => {
     const entries = new MemoryEntryStore();
     const items = new MemoryInventoryStore();
     await items.insertItemIfAbsent(fractionItem());
     await items.insertItemIfAbsent(fractionItem({ ulid: ULID(11) }));
+    await items.insertItemIfAbsent(fractionItem({ ulid: ULID(12) }));
     await entries.insertIfAbsent({ ulid: ULID(23), logged_at: new Date('2026-07-17T12:00:00Z'), note: null, recipe_ulid: null, component_quantities: null, notes_reviewed: true });
     const store = new MemoryConsumeStore(entries, items);
 
-    await store.linkConsumption(ULID(23), ULID(10), { state: 'open', on_hand_fraction: 0.4 });
+    // Three components of one meal. Under the old single-column link, the
+    // first would have claimed the entry and the other two would have been
+    // refused as conflicts with it.
+    for (const item of [ULID(10), ULID(11), ULID(12)]) {
+      const result = await store.linkConsumption(
+        ULID(23),
+        item,
+        { state: 'open', on_hand_fraction: 0.4 },
+        FRACTION(0.2)
+      );
+      expect(result.linked).toBe(true);
+    }
 
-    await expect(
-      store.linkConsumption(ULID(23), ULID(11), { state: 'open', on_hand_fraction: 0.4 })
-    ).rejects.toThrow(/already linked to a different item/);
+    // Every one of them actually moved.
+    for (const item of [ULID(10), ULID(11), ULID(12)]) {
+      expect(items.items.get(item)?.on_hand_fraction).toBe(0.4);
+    }
+    const rows = await entries.listConsumptions(ULID(23));
+    expect(rows.map((r) => r.item_ulid).sort()).toEqual([ULID(10), ULID(11), ULID(12)]);
+    expect(rows.every((r) => r.amount === 0.2 && r.amount_kind === 'fraction')).toBe(true);
+
+    // The derived column names the FIRST item and does not slide forward.
+    expect(entries.records.get(ULID(23))?.inventory_item_ulid).toBe(ULID(10));
+  });
+
+  it('replay is keyed on the PAIR: re-linking one component of a multi-item meal re-applies nothing', async () => {
+    const entries = new MemoryEntryStore();
+    const items = new MemoryInventoryStore();
+    await items.insertItemIfAbsent(fractionItem());
+    await items.insertItemIfAbsent(fractionItem({ ulid: ULID(11) }));
+    await entries.insertIfAbsent({ ulid: ULID(24), logged_at: new Date('2026-07-17T12:00:00Z'), note: null, recipe_ulid: null, component_quantities: null, notes_reviewed: true });
+    const store = new MemoryConsumeStore(entries, items);
+
+    await store.linkConsumption(ULID(24), ULID(10), { state: 'open', on_hand_fraction: 0.4 }, FRACTION(0.2));
+    await store.linkConsumption(ULID(24), ULID(11), { state: 'open', on_hand_fraction: 0.4 }, FRACTION(0.2));
+
+    // Retry of the FIRST component only.
+    const replay = await store.linkConsumption(
+      ULID(24),
+      ULID(10),
+      { state: 'finished', closed_at: new Date(), on_hand_fraction: 0 },
+      FRACTION(0.4)
+    );
+    expect(replay.linked).toBe(false);
+    expect(items.items.get(ULID(10))?.on_hand_fraction).toBe(0.4);
+    expect(items.items.get(ULID(11))?.on_hand_fraction).toBe(0.4);
+    expect((await entries.listConsumptions(ULID(24))).length).toBe(2);
   });
 });

@@ -272,10 +272,13 @@ export interface EntryRecord extends NutritionFields {
    */
   portion_multiplier: number;
   /**
-   * The inventory item this entry depleted. Set by a stated-weight consumption
-   * — an `eat` call, or an eaten sheet's decrement bindings (§ Eaten sheets
-   * decrement their sources). There is no background matcher: nothing infers
-   * which stock a meal came off.
+   * The FIRST inventory item this entry depleted — a DERIVED convenience, not
+   * the record (specs/modules/kitchen.md § Data model). A meal depletes as many
+   * items as it has tracked components, and the full set lives in
+   * `kitchen.entry_consumptions`, keyed `(entry, item)`. This column is kept
+   * because it is part of the `Entry` wire shape clients read, and because it
+   * answers the depletion matcher's one question exactly — "has this entry
+   * depleted anything at all?" (§ Depletion matcher).
    */
   inventory_item_ulid: string | null;
   /**
@@ -287,6 +290,39 @@ export interface EntryRecord extends NutritionFields {
   excluded_lines: EstimateExclusion[] | null;
   created_at: Date;
   updated_at: Date;
+}
+
+/**
+ * Which unit model a recorded decrement followed — the item's own
+ * (specs/modules/kitchen.md § count-vs-fraction), never the caller's request
+ * shape. A stated 50 g off a 500 g package records `0.1` `'fraction'`, because
+ * that is the movement the ledger actually made.
+ */
+export type ConsumptionAmountKind = 'fraction' | 'units';
+
+/** The decrement one entry applied to one item, as applied. */
+export interface ConsumptionAmount {
+  amount: number;
+  amount_kind: ConsumptionAmountKind;
+}
+
+/**
+ * A row in `kitchen.entry_consumptions` — one item one entry depleted
+ * (specs/modules/kitchen.md § Data model). `(entry_ulid, item_ulid)` is the
+ * primary key AND the replay guard for every consumption write: a repeat of the
+ * pair is a replay, the same entry against a different item is the next
+ * component of the same meal.
+ *
+ * `amount`/`amount_kind` are null TOGETHER when the amount is unknown — the
+ * state of a row backfilled from the pre-existing single link column, which
+ * recorded that a depletion happened and never how much.
+ */
+export interface EntryConsumptionRecord {
+  entry_ulid: string;
+  item_ulid: string;
+  amount: number | null;
+  amount_kind: ConsumptionAmountKind | null;
+  created_at: Date;
 }
 
 /** One uploaded photo part, held in memory only for the duration of one estimation attempt. */
