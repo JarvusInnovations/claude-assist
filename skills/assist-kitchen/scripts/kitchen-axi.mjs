@@ -2502,6 +2502,14 @@ var PREP_HELP = `kitchen-axi prep <subcommand> [args] [--json]
   it first. A product missing ONE field contributes 'unknown' to that total, never
   zero \u2014 the sheet reports which fields came back unknown.
 
+  On a --cook sheet, --component (a product) does NOT bind to stock \u2014 only
+  --component-item/--component-unit do, because a product is a catalog row, not
+  stock. Submitting will NOT decrement a --component row; the sheet marks it
+  "not tracked in stock" so this is visible on the page, not just in the reply
+  below. That's fine for food that genuinely isn't tracked stock; for on-hand
+  stock, use --component-item/--component-unit so the submission actually moves
+  inventory.
+
   PUBLISHING WRITES NOTHING TO THE LEDGER. A definition is a form awaiting a real
   event; stock moves only when the submission lands.
 
@@ -2655,6 +2663,7 @@ async function publishPrep(args) {
   if (flags.json) return JSON.stringify(result, null, 2);
   const totals = result?.planned_totals ?? {};
   const unknown = result?.unknown_fields ?? [];
+  const untracked = result?.untracked_components ?? [];
   return renderOutput2([
     renderObject({
       published: result.slug,
@@ -2672,6 +2681,9 @@ async function publishPrep(args) {
       "Totals above are a preview; the stored numbers are computed server-side from the definition",
       ...unknown.length ? [
         `UNKNOWN (no component carried these): ${unknown.join(", ")} \u2014 seed the missing product panels rather than reading the total as 0`
+      ] : [],
+      ...untracked.length ? [
+        `NOT TRACKED IN STOCK (--component, not --component-item/--component-unit): ${untracked.join(", ")} \u2014 submitting will NOT decrement these, and the sheet itself now says so. If this food IS on-hand stock, republish with --component-item/--component-unit instead so the submission actually decrements it.`
       ] : [],
       "Nothing was written to the ledger; stock moves when the sheet is submitted"
     ])
@@ -3587,7 +3599,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "2163176" : "dev";
+var VERSION = true ? "197cae9" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)
