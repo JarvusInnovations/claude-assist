@@ -23,6 +23,8 @@
  * something else publishes its own HTML, as before.
  */
 
+import { randomUUID } from 'node:crypto';
+
 export const WORKSHEET_KIND = 'worksheet';
 export const WORKSHEET_VERSION = 1;
 
@@ -682,6 +684,20 @@ function embedJson(value: unknown): string {
   return JSON.stringify(value).replace(/</g, '\\u003c');
 }
 
+/**
+ * One opaque token minted fresh on every render, carried on the `pw-definition`
+ * element as `data-pw-instance`. It has no meaning beyond "this HTML came from
+ * this render call" — the client-side draft (§ Idempotency) scopes itself to
+ * it precisely so a republish (a new render, even of byte-identical content)
+ * starts a fresh submission instead of resurrecting the prior one's key and
+ * quantities. It is NOT the `version` field inside the definition JSON — that
+ * is the fixed wire-protocol version (`WORKSHEET_VERSION`), the same on every
+ * worksheet ever published.
+ */
+function renderInstanceToken(): string {
+  return randomUUID();
+}
+
 const WORKSHEET_STYLES = `
   :root { color-scheme: light dark; }
   body { font-family: system-ui, sans-serif; max-width: 46rem; margin: 0 auto; padding: 1rem 1rem 6rem; line-height: 1.5; }
@@ -717,6 +733,7 @@ const WORKSHEET_STYLES = `
  * bespoke arithmetic, which is the whole point of the pattern.
  */
 export function renderWorksheetHtml(definition: WorksheetDefinition, title: string): string {
+  const instanceToken = renderInstanceToken();
   const unit = definition.unit ?? 'g';
   const basis = definition.basis ?? 100;
   const heading = definition.heading ?? title;
@@ -779,7 +796,7 @@ ${steps}  <h2>${escapeHtml(definition.note_label ?? 'Notes')}</h2>
 <textarea id="pw-note" placeholder="anything worth remembering"></textarea>
 <p><button id="pw-submit" type="button">${escapeHtml(submitLabel)}</button></p>
 <div id="pw-status" data-state="idle" role="status" aria-live="polite"></div>
-<script type="application/json" id="pw-definition">${embedJson(definition)}</script>
+<script type="application/json" id="pw-definition" data-pw-instance="${instanceToken}">${embedJson(definition)}</script>
 <script src="/pages/_helper.js"></script>
 <script>window.pagesWorksheetInit();</script>
 `;
