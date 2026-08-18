@@ -8,8 +8,10 @@
  *   item.
  * - `linkConsumption()` — "stated-weight consumption" (specs/modules/
  *   kitchen.md § Stated-weight consumption): LINKS an already-logged entry
- *   (`kitchen.entries.inventory_item_ulid`) to the item it depleted and
- *   applies the depletion, without creating the entry.
+ *   (a `kitchen.entry_consumptions` row, keyed on the `(entry, item)` PAIR) to
+ *   the item it depleted and applies the depletion, without creating the entry.
+ *   One entry may link to many items — a meal depletes one per tracked
+ *   component.
  *
  * Both exist because a failure of either side must leave NEITHER applied —
  * the hard requirement is the same one, restated for a second write shape.
@@ -29,8 +31,14 @@
  */
 
 import type postgres from 'postgres';
-import type { EntryRecord, EstimationSource, NutritionFields } from '../types.js';
-import { rowToEntry } from '../store.js';
+import type {
+  ConsumptionAmount,
+  EntryConsumptionRecord,
+  EntryRecord,
+  EstimationSource,
+  NutritionFields,
+} from '../types.js';
+import { rowToEntry, rowToEntryConsumption } from '../store.js';
 import type { InventoryItemRecord } from '../inventory-types.js';
 import type { ItemStateUpdate } from '../inventory-store.js';
 import { rowToItem } from '../inventory-store.js';
@@ -43,7 +51,12 @@ export interface ConsumeEntryWrite {
   nutrition: NutritionFields;
   source: EstimationSource;
   status: 'estimated';
-  /** The inventory item this entry depletes — linked in the SAME insert, not a follow-up UPDATE. */
+  /**
+   * The inventory item this entry depletes — set in the SAME insert, not a
+   * follow-up UPDATE. This is the DERIVED column (specs/modules/kitchen.md
+   * § Data model); the authoritative `kitchen.entry_consumptions` row is
+   * written in the same transaction.
+   */
   inventory_item_ulid: string;
 }
 
@@ -59,8 +72,9 @@ export interface LinkConsumptionResult {
   entry: EntryRecord;
   item: InventoryItemRecord;
   /**
-   * False when the entry was ALREADY linked to `itemUlid` — a pure replay,
-   * neither side re-applied.
+   * False when this exact `(entry, item)` PAIR was already recorded — a pure
+   * replay, neither side re-applied. The same entry against a DIFFERENT item is
+   * the next component of the same meal and links normally.
    */
   linked: boolean;
 }
@@ -73,7 +87,12 @@ export interface ConsumeStore {
    * exists) is a pure read — it returns the existing entry and the item
    * UNCHANGED, never re-applying `itemUpdate`.
    */
-  consume(entry: ConsumeEntryWrite, itemUlid: string, itemUpdate: ItemStateUpdate): Promise<ConsumeWriteResult>;
+  consume(
+    entry: ConsumeEntryWrite,
+    itemUlid: string,
+    itemUpdate: ItemStateUpdate,
+    applied: ConsumptionAmount
+  ): Promise<ConsumeWriteResult>;
 
   /**
    * Cheap idempotency pre-check: does an entry with this ULID already
@@ -86,21 +105,41 @@ export interface ConsumeStore {
   peekEntry(entryUlid: string): Promise<EntryRecord | null>;
 
   /**
+   * The per-PAIR replay pre-check (specs/modules/kitchen.md § Stated-weight
+   * consumption): has THIS entry already depleted THIS item? Non-null means a
+   * replay; null means either a first link or the next component of a
+   * multi-component meal, which are the same thing to this table.
+   *
+   * Split from `peekEntry` because the two questions are genuinely different
+   * now: one asks whether the entry exists at all, the other whether this pair
+   * has already been applied. Reading the answer to the second off the entry's
+   * single link column is the defect this table replaced — it made every
+   * component after the first look like a conflict with the first.
+   */
+  peekConsumption(entryUlid: string, itemUlid: string): Promise<EntryConsumptionRecord | null>;
+
+  /**
    * The stated-weight-consumption atomic write (specs/modules/kitchen.md
    * § Stated-weight consumption): link an ALREADY-EXISTING entry
    * (`entryUlid`, journaled separately by the caller — this never inserts
    * one) to `itemUlid` and apply `itemUpdate`, in ONE transaction. Both
    * writes commit together or neither does.
    *
-   * Idempotent on `entryUlid`: when the entry is already linked to
-   * `itemUlid`, this is a pure read (`linked: false`) that reapplies
-   * neither write. The pipeline is expected to have already ruled out the
-   * conflicting case (the entry linked to a DIFFERENT item) and the missing
-   * case (no such entry) before calling this — see
-   * `InventoryPipeline.consumeStatedAmount` — so those are should-never-
-   * happen races here, surfaced as a plain `Error`, not a typed one.
+   * Idempotent on the PAIR `(entryUlid, itemUlid)`: when that pair is already
+   * recorded, this is a pure read (`linked: false`) that reapplies neither
+   * write. A different `itemUlid` under the same entry is NOT a conflict — a
+   * meal depletes one item per tracked component, and refusing the second was
+   * the defect this keying fixes (claude-assist#215). The pipeline is expected
+   * to have already ruled out the missing case (no such entry) before calling
+   * this — see `InventoryPipeline.consumeStatedAmount` — so that is a
+   * should-never-happen race here, surfaced as a plain `Error`, not a typed one.
    */
-  linkConsumption(entryUlid: string, itemUlid: string, itemUpdate: ItemStateUpdate): Promise<LinkConsumptionResult>;
+  linkConsumption(
+    entryUlid: string,
+    itemUlid: string,
+    itemUpdate: ItemStateUpdate,
+    applied: ConsumptionAmount
+  ): Promise<LinkConsumptionResult>;
 }
 
 export class PgConsumeStore implements ConsumeStore {
@@ -111,10 +150,19 @@ export class PgConsumeStore implements ConsumeStore {
     return row ? rowToEntry(row) : null;
   }
 
+  async peekConsumption(entryUlid: string, itemUlid: string): Promise<EntryConsumptionRecord | null> {
+    const [row] = await this.sql`
+      SELECT * FROM kitchen.entry_consumptions
+      WHERE entry_ulid = ${entryUlid} AND item_ulid = ${itemUlid}
+    `;
+    return row ? rowToEntryConsumption(row) : null;
+  }
+
   async consume(
     entry: ConsumeEntryWrite,
     itemUlid: string,
-    itemUpdate: ItemStateUpdate
+    itemUpdate: ItemStateUpdate,
+    applied: ConsumptionAmount
   ): Promise<ConsumeWriteResult> {
     return this.sql.begin(async (rawTx) => {
       // postgres.js's TransactionSql type drops the tagged-template call
@@ -152,6 +200,15 @@ export class PgConsumeStore implements ConsumeStore {
         return { entry: rowToEntry(existingEntry), item: rowToItem(currentItem), created: false };
       }
 
+      // The authoritative link, in the same transaction as the entry that just
+      // won the insert — so there is no window where the entry exists and its
+      // depletion claim does not.
+      await tx`
+        INSERT INTO kitchen.entry_consumptions (entry_ulid, item_ulid, amount, amount_kind)
+        VALUES (${entry.ulid}, ${itemUlid}, ${applied.amount}, ${applied.amount_kind})
+        ON CONFLICT (entry_ulid, item_ulid) DO NOTHING
+      `;
+
       const [current] = await tx`SELECT * FROM kitchen.inventory_items WHERE ulid = ${itemUlid}`;
       if (!current) {
         throw new Error(`consume: inventory item ${itemUlid} not found mid-transaction`);
@@ -180,30 +237,37 @@ export class PgConsumeStore implements ConsumeStore {
   async linkConsumption(
     entryUlid: string,
     itemUlid: string,
-    itemUpdate: ItemStateUpdate
+    itemUpdate: ItemStateUpdate,
+    applied: ConsumptionAmount
   ): Promise<LinkConsumptionResult> {
     return this.sql.begin(async (rawTx) => {
       const tx = rawTx as unknown as postgres.Sql;
 
-      // Lock the entry row for the duration of the transaction so a
-      // near-simultaneous replay can't race this read against the UPDATE
-      // below (mirrors `consume`'s ON CONFLICT DO NOTHING idempotency net,
-      // restated for an UPDATE rather than an INSERT).
+      // Lock the entry row for the duration of the transaction: it proves the
+      // entry exists, and it serialises the read-modify-write on the derived
+      // `inventory_item_ulid` column below when several components of ONE meal
+      // land at once. The real replay guard is the pair-keyed INSERT that
+      // follows (mirroring `consume`'s ON CONFLICT DO NOTHING net).
       const [entryRow] = await tx`SELECT * FROM kitchen.entries WHERE ulid = ${entryUlid} FOR UPDATE`;
       if (!entryRow) {
         // The pipeline already checked this exists before calling in —
         // reaching here is a should-never-happen race, not a caller error.
         throw new Error(`linkConsumption: entry ${entryUlid} not found mid-transaction`);
       }
-      const existingLink = entryRow.inventory_item_ulid as string | null;
-      if (existingLink && existingLink !== itemUlid) {
-        // Ditto: the pipeline's pre-check should have caught this.
-        throw new Error(`linkConsumption: entry ${entryUlid} already linked to a different item (${existingLink})`);
-      }
 
-      if (existingLink === itemUlid) {
-        // Replay: already linked to THIS item. Read both rows back
-        // UNCHANGED — no second deplete.
+      // Idempotency is the PAIR. Zero rows back means this entry already
+      // depleted this item; a different item under the same entry inserts
+      // cleanly, because that is the next component, not a conflict.
+      const claimed = await tx`
+        INSERT INTO kitchen.entry_consumptions (entry_ulid, item_ulid, amount, amount_kind)
+        VALUES (${entryUlid}, ${itemUlid}, ${applied.amount}, ${applied.amount_kind})
+        ON CONFLICT (entry_ulid, item_ulid) DO NOTHING
+        RETURNING entry_ulid
+      `;
+
+      if (claimed.length === 0) {
+        // Replay of this exact pair. Read both rows back UNCHANGED — no
+        // second deplete.
         const [currentItem] = await tx`SELECT * FROM kitchen.inventory_items WHERE ulid = ${itemUlid}`;
         if (!currentItem) {
           throw new Error(`linkConsumption: replay lookup failed for item ${itemUlid}`);
@@ -215,8 +279,11 @@ export class PgConsumeStore implements ConsumeStore {
       if (!current) {
         throw new Error(`linkConsumption: inventory item ${itemUlid} not found mid-transaction`);
       }
+      // The derived column takes the FIRST item only — a second component must
+      // not slide it forward (specs/modules/kitchen.md § Data model).
       const [linkedEntryRow] = await tx`
-        UPDATE kitchen.entries SET inventory_item_ulid = ${itemUlid}
+        UPDATE kitchen.entries
+        SET inventory_item_ulid = COALESCE(inventory_item_ulid, ${itemUlid})
         WHERE ulid = ${entryUlid}
         RETURNING *
       `;

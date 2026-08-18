@@ -7,7 +7,7 @@
  * rationale (claude-assist#110).
  */
 
-import type { EntryRecord } from '../types.js';
+import type { ConsumptionAmount, EntryConsumptionRecord, EntryRecord } from '../types.js';
 import type { InventoryItemRecord } from '../inventory-types.js';
 import type { ItemStateUpdate } from '../inventory-store.js';
 import type { ConsumeEntryWrite, ConsumeStore, ConsumeWriteResult, LinkConsumptionResult } from './consume-store.js';
@@ -39,10 +39,18 @@ export class MemoryConsumeStore implements ConsumeStore {
     return existing ? structuredClone(existing) : null;
   }
 
+  async peekConsumption(entryUlid: string, itemUlid: string): Promise<EntryConsumptionRecord | null> {
+    const row = this.entryStore.consumptions.find(
+      (c) => c.entry_ulid === entryUlid && c.item_ulid === itemUlid
+    );
+    return row ? structuredClone(row) : null;
+  }
+
   async consume(
     entry: ConsumeEntryWrite,
     itemUlid: string,
-    itemUpdate: ItemStateUpdate
+    itemUpdate: ItemStateUpdate,
+    applied: ConsumptionAmount
   ): Promise<ConsumeWriteResult> {
     const existingEntry = this.entryStore.records.get(entry.ulid);
     if (existingEntry) {
@@ -94,6 +102,13 @@ export class MemoryConsumeStore implements ConsumeStore {
     // between here and the item write throws — including the test-only
     // `beforeItemWrite` fault-injection hook.
     this.entryStore.records.set(entry.ulid, entryRecord);
+    this.entryStore.consumptions.push({
+      entry_ulid: entry.ulid,
+      item_ulid: itemUlid,
+      amount: applied.amount,
+      amount_kind: applied.amount_kind,
+      created_at: now,
+    });
     try {
       this.hooks.beforeItemWrite?.();
 
@@ -115,6 +130,10 @@ export class MemoryConsumeStore implements ConsumeStore {
     } catch (err) {
       // Roll back BOTH sides — a failure here must leave neither applied.
       this.entryStore.records.delete(entry.ulid);
+      const claimIndex = this.entryStore.consumptions.findIndex(
+        (c) => c.entry_ulid === entry.ulid && c.item_ulid === itemUlid
+      );
+      if (claimIndex >= 0) this.entryStore.consumptions.splice(claimIndex, 1);
       this.itemStore.items.set(itemUlid, itemBeforeSnapshot);
       throw err;
     }
@@ -123,7 +142,8 @@ export class MemoryConsumeStore implements ConsumeStore {
   async linkConsumption(
     entryUlid: string,
     itemUlid: string,
-    itemUpdate: ItemStateUpdate
+    itemUpdate: ItemStateUpdate,
+    applied: ConsumptionAmount
   ): Promise<LinkConsumptionResult> {
     const entryBefore = this.entryStore.records.get(entryUlid);
     if (!entryBefore) {
@@ -131,12 +151,11 @@ export class MemoryConsumeStore implements ConsumeStore {
       // reaching here is a should-never-happen race, not a caller error.
       throw new Error(`linkConsumption: entry ${entryUlid} not found`);
     }
-    if (entryBefore.inventory_item_ulid && entryBefore.inventory_item_ulid !== itemUlid) {
-      throw new Error(`linkConsumption: entry ${entryUlid} already linked to a different item (${entryBefore.inventory_item_ulid})`);
-    }
 
-    if (entryBefore.inventory_item_ulid === itemUlid) {
-      // Replay: already linked to THIS item. Neither side is re-applied.
+    // Idempotency is the PAIR: this entry may legitimately have depleted other
+    // items already (one per tracked component of the meal).
+    if (this.entryStore.consumptions.some((c) => c.entry_ulid === entryUlid && c.item_ulid === itemUlid)) {
+      // Replay of this exact pair. Neither side is re-applied.
       const currentItem = this.itemStore.items.get(itemUlid);
       if (!currentItem) throw new Error(`linkConsumption: item ${itemUlid} not found`);
       return { entry: structuredClone(entryBefore), item: structuredClone(currentItem), linked: false };
@@ -151,8 +170,20 @@ export class MemoryConsumeStore implements ConsumeStore {
     // Write side 1 (link). Rolled back in the catch below if anything
     // between here and the item write throws — including the test-only
     // `beforeItemWrite` fault-injection hook (shared with `consume()`).
-    const linkedEntry: EntryRecord = { ...entryBeforeSnapshot, inventory_item_ulid: itemUlid, updated_at: now };
+    // The derived column takes the FIRST item only.
+    const linkedEntry: EntryRecord = {
+      ...entryBeforeSnapshot,
+      inventory_item_ulid: entryBeforeSnapshot.inventory_item_ulid ?? itemUlid,
+      updated_at: now,
+    };
     this.entryStore.records.set(entryUlid, linkedEntry);
+    this.entryStore.consumptions.push({
+      entry_ulid: entryUlid,
+      item_ulid: itemUlid,
+      amount: applied.amount,
+      amount_kind: applied.amount_kind,
+      created_at: now,
+    });
     try {
       this.hooks.beforeItemWrite?.();
 
@@ -171,6 +202,10 @@ export class MemoryConsumeStore implements ConsumeStore {
     } catch (err) {
       // Roll back BOTH sides — a failure here must leave neither applied.
       this.entryStore.records.set(entryUlid, entryBeforeSnapshot);
+      const claimIndex = this.entryStore.consumptions.findIndex(
+        (c) => c.entry_ulid === entryUlid && c.item_ulid === itemUlid
+      );
+      if (claimIndex >= 0) this.entryStore.consumptions.splice(claimIndex, 1);
       this.itemStore.items.set(itemUlid, itemBeforeSnapshot);
       throw err;
     }

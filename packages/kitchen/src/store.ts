@@ -11,6 +11,8 @@ import type postgres from 'postgres';
 import { coerceBareDateToLocalNoon } from './date-coerce.js';
 import type {
   ComponentQuantity,
+  ConsumptionAmount,
+  EntryConsumptionRecord,
   EntryRecord,
   EntryStatus,
   EstimateExclusion,
@@ -162,15 +164,37 @@ export interface EntryStore {
   /** Recent/frequent logged items for the reselect strip, most-recent first. */
   recentLabels(limit: number): Promise<RecentEntrySummary[]>;
 
-  /** Link an entry to the inventory item its consumption decremented. */
-  linkInventoryItem(entryUlid: string, itemUlid: string): Promise<void>;
+  /**
+   * Record that an entry's consumption decremented an inventory item: a
+   * `kitchen.entry_consumptions` row (specs/modules/kitchen.md § Data model),
+   * plus the derived `entries.inventory_item_ulid` when that is still empty.
+   *
+   * Idempotent on the PAIR — re-linking the same `(entry, item)` keeps the
+   * first row and its amount. A DIFFERENT item under the same entry is the next
+   * component of the same meal, not a conflict.
+   *
+   * `applied` is the decrement as it landed on the item's own unit model;
+   * omitted when the caller genuinely doesn't know it.
+   */
+  linkInventoryItem(entryUlid: string, itemUlid: string, applied?: ConsumptionAmount): Promise<void>;
+
+  /** Every item one entry depleted, oldest link first. */
+  listConsumptions(entryUlid: string): Promise<EntryConsumptionRecord[]>;
 
   /**
    * Move every entry that depleted one item onto another, returning how many
-   * moved — the entries half of an item merge (specs/modules/kitchen.md
-   * § Item corrections). Lives here rather than on the inventory store because
-   * `kitchen.entries` is this store's table; the inventory pipeline reaches it
-   * through an injected hook, the same seam `linkInventoryItem` uses.
+   * DISTINCT entries moved — the entries half of an item merge
+   * (specs/modules/kitchen.md § Item corrections). Lives here rather than on the
+   * inventory store because `kitchen.entries` is this store's table; the
+   * inventory pipeline reaches it through an injected hook, the same seam
+   * `linkInventoryItem` uses.
+   *
+   * **Collapses on collision.** One entry may have depleted BOTH rows of a
+   * duplicate — the ordinary consequence of two records for one package — and
+   * the pair key forbids two rows for `(entry, survivor)`. The colliding rows
+   * fold into one: amounts ADD when both are known and share a kind, and the
+   * survivor's row is kept untouched otherwise, because a fraction and a unit
+   * count cannot be added honestly.
    */
   relinkInventoryItem(fromItemUlid: string, toItemUlid: string): Promise<number>;
 }
@@ -271,6 +295,22 @@ function parseNumeric(value: unknown): number | null {
   if (typeof value === 'number') return value;
   const parsed = parseFloat(value as string);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
+ * Map a `kitchen.entry_consumptions` row. Exported for the same reason
+ * `rowToEntry` below is — `services/consume-store.ts` writes and reads this
+ * table from the inventory side and must not carry a second copy of the
+ * mapping.
+ */
+export function rowToEntryConsumption(row: Record<string, unknown>): EntryConsumptionRecord {
+  return {
+    entry_ulid: row.entry_ulid as string,
+    item_ulid: row.item_ulid as string,
+    amount: row.amount == null ? null : Number(row.amount),
+    amount_kind: (row.amount_kind as EntryConsumptionRecord['amount_kind']) ?? null,
+    created_at: row.created_at as Date,
+  };
 }
 
 /**
@@ -509,19 +549,98 @@ export class PgEntryStore implements EntryStore {
     return rows.length > 0;
   }
 
-  async linkInventoryItem(entryUlid: string, itemUlid: string): Promise<void> {
-    await this.sql`
-      UPDATE kitchen.entries SET inventory_item_ulid = ${itemUlid} WHERE ulid = ${entryUlid}
+  async linkInventoryItem(
+    entryUlid: string,
+    itemUlid: string,
+    applied?: ConsumptionAmount
+  ): Promise<void> {
+    // One transaction: the row and the derived column are two statements
+    // expressing ONE fact. Splitting them leaves a window where the link is
+    // recorded but the matcher's "already depleted" guard is not, and a
+    // re-estimate would then take another step off the shelf.
+    await this.sql.begin(async (rawTx) => {
+      const tx = rawTx as unknown as postgres.Sql;
+      // The authoritative record. DO NOTHING rather than DO UPDATE: a second
+      // link of the same pair is a REPLAY, and the first write's amount is the
+      // one that matched a real decrement.
+      await tx`
+        INSERT INTO kitchen.entry_consumptions (entry_ulid, item_ulid, amount, amount_kind)
+        VALUES (${entryUlid}, ${itemUlid}, ${applied?.amount ?? null}, ${applied?.amount_kind ?? null})
+        ON CONFLICT (entry_ulid, item_ulid) DO NOTHING
+      `;
+      // The derived column names the FIRST item only — a later component must
+      // not overwrite it, or the guard above would keep sliding forward and the
+      // wire shape would report the last link as if it were the one.
+      await tx`
+        UPDATE kitchen.entries SET inventory_item_ulid = ${itemUlid}
+        WHERE ulid = ${entryUlid} AND inventory_item_ulid IS NULL
+      `;
+    });
+  }
+
+  async listConsumptions(entryUlid: string): Promise<EntryConsumptionRecord[]> {
+    const rows = await this.sql`
+      SELECT * FROM kitchen.entry_consumptions
+      WHERE entry_ulid = ${entryUlid}
+      ORDER BY created_at ASC, item_ulid ASC
     `;
+    return rows.map(rowToEntryConsumption);
   }
 
   async relinkInventoryItem(fromItemUlid: string, toItemUlid: string): Promise<number> {
-    const rows = await this.sql`
-      UPDATE kitchen.entries SET inventory_item_ulid = ${toItemUlid}
-      WHERE inventory_item_ulid = ${fromItemUlid}
-      RETURNING ulid
-    `;
-    return rows.length;
+    return this.sql.begin(async (rawTx) => {
+      const tx = rawTx as unknown as postgres.Sql;
+
+      // Sequential statements, not one data-modifying CTE: every CTE in a
+      // statement sees the same snapshot, so the final repoint would still find
+      // the rows the collapse deleted and re-collide on the pair key.
+
+      // 1. Fold each colliding loser row into the survivor's. Amounts add only
+      //    when both are known and share a kind — a fraction and a unit count
+      //    have no honest sum, and there the survivor's row stands as it is.
+      const collapsed = await tx`
+        UPDATE kitchen.entry_consumptions t SET
+          amount = CASE
+            WHEN t.amount IS NOT NULL AND f.amount IS NOT NULL AND t.amount_kind = f.amount_kind
+              THEN t.amount + f.amount
+            ELSE t.amount
+          END
+        FROM kitchen.entry_consumptions f
+        WHERE f.item_ulid = ${fromItemUlid}
+          AND f.entry_ulid = t.entry_ulid
+          AND t.item_ulid = ${toItemUlid}
+        RETURNING t.entry_ulid
+      `;
+
+      // 2. Drop the now-folded loser rows.
+      await tx`
+        DELETE FROM kitchen.entry_consumptions f
+        WHERE f.item_ulid = ${fromItemUlid}
+          AND EXISTS (
+            SELECT 1 FROM kitchen.entry_consumptions t
+            WHERE t.entry_ulid = f.entry_ulid AND t.item_ulid = ${toItemUlid}
+          )
+      `;
+
+      // 3. Repoint what is left — no collision possible now.
+      const moved = await tx`
+        UPDATE kitchen.entry_consumptions SET item_ulid = ${toItemUlid}
+        WHERE item_ulid = ${fromItemUlid}
+        RETURNING entry_ulid
+      `;
+
+      // The derived column follows; it is single-valued, so it cannot collide.
+      await tx`
+        UPDATE kitchen.entries SET inventory_item_ulid = ${toItemUlid}
+        WHERE inventory_item_ulid = ${fromItemUlid}
+      `;
+
+      const entries = new Set<string>([
+        ...collapsed.map((r) => r.entry_ulid as string),
+        ...moved.map((r) => r.entry_ulid as string),
+      ]);
+      return entries.size;
+    });
   }
 
   async recentLabels(limit: number): Promise<RecentEntrySummary[]> {

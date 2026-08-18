@@ -19,6 +19,10 @@ import {
   type CookModeEntryIngest,
 } from './cook-mode.js';
 import type { StatedMacros } from '../types.js';
+import { MemoryEntryStore } from '../memory-store.js';
+import { MemoryInventoryStore } from '../inventory-memory-store.js';
+import { MemoryConsumeStore } from './consume-memory-store.js';
+import { InventoryPipeline } from './inventory.js';
 
 const KEY = '01JAAAAAAAAAAAAAAAAAAAAAAA';
 const RECIPE = '01JBBBBBBBBBBBBBBBBBBBBBBB';
@@ -373,5 +377,142 @@ describe('eaten sheets decrement their sources (§ Eaten sheets decrement)', () 
     await sink.cook(req({ consumes: undefined }) as any);
     expect(calls.stated).toHaveLength(0);
     expect(calls.units).toHaveLength(0);
+  });
+});
+
+describe('a multi-component eaten sheet decrements EVERY bound component (claude-assist#215)', () => {
+  /**
+   * The one test the stubbed depleter above structurally cannot make: cook mode
+   * driving the REAL inventory pipeline, which is where the single-column link
+   * lived. Six divisible components, all bound, one entry.
+   *
+   * Under `entries.inventory_item_ulid`, the first binding claimed the entry's
+   * one link slot and the remaining five were refused as conflicts with it —
+   * exactly what a live six-component sheet did (two applied, four flagged).
+   */
+  const log = { warn() {}, error() {}, info() {}, debug() {} } as any;
+
+  async function realDepleterHarness(componentCount: number) {
+    const store = new MemoryInventoryStore();
+    const entryStore = new MemoryEntryStore();
+    const pipeline = new InventoryPipeline(store, null, null, log, {
+      consumeStore: new MemoryConsumeStore(entryStore, store),
+      resolveRecipe: async () => null,
+      linkEntry: (entryUlid, itemUlid, applied) =>
+        entryStore.linkInventoryItem(entryUlid, itemUlid, applied),
+    });
+
+    // Each component is a divisible item with a real mass basis, so nothing is
+    // refused for the legitimate reason (§ The basis rule: refuse, never infer).
+    const items: string[] = [];
+    for (let i = 0; i < componentCount; i++) {
+      const product = await store.insertProduct({
+        ulid: `01JP${String(i).padStart(22, '0')}`.toUpperCase(),
+        name: `component ${i}`,
+        shelf_life_class: 'pantry',
+        aliases: [],
+        nutrition_per_100g: null,
+        ingredients: null,
+        package_size: null,
+        shelf_life_days_unopened: null,
+        shelf_life_days_opened: null,
+        net_content_g: 500,
+      } as any);
+      const { item } = await pipeline.createItem({
+        product_ulid: product.ulid,
+        acquired_at: '2026-07-01',
+        on_hand_fraction: 1,
+      });
+      await pipeline.applyEvent(item.ulid, 'opened', { at: '2026-07-10' });
+      items.push(item.ulid);
+    }
+
+    // The entry the sheet logs, journaled by the entries side as usual.
+    const flagged: string[][] = [];
+    const cook = new KitchenCookMode({
+      entries: {
+        async ingest(input) {
+          const { record, created } = await entryStore.insertIfAbsent({
+            ulid: input.ulid,
+            logged_at: new Date('2026-07-17T12:00:00Z'),
+            note: input.note ?? null,
+            recipe_ulid: null,
+            component_quantities: null,
+            notes_reviewed: true,
+          });
+          return { record, created };
+        },
+        async flagUnappliedDecrements(_ulid, unapplied) {
+          flagged.push(unapplied);
+        },
+      },
+      inventory: fakeConverter().inventory,
+      depleter: {
+        consumeStated: (itemUlid, input) => pipeline.consumeStatedAmount(itemUlid, input),
+        finishUnit: (itemUlid, input) => pipeline.applyEvent(itemUlid, 'finished-unit', input),
+      },
+    });
+
+    return { cook, pipeline, store, entryStore, items, flagged };
+  }
+
+  it('applies all six decrements and flags none', async () => {
+    const { cook, store, entryStore, items, flagged } = await realDepleterHarness(6);
+
+    await cook.cook(
+      request({
+        ulid: KEY,
+        components: items.map((_, i) => ({ label: `c${i}`, quantity: 50 })),
+        consumes: items.map((ulid, i) => ({
+          component: `c${i}`,
+          item_ulid: ulid,
+          model: 'divisible' as const,
+        })),
+        at: '2026-07-17',
+      }) as any
+    );
+
+    expect(flagged).toEqual([]);
+    // 50 g off a 500 g basis = 0.1 of the package, on every one of the six.
+    for (const ulid of items) {
+      expect(store.items.get(ulid)!.on_hand_fraction).toBeCloseTo(0.9, 6);
+    }
+    const rows = await entryStore.listConsumptions(KEY);
+    expect(rows).toHaveLength(6);
+    expect(rows.map((r) => r.item_ulid).sort()).toEqual([...items].sort());
+  });
+
+  it('a retried binding re-applies nothing — the guard is per (entry, item), not per entry', async () => {
+    const { cook, pipeline, store, entryStore, items } = await realDepleterHarness(3);
+    const sheet = request({
+      ulid: KEY,
+      components: items.map((_, i) => ({ label: `c${i}`, quantity: 50 })),
+      consumes: items.map((ulid, i) => ({
+        component: `c${i}`,
+        item_ulid: ulid,
+        model: 'divisible' as const,
+      })),
+      at: '2026-07-17',
+    }) as any;
+
+    await cook.cook(sheet);
+
+    // A whole-sheet resubmission never reaches the bindings — the entry ingest
+    // is ULID-idempotent and `logEaten` only decrements on a fresh entry.
+    await cook.cook(sheet);
+
+    // The case that DOES reach them: one binding retried on its own, the shape
+    // a flaky network or a partially-failed run produces.
+    const retry = await pipeline.consumeStatedAmount(items[1]!, {
+      amount_g: 50,
+      entry_ulid: KEY,
+      at: '2026-07-17',
+    });
+    expect(retry!.linked).toBe(false);
+
+    for (const ulid of items) {
+      expect(store.items.get(ulid)!.on_hand_fraction).toBeCloseTo(0.9, 6);
+    }
+    expect(await entryStore.listConsumptions(KEY)).toHaveLength(3);
   });
 });

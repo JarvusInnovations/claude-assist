@@ -14,7 +14,6 @@ import {
   ItemValidationError,
   NotCountedItemError,
   ReconcileValidationError,
-  StatedConsumeConflictError,
   StatedConsumeNotConfiguredError,
   StatedConsumeValidationError,
 } from './inventory.js';
@@ -1170,6 +1169,67 @@ describe('item merge (§ Item corrections)', () => {
     expect(pipeline.mergeItems(loser.ulid, third.ulid)).rejects.toThrow(ItemConflictError);
     // And a survivor that was itself merged away is refused.
     expect(pipeline.mergeItems(third.ulid, loser.ulid)).rejects.toThrow(ItemConflictError);
+  });
+
+  it('COLLAPSES a relink collision: one entry that depleted BOTH rows ends with one row and the summed amount', async () => {
+    const { entries, pipeline } = harness();
+    const { item: survivor } = await pipeline.createItem({ raw_label: 'A', acquired_at: '2026-07-18' });
+    const { item: loser } = await pipeline.createItem({ raw_label: 'A', acquired_at: '2026-07-18' });
+    const { record: entry } = await entries.insertIfAbsent({
+      ulid: ULID(78), logged_at: new Date('2026-07-19T12:00:00Z'), note: 'A',
+      recipe_ulid: null, component_quantities: null,
+      notes_reviewed: true,
+    });
+    // Two records for one package, so the meal ate off both of them.
+    await entries.linkInventoryItem(entry.ulid, survivor.ulid, { amount: 0.3, amount_kind: 'fraction' });
+    await entries.linkInventoryItem(entry.ulid, loser.ulid, { amount: 0.2, amount_kind: 'fraction' });
+
+    const merged = await pipeline.mergeItems(loser.ulid, survivor.ulid);
+    expect(merged!.relinked.entries).toBe(1);
+
+    const rows = await entries.listConsumptions(entry.ulid);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.item_ulid).toBe(survivor.ulid);
+    // The entry really did eat both halves of the one package.
+    expect(rows[0]!.amount).toBeCloseTo(0.5, 6);
+  });
+
+  it('keeps the survivor row untouched when the two amounts cannot be honestly added', async () => {
+    const { entries, pipeline } = harness();
+    const { item: survivor } = await pipeline.createItem({ raw_label: 'A', acquired_at: '2026-07-18' });
+    const { item: loser } = await pipeline.createItem({ raw_label: 'A', acquired_at: '2026-07-18' });
+    const { record: entry } = await entries.insertIfAbsent({
+      ulid: ULID(79), logged_at: new Date('2026-07-19T12:00:00Z'), note: 'A',
+      recipe_ulid: null, component_quantities: null,
+      notes_reviewed: true,
+    });
+    await entries.linkInventoryItem(entry.ulid, survivor.ulid, { amount: 1, amount_kind: 'units' });
+    // Unknown amount — e.g. a row backfilled from the pre-existing link column.
+    await entries.linkInventoryItem(entry.ulid, loser.ulid);
+
+    await pipeline.mergeItems(loser.ulid, survivor.ulid);
+
+    const rows = await entries.listConsumptions(entry.ulid);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.amount).toBe(1);
+    expect(rows[0]!.amount_kind).toBe('units');
+  });
+
+  it('deleting an entry retracts its depletion claims', async () => {
+    const { entries, pipeline } = harness();
+    const { item } = await pipeline.createItem({ raw_label: 'A', acquired_at: '2026-07-18' });
+    const { record: entry } = await entries.insertIfAbsent({
+      ulid: ULID(77), logged_at: new Date('2026-07-19T12:00:00Z'), note: 'A',
+      recipe_ulid: null, component_quantities: null,
+      notes_reviewed: true,
+    });
+    await entries.linkInventoryItem(entry.ulid, item.ulid, { amount: 0.2, amount_kind: 'fraction' });
+    expect(await entries.listConsumptions(entry.ulid)).toHaveLength(1);
+
+    // Mirrors the FK's ON DELETE CASCADE: a stale row would otherwise make a
+    // re-logged entry under the same ULID look like an applied replay.
+    await entries.delete(entry.ulid);
+    expect(await entries.listConsumptions(entry.ulid)).toHaveLength(0);
   });
 
   it('reports entries: 0 rather than claiming a move when the entries hook is unwired', async () => {
@@ -2563,7 +2623,7 @@ describe('stated-weight consumption (§ Stated-weight consumption — eating is 
       expect(replay!.item.state).toBe('finished');
     });
 
-    it('409s (StatedConsumeConflictError) when entry_ulid is already linked to a DIFFERENT item', async () => {
+    it('one entry depletes MANY items: a SECOND item under the same entry_ulid applies, never conflicts (claude-assist#215)', async () => {
       const { pipeline, entries } = harness();
       const { item: itemA } = await pipeline.createItem({ raw_label: 'Hummus tub', shelf_life_class: 'fridge_short', acquired_at: '2026-07-01', on_hand_fraction: 1 });
       const { item: itemB } = await pipeline.createItem({ raw_label: 'Other tub', shelf_life_class: 'fridge_short', acquired_at: '2026-07-01', on_hand_fraction: 1 });
@@ -2571,10 +2631,18 @@ describe('stated-weight consumption (§ Stated-weight consumption — eating is 
       await pipeline.applyEvent(itemB.ulid, 'opened', { at: '2026-07-10' });
       await entries.insertIfAbsent({ ulid: ULID(83), logged_at: new Date('2026-07-17T12:00:00Z'), note: null, recipe_ulid: null, component_quantities: null, notes_reviewed: true });
 
-      await pipeline.consumeStatedAmount(itemA.ulid, { fraction: 0.2, entry_ulid: ULID(83) });
-      await expect(
-        pipeline.consumeStatedAmount(itemB.ulid, { fraction: 0.2, entry_ulid: ULID(83) })
-      ).rejects.toThrow(StatedConsumeConflictError);
+      // Two components of one meal. This used to throw
+      // StatedConsumeConflictError on the second and leave itemB untouched.
+      const a = await pipeline.consumeStatedAmount(itemA.ulid, { fraction: 0.2, entry_ulid: ULID(83) });
+      const b = await pipeline.consumeStatedAmount(itemB.ulid, { fraction: 0.2, entry_ulid: ULID(83) });
+
+      expect(a!.linked).toBe(true);
+      expect(b!.linked).toBe(true);
+      expect(a!.item.on_hand_fraction).toBe(0.8);
+      expect(b!.item.on_hand_fraction).toBe(0.8);
+
+      const rows = await entries.listConsumptions(ULID(83));
+      expect(rows.map((r) => r.item_ulid).sort()).toEqual([itemA.ulid, itemB.ulid].sort());
     });
 
     it('400s (StatedConsumeValidationError) when entry_ulid names an entry that does not exist', async () => {

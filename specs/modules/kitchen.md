@@ -1756,9 +1756,26 @@ once written down.
   retains the printed measure verbatim, and per-gram cost for weighed goods
   is a read-time parse of `raw_text` (blessed; structured measure capture is
   a follow-up only if that parse proves too flaky across stores).
-- **`kitchen.entries.inventory_item_ulid`** — added column (nullable, no FK):
-  the item a consumption entry depleted (phase-1 "optional inventory-item
-  link").
+- **`kitchen.entry_consumptions`** — the entry→item depletion ledger, and the
+  authoritative record of what a meal took off the shelf: `{ entry_ulid,
+  item_ulid, amount, amount_kind, created_at }`, **primary key
+  `(entry_ulid, item_ulid)`**. One row per item one entry depleted, so a meal
+  built from six tracked components carries six rows. `amount` is the
+  decrement that was actually APPLIED to the item's own unit model and
+  `amount_kind` names which model it followed — `'fraction'` (a share of the
+  package) or `'units'` (whole sealed units). Both are null together on a row
+  whose amount is unknown, which is exactly what a row backfilled from the
+  pre-existing single column is. `entry_ulid` has an FK to `kitchen.entries`
+  with `ON DELETE CASCADE` (deleting an entry retracts its depletion claims —
+  the same thing the old column did by disappearing with the row); `item_ulid`
+  has none, matching the rest of the module's item references.
+- **`kitchen.entries.inventory_item_ulid`** — added column (nullable, no FK).
+  **Derived convenience, no longer the record.** It holds the FIRST item this
+  entry depleted and is retained for two reasons: it is part of the `Entry`
+  wire shape the client app and CLI already read, and it is the depletion
+  matcher's one-shot guard (§ Depletion matcher — "has this entry already
+  depleted anything?", a question one column answers exactly). Anything that
+  needs the full set of items a meal depleted reads `entry_consumptions`.
 
 **Shelf-life classes** (enum `kitchen.shelf_life_class`; code owns the
 default day windows in `src/inventory-derive.ts`, `(unopened, opened)`):
@@ -2054,6 +2071,20 @@ reconcile because it was the only thing that moved the number.
 - **Entry linkage** is optional but atomic when supplied: given the consuming
   entry's ULID, the depletion and the entry link commit together or neither does,
   the same hard requirement § Consume from inventory states.
+- **One entry may deplete MANY items, and the idempotency key is the pair.**
+  A meal is built from several tracked components, so the same consuming entry
+  legitimately links to each item it drew from — one call per component. The
+  replay guard therefore keys on `(entry, item)` (§ Data model
+  `kitchen.entry_consumptions`), not on the entry alone: a repeat of the SAME
+  pair neither re-links nor re-depletes, while a DIFFERENT item under the same
+  entry is a new component, not a conflict.
+
+  This was a real defect, not a hypothetical: while the link was a single
+  column on the entry, the first component claimed it and every later one was
+  refused as a conflict, so a six-component eaten sheet decremented two items
+  and flagged four. The refusals surfaced correctly (§ An unapplied decrement
+  is VISIBLE, never silent) — the model underneath them was wrong
+  (claude-assist#215).
 
 ### Reconcile — corrections are observations, not events
 
@@ -2433,18 +2464,20 @@ Item mutation:
   terminal `finished` (consumed) — never `tossed`; a positive remainder is
   left on hand, unrounded. `entry_ulid`, when supplied, names an
   ALREADY-LOGGED consuming journal entry (this endpoint never creates one):
-  the depletion and the link (`kitchen.entries.inventory_item_ulid`) commit
+  the depletion and the link (a `kitchen.entry_consumptions` row) commit
   in ONE transaction (mirroring `consume`'s atomicity requirement, via
   `ConsumeStore.linkConsumption` — a sibling of `ConsumeStore.consume`, not a
-  second composed write), and `entry_ulid` doubles as the idempotency key: a
-  replay (already linked to this item) neither re-links nor re-depletes.
+  second composed write), and **`(entry_ulid, item)` is the idempotency
+  key**: a replay of the same pair neither re-links nor re-depletes, while
+  the same `entry_ulid` against a DIFFERENT item is an ordinary second
+  component and applies normally (§ Stated-weight consumption — one entry may
+  deplete many items).
   Omitted, the depletion still records as consumption via a plain
   single-table write. Returns `{ item: InventoryItem, entry: Entry | null,
   linked: boolean }` (`linked` true only on a fresh link; false when no
   `entry_ulid` was supplied, or on an idempotent replay). `404` unknown item;
   `409` `InvalidTransitionError` — the item is already terminal;
-  `409` `StatedConsumeConflictError` — `entry_ulid` is already linked to a
-  DIFFERENT item; `400` `StatedConsumeValidationError` — neither/both of
+  `400` `StatedConsumeValidationError` — neither/both of
   `amount_g`/`fraction`, an out-of-range amount, an unknown `entry_ulid`, a
   counted item, or `amount_g` with no mass basis on the linked product; `503`
   `StatedConsumeNotConfiguredError` — `entry_ulid` was supplied but the
@@ -2657,11 +2690,15 @@ so a count that never moves is worse than a fraction — unlike a fraction it
 doesn't look like a guess, and eat-first then nags about items that are gone
 while staying quiet about items that aren't.
 
-**One entry depletes at most once.** The matcher is skipped outright when the
-entry already carries an `inventory_item_ulid`. An entry can reach `estimated`
-more than once — a note/label `PATCH` re-queues estimation, and the hook itself
-is best-effort and retried — and without this guard each pass would take another
-unit off the shelf. The link column *is* the idempotency key.
+**One entry depletes at most once *by matching*.** The matcher is skipped
+outright when the entry already carries an `inventory_item_ulid`. An entry can
+reach `estimated` more than once — a note/label `PATCH` re-queues estimation, and
+the hook itself is best-effort and retried — and without this guard each pass
+would take another unit off the shelf. The derived link column is exactly the
+right key for this one question ("has this entry depleted anything at all?"), and
+it stays the matcher's guard even though `kitchen.entry_consumptions` is now the
+authoritative record (§ Data model). A *guessed* match must never fan out; only a
+caller that states its components gets to deplete more than one item.
 
 The match is label-only and the decrement is a fixed step (a directional
 fraction, or one unit) — it consumes no macro quantities, so the portion
@@ -2670,14 +2707,15 @@ that amount is the **effective** macros, not the base.)
 
 **Deliberately out of scope: recipe-component fan-out.** An entry logged against
 a recipe whose components map to several tracked products depletes at most the
-ONE item its own label matched — never one item per component. Fanning out needs
-a per-(entry, item) link carrying each decrement's quantity: the single
-`inventory_item_ulid` column cannot express it, and without a per-pair key the
-idempotency guard above has nothing to check. So it is separate work with its own
-schema, not an extension of the label matcher — and until it exists the matcher
-must not pretend to it. Component-level depletion does have an exact path today:
-`POST /inventory/convert` spends the named sources, and
-`POST /inventory/:ulid/consume` logs + depletes the derived item atomically.
+ONE item its own label matched — never one item per component. The schema no
+longer forbids it (`kitchen.entry_consumptions` holds a per-(entry, item) link
+with each decrement's amount), but the *matcher* still must not do it: fanning
+out on a label guess would multiply one uncertain match into N uncertain
+decrements, which is the opposite of what a conservative, model-free pass is
+for. Component-level depletion belongs to the paths where the caller STATES the
+components: an eaten worksheet's bindings (§ Eaten sheets decrement their
+sources), `POST /inventory/convert` spending named sources, and `POST
+/inventory/:ulid/consume` logging + depleting a derived item atomically.
 
 ### Non-inventory dismissal
 
@@ -2751,13 +2789,28 @@ are deliberately distinct:
    The survivor keeps its own on-hand model untouched; if that count is also
    wrong, a `recount` fixes it, and that is a separate observation.
 4. **Relink every dependent** onto the survivor, with per-table counts in the
-   response: `entries.inventory_item_ulid` (consumption entries that depleted
-   the loser), `purchase_batch_lines.inventory_item_ulid` (the receipt line that
+   response: `entry_consumptions` + `entries.inventory_item_ulid` (consumption
+   entries that depleted the loser), `purchase_batch_lines.inventory_item_ulid`
+   (the receipt line that
    created it), `inventory_derivations.sources[].item_ulid` (conversions that
    spent it as an input), and `inventory_derivations.derived_item_ulid` — the
    last **only when the survivor has no derivation of its own**, since that link
    is 1:1 by construction; a survivor that already carries provenance keeps it
    and the loser's stays with the loser (reported as `0`).
+
+   **A relink can COLLIDE, and collides by collapsing.** One entry may have
+   depleted both rows of the duplicate — that is the ordinary consequence of two
+   records for one package — so repointing would produce two
+   `entry_consumptions` rows for the same `(entry, survivor)` pair, which the
+   primary key forbids and which would double-count the meal. The two rows
+   collapse into one: their amounts **add** when both are known and share an
+   `amount_kind` (the entry really did eat both halves of one package), and the
+   survivor's row is kept unchanged when either amount is unknown or the kinds
+   disagree, because there is no honest way to add a fraction to a unit count.
+   This does not contradict rule 3 — that rule forbids summing *on-hand*
+   quantities, which would manufacture stock; this sums *consumption*, which
+   already happened. The reported `entries` count is the number of distinct
+   entries moved, collapsed ones included.
 5. **Retire the loser** — terminal `dismissed`, `closed_at` stamped, and
    `merged_into` set to the survivor. `dismissed` is used from *any* prior
    state, including an already-terminal one: the merge is the assertion that this
@@ -3015,7 +3068,9 @@ unscaled (a recipe-computed total is exactly confidence `1` regardless of
 what share one tap accounts for), `label` = the item's `raw_label`, and
 `inventory_item_ulid` = the consumed item — set in the SAME insert, not a
 follow-up link (contrast the depletion matcher's best-effort, separate
-`linkEntry` call).
+`linkEntry` call). The matching `kitchen.entry_consumptions` row (§ Data model)
+is written in that same transaction, carrying the applied decrement: `quantity`
+`units` for a counted item, the consumed `fraction` for a divisible one.
 
 **Depletion** reuses the existing state-transition semantics exactly:
 
@@ -3573,6 +3628,23 @@ reply names the same rows under `untracked_components`, so the author sees it
 at publish time, not by hand-counting stock days later. A `--component-item` /
 `--component-unit` row, and every recipe-seeded row, carries no such note —
 only a component that *could* have bound and didn't gets marked.
+
+### Every bound component decrements, not just the first
+
+A worksheet's whole point is a build from several components, so the common case
+is one entry depleting N items — six is an ordinary number, one is the rare one.
+Each binding applies at its own submitted quantity against its own item, and the
+per-`(entry, item)` link (§ Data model `kitchen.entry_consumptions`) is what
+lets that be both recorded and replay-safe.
+
+This is stated because the implementation once could not do it: with a single
+`inventory_item_ulid` column, the first binding claimed the entry's one link
+slot and every later binding was refused as a conflict with it. The submission
+looked healthy — the entry was right, the refusals were reported honestly — and
+the ledger still moved by roughly one component per meal, which is nearer to the
+"nothing decrements" state this section exists to end than to a working feature
+(claude-assist#215). **A per-meal decrement count of one is the signature of that
+bug, not of a simple meal.**
 
 ### An unapplied decrement is VISIBLE, never silent
 

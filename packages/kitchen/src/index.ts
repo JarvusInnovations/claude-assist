@@ -187,7 +187,8 @@ export default createPlugin('kitchen', async (fastify: FastifyInstance, options:
     // Same resolved zone the entries/expenditure/weigh-in routes bucket by, so
     // an item's dates and the journal entry for the same act agree on the day.
     ownerTz,
-    linkEntry: (entryUlid, itemUlid) => entryStore.linkInventoryItem(entryUlid, itemUlid),
+    linkEntry: (entryUlid, itemUlid, applied) =>
+      entryStore.linkInventoryItem(entryUlid, itemUlid, applied),
     // The entries half of an item merge (§ Item corrections) — same store seam.
     relinkEntries: (fromItemUlid, toItemUlid) => entryStore.relinkInventoryItem(fromItemUlid, toItemUlid),
     // Atomic entry+deplete write for consume() (claude-assist#110) — see

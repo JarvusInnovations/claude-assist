@@ -6,6 +6,8 @@
 
 import { normalizeRecipeName } from './types.js';
 import type {
+  ConsumptionAmount,
+  EntryConsumptionRecord,
   EntryRecord,
   EntryStatus,
   EstimateExclusion,
@@ -33,6 +35,13 @@ import { EMPTY_NUTRITION } from './store.js';
 
 export class MemoryEntryStore implements EntryStore {
   readonly records = new Map<string, EntryRecord>();
+  /**
+   * `kitchen.entry_consumptions` — the authoritative entry->item depletion
+   * ledger, keyed `(entry, item)` (specs/modules/kitchen.md § Data model).
+   * A flat list rather than a nested map so the merge-relink collapse reads
+   * the same way the SQL does.
+   */
+  readonly consumptions: EntryConsumptionRecord[] = [];
 
   async listUnreviewedNotes(limit = 50): Promise<EntryRecord[]> {
     return [...this.records.values()]
@@ -187,23 +196,65 @@ export class MemoryEntryStore implements EntryStore {
   }
 
   async delete(ulid: string): Promise<boolean> {
+    // Mirrors the FK's ON DELETE CASCADE: deleting an entry retracts its
+    // depletion claims, so a re-log under the same ULID is not silently
+    // treated as an already-applied replay.
+    for (let i = this.consumptions.length - 1; i >= 0; i--) {
+      if (this.consumptions[i]!.entry_ulid === ulid) this.consumptions.splice(i, 1);
+    }
     return this.records.delete(ulid);
   }
 
-  async linkInventoryItem(entryUlid: string, itemUlid: string): Promise<void> {
+  async linkInventoryItem(
+    entryUlid: string,
+    itemUlid: string,
+    applied?: ConsumptionAmount
+  ): Promise<void> {
+    // Idempotent on the PAIR — a repeat keeps the first row and its amount.
+    if (!this.consumptions.some((c) => c.entry_ulid === entryUlid && c.item_ulid === itemUlid)) {
+      this.consumptions.push({
+        entry_ulid: entryUlid,
+        item_ulid: itemUlid,
+        amount: applied?.amount ?? null,
+        amount_kind: applied?.amount_kind ?? null,
+        created_at: new Date(),
+      });
+    }
+    // Derived: the FIRST item only, never overwritten by a later component.
     const record = this.records.get(entryUlid);
-    if (record) record.inventory_item_ulid = itemUlid;
+    if (record && record.inventory_item_ulid === null) record.inventory_item_ulid = itemUlid;
+  }
+
+  async listConsumptions(entryUlid: string): Promise<EntryConsumptionRecord[]> {
+    return this.consumptions
+      .filter((c) => c.entry_ulid === entryUlid)
+      .map((c) => structuredClone(c));
   }
 
   async relinkInventoryItem(fromItemUlid: string, toItemUlid: string): Promise<number> {
-    let moved = 0;
-    for (const record of this.records.values()) {
-      if (record.inventory_item_ulid === fromItemUlid) {
-        record.inventory_item_ulid = toItemUlid;
-        moved++;
+    const touched = new Set<string>();
+    for (let i = this.consumptions.length - 1; i >= 0; i--) {
+      const row = this.consumptions[i]!;
+      if (row.item_ulid !== fromItemUlid) continue;
+      touched.add(row.entry_ulid);
+      const survivor = this.consumptions.find(
+        (c) => c.entry_ulid === row.entry_ulid && c.item_ulid === toItemUlid
+      );
+      if (survivor) {
+        // Collapse: one entry depleted BOTH rows of the duplicate. Amounts add
+        // only when both are known and share a kind (§ Item corrections).
+        if (survivor.amount !== null && row.amount !== null && survivor.amount_kind === row.amount_kind) {
+          survivor.amount += row.amount;
+        }
+        this.consumptions.splice(i, 1);
+      } else {
+        row.item_ulid = toItemUlid;
       }
     }
-    return moved;
+    for (const record of this.records.values()) {
+      if (record.inventory_item_ulid === fromItemUlid) record.inventory_item_ulid = toItemUlid;
+    }
+    return touched.size;
   }
 
   async recentLabels(limit: number): Promise<RecentEntrySummary[]> {

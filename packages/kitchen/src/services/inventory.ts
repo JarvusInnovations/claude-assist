@@ -104,7 +104,7 @@ import type { LabelParser } from './label-parser.js';
 import { convertNetContent, derivePer100gFromServing } from './label-parser.js';
 import type { ConsumeStore } from './consume-store.js';
 import { computeRecipeMacros, round1 } from './recipes.js';
-import type { EntryRecord, NutritionFields, RecipeRecord } from '../types.js';
+import type { ConsumptionAmount, EntryRecord, NutritionFields, RecipeRecord } from '../types.js';
 
 /** Thrown when a label intake is attempted with no label parser configured. */
 export class LabelParserUnavailableError extends Error {
@@ -243,18 +243,6 @@ export class StatedConsumeValidationError extends Error {
 }
 
 /**
- * Thrown when `consumeStatedAmount`'s `entry_ulid` is already linked to a
- * DIFFERENT inventory item than the one this call named — a genuine
- * conflict, not a replay of the same call. A `409` at the route.
- */
-export class StatedConsumeConflictError extends Error {
-  constructor(entryUlid: string, existingItemUlid: string) {
-    super(`Consuming entry ${entryUlid} is already linked to inventory item ${existingItemUlid}, not this one`);
-    this.name = 'StatedConsumeConflictError';
-  }
-}
-
-/**
  * Thrown when `consumeStatedAmount()` is called with an `entry_ulid` but the
  * module wasn't wired with a `consumeStore` (the atomic link needs it) —
  * mapped to `503`, mirroring `ConsumeNotConfiguredError`. Without an
@@ -272,11 +260,13 @@ export interface InventoryPipelineConfig {
   /** Directional fraction decrement per matched consumption entry (default 0.34). */
   depletionStep?: number;
   /**
-   * Link an estimated consumption entry to the inventory item it depleted
-   * (sets kitchen.entries.inventory_item_ulid). Injected by the module so the
-   * pipeline stays entry-store-agnostic.
+   * Record that an estimated consumption entry depleted an inventory item (a
+   * `kitchen.entry_consumptions` row plus the derived
+   * `kitchen.entries.inventory_item_ulid`). Injected by the module so the
+   * pipeline stays entry-store-agnostic. `applied` is the decrement as it
+   * landed on the item's own unit model.
    */
-  linkEntry?: (entryUlid: string, itemUlid: string) => Promise<void>;
+  linkEntry?: (entryUlid: string, itemUlid: string, applied?: ConsumptionAmount) => Promise<void>;
   /**
    * Move every consumption entry that depleted one item onto another, returning
    * how many moved — the entries half of an item merge (§ Item corrections).
@@ -341,7 +331,7 @@ export class InventoryPipeline {
   static readonly MAX_PARSE_ATTEMPTS = 5;
 
   private depletionStep: number;
-  private linkEntry?: (entryUlid: string, itemUlid: string) => Promise<void>;
+  private linkEntry?: (entryUlid: string, itemUlid: string, applied?: ConsumptionAmount) => Promise<void>;
   private relinkEntries?: (fromItemUlid: string, toItemUlid: string) => Promise<number>;
   private consumeStore?: ConsumeStore;
   private resolveRecipe?: (recipeUlid: string) => Promise<RecipeRecord | null>;
@@ -1711,6 +1701,9 @@ export class InventoryPipeline {
     const at = this.eventDay(input.at);
     let itemUpdate: ItemStateUpdate;
     let share: number;
+    // The decrement as it lands on the item's OWN unit model — what the
+    // `kitchen.entry_consumptions` row records (§ Data model).
+    let applied: ConsumptionAmount;
 
     if (item.units_total != null && item.units_remaining != null) {
       // Counted item: finished-unit semantics, generalized to `quantity` units.
@@ -1725,6 +1718,7 @@ export class InventoryPipeline {
       // it. The 2026-07-22 oat-jar incident: a per-jar recipe on a 3-jar
       // batch logged ⅓ of a jar under the old whole-item division.
       share = quantity;
+      applied = { amount: quantity, amount_kind: 'units' };
       const remaining = item.units_remaining - quantity;
       itemUpdate =
         remaining === 0
@@ -1745,6 +1739,7 @@ export class InventoryPipeline {
         throw new ConsumeValidationError(`item ${itemUlid} has nothing on hand to consume`);
       }
       share = item.on_hand_fraction;
+      applied = { amount: item.on_hand_fraction, amount_kind: 'fraction' };
       itemUpdate = { state: 'finished', closed_at: at, on_hand_fraction: 0 };
     }
 
@@ -1767,7 +1762,8 @@ export class InventoryPipeline {
         inventory_item_ulid: itemUlid,
       },
       itemUlid,
-      itemUpdate
+      itemUpdate,
+      applied
     );
 
     return {
@@ -1798,8 +1794,6 @@ export class InventoryPipeline {
    *   `NotCountedItemError`'s inverse case for `finished-unit`), or
    *   `amount_g` against an item with no mass basis (the linked product's
    *   `net_content_g`) — **never scaled against an invented denominator**.
-   * - `StatedConsumeConflictError` (`409`) — `entry_ulid` is already linked
-   *   to a DIFFERENT item.
    * - `StatedConsumeNotConfiguredError` (`503`) — `entry_ulid` was supplied
    *   but the module wasn't wired with a `consumeStore`.
    *
@@ -1823,12 +1817,22 @@ export class InventoryPipeline {
    * inventory states, via `this.consumeStore.linkConsumption` (a sibling of
    * `consumeStore.consume`, not a second composed write). Unlike `consume()`,
    * this never CREATES the entry — it links one the caller already logged.
-   * Idempotent on `entry_ulid`: a replay (already linked to THIS item)
-   * neither re-links nor re-depletes, checked BEFORE terminal/model
-   * validation for the same reason `consume()`'s replay check runs first —
-   * the first successful call may already have driven the item terminal.
+   *
+   * **Idempotent on the PAIR `(entry_ulid, item)`**, not on `entry_ulid`
+   * alone: one meal depletes one item per tracked component, so the same
+   * entry against a different item is the NEXT component, not a conflict.
+   * Keying on the entry alone is what made an eaten worksheet decrement its
+   * first component and refuse all the rest (claude-assist#215). A replay of
+   * the same pair neither re-links nor re-depletes, checked BEFORE
+   * terminal/model validation for the same reason `consume()`'s replay check
+   * runs first — the first successful call may already have driven the item
+   * terminal.
+   *
    * Without `entry_ulid`, the depletion is a plain single-table write (no
-   * `consumeStore` needed) and still records as consumption.
+   * `consumeStore` needed) and still records as consumption — and, having no
+   * key of any kind, is still unguarded against replay (claude-assist#174:
+   * closing it needs a client-supplied depletion ULID, which a pair key
+   * naming an absent entry cannot substitute for).
    */
   async consumeStatedAmount(itemUlid: string, input: StatedConsumeInput): Promise<StatedConsumeResult | null> {
     const item = await this.store.getItem(itemUlid);
@@ -1844,11 +1848,12 @@ export class InventoryPipeline {
       if (!existingEntry) {
         throw new StatedConsumeValidationError(`entry_ulid ${input.entry_ulid} does not exist`);
       }
-      if (existingEntry.inventory_item_ulid === itemUlid) {
+      // Keyed on the PAIR. An entry already linked to OTHER items is the
+      // normal state of a multi-component meal partway through its bindings,
+      // and must fall straight through to apply this component.
+      const alreadyApplied = await this.consumeStore.peekConsumption(input.entry_ulid, itemUlid);
+      if (alreadyApplied) {
         return { item: await this.viewOf(item), entry: existingEntry, linked: false };
-      }
-      if (existingEntry.inventory_item_ulid) {
-        throw new StatedConsumeConflictError(input.entry_ulid, existingEntry.inventory_item_ulid);
       }
     }
 
@@ -1900,7 +1905,12 @@ export class InventoryPipeline {
 
     if (input.entry_ulid !== undefined) {
       // Atomic: link the already-logged entry + deplete, in ONE transaction.
-      const result = await this.consumeStore!.linkConsumption(input.entry_ulid, itemUlid, itemUpdate);
+      // The recorded amount is the APPLIED fraction, not the requested grams —
+      // the grams stay in the item's provenance note above.
+      const result = await this.consumeStore!.linkConsumption(input.entry_ulid, itemUlid, itemUpdate, {
+        amount: consumedAmount,
+        amount_kind: 'fraction',
+      });
       return { item: await this.viewOf(result.item), entry: result.entry, linked: result.linked };
     }
 
@@ -2069,6 +2079,9 @@ export class InventoryPipeline {
     if (!best) return null;
 
     let updated: InventoryItemRecord | null;
+    // What the decrement actually took off, in the item's own unit model — the
+    // amount recorded on the `kitchen.entry_consumptions` row.
+    let applied: ConsumptionAmount;
     if (best.units_total != null && best.units_remaining != null) {
       try {
         updated = await this.applyEventToRecord(best, 'finished-unit', {});
@@ -2078,13 +2091,17 @@ export class InventoryPipeline {
         this.log.warn({ err, entry: entry.ulid, item: best.ulid }, 'Counted depletion could not be applied');
         return null;
       }
+      applied = { amount: 1, amount_kind: 'units' };
     } else {
       const next = clampFraction(best.on_hand_fraction - this.depletionStep);
       updated = await this.store.setItemFraction(best.ulid, next);
+      // The clamped delta, not the nominal step: a nearly-empty item gives up
+      // less than a full step, and the ledger should say what it gave up.
+      applied = { amount: best.on_hand_fraction - next, amount_kind: 'fraction' };
     }
     if (this.linkEntry) {
       try {
-        await this.linkEntry(entry.ulid, best.ulid);
+        await this.linkEntry(entry.ulid, best.ulid, applied);
       } catch (err) {
         this.log.warn({ err, entry: entry.ulid, item: best.ulid }, 'Failed to link depleted entry');
       }
