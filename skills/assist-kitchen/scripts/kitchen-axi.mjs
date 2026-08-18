@@ -639,9 +639,9 @@ var COMMAND_GROUPS = [
     commands: [
       {
         usage: 'expenditure log "<label>" --kcal N [--duration M] [--avg-hr H] [--at TIME] [--source S] [--ulid U]',
-        summary: "record a stated burn (active calories \u2014 a device said it or you did; never model-estimated); feeds the daily net line, which is context, not a spend-it budget; --at defaults to now \u2014 prefer a full local timestamp with offset, a bare YYYY-MM-DD backstops to local noon that day. STRAVA ACTIVITIES SYNC THEMSELVES (a scheduled server feed pulls the trailing week every ~30 min, idempotently) \u2014 NEVER manually log or import a Strava/Garmin workout; this verb is only for burns that never reach Strava"
+        summary: "record a stated burn (active calories \u2014 a device said it or you did; never model-estimated); feeds the daily net line, which is context, not a spend-it budget; --at defaults to now \u2014 prefer a full local timestamp with offset, a bare YYYY-MM-DD backstops to local noon that day. STRAVA ACTIVITIES SYNC THEMSELVES (a scheduled server feed pulls the trailing week every ~30 min, idempotently) \u2014 never manually log a burn the feed will also import. But the feed only imports an activity with a calorie value; one with none is skipped forever (never retried, never written as 0) \u2014 and most manually-entered Strava activities have exactly no calorie value, so THOSE are yours to state here. Check `expenditure list --include-skipped` for what the feed is sitting on"
       },
-      { usage: "expenditure list [--since DATE] [--limit N]", summary: "recent expenditures, newest first" },
+      { usage: "expenditure list [--since DATE] [--limit N] [--include-skipped]", summary: "recent expenditures, newest first; --include-skipped also lists Strava activities the sync will never import (no calorie value)" },
       { usage: "expenditure delete <ulid>", summary: "remove an expenditure from all rollups" }
     ]
   },
@@ -2761,13 +2761,27 @@ var EXPENDITURE_HELP = `kitchen-axi expenditure <subcommand> [args] [--json]
                                        timestamp, a bare YYYY-MM-DD backstops to local
                                        noon that day; idempotent on --ulid)
   list [--since DATE] [--limit N]      recent expenditures, newest first
+       [--include-skipped]              also list Strava activities the sync
+                                          will never import (see below)
   delete <ulid>                        remove from all rollups
 
   Burns are always STATED \u2014 a device said it, or you did; there is no model
   estimation path for a burn (\xA7 Expenditure & net energy). kcal is ACTIVE
   calories, not gross. The daily net line ((TDEE base + burns) \u2212 intake) is
   CONTEXT, not a spend-it budget: the intake range stays the target, and
-  nothing here computes "remaining to eat" from a workout.`;
+  nothing here computes "remaining to eat" from a workout.
+
+  STRAVA ACTIVITIES SYNC THEMSELVES (a scheduled server feed pulls the
+  trailing week every ~30 min, idempotently) \u2014 never manually log a burn the
+  feed will also import, that double-counts it. But the feed only imports an
+  activity that carries a calorie value; one with none is skipped and
+  NEVER retried \u2014 refusing to write a burn as 0, forever, not just this
+  tick. Most manually-entered Strava activities have no calorie value (the
+  manual-entry form has no calories field, and without HR/power Strava
+  computes none), so this is exactly the activity most likely to need a
+  stated burn. If it has no calorie value, it is yours to log here \u2014 run
+  \`expenditure list --include-skipped\` first to see what the feed is
+  sitting on.`;
 var ROW_SCHEMA = [
   field("ulid"),
   // `day` = owner-tz calendar date (authoritative bucketing key); `occurred`
@@ -2779,6 +2793,12 @@ var ROW_SCHEMA = [
   field("kcal"),
   field("duration_min"),
   field("avg_hr")
+];
+var SKIPPED_SCHEMA = [
+  field("activity_id"),
+  field("day"),
+  field("occurred_local", "occurred"),
+  field("label")
 ];
 var SOURCES = ["strava", "health_connect", "garmin", "manual"];
 async function expenditureCommand(args) {
@@ -2825,13 +2845,29 @@ async function logExpenditure(args) {
   return renderDetail("expenditure", row, ROW_SCHEMA);
 }
 async function listExpenditures(args) {
-  const { flags } = parseArgs(args, ["json"], ["since", "limit"]);
+  const { flags } = parseArgs(args, ["json", "include-skipped"], ["since", "limit"]);
   const result = await api.get("/api/kitchen/expenditures", {
     since: typeof flags.since === "string" ? validateDate(flags.since, "--since", EXPENDITURE_HELP) : void 0,
     limit: typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", EXPENDITURE_HELP, { min: 1 })) : void 0
   });
-  if (flags.json) return rawJson(result);
-  return renderList("expenditures", result?.expenditures ?? [], ROW_SCHEMA);
+  if (!flags["include-skipped"]) {
+    if (flags.json) return rawJson(result);
+    return renderList("expenditures", result?.expenditures ?? [], ROW_SCHEMA);
+  }
+  const skippedResult = await api.get("/api/kitchen/expenditures/skipped");
+  const skipped = skippedResult?.skipped ?? [];
+  if (flags.json) return rawJson({ ...result, skipped });
+  const sections = [renderList("expenditures", result?.expenditures ?? [], ROW_SCHEMA)];
+  sections.push(renderList("skipped_strava_activities", skipped, SKIPPED_SCHEMA));
+  if (skipped.length > 0) {
+    sections.push(
+      renderHelp([
+        "Each row is a Strava activity with no calorie value \u2014 the sync will never import it (refuses to write a burn as 0)",
+        'State the burn yourself: `kitchen-axi expenditure log "<label>" --kcal N --at <occurred>`'
+      ])
+    );
+  }
+  return sections.join("\n");
 }
 async function deleteExpenditure(args) {
   const { positionals, flags } = parseArgs(args, ["json"], []);
@@ -3587,7 +3623,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "2163176" : "dev";
+var VERSION = true ? "197cae9" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)
