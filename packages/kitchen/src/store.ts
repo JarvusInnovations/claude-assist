@@ -549,21 +549,28 @@ export class PgEntryStore implements EntryStore {
     itemUlid: string,
     applied?: ConsumptionAmount
   ): Promise<void> {
-    // The authoritative record. DO NOTHING rather than DO UPDATE: a second link
-    // of the same pair is a REPLAY, and the first write's amount is the one that
-    // matched a real decrement.
-    await this.sql`
-      INSERT INTO kitchen.entry_consumptions (entry_ulid, item_ulid, amount, amount_kind)
-      VALUES (${entryUlid}, ${itemUlid}, ${applied?.amount ?? null}, ${applied?.amount_kind ?? null})
-      ON CONFLICT (entry_ulid, item_ulid) DO NOTHING
-    `;
-    // The derived column names the FIRST item only — a later component must not
-    // overwrite it, or the matcher's "already depleted" guard would keep sliding
-    // forward and the wire shape would report the last link as if it were the one.
-    await this.sql`
-      UPDATE kitchen.entries SET inventory_item_ulid = ${itemUlid}
-      WHERE ulid = ${entryUlid} AND inventory_item_ulid IS NULL
-    `;
+    // One transaction: the row and the derived column are two statements
+    // expressing ONE fact. Splitting them leaves a window where the link is
+    // recorded but the matcher's "already depleted" guard is not, and a
+    // re-estimate would then take another step off the shelf.
+    await this.sql.begin(async (rawTx) => {
+      const tx = rawTx as unknown as postgres.Sql;
+      // The authoritative record. DO NOTHING rather than DO UPDATE: a second
+      // link of the same pair is a REPLAY, and the first write's amount is the
+      // one that matched a real decrement.
+      await tx`
+        INSERT INTO kitchen.entry_consumptions (entry_ulid, item_ulid, amount, amount_kind)
+        VALUES (${entryUlid}, ${itemUlid}, ${applied?.amount ?? null}, ${applied?.amount_kind ?? null})
+        ON CONFLICT (entry_ulid, item_ulid) DO NOTHING
+      `;
+      // The derived column names the FIRST item only — a later component must
+      // not overwrite it, or the guard above would keep sliding forward and the
+      // wire shape would report the last link as if it were the one.
+      await tx`
+        UPDATE kitchen.entries SET inventory_item_ulid = ${itemUlid}
+        WHERE ulid = ${entryUlid} AND inventory_item_ulid IS NULL
+      `;
+    });
   }
 
   async listConsumptions(entryUlid: string): Promise<EntryConsumptionRecord[]> {
