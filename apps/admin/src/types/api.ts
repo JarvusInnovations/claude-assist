@@ -142,6 +142,13 @@ export interface SessionRecord {
   git_branch: string | null;
   started_at: string;
   ended_at: string | null;
+  /** Prompt size on the last main-chain API call; null when never measured */
+  context_final_tokens: number | null;
+  /** Largest prompt size observed on a main-chain API call */
+  context_peak_tokens: number | null;
+  /** Context window of the model that served the last call; null if unknown */
+  context_limit_tokens: number | null;
+  context_model: string | null;
   user_messages: string[];
   tools_used: string[];
   files_touched: { reads: string[]; writes: string[] };

@@ -12,7 +12,16 @@ import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { sessionsApi } from "@/api/sessions";
+
 import { TranscriptViewer } from "@/components/TranscriptViewer";
+
+const contextTone = (fraction: number) =>
+  fraction >= 0.85
+    ? "bg-red-500"
+    : fraction >= 0.6
+      ? "bg-amber-500"
+      : "bg-emerald-500";
+
 
 export function SessionDetailPage() {
   const { id } = useParams();
@@ -177,6 +186,70 @@ export function SessionDetailPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Context Window — occupancy of a single call's prompt, distinct from
+          the lifetime token sums below. */}
+      {session.context_final_tokens !== null && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg">Context Window</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {([
+              {
+                label: "Final",
+                hint: "where a resume would start",
+                used: session.context_final_tokens,
+              },
+              {
+                label: "Peak",
+                hint: "highest the prompt reached",
+                used: session.context_peak_tokens,
+              },
+            ] as const).map(({ label, hint, used }) =>
+              used === null ? null : (
+                <div key={label}>
+                  <div className="flex items-baseline justify-between text-sm">
+                    <span className="font-medium">
+                      {label}{" "}
+                      <span className="font-normal text-muted-foreground">— {hint}</span>
+                    </span>
+                    <span className="font-mono tabular-nums">
+                      {used.toLocaleString()}
+                      {session.context_limit_tokens !== null && (
+                        <span className="text-muted-foreground">
+                          {" / "}
+                          {session.context_limit_tokens.toLocaleString()}
+                          {"  "}
+                          {Math.round((used / session.context_limit_tokens) * 100)}%
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                  {session.context_limit_tokens !== null && (
+                    <div className="mt-1.5 h-2 w-full overflow-hidden rounded-full bg-muted">
+                      <div
+                        className={`h-full rounded-full ${contextTone(used / session.context_limit_tokens)}`}
+                        style={{
+                          width: `${Math.max(Math.min(used / session.context_limit_tokens, 1) * 100, 1)}%`,
+                        }}
+                      />
+                    </div>
+                  )}
+                </div>
+              )
+            )}
+            <p className="text-xs text-muted-foreground">
+              {session.context_limit_tokens === null
+                ? `No published context window for ${session.context_model ?? "this model"} — showing token counts only.`
+                : session.context_peak_tokens !== null &&
+                    session.context_peak_tokens > session.context_final_tokens
+                  ? `${(session.context_peak_tokens - session.context_final_tokens).toLocaleString()} tokens reclaimed by compaction · ${session.context_model}`
+                  : `Measured against ${session.context_model}`}
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Token Usage */}
       <Card>

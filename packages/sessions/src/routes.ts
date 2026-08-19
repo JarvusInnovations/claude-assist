@@ -152,6 +152,10 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
           s.outline,
           s.title,
           s.session_name,
+          s.context_final_tokens,
+          s.context_peak_tokens,
+          s.context_limit_tokens,
+          s.context_model,
           m.machine_id,
           ts_rank(s.search_vector, websearch_to_tsquery('english', ${search})) as rank
         FROM sessions.sessions s
@@ -198,6 +202,10 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
           s.outline,
           s.title,
           s.session_name,
+          s.context_final_tokens,
+          s.context_peak_tokens,
+          s.context_limit_tokens,
+          s.context_model,
           m.machine_id
         FROM sessions.sessions s
         JOIN sessions.machines m ON s.machine_id = m.id
@@ -232,6 +240,10 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       outline: s.outline ?? null,
       title: s.title ?? null,
       session_name: s.session_name ?? null,
+      context_final_tokens: s.context_final_tokens ?? null,
+      context_peak_tokens: s.context_peak_tokens ?? null,
+      context_limit_tokens: s.context_limit_tokens ?? null,
+      context_model: s.context_model ?? null,
       message_count: s.message_count,
       user_message_count: s.user_message_count,
       input_tokens: parseInt(String(s.input_tokens), 10) || 0,
@@ -490,6 +502,10 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       user_messages: session.user_messages,
       tools_used: session.tools_used,
       files_touched: session.files_touched,
+      context_final_tokens: session.context_final_tokens ?? null,
+      context_peak_tokens: session.context_peak_tokens ?? null,
+      context_limit_tokens: session.context_limit_tokens ?? null,
+      context_model: session.context_model ?? null,
       message_count: session.message_count,
       user_message_count: session.user_message_count,
       input_tokens: parseInt(String(session.input_tokens), 10) || 0,

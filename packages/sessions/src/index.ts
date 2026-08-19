@@ -92,6 +92,21 @@ export default createPlugin('sessions', async (fastify, options) => {
     classificationStore,
   });
 
+  // One-shot backfill for sessions ingested before context columns existed.
+  // Idempotent: each row is stamped, so after the first pass this is a no-op
+  // query per boot. Runs off the schedule so it never blocks startup.
+  fastify.scheduler.register({
+    name: 'sessions:backfill-context',
+    schedule: '23 4 * * *',
+    runOnStartup: true,
+    handler: async () => {
+      const result = await syncService.backfillContextWindow();
+      if (result.scanned > 0) {
+        fastify.log.info({ result }, `Context backfill: ${result.measured}/${result.scanned} measured`);
+      }
+    },
+  });
+
   // Register scheduled sync task for localhost (unless disabled)
   if (!config.disableLocalIngest) {
     fastify.scheduler.register({

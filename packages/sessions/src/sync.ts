@@ -380,6 +380,10 @@ export class SyncService {
           model_tokens = ${this.sql.json(parsed.modelTokens as any)},
           activity_ranges = ${this.sql.json(parsed.activityRanges as any)},
           session_name = ${parsed.sessionName},
+          context_final_tokens = ${parsed.contextFinalTokens},
+          context_peak_tokens = ${parsed.contextPeakTokens},
+          context_limit_tokens = ${parsed.contextLimitTokens},
+          context_model = ${parsed.contextModel},
           synced_at = NOW()
         WHERE id = ${sessionId}::uuid AND machine_id = ${machineId}
       `;
@@ -396,7 +400,8 @@ export class SyncService {
         input_tokens, output_tokens, cache_read_tokens,
         transcript_path, transcript_hash, raw_transcript,
         search_text, message_count, user_message_count, claude_version,
-        models_used, model_tokens, activity_ranges, session_name
+        models_used, model_tokens, activity_ranges, session_name,
+        context_final_tokens, context_peak_tokens, context_limit_tokens, context_model
       ) VALUES (
         ${sessionId}::uuid,
         ${machineId},
@@ -420,12 +425,71 @@ export class SyncService {
         ${this.sql.json(parsed.modelsUsed)},
         ${this.sql.json(parsed.modelTokens as any)},
         ${this.sql.json(parsed.activityRanges as any)},
-        ${parsed.sessionName}
+        ${parsed.sessionName},
+        ${parsed.contextFinalTokens},
+        ${parsed.contextPeakTokens},
+        ${parsed.contextLimitTokens},
+        ${parsed.contextModel}
       )
     `;
 
     await this.writeToolCalls(sessionId, parsed.toolCalls);
     return true;
+  }
+
+  /**
+   * Backfill context-window readings for sessions ingested before the columns
+   * existed (specs/behaviors/session-context-window.md).
+   *
+   * Re-parses the stored raw_transcript rather than the file on disk: Claude
+   * prunes transcripts after ~a month, so the archive is the only copy for
+   * older sessions. Batched because raw_transcript totals multiple GB — a
+   * single SELECT would pull the whole corpus into memory.
+   */
+  async backfillContextWindow(batchSize = 25): Promise<{ scanned: number; measured: number }> {
+    let scanned = 0;
+    let measured = 0;
+
+    for (;;) {
+      const rows = await this.sql<{ id: string; raw_transcript: string }[]>`
+        SELECT id, raw_transcript
+        FROM sessions.sessions
+        WHERE context_final_tokens IS NULL
+          AND context_backfilled_at IS NULL
+          AND raw_transcript IS NOT NULL
+        ORDER BY started_at DESC
+        LIMIT ${batchSize}
+      `;
+      if (rows.length === 0) break;
+
+      for (const row of rows) {
+        scanned++;
+        let parsed;
+        try {
+          parsed = parseTranscript(row.id, row.raw_transcript);
+        } catch {
+          // A transcript we cannot parse stays unmeasured, but gets stamped so
+          // the next pass does not retry it forever.
+          await this.sql`
+            UPDATE sessions.sessions SET context_backfilled_at = NOW()
+            WHERE id = ${row.id}::uuid
+          `;
+          continue;
+        }
+        if (parsed.contextFinalTokens !== null) measured++;
+        await this.sql`
+          UPDATE sessions.sessions SET
+            context_final_tokens = ${parsed.contextFinalTokens},
+            context_peak_tokens = ${parsed.contextPeakTokens},
+            context_limit_tokens = ${parsed.contextLimitTokens},
+            context_model = ${parsed.contextModel},
+            context_backfilled_at = NOW()
+          WHERE id = ${row.id}::uuid
+        `;
+      }
+    }
+
+    return { scanned, measured };
   }
 
   /**
