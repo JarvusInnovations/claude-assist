@@ -1,9 +1,10 @@
 ---
-status: in-progress
+status: done
 depends: []
 specs:
   - specs/behaviors/session-context-window.md
 issues: []
+pr: 223
 ---
 
 # Plan: Session context-window measurement + admin display
