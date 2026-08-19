@@ -41,6 +41,25 @@ const formatSinceActivity = (elapsedMs: number) => {
   return minutes < 1 ? "just now" : `${minutes}m ago`;
 };
 
+/**
+ * Context occupancy as a fraction, or null when it was never measured or the
+ * model's window is unknown — a bar drawn against a guessed ceiling would be
+ * indistinguishable from a measured one.
+ */
+const contextFraction = (session: SessionRecord) => {
+  const used = session.context_final_tokens;
+  const limit = session.context_limit_tokens;
+  if (used === null || limit === null || limit <= 0) return null;
+  return Math.min(used / limit, 1);
+};
+
+const contextTone = (fraction: number) =>
+  fraction >= 0.85
+    ? "bg-red-500"
+    : fraction >= 0.6
+      ? "bg-amber-500"
+      : "bg-emerald-500";
+
 export function SessionsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -341,6 +360,7 @@ export function SessionsPage() {
                   <TableHead className="w-[100px]">Last activity</TableHead>
                   <TableHead>Project</TableHead>
                   <TableHead className="w-[150px]">Branch</TableHead>
+                  <TableHead className="w-[130px]">Context</TableHead>
                   <TableHead className="w-[140px]">Size</TableHead>
                   <TableHead className="w-[180px]">ID</TableHead>
                 </TableRow>
@@ -417,6 +437,32 @@ export function SessionsPage() {
                       >
                         {session.git_branch || "N/A"}
                       </span>
+                    </TableCell>
+                    <TableCell>
+                      {(() => {
+                        const fraction = contextFraction(session);
+                        if (fraction === null) {
+                          return <span className="text-xs text-muted-foreground">—</span>;
+                        }
+                        return (
+                          <div
+                            className="flex items-center gap-2"
+                            title={`${session.context_final_tokens!.toLocaleString()} / ${session.context_limit_tokens!.toLocaleString()} tokens${
+                              session.context_model ? ` · ${session.context_model}` : ""
+                            }`}
+                          >
+                            <div className="h-1.5 w-16 shrink-0 overflow-hidden rounded-full bg-muted">
+                              <div
+                                className={`h-full rounded-full ${contextTone(fraction)}`}
+                                style={{ width: `${Math.max(fraction * 100, 2)}%` }}
+                              />
+                            </div>
+                            <span className="text-xs tabular-nums text-muted-foreground">
+                              {Math.round(fraction * 100)}%
+                            </span>
+                          </div>
+                        );
+                      })()}
                     </TableCell>
                     <TableCell className="text-sm font-mono">
                       {session.message_count} / {formatTokens(session.input_tokens + session.output_tokens)}

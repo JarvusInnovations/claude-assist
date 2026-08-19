@@ -130,6 +130,14 @@ export interface ParsedSession {
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
+  /** Prompt size on the last main-chain API call; null when never measured */
+  contextFinalTokens: number | null;
+  /** Largest prompt size observed on a main-chain API call */
+  contextPeakTokens: number | null;
+  /** Context window of the model that served the last main-chain call */
+  contextLimitTokens: number | null;
+  /** Model that served the last main-chain call */
+  contextModel: string | null;
   startedAt: Date | null;
   endedAt: Date | null;
   messageCount: number;
@@ -213,6 +221,10 @@ export interface SessionRecord {
   git_branch: string | null;
   started_at: Date;
   ended_at: Date | null;
+  context_final_tokens: number | null;
+  context_peak_tokens: number | null;
+  context_limit_tokens: number | null;
+  context_model: string | null;
   user_messages: string[];
   tools_used: string[];
   files_touched: FilesTouched;

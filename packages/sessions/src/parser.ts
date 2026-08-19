@@ -10,6 +10,7 @@ import type {
 } from './types.js';
 import { extractToolTarget } from './transcript.js';
 import { sanitizeText, sanitizeStringArray } from './sanitize.js';
+import { contextWindowFor } from './context-window.js';
 
 /**
  * File operation type for classification
@@ -95,6 +96,11 @@ export function parseTranscript(
 
   let inputTokens = 0;
   let cacheReadTokens = 0;
+  // Context-window occupancy — the size of a single call's prompt, not a sum.
+  // Null until a main-chain call is seen; see specs/behaviors/session-context-window.md.
+  let contextFinalTokens: number | null = null;
+  let contextPeakTokens: number | null = null;
+  let contextModel: string | null = null;
   let startedAt: Date | null = null;
   let endedAt: Date | null = null;
   let messageCount = 0;
@@ -209,6 +215,22 @@ export function parseTranscript(
         const usage = msg.message.usage;
         const isFirstInChain = !msg.parentUuid || !messagesWithUsage.has(msg.parentUuid);
 
+        // Context occupancy: one reading per API call, main chain only. Sidechains
+        // are subagents holding their own separate context, so they never move the
+        // main conversation's numbers. isFirstInChain keeps a streamed chain (whose
+        // messages repeat identical input counts) from counting many times.
+        if (isFirstInChain && !msg.isSidechain) {
+          const contextTokens =
+            (usage.input_tokens ?? 0) +
+            (usage.cache_creation_input_tokens ?? 0) +
+            (usage.cache_read_input_tokens ?? 0);
+          if (contextTokens > 0) {
+            contextFinalTokens = contextTokens;
+            contextPeakTokens = Math.max(contextPeakTokens ?? 0, contextTokens);
+            if (model) contextModel = model;
+          }
+        }
+
         // Input and cache_read are constant within a chain - count from first message only
         if (isFirstInChain) {
           inputTokens += usage.input_tokens ?? 0;
@@ -305,6 +327,10 @@ export function parseTranscript(
     inputTokens,
     outputTokens,
     cacheReadTokens,
+    contextFinalTokens,
+    contextPeakTokens,
+    contextLimitTokens: contextWindowFor(contextModel),
+    contextModel,
     startedAt,
     endedAt,
     messageCount,
