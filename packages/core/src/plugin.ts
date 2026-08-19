@@ -577,6 +577,13 @@ export interface NotifyPluginConfig {
  * Configuration for the sessions plugin
  */
 export interface SessionsPluginConfig {
+  /**
+   * Display label for the machine this server ingests local sessions from.
+   * Defaults to 'localhost' — which names the deployment, not the machine.
+   * Safe to change: the local machine row is matched on its is_localhost
+   * flag, so renaming carries its existing sessions with it.
+   */
+  machineId?: string;
   /** Original Claude directory path (for Docker path translation) */
   originalClaudeDir?: string;
   /** Minimum file size to process */

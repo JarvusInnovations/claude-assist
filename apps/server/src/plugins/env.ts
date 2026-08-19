@@ -36,6 +36,12 @@ const schema = {
     DISABLE_SYNCS: { type: 'boolean', default: false },
 
     // Sessions module
+    // Label for the machine this server ingests local sessions from. Defaults
+    // to 'localhost', which names the deployment rather than the machine —
+    // set it to the box's actual name so the UI shows an identity. Renaming is
+    // safe: the local machine row is matched on its is_localhost flag, so its
+    // history follows the new label.
+    SESSIONS_MACHINE_ID: { type: 'string' },
     SESSIONS_ORIGINAL_CLAUDE_DIR: { type: 'string' },
     SESSIONS_MIN_FILE_SIZE: { type: 'number', default: 500 },
     SESSIONS_DISABLE_LOCAL_INGEST: { type: 'boolean', default: false },
@@ -455,6 +461,7 @@ declare module 'fastify' {
       DISABLE_SYNCS: boolean;
 
       // Sessions module
+      SESSIONS_MACHINE_ID?: string;
       SESSIONS_ORIGINAL_CLAUDE_DIR?: string;
       SESSIONS_MIN_FILE_SIZE: number;
       SESSIONS_DISABLE_LOCAL_INGEST: boolean;

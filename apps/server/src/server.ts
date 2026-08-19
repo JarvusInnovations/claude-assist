@@ -410,6 +410,7 @@ await fastify.register(
         migrationsDir: join(__dirname, '../../../packages/sessions/migrations'),
         disableMigrations: fastify.config.DISABLE_MIGRATIONS,
         sessionsConfig: {
+          machineId: fastify.config.SESSIONS_MACHINE_ID,
           originalClaudeDir: fastify.config.SESSIONS_ORIGINAL_CLAUDE_DIR,
           minFileSize: fastify.config.SESSIONS_MIN_FILE_SIZE,
           outlineConcurrency: fastify.config.OUTLINE_CONCURRENCY,
