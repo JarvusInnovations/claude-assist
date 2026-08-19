@@ -27,6 +27,7 @@ export default createPlugin('sessions', async (fastify, options) => {
   // originalClaudeDir: The original path on host (e.g., /Users/<user>/.claude)
   // This allows the scanner to translate transcript paths when running in Docker
   const syncService = new SyncService(fastify.sql, fastify.log, {
+    machineId: config.machineId,
     originalClaudeDir: config.originalClaudeDir,
     minFileSize: config.minFileSize,
     disableLocalIngest: config.disableLocalIngest,

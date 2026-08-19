@@ -278,6 +278,33 @@ export class SyncService {
     hostname: string | null,
     isLocalhost: boolean
   ): Promise<MachineRecord> {
+    // The local machine is identified by its is_localhost flag, never by its
+    // label. machine_id is a display name the operator can change
+    // (SESSIONS_MACHINE_ID) — matching on it would fork a second machine and
+    // strand every session already attributed to the old label, splitting one
+    // machine's history in two. Remote machines have no such flag and are
+    // still matched by the id their ingest call supplies.
+    if (isLocalhost) {
+      const local = await this.sql<MachineRecord[]>`
+        SELECT * FROM sessions.machines WHERE is_localhost = TRUE ORDER BY id LIMIT 1
+      `;
+      const row = local[0];
+      if (row) {
+        if (row.machine_id === machineId && row.hostname === hostname) return row;
+        const renamed = await this.sql<MachineRecord[]>`
+          UPDATE sessions.machines
+          SET machine_id = ${machineId}, hostname = ${hostname}
+          WHERE id = ${row.id}
+          RETURNING *
+        `;
+        this.log.info(
+          { from: row.machine_id, to: machineId, hostname },
+          'Relabelled local machine — existing sessions follow it'
+        );
+        return renamed[0]!;
+      }
+    }
+
     const existing = await this.sql<MachineRecord[]>`
       SELECT * FROM sessions.machines WHERE machine_id = ${machineId}
     `;
