@@ -99,7 +99,7 @@ and return a continuation anchor rather than dumping the whole session.
 
 ### Recall
 
-- `scripts/sessions-axi search [--query TEXT] [--project PATH] [--days N | --since DATE --until DATE | --forever] [--tools a,b] [--files-read frag] [--files-written frag] [--machine ID] [--min-user-messages N] [--include-empty] [--limit N] [--offset N]` — find sessions by topic/tool/file (tools & files are substring matches); defaults to last 30 days, hides subagent sessions at --min-user-messages 2
+- `scripts/sessions-axi search [--query TEXT] [--project PATH] [--days N | --since DATE --until DATE | --forever] [--tools a,b] [--files-read frag] [--files-written frag] [--machine ID] [--min-user-messages N] [--include-empty] [--limit N] [--offset N]` — find sessions by topic/tool/file (tools & files are substring matches); defaults to the last 30 days of activity (window & ordering use last activity, not start), hides subagent sessions at --min-user-messages 2
 - `scripts/sessions-axi transcript <session-id> [--after DATE] [--before DATE] [--include-tools]` — compact, token-efficient transcript of one session (optionally trimmed to a time window)
 - `scripts/sessions-axi transcript --after DATE --before DATE [--group project|time] [--project PATH] [--min-user-messages N] [--include-tools]` — cross-session transcript for a time range — the primary tool for "what did I work on <when>?"
 - `scripts/sessions-axi grep <session-id> --tool Bash --match "text" [--in target|text|tool] [--context N]` — find tool calls / text within a transcript — windowed matches + anchors

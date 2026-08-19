@@ -28,7 +28,18 @@ import {
 } from "@/components/ui/table";
 
 import { sessionsApi } from "@/api/sessions";
-import type { SessionQueryParams } from "@/types/api";
+import type { SessionQueryParams, SessionRecord } from "@/types/api";
+
+const HOUR_MS = 60 * 60 * 1000;
+
+/** Sessions are ordered by this server-side: last message timestamp, else start. */
+const lastActivityAt = (session: SessionRecord) =>
+  new Date(session.ended_at ?? session.started_at).getTime();
+
+const formatSinceActivity = (elapsedMs: number) => {
+  const minutes = Math.floor(elapsedMs / 60_000);
+  return minutes < 1 ? "just now" : `${minutes}m ago`;
+};
 
 export function SessionsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -64,6 +75,8 @@ export function SessionsPage() {
   const { data: sessions, isLoading, refetch } = useQuery({
     queryKey: ["sessions", filters],
     queryFn: () => sessionsApi.getSessions(filters),
+    // Keeps both the activity ordering and the last-hour highlight from going stale
+    refetchInterval: 60_000,
   });
 
   const { data: machines } = useQuery({
@@ -113,6 +126,14 @@ export function SessionsPage() {
     if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}K`;
     return tokens.toString();
   };
+
+  // Search results come back relevance-ordered, so the recent rows are only
+  // contiguous — and only worth a divider — in the default activity ordering.
+  const now = Date.now();
+  const activityOrdered = !filters.search;
+  const recentCount = (sessions ?? []).filter(
+    (s) => now - lastActivityAt(s) < HOUR_MS
+  ).length;
 
   return (
     <div className="p-6 space-y-6">
@@ -325,14 +346,41 @@ export function SessionsPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {sessions.map((session) => (
-                  <TableRow key={session.id}>
+                {sessions.map((session, i) => {
+                  const elapsed = now - lastActivityAt(session);
+                  const isRecent = elapsed < HOUR_MS;
+                  // Closes the last-hour block off from everything older
+                  const endsRecentBlock =
+                    activityOrdered &&
+                    isRecent &&
+                    i === recentCount - 1 &&
+                    recentCount < sessions.length;
+
+                  return (
+                  <TableRow
+                    key={session.id}
+                    className={[
+                      isRecent ? "bg-emerald-50/70 dark:bg-emerald-950/40" : "",
+                      endsRecentBlock ? "border-b-2 border-b-emerald-400" : "",
+                    ].filter(Boolean).join(" ")}
+                  >
                     <TableCell className="text-sm text-muted-foreground">
                       {new Date(session.started_at).toLocaleDateString()}{" "}
                       {new Date(session.started_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                     </TableCell>
                     <TableCell className="text-sm text-muted-foreground">
-                      {session.ended_at ? (
+                      {isRecent ? (
+                        <span
+                          className="flex items-center gap-1.5 font-medium text-emerald-700 dark:text-emerald-200"
+                          title={new Date(session.ended_at ?? session.started_at).toLocaleString()}
+                        >
+                          <span className="relative flex h-2 w-2 shrink-0">
+                            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                            <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                          </span>
+                          {formatSinceActivity(elapsed)}
+                        </span>
+                      ) : session.ended_at ? (
                         <span title={new Date(session.ended_at).toLocaleString()}>
                           {new Date(session.ended_at).toLocaleDateString()}{" "}
                           {new Date(session.ended_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
@@ -387,7 +435,8 @@ export function SessionsPage() {
                       </button>
                     </TableCell>
                   </TableRow>
-                ))}
+                  );
+                })}
               </TableBody>
             </Table>
           ) : (

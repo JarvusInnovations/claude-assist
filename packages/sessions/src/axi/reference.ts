@@ -27,7 +27,7 @@ export const COMMAND_GROUPS: CommandGroup[] = [
         usage:
           "search [--query TEXT] [--project PATH] [--days N | --since DATE --until DATE | --forever] [--tools a,b] [--files-read frag] [--files-written frag] [--machine ID] [--min-user-messages N] [--include-empty] [--limit N] [--offset N]",
         summary:
-          "find sessions by topic/tool/file (tools & files are substring matches); defaults to last 30 days, hides subagent sessions at --min-user-messages 2",
+          "find sessions by topic/tool/file (tools & files are substring matches); defaults to the last 30 days of activity (window & ordering use last activity, not start), hides subagent sessions at --min-user-messages 2",
       },
       {
         usage: "transcript <session-id> [--after DATE] [--before DATE] [--include-tools]",
