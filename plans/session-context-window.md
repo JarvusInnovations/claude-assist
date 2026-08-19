@@ -61,11 +61,11 @@ unmeasurable session (no main-chain usage) from being rescanned every night.
 - [x] Unknown model yields a null limit; dated ids (`-20251101`) still resolve
 - [x] Migration applies clean (verified inside a rolled-back transaction against
       the live schema; backfill selector resolves, 2,614 rows awaiting)
-- [ ] Backfill actually populates existing rows — runs at first boot after deploy
+- [x] Backfill populated existing rows: 2,614 stamped, 2,312 measured of 2,615
 - [x] Live check: parser output matches an independent `jq` recomputation on 6
       frozen real transcripts, final and peak, exactly
-- [ ] List bar renders final %; absent when reading or limit is null
-- [ ] Detail page shows both readings, limit, and model
+- [x] List bar renders final %; absent when reading or limit is null
+- [x] Detail page shows both readings, limit, and model
 - [x] `bun test packages/sessions` green (91); admin + sessions `tsc` clean
 
 ## Risks / unknowns
@@ -77,10 +77,23 @@ silently wrong.
 
 ## Notes
 
-The two UI checkboxes and the backfill cannot be ticked before deploy: the
-endpoints select columns the migration adds, so nothing renders until the
-server boots with the migration applied. Ordering is safe in both directions —
-an old server with the new bundle simply returns undefined for the fields,
-which the bar treats as "unmeasured" and omits.
+Shipped in #223 (`26d85ee`); migration 013 and the backfill ran on the
+2026-08-19 restart.
+
+The null case held up on real data: all **302** unmeasured sessions have
+`output_tokens = 0` and ~10 messages — genuinely empty sessions, not parser
+failures. Zero unmeasured rows have output above 1k, which is the check that
+would have caught a silent miss.
+
+Model resolution covered the whole archive — every measured session resolved
+to a limit, including the dated snapshots the suffix-stripping exists for
+(`claude-opus-4-5-20251101` → 200K, ×377; `claude-sonnet-4-5-20250929` → 200K,
+×84; `claude-haiku-4-5-20251001` → 200K, ×60). No session's last main-chain
+call was `<synthetic>`, so the null-limit path is unexercised in practice but
+still correct to keep.
+
+Best demonstration of why both readings are stored: session
+`177966e4` peaked at 976,990 (98%) and ended at 661,525 (66%) — 315,465 tokens
+reclaimed by compaction. Final-only would have shown a comfortable 66%.
 
 ## Follow-ups
