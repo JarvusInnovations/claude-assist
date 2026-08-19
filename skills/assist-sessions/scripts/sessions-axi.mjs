@@ -574,7 +574,7 @@ var COMMAND_GROUPS = [
     commands: [
       {
         usage: "search [--query TEXT] [--project PATH] [--days N | --since DATE --until DATE | --forever] [--tools a,b] [--files-read frag] [--files-written frag] [--machine ID] [--min-user-messages N] [--include-empty] [--limit N] [--offset N]",
-        summary: "find sessions by topic/tool/file (tools & files are substring matches); defaults to last 30 days, hides subagent sessions at --min-user-messages 2"
+        summary: "find sessions by topic/tool/file (tools & files are substring matches); defaults to the last 30 days of activity (window & ordering use last activity, not start), hides subagent sessions at --min-user-messages 2"
       },
       {
         usage: "transcript <session-id> [--after DATE] [--before DATE] [--include-tools]",
@@ -1441,7 +1441,7 @@ async function shareCommand(args) {
 }
 
 // packages/sessions/src/axi/cli.ts
-var VERSION = true ? "e3619c3" : "dev";
+var VERSION = true ? "6c32b6c" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [command] [args] [flags]
        ${CLI}                 # no args \u2192 home (recent activity + next steps)
