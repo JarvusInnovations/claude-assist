@@ -53,6 +53,16 @@ const contextFraction = (session: SessionRecord) => {
   return Math.min(used / limit, 1);
 };
 
+/**
+ * Compact origin line: host:repo#branch. The full project path stays in the
+ * cell's tooltip rather than the label, which has to share the column with the
+ * session title.
+ */
+const repoLabel = (session: SessionRecord) => {
+  const repo = session.project_path?.split("/").pop() || "unknown";
+  return `${session.machine}:${repo}${session.git_branch ? `#${session.git_branch}` : ""}`;
+};
+
 const contextTone = (fraction: number) =>
   fraction >= 0.85
     ? "bg-red-500"
@@ -356,13 +366,11 @@ export function SessionsPage() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-[100px]">Started</TableHead>
-                  <TableHead className="w-[100px]">Last activity</TableHead>
-                  <TableHead>Project</TableHead>
-                  <TableHead className="w-[150px]">Branch</TableHead>
+                  <TableHead className="w-[180px]">ID</TableHead>
+                  <TableHead className="w-[110px]">Last activity</TableHead>
                   <TableHead className="w-[130px]">Context</TableHead>
                   <TableHead className="w-[140px]">Size</TableHead>
-                  <TableHead className="w-[180px]">ID</TableHead>
+                  <TableHead>Project</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -384,9 +392,18 @@ export function SessionsPage() {
                       endsRecentBlock ? "border-b-2 border-b-emerald-400" : "",
                     ].filter(Boolean).join(" ")}
                   >
-                    <TableCell className="text-sm text-muted-foreground">
-                      {new Date(session.started_at).toLocaleDateString()}{" "}
-                      {new Date(session.started_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                    <TableCell>
+                      <button
+                        className="text-xs font-mono text-muted-foreground hover:text-foreground cursor-pointer truncate max-w-[170px] block text-left"
+                        title={session.session_name || session.id}
+                        onClick={() => {
+                          const value = session.session_name || session.id;
+                          navigator.clipboard.writeText(value);
+                          toast.success(session.session_name ? "Session name copied" : "Session ID copied");
+                        }}
+                      >
+                        {session.session_name || session.id.slice(0, 8)}
+                      </button>
                     </TableCell>
                     <TableCell className="text-sm text-muted-foreground">
                       {isRecent ? (
@@ -408,35 +425,6 @@ export function SessionsPage() {
                       ) : (
                         "—"
                       )}
-                    </TableCell>
-                    <TableCell className="max-w-0">
-                      <Link
-                        to={`/sessions/${session.id}`}
-                        title={
-                          session.title ||
-                          session.project_path?.split("/").pop() ||
-                          "Unknown"
-                        }
-                        className="hover:underline font-medium truncate block"
-                      >
-                        {session.title ||
-                          session.project_path?.split("/").pop() ||
-                          "Unknown"}
-                      </Link>
-                      <span
-                        className="text-xs text-muted-foreground truncate block"
-                        title={`${session.machine}:${session.project_path}`}
-                      >
-                        {session.machine}:{session.project_path}
-                      </span>
-                    </TableCell>
-                    <TableCell className="text-sm">
-                      <span
-                        className="block max-w-[150px] truncate"
-                        title={session.git_branch || ""}
-                      >
-                        {session.git_branch || "N/A"}
-                      </span>
                     </TableCell>
                     <TableCell>
                       {(() => {
@@ -467,18 +455,26 @@ export function SessionsPage() {
                     <TableCell className="text-sm font-mono">
                       {session.message_count} / {formatTokens(session.input_tokens + session.output_tokens)}
                     </TableCell>
-                    <TableCell>
-                      <button
-                        className="text-xs font-mono text-muted-foreground hover:text-foreground cursor-pointer truncate max-w-[170px] block text-left"
-                        title={session.session_name || session.id}
-                        onClick={() => {
-                          const value = session.session_name || session.id;
-                          navigator.clipboard.writeText(value);
-                          toast.success(session.session_name ? "Session name copied" : "Session ID copied");
-                        }}
+                    <TableCell className="max-w-0">
+                      <Link
+                        to={`/sessions/${session.id}`}
+                        title={
+                          session.title ||
+                          session.project_path?.split("/").pop() ||
+                          "Unknown"
+                        }
+                        className="hover:underline font-medium truncate block"
                       >
-                        {session.session_name || session.id.slice(0, 8)}
-                      </button>
+                        {session.title ||
+                          session.project_path?.split("/").pop() ||
+                          "Unknown"}
+                      </Link>
+                      <span
+                        className="text-xs text-muted-foreground truncate block"
+                        title={`${session.machine}:${session.project_path}${session.git_branch ? `#${session.git_branch}` : ""}`}
+                      >
+                        {repoLabel(session)}
+                      </span>
                     </TableCell>
                   </TableRow>
                   );
