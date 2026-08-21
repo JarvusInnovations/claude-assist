@@ -112,11 +112,17 @@ export default createPlugin('kitchen', async (fastify: FastifyInstance, options:
   // threaded into every route that computes a local day. A present-but-invalid
   // zone throws here and fails boot loudly (same doctrine as KITCHEN_DAILY_TARGETS);
   // unset ⇒ UTC fallback, stated in affected output.
-  const ownerTz = resolveOwnerTz(config.ownerTz);
+  const ownerTz = resolveOwnerTz(config.ownerTz, config.dayStartHour);
   if (ownerTz.fallback) {
     fastify.log.warn('KITCHEN_OWNER_TZ unset — local-day bucketing falls back to UTC (stated in output)');
   } else {
     fastify.log.info({ zone: ownerTz.zone }, 'Kitchen owner timezone configured');
+  }
+  if (ownerTz.dayStartHour !== 0) {
+    fastify.log.info(
+      { dayStartHour: ownerTz.dayStartHour },
+      'Kitchen consumption day rolls over after midnight (entries + expenditures only)'
+    );
   }
 
   const entryStore = new PgEntryStore(fastify.sql);
@@ -372,6 +378,7 @@ export {
   OwnerTzConfigError,
   offsetMinutes,
   localDay,
+  subjectiveDay,
   localDisplay,
   formatOffset,
   localToday,

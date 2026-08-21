@@ -40,7 +40,7 @@ import type {
   RecipeComponent,
   StatedMacros,
 } from '../types.js';
-import { localDay, localDisplay, resolveOwnerTz, type OwnerTz } from '../zoned.js';
+import { localDisplay, resolveOwnerTz, subjectiveDay, type OwnerTz } from '../zoned.js';
 
 /**
  * The eight panel fields accepted on a directly-stated `macros` object
@@ -100,7 +100,7 @@ function serializeEntry(entry: EntryRecord, ownerTz: OwnerTz): Record<string, un
   const loggedAt = entry.logged_at instanceof Date ? entry.logged_at : new Date(entry.logged_at);
   return {
     ...entry,
-    day: localDay(loggedAt, ownerTz.zone),
+    day: subjectiveDay(loggedAt, ownerTz),
     logged_local: localDisplay(loggedAt, ownerTz.zone),
   };
 }
