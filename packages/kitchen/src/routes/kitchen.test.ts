@@ -1074,6 +1074,39 @@ describe('kitchen routes', () => {
   });
 
   describe('GET /kitchen/reselect', () => {
+    /** A live estimated entry under `label`, so it earns a row on the recents half. */
+    async function seedEstimatedLabel(label: string): Promise<string> {
+      const ulid = generateUlid();
+      await entries.insertIfAbsent({
+        ulid,
+        logged_at: new Date(),
+        note: null,
+        recipe_ulid: null,
+        component_quantities: null,
+        notes_reviewed: true,
+      });
+      await entries.applyEstimate(
+        ulid,
+        label,
+        {
+          calories: 200,
+          protein_g: 10,
+          fat_g: 8,
+          sat_fat_g: 2,
+          carbs_g: 20,
+          sugar_g: null,
+          added_sugar_g: null,
+          fiber_g: null,
+          sodium_mg: 300,
+          confidence: 0.5,
+          portion_basis: 'one serving',
+        },
+        'model',
+        'estimated'
+      );
+      return ulid;
+    }
+
     it('returns recipes + recent entries', async () => {
       await recipes.insert({ ulid: generateUlid(), name: 'Salad', components: [], source: 'pushed' });
       const response = await fastify.inject({ method: 'GET', url: '/kitchen/reselect' });
@@ -1117,6 +1150,53 @@ describe('kitchen routes', () => {
       const recent = json.recent.find((r: { label: string }) => r.label === 'Latte');
       expect(recent).toBeDefined();
       expect(recent.entry_ulid).toBe(sourceUlid);
+    });
+
+    it('?q narrows recipes AND recents, case-insensitively; no q leaves the strip whole', async () => {
+      await recipes.insert({ ulid: generateUlid(), name: 'Bowl alpha', components: [], source: 'pushed' });
+      await recipes.insert({ ulid: generateUlid(), name: 'Plate omega', components: [], source: 'pushed' });
+      await seedEstimatedLabel('Beverage alpha');
+      await seedEstimatedLabel('Beverage omega');
+
+      const whole = (await fastify.inject({ method: 'GET', url: '/kitchen/reselect' })).json();
+      expect(whole.recipes.map((r: { name: string }) => r.name).sort()).toEqual(['Bowl alpha', 'Plate omega']);
+      expect(whole.recent.map((r: { label: string }) => r.label).sort()).toEqual([
+        'Beverage alpha',
+        'Beverage omega',
+      ]);
+
+      const res = await fastify.inject({ method: 'GET', url: '/kitchen/reselect?q=ALPHA' });
+      expect(res.statusCode).toBe(200);
+      const json = res.json();
+      expect(json.recipes.map((r: { name: string }) => r.name)).toEqual(['Bowl alpha']);
+      expect(json.recent.map((r: { label: string }) => r.label)).toEqual(['Beverage alpha']);
+
+      // An empty q is not a search — the strip is whole again.
+      const blank = (await fastify.inject({ method: 'GET', url: '/kitchen/reselect?q=' })).json();
+      expect(blank).toEqual(whole);
+    });
+
+    it('?q matching nothing is an empty strip with 200, not an error', async () => {
+      await recipes.insert({ ulid: generateUlid(), name: 'Bowl alpha', components: [], source: 'pushed' });
+
+      const res = await fastify.inject({ method: 'GET', url: '/kitchen/reselect?q=no-such-thing' });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json<{ recipes: unknown[]; recent: unknown[] }>()).toEqual({ recipes: [], recent: [] });
+    });
+
+    it('?q composes with limit, bounding the MATCHES rather than the first page', async () => {
+      for (const name of ['aa', 'ab', 'ac', 'zz match one', 'zz match two']) {
+        await recipes.insert({ ulid: generateUlid(), name, components: [], source: 'pushed' });
+      }
+
+      const paged = (await fastify.inject({ method: 'GET', url: '/kitchen/reselect?limit=2' })).json();
+      expect(paged.recipes.map((r: { name: string }) => r.name)).toEqual(['aa', 'ab']);
+
+      const searched = (
+        await fastify.inject({ method: 'GET', url: '/kitchen/reselect?q=match&limit=2' })
+      ).json();
+      expect(searched.recipes.map((r: { name: string }) => r.name)).toEqual(['zz match one', 'zz match two']);
     });
   });
 });

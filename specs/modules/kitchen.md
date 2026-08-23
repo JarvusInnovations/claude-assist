@@ -766,6 +766,36 @@ the stale pill.
 label, calories, protein_g, fat_g, sat_fat_g, carbs_g, sodium_mg, last_logged_at,
 log_count }`. The macro fields are the source entry's **base** (unscaled) macros.
 
+### Searching the strip
+
+The strip is the fastest path in the module, and it is the one surface that gets
+*slower* the more it is used: both halves grow monotonically, and the recents
+half grows without bound — every distinct label ever logged earns a permanent
+row. Paging and scrolling alone therefore degrade the re-log of a habitual item
+from two taps into a hunt.
+
+`GET /reselect` accepts an optional **`q`**: a case-insensitive substring,
+matched over a recipe's `name` and a recent item's `label`. It carries the same
+meaning `q` carries on `GET /products`.
+
+- **It applies to BOTH collections.** They are independent lists, and narrowing
+  only the recipes would leave the unbounded half untouched — the half the
+  search exists for.
+- **It applies BEFORE `limit`,** on each half and server-side. `?q=x&limit=5`
+  returns the top five *matches*; it does not filter the top five rows. A
+  client must never need the whole strip in memory to find one row, and the
+  CLI and the app must agree on what a search means.
+- **Absent or empty, it filters nothing.** The strip is then exactly the strip
+  that existed before search — every caller that sends no `q` (including the
+  planning-session context builder) is unaffected.
+- **No match is an empty strip, not an error.**
+
+Searching does not deduplicate. Because the recents half is keyed on the label
+*string*, two logs of one food under different wording are two permanent rows
+with split frequency counts; relabelling the odd one to the canonical string
+collapses them and transfers the count, since label equality is what groups
+them.
+
 ## Recipe corrections — upsert on name, explicit-ulid replace, archive
 
 A recipe's numbers get corrected: a component was wrong, a per-100g reference
@@ -1200,11 +1230,12 @@ module's schemas — scoped here because this module is what regressed.
   change. Any of these axes may be sent alone or composed in one PATCH (override
   sets base, multiplier scales it, logged_at moves the day).
 - `DELETE /entries/:ulid` — removes the entry from all rollups.
-- `GET /reselect` — the strip: recipes (sheet + pushed + promoted) merged with
-  recent/frequent logged items. Each recent item carries an `entry_ulid` — the
-  source entry it summarizes — so a recent pill can re-log by cloning it (§
-  Reselect cloning). See § Reselect cloning for the recent-summary shape and how
-  `entry_ulid` is derived.
+- `GET /reselect?q&limit` — the strip: recipes (sheet + pushed + promoted)
+  merged with recent/frequent logged items. Each recent item carries an
+  `entry_ulid` — the source entry it summarizes — so a recent pill can re-log by
+  cloning it (§ Reselect cloning). See § Reselect cloning for the
+  recent-summary shape and how `entry_ulid` is derived, and § Searching the
+  strip for `q`.
 - `POST /recipes` — agent-pushed one-off or reusable templates. **Upserts**:
   `201` on create, `200` on replace, `409` on a name collision it must not
   resolve by guessing — see § Recipe corrections for the key rules.

@@ -722,7 +722,7 @@ var COMMAND_GROUPS = [
   {
     group: "Recipes",
     commands: [
-      { usage: "recipes list [--limit N]", summary: "the reselect strip \u2014 merged sheet + pushed + promoted recipes plus recent/frequent logged items" },
+      { usage: "recipes list [--q TEXT] [--limit N]", summary: "the reselect strip \u2014 merged sheet + pushed + promoted recipes plus recent/frequent logged items; --q substring-matches recipe names AND recent labels" },
       {
         usage: "recipes push '<recipe json>' [--ulid U]",
         summary: 'agent-authored template: {"name": "...", "components": [{label, default_qty_g, per_100g:{calories, protein_g, sat_fat_g}}]}. UPSERTS \u2014 a correction REPLACES rather than forks: the key is the normalized name (case/spacing-insensitive), or --ulid for one specific record. Prints created vs replaced. A name already held by a promoted or sheet-sourced recipe is a 409 naming it (rename, or pass --ulid deliberately) \u2014 never a silent clobber and never a second same-named pill on the strip'
@@ -3096,8 +3096,10 @@ async function scanReceipt(args) {
 // packages/kitchen/src/axi/commands/recipes.ts
 var RECIPES_HELP = `kitchen-axi recipes <subcommand> [args] [--json]
 
-  list [--limit N]                  the reselect strip: merged sheet + pushed +
-                                      promoted recipes, plus recent logged items
+  list [--q TEXT] [--limit N]       the reselect strip: merged sheet + pushed +
+                                      promoted recipes, plus recent logged items.
+                                      --q matches recipe names AND recent labels
+                                      (substring), server-side before --limit
   push '<recipe json>' [--ulid U]   agent-authored template; body is
                                       {"name": "...", "components": [
                                         {"label": "...", "default_qty_g": N,
@@ -3147,9 +3149,10 @@ async function recipesCommand(args) {
   }
 }
 async function listRecipes(args) {
-  const { flags } = parseArgs(args, ["json"], ["limit"]);
+  const { flags } = parseArgs(args, ["json"], ["q", "limit"]);
+  const q = typeof flags.q === "string" ? flags.q : void 0;
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", RECIPES_HELP, { min: 1 })) : void 0;
-  const strip = await api.get("/api/kitchen/reselect", { limit });
+  const strip = await api.get("/api/kitchen/reselect", { q, limit });
   if (flags.json) return rawJson(strip);
   const recipes = strip?.recipes ?? [];
   const recent = strip?.recent ?? [];
@@ -3635,7 +3638,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "e3619c3" : "dev";
+var VERSION = true ? "1ffe73e" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)

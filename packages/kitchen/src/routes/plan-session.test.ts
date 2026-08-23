@@ -108,6 +108,20 @@ describe('plan-session context builder', () => {
     expect(ctx.eatFirst.map((i) => i.label)).toEqual(['soonest', 'middle', 'later']);
   });
 
+  it('still gets the WHOLE strip — the planning context never passes a search query', async () => {
+    // The reselect search is opt-in: this caller asks for no `q`, so every
+    // recipe and every recent label is still in scope for planning. A regression
+    // here would silently narrow what the session is allowed to suggest.
+    await recipes.insert({ ulid: generateUlid(), name: 'bowl alpha', components: [], source: 'pushed' });
+    await recipes.insert({ ulid: generateUlid(), name: 'plate omega', components: [], source: 'pushed' });
+    await seedEstimated(entries, { calories: 100 });
+
+    const ctx = await gatherPlanningContext({ pipeline, inventory });
+
+    expect(ctx.mealBank.map((m) => m.name).sort()).toEqual(['bowl alpha', 'plate omega']);
+    expect(ctx.recent.map((r) => r.label)).toEqual(['seeded meal']);
+  });
+
   it('composePreloadPrompt reflects the state and instructs a warm meal-planning takeover', async () => {
     await seedEstimated(entries, { calories: 500, protein_g: 40 });
     await seedItem(invStore, { raw_label: 'greek yogurt', eat_by: new Date('2000-01-02') });

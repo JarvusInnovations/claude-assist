@@ -257,10 +257,13 @@ export class MemoryEntryStore implements EntryStore {
     return touched.size;
   }
 
-  async recentLabels(limit: number): Promise<RecentEntrySummary[]> {
+  async recentLabels(limit: number, q?: string): Promise<RecentEntrySummary[]> {
+    const needle = q?.toLowerCase();
     const byLabel = new Map<string, RecentEntrySummary>();
+    // Matching before the grouping and the slice, so `limit` bounds the matches.
     const sorted = [...this.records.values()]
       .filter((r) => r.label && r.status === 'estimated')
+      .filter((r) => !needle || r.label!.toLowerCase().includes(needle))
       .sort((a, b) => b.logged_at.getTime() - a.logged_at.getTime());
     for (const r of sorted) {
       const label = r.label!;
@@ -309,10 +312,12 @@ export class MemoryRecipeStore implements RecipeStore {
     return record ? structuredClone(record) : null;
   }
 
-  async list(filter: { limit?: number }): Promise<RecipeRecord[]> {
+  async list(filter: { limit?: number; q?: string }): Promise<RecipeRecord[]> {
     const limit = filter.limit ?? 100;
+    const q = filter.q?.toLowerCase();
     return [...this.records.values()]
       .filter((r) => r.archived_at === null)
+      .filter((r) => !q || r.name.toLowerCase().includes(q))
       .sort((a, b) => a.name.localeCompare(b.name))
       .slice(0, limit)
       .map((r) => structuredClone(r));

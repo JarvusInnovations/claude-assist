@@ -254,7 +254,7 @@ in doubt, read the spec.
 
 ### Recipes
 
-- `scripts/kitchen-axi recipes list [--limit N]` — the reselect strip — merged sheet + pushed + promoted recipes plus recent/frequent logged items
+- `scripts/kitchen-axi recipes list [--q TEXT] [--limit N]` — the reselect strip — merged sheet + pushed + promoted recipes plus recent/frequent logged items; --q substring-matches recipe names AND recent labels
 - `scripts/kitchen-axi recipes push '<recipe json>' [--ulid U]` — agent-authored template: {"name": "...", "components": [{label, default_qty_g, per_100g:{calories, protein_g, sat_fat_g}}]}. UPSERTS — a correction REPLACES rather than forks: the key is the normalized name (case/spacing-insensitive), or --ulid for one specific record. Prints created vs replaced. A name already held by a promoted or sheet-sourced recipe is a 409 naming it (rename, or pass --ulid deliberately) — never a silent clobber and never a second same-named pill on the strip
 - `scripts/kitchen-axi recipes delete <ulid>` — ARCHIVE a recipe — off the reselect strip permanently, but still resolvable by ulid, so entries logged from it and prepped items derived from it keep working. Idempotent; 404 for an unknown or sheet-sourced ulid (the meal-bank sheet is never written from here). There is no hard delete
 - `scripts/kitchen-axi recipes promote <entry-ulid> --name NAME` — create a reusable recipe from a logged entry
