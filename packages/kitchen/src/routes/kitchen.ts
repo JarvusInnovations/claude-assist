@@ -398,20 +398,24 @@ export const registerKitchenRoutes: FastifyPluginAsync<KitchenRoutesConfig> = as
   // Static path registered ahead of /kitchen/entries/:ulid; find-my-way matches
   // literal segments before params regardless of registration order, but this
   // mirrors capture's /capture/references-before-:ulid convention for clarity.
-  fastify.get<{ Querystring: { limit?: string } }>(
+  // `q` is a case-insensitive substring search across BOTH halves of the strip
+  // (recipe names and recent labels), applied server-side before each half's
+  // limit — same shape and semantics as `GET /kitchen/products?q`. Empty or
+  // absent, it filters nothing.
+  fastify.get<{ Querystring: { q?: string; limit?: string } }>(
     '/kitchen/reselect',
     {
       schema: {
         querystring: {
           type: 'object',
           additionalProperties: false,
-          properties: { limit: { type: 'string', pattern: '^[0-9]+$' } },
+          properties: { q: { type: 'string' }, limit: { type: 'string', pattern: '^[0-9]+$' } },
         },
       },
     },
     async (request) => {
       const limit = request.query.limit ? parseInt(request.query.limit, 10) : undefined;
-      return pipeline.reselect(limit);
+      return pipeline.reselect(limit, request.query.q);
     }
   );
 

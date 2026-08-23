@@ -161,8 +161,15 @@ export interface EntryStore {
 
   delete(ulid: string): Promise<boolean>;
 
-  /** Recent/frequent logged items for the reselect strip, most-recent first. */
-  recentLabels(limit: number): Promise<RecentEntrySummary[]>;
+  /**
+   * Recent/frequent logged items for the reselect strip, most-recent first.
+   *
+   * `q` is a case-insensitive substring over `label`, applied BEFORE `limit`
+   * (same semantics as the product listing's `q`). This half of the strip is
+   * the one that grows without bound — every distinct label ever logged earns
+   * a row — so the search has to reach rows the default page never shows.
+   */
+  recentLabels(limit: number, q?: string): Promise<RecentEntrySummary[]>;
 
   /**
    * Record that an entry's consumption decremented an inventory item: a
@@ -211,8 +218,12 @@ export interface RecipeStore {
    * Live pushed + promoted recipes — archived rows excluded, so a retired
    * recipe can never be tapped again (sheet recipes are a read-through
    * projection and never appear here).
+   *
+   * `q` is a case-insensitive substring over `name`, applied BEFORE `limit`
+   * (same semantics as the product listing's `q`) so a search returns the top
+   * matches rather than the matches inside the top page.
    */
-  list(filter: { limit?: number }): Promise<RecipeRecord[]>;
+  list(filter: { limit?: number; q?: string }): Promise<RecipeRecord[]>;
   /**
    * Every LIVE recipe whose name normalizes to `normalizedName` — the
    * upsert-on-name key lookup (§ Recipe corrections). Returns all matches, not
@@ -643,7 +654,10 @@ export class PgEntryStore implements EntryStore {
     });
   }
 
-  async recentLabels(limit: number): Promise<RecentEntrySummary[]> {
+  async recentLabels(limit: number, q?: string): Promise<RecentEntrySummary[]> {
+    // Matching inside the WHERE means the grouping, the ordering, and the LIMIT
+    // all run over the matches — a search is not a filter over the first page.
+    const match = q ? this.sql`AND label ILIKE ${'%' + q + '%'}` : this.sql``;
     const rows = await this.sql`
       SELECT
         label,
@@ -660,7 +674,7 @@ export class PgEntryStore implements EntryStore {
         MAX(logged_at) AS last_logged_at,
         COUNT(*)::int AS log_count
       FROM kitchen.entries
-      WHERE label IS NOT NULL AND status = 'estimated'
+      WHERE label IS NOT NULL AND status = 'estimated' ${match}
       GROUP BY label
       ORDER BY MAX(logged_at) DESC
       LIMIT ${limit}
@@ -701,13 +715,22 @@ export class PgRecipeStore implements RecipeStore {
     return row ? rowToRecipe(row) : null;
   }
 
-  async list(filter: { limit?: number }): Promise<RecipeRecord[]> {
+  async list(filter: { limit?: number; q?: string }): Promise<RecipeRecord[]> {
     const limit = Math.min(filter.limit ?? 100, 500);
-    const rows = await this.sql`
-      SELECT * FROM kitchen.recipes
-      WHERE archived_at IS NULL
-      ORDER BY name ASC LIMIT ${limit}
-    `;
+    // The match is part of the WHERE, not a post-filter, so `limit` bounds the
+    // MATCHES rather than the page the matches had to fall inside of.
+    const rows = filter.q
+      ? await this.sql`
+          SELECT * FROM kitchen.recipes
+          WHERE archived_at IS NULL
+            AND name ILIKE ${'%' + filter.q + '%'}
+          ORDER BY name ASC LIMIT ${limit}
+        `
+      : await this.sql`
+          SELECT * FROM kitchen.recipes
+          WHERE archived_at IS NULL
+          ORDER BY name ASC LIMIT ${limit}
+        `;
     return rows.map(rowToRecipe);
   }
 

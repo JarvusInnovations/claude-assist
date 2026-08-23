@@ -6,8 +6,10 @@ import { cliInvocation } from "../invocation.js";
 
 export const RECIPES_HELP = `kitchen-axi recipes <subcommand> [args] [--json]
 
-  list [--limit N]                  the reselect strip: merged sheet + pushed +
-                                      promoted recipes, plus recent logged items
+  list [--q TEXT] [--limit N]       the reselect strip: merged sheet + pushed +
+                                      promoted recipes, plus recent logged items.
+                                      --q matches recipe names AND recent labels
+                                      (substring), server-side before --limit
   push '<recipe json>' [--ulid U]   agent-authored template; body is
                                       {"name": "...", "components": [
                                         {"label": "...", "default_qty_g": N,
@@ -61,9 +63,10 @@ export async function recipesCommand(args: string[]): Promise<string> {
 }
 
 async function listRecipes(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json"], ["limit"]);
+  const { flags } = parseArgs(args, ["json"], ["q", "limit"]);
+  const q = typeof flags.q === "string" ? flags.q : undefined;
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", RECIPES_HELP, { min: 1 })) : undefined;
-  const strip = await api.get("/api/kitchen/reselect", { limit });
+  const strip = await api.get("/api/kitchen/reselect", { q, limit });
   if (flags.json) return rawJson(strip);
   const recipes = strip?.recipes ?? [];
   const recent = strip?.recent ?? [];

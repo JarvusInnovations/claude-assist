@@ -732,14 +732,33 @@ export class KitchenPipeline {
     }));
   }
 
-  /** GET /reselect: recipes (sheet + pushed + promoted) merged with recent/frequent logged items. */
-  async reselect(limit = 20): Promise<ReselectStrip> {
+  /**
+   * GET /reselect: recipes (sheet + pushed + promoted) merged with
+   * recent/frequent logged items.
+   *
+   * `q` is an optional case-insensitive substring search, matching a recipe's
+   * `name` and a recent item's `label` — the same semantics `q` has on the
+   * product listing. **It has to reach BOTH halves of the strip**: the two
+   * collections are independent, and the recents half is the one that grows
+   * without bound, so a search that only narrowed the recipes would leave the
+   * scroll it was meant to fix. Each half applies the match BEFORE its own
+   * `limit`, so a search returns the top matches rather than the matches inside
+   * the top page. An empty or absent `q` filters nothing — the strip is then
+   * exactly what it was before search existed.
+   */
+  async reselect(limit = 20, q?: string): Promise<ReselectStrip> {
     const [sheetRecipes, dbRecipes, recent] = await Promise.all([
       this.readSheetRecipes(),
-      this.recipes.list({ limit }),
-      this.entries.recentLabels(limit),
+      this.recipes.list({ limit, q }),
+      this.entries.recentLabels(limit, q),
     ]);
-    return { recipes: [...sheetRecipes, ...dbRecipes], recent };
+    // Sheet recipes are a read-through projection with no query surface of
+    // their own, so their share of the match runs here.
+    const needle = q?.toLowerCase();
+    const sheetMatches = needle
+      ? sheetRecipes.filter((r) => r.name.toLowerCase().includes(needle))
+      : sheetRecipes;
+    return { recipes: [...sheetMatches, ...dbRecipes], recent };
   }
 
   /**

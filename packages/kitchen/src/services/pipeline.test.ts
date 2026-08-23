@@ -860,6 +860,156 @@ describe('reselect merge logic', () => {
   });
 });
 
+describe('reselect text search (q) — one query over BOTH halves of the strip', () => {
+  const PANEL: NutritionFields = {
+    calories: 200,
+    protein_g: 10,
+    fat_g: 8,
+    sat_fat_g: 2,
+    carbs_g: 20,
+    sugar_g: null,
+    added_sugar_g: null,
+    fiber_g: null,
+    sodium_mg: 300,
+    confidence: 0.5,
+    portion_basis: 'one serving',
+  };
+
+  /** A live estimated entry under `label`, logged at a fixed instant. */
+  async function logLabel(entries: MemoryEntryStore, label: string, loggedAt: Date): Promise<string> {
+    const ulid = generateUlid();
+    await entries.insertIfAbsent({
+      ulid,
+      logged_at: loggedAt,
+      note: null,
+      recipe_ulid: null,
+      component_quantities: null,
+      notes_reviewed: true,
+    });
+    await entries.applyEstimate(ulid, label, PANEL, 'model', 'estimated');
+    return ulid;
+  }
+
+  function mkSheetRecipe(name: string) {
+    return {
+      ulid: generateUlid(),
+      name,
+      components: [],
+      source: 'sheet' as const,
+      created_at: new Date(),
+      updated_at: new Date(),
+      archived_at: null,
+    };
+  }
+
+  it('narrows recipes AND recents in the same call — a match in either half survives, a non-match in either is gone', async () => {
+    // The whole point of the search: the two collections are independent, and a
+    // fix that only reached the recipes would leave the unbounded half alone.
+    const entries = new MemoryEntryStore();
+    const recipes = new MemoryRecipeStore();
+    const pipeline = new KitchenPipeline(entries, recipes, null, log, {
+      readSheetRecipes: async () => [mkSheetRecipe('Sheet bowl alpha'), mkSheetRecipe('Sheet bowl omega')],
+    });
+    await recipes.insert({ ulid: generateUlid(), name: 'Pushed plate alpha', components: [], source: 'pushed' });
+    await recipes.insert({ ulid: generateUlid(), name: 'Pushed plate omega', components: [], source: 'pushed' });
+    await logLabel(entries, 'Beverage alpha', new Date('2026-01-02T12:00:00Z'));
+    await logLabel(entries, 'Beverage omega', new Date('2026-01-01T12:00:00Z'));
+
+    const strip = await pipeline.reselect(20, 'alpha');
+
+    // Both recipe sources (sheet projection + DB rows) obey the same match.
+    expect(strip.recipes.map((r) => r.name).sort()).toEqual(['Pushed plate alpha', 'Sheet bowl alpha']);
+    expect(strip.recent.map((r) => r.label)).toEqual(['Beverage alpha']);
+  });
+
+  it('matches case-insensitively on both halves', async () => {
+    const entries = new MemoryEntryStore();
+    const recipes = new MemoryRecipeStore();
+    const pipeline = new KitchenPipeline(entries, recipes, null, log, {
+      readSheetRecipes: async () => [mkSheetRecipe('Sheet BOWL Alpha')],
+    });
+    await recipes.insert({ ulid: generateUlid(), name: 'Pushed Plate ALPHA', components: [], source: 'pushed' });
+    await logLabel(entries, 'Beverage AlPhA', new Date('2026-01-02T12:00:00Z'));
+
+    const strip = await pipeline.reselect(20, 'aLpHa');
+
+    expect(strip.recipes.map((r) => r.name).sort()).toEqual(['Pushed Plate ALPHA', 'Sheet BOWL Alpha']);
+    expect(strip.recent.map((r) => r.label)).toEqual(['Beverage AlPhA']);
+  });
+
+  it('filters BEFORE limit: q + limit returns the top N MATCHES, not the matches inside the top N', async () => {
+    // The naive implementation (page first, filter the page) would find nothing
+    // here: every match sits below the limit cut-off in the unfiltered order.
+    const entries = new MemoryEntryStore();
+    const recipes = new MemoryRecipeStore();
+    const pipeline = new KitchenPipeline(entries, recipes, null, log);
+
+    // Recipes list name-ascending: the three matches sort last of nine.
+    for (const name of ['aa', 'ab', 'ac', 'ad', 'ae', 'af']) {
+      await recipes.insert({ ulid: generateUlid(), name, components: [], source: 'pushed' });
+    }
+    for (const name of ['z-match-1', 'z-match-2', 'z-match-3']) {
+      await recipes.insert({ ulid: generateUlid(), name, components: [], source: 'pushed' });
+    }
+    // Recents list most-recent-first: the three matches are the OLDEST three.
+    let day = 20;
+    for (const label of ['filler a', 'filler b', 'filler c', 'filler d', 'filler e', 'filler f']) {
+      await logLabel(entries, label, new Date(`2026-01-${day}T12:00:00Z`));
+      day -= 1;
+    }
+    for (const label of ['old match 1', 'old match 2', 'old match 3']) {
+      await logLabel(entries, label, new Date(`2026-01-${String(day).padStart(2, '0')}T12:00:00Z`));
+      day -= 1;
+    }
+
+    const unfiltered = await pipeline.reselect(2);
+    expect(unfiltered.recipes.map((r) => r.name)).toEqual(['aa', 'ab']);
+    expect(unfiltered.recent.map((r) => r.label)).toEqual(['filler a', 'filler b']);
+
+    const searched = await pipeline.reselect(2, 'match');
+    expect(searched.recipes.map((r) => r.name)).toEqual(['z-match-1', 'z-match-2']);
+    expect(searched.recent.map((r) => r.label)).toEqual(['old match 1', 'old match 2']);
+  });
+
+  it('an absent or empty q leaves the strip byte-identical to the pre-search strip', async () => {
+    // The safety property: search is purely additive. A client that never sends
+    // q — including the plan-session caller — sees exactly what it saw before.
+    const entries = new MemoryEntryStore();
+    const recipes = new MemoryRecipeStore();
+    // One stable sheet record, so a re-read is the same record and equality
+    // compares the strip rather than freshly-minted ULIDs.
+    const sheetRecipe = mkSheetRecipe('Sheet bowl alpha');
+    const pipeline = new KitchenPipeline(entries, recipes, null, log, {
+      readSheetRecipes: async () => [sheetRecipe],
+    });
+    await recipes.insert({ ulid: generateUlid(), name: 'Pushed plate omega', components: [], source: 'pushed' });
+    await logLabel(entries, 'Beverage alpha', new Date('2026-01-02T12:00:00Z'));
+    await logLabel(entries, 'Beverage omega', new Date('2026-01-01T12:00:00Z'));
+
+    const baseline = await pipeline.reselect();
+    expect(await pipeline.reselect(20, undefined)).toEqual(baseline);
+    expect(await pipeline.reselect(20, '')).toEqual(baseline);
+    // And the default limit is still the default limit.
+    expect(await pipeline.reselect()).toEqual(baseline);
+    expect(baseline.recipes.map((r) => r.name).sort()).toEqual(['Pushed plate omega', 'Sheet bowl alpha']);
+    expect(baseline.recent.map((r) => r.label)).toEqual(['Beverage alpha', 'Beverage omega']);
+  });
+
+  it('a q nothing matches is an empty strip, not an error', async () => {
+    const entries = new MemoryEntryStore();
+    const recipes = new MemoryRecipeStore();
+    const pipeline = new KitchenPipeline(entries, recipes, null, log, {
+      readSheetRecipes: async () => [mkSheetRecipe('Sheet bowl alpha')],
+    });
+    await recipes.insert({ ulid: generateUlid(), name: 'Pushed plate omega', components: [], source: 'pushed' });
+    await logLabel(entries, 'Beverage alpha', new Date('2026-01-02T12:00:00Z'));
+
+    const strip = await pipeline.reselect(20, 'no-such-thing');
+    expect(strip.recipes).toEqual([]);
+    expect(strip.recent).toEqual([]);
+  });
+});
+
 describe('reselect_of clone — deterministic recent re-log (no model call)', () => {
   const SOURCE_NUTRITION: NutritionFields = {
     calories: 300,

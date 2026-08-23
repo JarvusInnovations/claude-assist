@@ -221,7 +221,7 @@ export const COMMAND_GROUPS: CommandGroup[] = [
   {
     group: "Recipes",
     commands: [
-      { usage: "recipes list [--limit N]", summary: "the reselect strip — merged sheet + pushed + promoted recipes plus recent/frequent logged items" },
+      { usage: "recipes list [--q TEXT] [--limit N]", summary: "the reselect strip — merged sheet + pushed + promoted recipes plus recent/frequent logged items; --q substring-matches recipe names AND recent labels" },
       {
         usage: "recipes push '<recipe json>' [--ulid U]",
         summary:
