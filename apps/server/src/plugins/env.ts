@@ -201,6 +201,7 @@ const schema = {
     // unset falls back to UTC (stated in affected output); a present-but-invalid
     // zone fails boot loudly at kitchen plugin init.
     KITCHEN_OWNER_TZ: { type: 'string' },
+    KITCHEN_DAY_START_HOUR: { type: 'string' },
     // Strava activity sync (§ Strava activity sync) — all three credentials
     // present ⇒ the scheduled sync runs; any absent ⇒ entirely off. The
     // refresh token is a first-boot seed only (kitchen.strava_oauth is
@@ -550,6 +551,7 @@ declare module 'fastify' {
       KITCHEN_TDEE_BASE?: number;
       KITCHEN_DAILY_TARGETS?: string;
       KITCHEN_OWNER_TZ?: string;
+      KITCHEN_DAY_START_HOUR?: string;
       KITCHEN_STRAVA_CLIENT_ID?: string;
       KITCHEN_STRAVA_CLIENT_SECRET?: string;
       KITCHEN_STRAVA_REFRESH_TOKEN?: string;

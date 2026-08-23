@@ -532,6 +532,7 @@ await fastify.register(
           tdeeBase: fastify.config.KITCHEN_TDEE_BASE,
           dailyTargets: fastify.config.KITCHEN_DAILY_TARGETS,
           ownerTz: fastify.config.KITCHEN_OWNER_TZ,
+          dayStartHour: fastify.config.KITCHEN_DAY_START_HOUR,
           stravaClientId: fastify.config.KITCHEN_STRAVA_CLIENT_ID,
           stravaClientSecret: fastify.config.KITCHEN_STRAVA_CLIENT_SECRET,
           stravaRefreshToken: fastify.config.KITCHEN_STRAVA_REFRESH_TOKEN,

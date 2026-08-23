@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'bun:test';
 import {
   resolveOwnerTz,
+  resolveDayStartHour,
+  subjectiveDay,
+  DayStartHourConfigError,
   OwnerTzConfigError,
   offsetMinutes,
   localDay,
@@ -181,5 +184,98 @@ describe('ownerLocalInstant — the timestamptz an inventory verb writes', () =>
   it('absent ⇒ the seeded now', () => {
     const now = new Date('2026-08-04T01:31:00Z');
     expect(ownerLocalInstant(undefined, 'America/New_York', now).toISOString()).toBe('2026-08-04T01:31:00.000Z');
+  });
+});
+
+/**
+ * Configurable consumption-day boundary (§ Timezone & local-day bucketing).
+ *
+ * `localDay` answers "what calendar date was it?" and governs facts about FOOD
+ * — an eat-by, a purchase date. `subjectiveDay` answers "which day did the
+ * eater mean?", which is what a journal rollup is asking. A meal at 00:30
+ * belongs to the evening it was part of, not to the date the clock had just
+ * turned over to.
+ */
+describe('consumption day boundary (KITCHEN_DAY_START_HOUR)', () => {
+  const NY = 'America/New_York';
+
+  describe('resolveDayStartHour', () => {
+    it('absent/blank ⇒ 0, preserving the historical midnight boundary exactly', () => {
+      for (const empty of [undefined, null, '', '   ']) {
+        expect(resolveDayStartHour(empty as string | undefined)).toBe(0);
+      }
+    });
+
+    it('accepts an integer hour, as a string or a number', () => {
+      expect(resolveDayStartHour('4')).toBe(4);
+      expect(resolveDayStartHour(4)).toBe(4);
+      expect(resolveDayStartHour('0')).toBe(0);
+      expect(resolveDayStartHour('23')).toBe(23);
+    });
+
+    it('fails LOUDLY on a non-integer or out-of-range hour (never a silent default)', () => {
+      for (const bad of ['4.5', 'four', '-1', '24', '99']) {
+        expect(() => resolveDayStartHour(bad)).toThrow(DayStartHourConfigError);
+      }
+    });
+
+    it('rides on the owner-tz resolver so both are settled once at boot', () => {
+      expect(resolveOwnerTz(NY, '4').dayStartHour).toBe(4);
+      expect(resolveOwnerTz(NY).dayStartHour).toBe(0);
+      // The UTC-fallback branch carries it too — a fallback zone is still a
+      // configured boundary.
+      expect(resolveOwnerTz('', '4').dayStartHour).toBe(4);
+    });
+  });
+
+  describe('subjectiveDay', () => {
+    it('is IDENTICAL to localDay at the default boundary — nothing moves unless configured', () => {
+      const instants = [
+        new Date('2026-08-21T03:39:00Z'), // 23:39 EDT
+        new Date('2026-08-21T04:30:00Z'), // 00:30 EDT, just past midnight
+        new Date('2026-08-21T16:00:00Z'), // midday
+      ];
+      for (const at of instants) {
+        expect(subjectiveDay(at, { zone: NY, dayStartHour: 0 })).toBe(localDay(at, NY));
+      }
+    });
+
+    it('rolls a post-midnight entry back to the previous day', () => {
+      // 2026-08-21T04:30Z == 00:30 EDT on the 21st.
+      const lateSnack = new Date('2026-08-21T04:30:00Z');
+      expect(localDay(lateSnack, NY)).toBe('2026-08-21');
+      expect(subjectiveDay(lateSnack, { zone: NY, dayStartHour: 4 })).toBe('2026-08-20');
+    });
+
+    it('leaves an entry just BEFORE midnight on its own day', () => {
+      // 23:39 EDT on the 20th — already correct, must not shift.
+      const beforeMidnight = new Date('2026-08-21T03:39:00Z');
+      expect(subjectiveDay(beforeMidnight, { zone: NY, dayStartHour: 4 })).toBe('2026-08-20');
+    });
+
+    it('treats the boundary hour itself as the NEW day (inclusive lower bound)', () => {
+      // 04:00 EDT exactly == 08:00Z.
+      const atBoundary = new Date('2026-08-21T08:00:00Z');
+      expect(subjectiveDay(atBoundary, { zone: NY, dayStartHour: 4 })).toBe('2026-08-21');
+      // One minute earlier still belongs to the previous day.
+      const justBefore = new Date('2026-08-21T07:59:00Z');
+      expect(subjectiveDay(justBefore, { zone: NY, dayStartHour: 4 })).toBe('2026-08-20');
+    });
+
+    it('composes with DST rather than fighting it', () => {
+      // US DST ends 2026-11-01. 01:30 local on the 1st is ambiguous by wall
+      // clock; the zone offset for the instant settles it, and the roll-back
+      // still lands on Oct 31 either way.
+      const duringFallBack = new Date('2026-11-01T05:30:00Z');
+      expect(subjectiveDay(duringFallBack, { zone: NY, dayStartHour: 4 })).toBe('2026-10-31');
+    });
+
+    it('works in a zone east of UTC', () => {
+      const tokyo = 'Asia/Tokyo'; // UTC+9, no DST
+      // 2026-08-20T18:30Z == 03:30 on the 21st in Tokyo.
+      const at = new Date('2026-08-20T18:30:00Z');
+      expect(localDay(at, tokyo)).toBe('2026-08-21');
+      expect(subjectiveDay(at, { zone: tokyo, dayStartHour: 4 })).toBe('2026-08-20');
+    });
   });
 });
