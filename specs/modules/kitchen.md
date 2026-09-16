@@ -553,6 +553,118 @@ an inventory verb also writes a consumption entry (§ Consume, § Stated-weight
 consumption), the entry's `logged_at` resolves through the same zone, so the item
 and its entry cannot disagree.
 
+
+## Day coverage — a day with no entries is not a day with no eating
+
+Per-day rollups derive from entries alone (§ Timezone & local-day bucketing).
+That derivation cannot separate two opposite situations that produce identical
+rows:
+
+- **A real low-intake day.** The owner skipped meals. This is a *finding* — the
+  journal exists to surface exactly this, and it is often the most useful row in
+  a week.
+- **A collection outage.** The owner ate normally and nothing reached the
+  journal: a lost or broken capture device, travel, a stretch where the habit
+  lapsed.
+
+Read as data the second becomes the first, silently. A multi-day outage enters
+every weekly average, every trend, and the net-energy line as a run of extreme
+deficits that never happened — and the longer the outage, the more it drags.
+
+This is the day-level case of the rule the panel already follows: **unknown is
+`null`, never `0`** (§ Nutrition panel). The module applies that at the field
+level and the item level (`needs_info`, `store_undetermined`). Day coverage
+applies it to the one remaining scope.
+
+### Coverage is asserted, never inferred
+
+**No heuristic may set coverage.** Not "intake implausibly low", not "burn
+logged against no intake", not "fewer entries than this owner's median". A
+genuine near-fast and a total outage are indistinguishable from the data and
+opposite in meaning, so any rule confident enough to flag the outage is
+confident enough to erase the finding.
+
+Coverage is therefore a **claim by someone who knows** — the owner, or an agent
+reconstructing a period with the owner in the loop. It is written deliberately,
+carries a reason, and is stored.
+
+### The record
+
+`kitchen.day_coverage` — **sparse**: a row exists only for a day that deviates.
+
+| column | | |
+| --- | --- | --- |
+| `day` | `DATE`, PK | owner-local calendar day, verbatim per § Timezone & local-day bucketing |
+| `coverage` | enum | `partial` \| `none` |
+| `reason` | text, required | why this day is not complete, in the asserter's words |
+| `asserted_at` | `timestamptz` | |
+| `asserted_by` | text | |
+
+**Absence of a row means `complete`.** The common case costs nothing, and the
+schema can never drift into "every day needs a coverage decision."
+
+`partial` and `none` are genuinely different and both are needed. `none` says
+the row's numbers mean nothing. `partial` says some entries are real and the
+total is a floor — which is what a reconstructed period looks like.
+
+**`reason` is required, not optional.** A bare flag decays into an unreadable
+marker within a month; the reason is what lets a later reader decide whether the
+exclusion still stands.
+
+### Rollups report coverage; they never hide data
+
+`days` gains a `coverage` field on every row, and a `coverage_reason` where one
+is set. The rollup **always returns the real totals** — a `partial` day still
+shows what was actually logged. The module's job is to say what it knows and
+how much of it is trustworthy, not to decide policy.
+
+Consumers then split cleanly:
+
+- **Anything that averages, trends, or totals across days** — weekly panels, the
+  net-energy line, streaks, "how did the week go" — **excludes non-`complete`
+  days from the denominator** and states how many it dropped. Silently averaging
+  over a gap is the bug this section exists to prevent; silently dropping days
+  without saying so is a smaller version of the same bug.
+- **Anything showing a single day** renders it with the flag and the reason.
+
+A `none` day is never presented as a data point. A `partial` day's totals are a
+**floor**, and any surface citing one says so.
+
+### Setting it
+
+Agent-facing only — there is no UI for this, by design. The owner encounters
+coverage in conversation ("the capture device was dead Tuesday through Friday"),
+not as a form to fill in, and an agent already reconstructing that period is the
+natural writer.
+
+- `kitchen-axi days mark <date> --coverage partial|none --reason "<text>"` —
+  idempotent upsert on `day`.
+- `kitchen-axi days unmark <date>` — deletes the row, restoring `complete`.
+- A date range is accepted (`--through <date>`) because outages come in runs and
+  marking four days one call at a time invites three-of-four.
+
+### Detection may prompt; it may not assert
+
+The prohibition above is on *inference*, not on *noticing*. The module may
+surface a **question** where a day looks suspicious — zero entries, or an
+expenditure logged against no intake — in the home view's open-questions channel
+alongside `needs_info` items:
+
+> `2026-09-12 — 1,211 kcal burned, no intake logged. Gap, or a real fast?`
+
+The question never resolves itself. It stays open until someone answers, and the
+answer is a `days mark` or a dismissal. This is how an outage gets caught
+without a near-fast day getting erased.
+
+### Principles (local)
+
+- **Absence of entries is not evidence of absence of eating.** The journal
+  records what reached it, which is a subset of what happened, and the gap
+  between those two is invisible from inside the data. Wherever a surface is
+  about to treat "no rows" as "no intake", it must first ask whether coverage is
+  known — and if it isn't, say so rather than compute. This is the day-level
+  statement of § Nutrition panel's unknown-is-`null`-never-`0`, and it binds the
+  same way: the system may report a hole, never fill one.
 ## Weigh-ins — scale data via the capture app (phase 3)
 
 Weight is the goal metric and the empirical tuner for `KITCHEN_TDEE_BASE`
