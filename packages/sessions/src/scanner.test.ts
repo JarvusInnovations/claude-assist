@@ -38,7 +38,7 @@ describe('SessionScanner transcript size limit', () => {
 
   it('skips transcripts over maxFileSize without ingesting them', async () => {
     const scanner = new SessionScanner({ claudeDir, minFileSize: 1, maxFileSize: 1024 });
-    const discovered = await scanner.discoverAllSessions(new Set());
+    const discovered = await Array.fromAsync(scanner.discoverAllSessions(new Set()));
 
     expect(discovered.map((s) => s.sessionId)).toEqual([SMALL_ID]);
     expect(scanner.oversized).toHaveLength(1);
@@ -59,14 +59,14 @@ describe('SessionScanner transcript size limit', () => {
 
   it('resets the oversized report on each scan', async () => {
     const scanner = new SessionScanner({ claudeDir, minFileSize: 1, maxFileSize: 1024 });
-    await scanner.discoverAllSessions(new Set());
-    await scanner.discoverAllSessions(new Set());
+    await Array.fromAsync(scanner.discoverAllSessions(new Set()));
+    await Array.fromAsync(scanner.discoverAllSessions(new Set()));
     expect(scanner.oversized).toHaveLength(1);
   });
 
   it('admits everything under the default limit', async () => {
     const scanner = new SessionScanner({ claudeDir, minFileSize: 1 });
-    const discovered = await scanner.discoverAllSessions(new Set());
+    const discovered = await Array.fromAsync(scanner.discoverAllSessions(new Set()));
     expect(discovered).toHaveLength(2);
     expect(scanner.oversized).toEqual([]);
   });

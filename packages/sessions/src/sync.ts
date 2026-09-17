@@ -97,18 +97,13 @@ export class SyncService {
         ? new Set<string>()
         : await this.getKnownHashes(machine.id);
 
-      // Discover new/changed sessions (scans projects directory for all sessions)
-      const discovered = await this.scanner.discoverAllSessions(knownHashes);
-      result.sessionsScanned = discovered.length;
-      for (const skipped of this.scanner.oversized) {
-        this.log.warn(
-          skipped,
-          'Skipping transcript over the size limit (SESSIONS_MAX_FILE_SIZE)'
-        );
-      }
-
-      // Process each discovered session
-      for (const session of discovered) {
+      // Discover new/changed sessions (scans projects directory for all
+      // sessions). Streamed so each transcript is ingested and released
+      // before the next is read, rather than holding the whole changed set.
+      for await (const session of this.scanner.discoverAllSessions(
+        knownHashes
+      )) {
+        result.sessionsScanned++;
         try {
           const isNew = await this.ingestSession(machine.id, session);
           if (isNew) {
@@ -121,6 +116,12 @@ export class SyncService {
           result.errors.push(message);
           this.log.error({ error, sessionId: session.sessionId }, message);
         }
+      }
+      for (const skipped of this.scanner.oversized) {
+        this.log.warn(
+          skipped,
+          'Skipping transcript over the size limit (SESSIONS_MAX_FILE_SIZE)'
+        );
       }
 
       // Update machine sync timestamp

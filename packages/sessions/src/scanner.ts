@@ -217,11 +217,15 @@ export class SessionScanner {
    * This finds sessions regardless of whether they have a .ended.json signal
    * Skips subagent sessions (files in /subagents/ directories)
    */
-  async discoverAllSessions(
+  async *discoverAllSessions(
     knownHashes: Set<string>
-  ): Promise<DiscoveredSession[]> {
+  ): AsyncGenerator<DiscoveredSession> {
+    // Yields rather than returning an array: every DiscoveredSession carries
+    // its full transcriptContent, so collecting them first means every
+    // changed transcript is resident at once. Yielding lets the caller ingest
+    // and release each one, which matters because a single actively-appended
+    // session can be hundreds of MB on its own.
     this.oversized = [];
-    const discovered: DiscoveredSession[] = [];
 
     // First, build a map of session IDs to their signal files (if any)
     const signalMap = await this.loadSignalMap();
@@ -232,7 +236,7 @@ export class SessionScanner {
       projectDirs = await readdir(this.projectsDir);
     } catch {
       // No projects directory means no sessions
-      return discovered;
+      return;
     }
 
     for (const projectDir of projectDirs) {
@@ -264,12 +268,10 @@ export class SessionScanner {
         );
 
         if (session) {
-          discovered.push(session);
+          yield session;
         }
       }
     }
-
-    return discovered;
   }
 
   /**
