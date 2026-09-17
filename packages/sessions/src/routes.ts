@@ -343,10 +343,14 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
     // Overlap query: selects sessions that span any part of [after, before].
     // Per-message timestamp filtering in serializeTranscript() trims to the exact window.
     const escapedProject = project?.replace(/%/g, '\\%').replace(/_/g, '\\_');
+    // Selects metadata only. Transcripts are loaded one at a time below:
+    // this endpoint returns up to 50 sessions, and a single long-lived
+    // session can carry hundreds of MB of JSONL, so pulling the blobs in
+    // the list query means the whole page of them sits on the heap at once.
     const sessions = await fastify.sql<
-      { id: string; project_path: string | null; raw_transcript: string; started_at: Date }[]
+      { id: string; project_path: string | null; started_at: Date }[]
     >`
-      SELECT id, project_path, raw_transcript, started_at
+      SELECT id, project_path, started_at
       FROM sessions.sessions
       WHERE started_at <= ${beforeDate}
         AND (ended_at >= ${afterDate} OR ended_at IS NULL)
@@ -362,14 +366,24 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
     const displayTime = (s: { started_at: Date }) =>
       s.started_at < afterDate ? afterDate.toISOString() : s.started_at.toISOString();
 
+    // One transcript resident at a time, rather than all 50. Each is dropped
+    // once serialized down to the requested window.
+    const serializeOne = async (id: string): Promise<string> => {
+      const [row] = await fastify.sql<{ raw_transcript: string | null }[]>`
+        SELECT raw_transcript FROM sessions.sessions WHERE id = ${id}::uuid
+      `;
+      if (!row?.raw_transcript) return '';
+      return serializeTranscript(row.raw_transcript, {
+        after: afterDate,
+        before: beforeDate,
+        includeTools,
+      });
+    };
+
     if (group === 'time') {
       const parts: string[] = [];
       for (const s of sessions) {
-        const transcript = serializeTranscript(s.raw_transcript, {
-          after: afterDate,
-          before: beforeDate,
-          includeTools,
-        });
+        const transcript = await serializeOne(s.id);
         if (!transcript.trim()) continue;
         const proj = s.project_path ?? 'unknown';
         parts.push(`--- [${proj}] ${displayTime(s)} ---\n${transcript}`);
@@ -379,7 +393,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
     }
 
     // group=project (default)
-    type SessionRow = { id: string; project_path: string | null; raw_transcript: string; started_at: Date };
+    type SessionRow = { id: string; project_path: string | null; started_at: Date };
     const byProject = new Map<string, SessionRow[]>();
     for (const s of sessions) {
       const key = s.project_path ?? 'unknown';
@@ -391,11 +405,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
     for (const [proj, projectSessions] of byProject) {
       const sectionParts = [`=== ${proj} ===`];
       for (const s of projectSessions) {
-        const transcript = serializeTranscript(s.raw_transcript, {
-          after: afterDate,
-          before: beforeDate,
-          includeTools,
-        });
+        const transcript = await serializeOne(s.id);
         if (!transcript.trim()) continue;
         sectionParts.push(`--- ${displayTime(s)} ---\n${transcript}`);
       }
