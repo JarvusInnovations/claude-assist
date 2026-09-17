@@ -1,4 +1,6 @@
 import { readdir, readFile, stat } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -72,6 +74,23 @@ export class SessionScanner {
    * initiating prompt), not raw transcript text — so legitimate sessions that
    * merely quote a marker in tool output or assistant prose are not dropped.
    */
+  /**
+   * MD5 a transcript without holding it in memory.
+   *
+   * Streamed rather than readFile()'d because this runs over every transcript
+   * on disk on each sync, and a long-lived session can reach hundreds of MB -
+   * enough that materializing one as a string spikes the heap on its own.
+   *
+   * Hashing the bytes matches what .update(string) produced for the UTF-8
+   * content this reads, so stored transcript_hash values stay comparable and
+   * a sync does not see every session as changed.
+   */
+  private async hashTranscriptFile(transcriptPath: string): Promise<string> {
+    const hash = createHash('md5');
+    await pipeline(createReadStream(transcriptPath), hash);
+    return hash.digest('hex');
+  }
+
   private isIgnoredTranscript(
     sessionId: string,
     transcriptContent: string
@@ -410,17 +429,18 @@ export class SessionScanner {
           continue;
         }
 
-        // Read and hash transcript (then discard content)
-        const transcriptContent = await readFile(transcriptPath, 'utf-8');
-
-        // Skip suppressed sessions (e.g. automated triage runners)
-        if (this.isIgnoredTranscript(sessionId, transcriptContent)) {
-          continue;
+        // Skip suppressed sessions (e.g. automated triage runners). This is
+        // the one check here that needs the transcript body, so it only reads
+        // the file when markers are actually configured - otherwise the
+        // inventory pass never materializes a transcript at all.
+        if (this.ignoreContentMarkers.length > 0) {
+          const transcriptContent = await readFile(transcriptPath, 'utf-8');
+          if (this.isIgnoredTranscript(sessionId, transcriptContent)) {
+            continue;
+          }
         }
 
-        const transcriptHash = createHash('md5')
-          .update(transcriptContent)
-          .digest('hex');
+        const transcriptHash = await this.hashTranscriptFile(transcriptPath);
 
         inventory.push({
           sessionId,
