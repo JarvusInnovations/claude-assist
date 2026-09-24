@@ -588,6 +588,8 @@ export interface SessionsPluginConfig {
   originalClaudeDir?: string;
   /** Minimum file size to process */
   minFileSize?: number;
+  /** Maximum file size to process; larger transcripts are skipped */
+  maxFileSize?: number;
   /** Concurrency for outline generation */
   outlineConcurrency?: number;
   /** Disable local filesystem scanning */

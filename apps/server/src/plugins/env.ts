@@ -44,6 +44,9 @@ const schema = {
     SESSIONS_MACHINE_ID: { type: 'string' },
     SESSIONS_ORIGINAL_CLAUDE_DIR: { type: 'string' },
     SESSIONS_MIN_FILE_SIZE: { type: 'number', default: 500 },
+    // Transcripts larger than this are skipped by local sync rather than read,
+    // parsed and rewritten whole every cycle (128 MiB).
+    SESSIONS_MAX_FILE_SIZE: { type: 'number', default: 134217728 },
     SESSIONS_DISABLE_LOCAL_INGEST: { type: 'boolean', default: false },
     SESSIONS_DISABLE_GENERATE_OUTLINES: { type: 'boolean', default: false },
     // Newline-separated prompt substrings; sessions containing any are
@@ -464,6 +467,7 @@ declare module 'fastify' {
       SESSIONS_MACHINE_ID?: string;
       SESSIONS_ORIGINAL_CLAUDE_DIR?: string;
       SESSIONS_MIN_FILE_SIZE: number;
+      SESSIONS_MAX_FILE_SIZE: number;
       SESSIONS_DISABLE_LOCAL_INGEST: boolean;
       SESSIONS_DISABLE_GENERATE_OUTLINES: boolean;
       SESSIONS_IGNORE_MARKERS?: string;
