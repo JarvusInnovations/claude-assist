@@ -44,9 +44,12 @@ const schema = {
     SESSIONS_MACHINE_ID: { type: 'string' },
     SESSIONS_ORIGINAL_CLAUDE_DIR: { type: 'string' },
     SESSIONS_MIN_FILE_SIZE: { type: 'number', default: 500 },
-    // Transcripts larger than this are skipped by local sync rather than read,
-    // parsed and rewritten whole every cycle (128 MiB).
-    SESSIONS_MAX_FILE_SIZE: { type: 'number', default: 134217728 },
+    // Chunked, incremental transcript ingest (specs/behaviors/
+    // session-transcript-storage.md). Replaces the retired
+    // SESSIONS_MAX_FILE_SIZE skip: no transcript is skipped for size — a
+    // larger one just catches up over more cycles, bounded by the budget.
+    SESSIONS_CHUNK_MAX_BYTES: { type: 'number', default: 8388608 }, // 8 MiB
+    SESSIONS_INGEST_BUDGET_BYTES: { type: 'number', default: 67108864 }, // 64 MiB
     SESSIONS_DISABLE_LOCAL_INGEST: { type: 'boolean', default: false },
     SESSIONS_DISABLE_GENERATE_OUTLINES: { type: 'boolean', default: false },
     // Newline-separated prompt substrings; sessions containing any are
@@ -479,7 +482,8 @@ declare module 'fastify' {
       SESSIONS_MACHINE_ID?: string;
       SESSIONS_ORIGINAL_CLAUDE_DIR?: string;
       SESSIONS_MIN_FILE_SIZE: number;
-      SESSIONS_MAX_FILE_SIZE: number;
+      SESSIONS_CHUNK_MAX_BYTES: number;
+      SESSIONS_INGEST_BUDGET_BYTES: number;
       SESSIONS_DISABLE_LOCAL_INGEST: boolean;
       SESSIONS_DISABLE_GENERATE_OUTLINES: boolean;
       SESSIONS_IGNORE_MARKERS?: string;

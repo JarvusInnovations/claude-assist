@@ -588,8 +588,19 @@ export interface SessionsPluginConfig {
   originalClaudeDir?: string;
   /** Minimum file size to process */
   minFileSize?: number;
-  /** Maximum file size to process; larger transcripts are skipped */
-  maxFileSize?: number;
+  /**
+   * Per-chunk row size cap, in bytes (specs/behaviors/
+   * session-transcript-storage.md; default 8 MiB / `SESSIONS_CHUNK_MAX_BYTES`).
+   */
+  chunkMaxBytes?: number;
+  /**
+   * Per-cycle ingest budget, in bytes — the most local sync or a push cycle
+   * reads/parses/writes for one session at a time, local sync and satellite
+   * push alike (default 64 MiB / `SESSIONS_INGEST_BUDGET_BYTES`). Supersedes
+   * the retired `SESSIONS_MAX_FILE_SIZE` skip: no session is skipped for
+   * size, a larger one just catches up over more cycles.
+   */
+  ingestBudgetBytes?: number;
   /** Concurrency for outline generation */
   outlineConcurrency?: number;
   /** Disable local filesystem scanning */
