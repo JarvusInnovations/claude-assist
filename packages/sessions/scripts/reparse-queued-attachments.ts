@@ -19,6 +19,7 @@
 
 import postgres from 'postgres';
 import { parseTranscript } from '../src/parser.js';
+import { TranscriptReader } from '../src/transcript-reader.js';
 
 const DATABASE_URL = process.env.DATABASE_URL;
 if (!DATABASE_URL) {
@@ -27,28 +28,31 @@ if (!DATABASE_URL) {
 }
 
 const sql = postgres(DATABASE_URL);
+const reader = new TranscriptReader(sql);
 
 async function main() {
   console.log('Fetching sessions with raw transcripts...');
 
-  const sessions = await sql<{ id: string; raw_transcript: string; user_message_count: number }[]>`
-    SELECT id, raw_transcript, user_message_count
-    FROM sessions.sessions
-    WHERE raw_transcript IS NOT NULL AND raw_transcript != ''
+  const ids = await reader.listSessionIdsWithContent();
+  const countRows = await sql<{ id: string; user_message_count: number }[]>`
+    SELECT id, user_message_count FROM sessions.sessions WHERE id = ANY(${ids}::uuid[])
   `;
+  const oldCountById = new Map(countRows.map((r) => [r.id, r.user_message_count]));
 
-  console.log(`Found ${sessions.length} sessions to scan`);
+  console.log(`Found ${ids.length} sessions to scan`);
 
   let updated = 0;
   let unchanged = 0;
   let recovered = 0;
   let errors = 0;
 
-  for (const session of sessions) {
+  for (const id of ids) {
     try {
-      const parsed = parseTranscript(session.id, session.raw_transcript);
+      const raw = await reader.readFull(id);
+      if (!raw) continue;
+      const parsed = parseTranscript(id, raw);
       const newCount = parsed.userMessages.length;
-      const oldCount = session.user_message_count;
+      const oldCount = oldCountById.get(id) ?? 0;
       const delta = newCount - oldCount;
 
       if (delta === 0) {
@@ -65,22 +69,22 @@ async function main() {
           message_count = ${parsed.messageCount},
           search_text = ${searchText},
           activity_ranges = ${sql.json(parsed.activityRanges as any)}
-        WHERE id = ${session.id}::uuid
+        WHERE id = ${id}::uuid
       `;
 
       updated++;
       recovered += delta;
       if (updated <= 20 || updated % 50 === 0) {
-        console.log(`  ${session.id}: ${oldCount} → ${newCount} (+${delta})`);
+        console.log(`  ${id}: ${oldCount} → ${newCount} (+${delta})`);
       }
     } catch (err) {
       errors++;
-      console.error(`Error reparsing session ${session.id}:`, err);
+      console.error(`Error reparsing session ${id}:`, err);
     }
   }
 
   console.log(`\nDone.`);
-  console.log(`  Sessions scanned:    ${sessions.length}`);
+  console.log(`  Sessions scanned:    ${ids.length}`);
   console.log(`  Sessions updated:    ${updated}`);
   console.log(`  Sessions unchanged:  ${unchanged}`);
   console.log(`  Messages recovered:  ${recovered}`);

@@ -689,3 +689,45 @@ export function serializeSince(
 
   return { text, seqStart: start, seqEnd: lastSeq, count: lastSeq - start + 1, truncated };
 }
+
+export interface MessageRangeResult {
+  /** Serialized lines for [fromSeq, toSeq] (inclusive, clamped to the transcript's bounds). */
+  text: string;
+  /** Actual first index included, or -1 when the range is empty. */
+  seqStart: number;
+  /** Actual last index included, or -1 when the range is empty. */
+  seqEnd: number;
+  /** Number of messages included (regardless of whether they rendered text). */
+  count: number;
+}
+
+/**
+ * Serialize a bounded message range `[fromSeq, toSeq]` (`toSeq` omitted reads
+ * to the end). This is the general range primitive
+ * (specs/behaviors/session-transcript-storage.md: "Readers take ranges") —
+ * `serializeSince` is the classification-specific variant layered on top,
+ * with a char budget and tail-keeping truncation `messageRange` deliberately
+ * leaves to its caller.
+ */
+export function serializeMessageRange(
+  rawTranscript: string,
+  fromSeq: number,
+  toSeq?: number
+): MessageRangeResult {
+  const msgs = parseMessages(rawTranscript);
+  const lastSeq = msgs.length - 1;
+  if (lastSeq < 0) return { text: '', seqStart: -1, seqEnd: -1, count: 0 };
+
+  const start = Math.max(0, fromSeq);
+  const end = toSeq === undefined ? lastSeq : Math.min(toSeq, lastSeq);
+  if (start > end || start > lastSeq) {
+    return { text: '', seqStart: -1, seqEnd: -1, count: 0 };
+  }
+
+  const lines: string[] = [];
+  for (let i = start; i <= end; i++) {
+    for (const l of serializeMessage(msgs[i]!)) lines.push(l);
+  }
+
+  return { text: lines.join('\n'), seqStart: start, seqEnd: end, count: end - start + 1 };
+}

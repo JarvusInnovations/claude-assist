@@ -37,7 +37,7 @@ export class ClassificationStore {
   ): Promise<SessionForClassification[]> {
     return this.sql<SessionForClassification[]>`
       SELECT
-        s.id, s.project_path, s.git_branch, s.raw_transcript, s.transcript_hash,
+        s.id, s.project_path, s.git_branch, s.transcript_hash,
         s.ended_at, s.output_tokens,
         c.last_seq        AS cursor_last_seq,
         c.last_hash       AS cursor_last_hash,
@@ -65,7 +65,7 @@ export class ClassificationStore {
   ): Promise<SessionForClassification[]> {
     return this.sql<SessionForClassification[]>`
       SELECT
-        s.id, s.project_path, s.git_branch, s.raw_transcript, s.transcript_hash,
+        s.id, s.project_path, s.git_branch, s.transcript_hash,
         s.ended_at, s.output_tokens,
         c.last_seq        AS cursor_last_seq,
         c.last_hash       AS cursor_last_hash,

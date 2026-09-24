@@ -258,6 +258,16 @@ export interface SessionRecord {
 }
 
 /**
+ * `SessionRecord` without the archive blob — the projection for routes that
+ * need a session's metadata but not its content (specs/behaviors/
+ * session-transcript-storage.md: "Readers take ranges"). A caller that also
+ * needs transcript content fetches it separately through `TranscriptReader`,
+ * so a session-detail lookup never pulls a potentially multi-GB column over
+ * the wire just to answer "what tools did this session use."
+ */
+export type SessionSummaryRecord = Omit<SessionRecord, 'raw_transcript'>;
+
+/**
  * Lightweight session inventory item for two-phase sync
  * Contains hash without full transcript content
  */

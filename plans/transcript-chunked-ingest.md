@@ -40,7 +40,11 @@ In scope:
    and sessions skipped for size become ingestable.
 7. Bounded `search_text` (the most recent user messages within the
    `tsvector` limit).
-8. The read layer learns `storage = chunked`.
+8. The read layer learns `storage = chunked`. This is what actually lets
+   around-anchor and grep resolve to only the chunks a range touches instead
+   of loading the whole transcript — the memory-ceiling criterion deferred
+   from [`transcript-read-layer`](transcript-read-layer.md), whose inline
+   backend has no choice but to load the full value for those two ranges.
 9. A nightly full-verification task (streamed, one chunk in memory at a time)
    for sessions active in the last day.
 
@@ -73,6 +77,9 @@ the backfill plan.
   sub-second
 - [ ] A satellite on the old CLI still syncs; on the new CLI it pushes the tail
   only
+- [ ] Around-anchor and grep on the largest archived session stay under a
+  memory ceiling (measured) once its `storage = chunked` (deferred from
+  [`transcript-read-layer`](transcript-read-layer.md))
 
 ## Risks / unknowns
 
