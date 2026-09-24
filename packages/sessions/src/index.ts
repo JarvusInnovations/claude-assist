@@ -30,6 +30,7 @@ export default createPlugin('sessions', async (fastify, options) => {
     machineId: config.machineId,
     originalClaudeDir: config.originalClaudeDir,
     minFileSize: config.minFileSize,
+    maxFileSize: config.maxFileSize,
     disableLocalIngest: config.disableLocalIngest,
     ignoreContentMarkers: config.ignoreContentMarkers,
   });

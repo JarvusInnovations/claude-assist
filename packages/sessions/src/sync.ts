@@ -20,6 +20,12 @@ import type {
   ToolCall,
 } from './types.js';
 
+/**
+ * Rows per tool_calls INSERT. Each row binds 7 parameters and Postgres caps a
+ * statement at 65,534, so a single insert fails past ~9,300 tool calls.
+ */
+const TOOL_CALL_INSERT_BATCH = 5000;
+
 export interface SyncServiceConfig extends ScannerConfig {
   machineId?: string;
   /** Disable local filesystem scanning */
@@ -91,12 +97,13 @@ export class SyncService {
         ? new Set<string>()
         : await this.getKnownHashes(machine.id);
 
-      // Discover new/changed sessions (scans projects directory for all sessions)
-      const discovered = await this.scanner.discoverAllSessions(knownHashes);
-      result.sessionsScanned = discovered.length;
-
-      // Process each discovered session
-      for (const session of discovered) {
+      // Discover new/changed sessions (scans projects directory for all
+      // sessions). Streamed so each transcript is ingested and released
+      // before the next is read, rather than holding the whole changed set.
+      for await (const session of this.scanner.discoverAllSessions(
+        knownHashes
+      )) {
+        result.sessionsScanned++;
         try {
           const isNew = await this.ingestSession(machine.id, session);
           if (isNew) {
@@ -109,6 +116,12 @@ export class SyncService {
           result.errors.push(message);
           this.log.error({ error, sessionId: session.sessionId }, message);
         }
+      }
+      for (const skipped of this.scanner.oversized) {
+        this.log.warn(
+          skipped,
+          'Skipping transcript over the size limit (SESSIONS_MAX_FILE_SIZE)'
+        );
       }
 
       // Update machine sync timestamp
@@ -376,92 +389,99 @@ export class SyncService {
     // Build search text from user messages (Kuato pattern)
     const searchText = parsed.userMessages.join(' ');
 
-    // Check if session already exists
-    const existing = await this.sql<{ id: string }[]>`
-      SELECT id FROM sessions.sessions
-      WHERE id = ${sessionId}::uuid AND machine_id = ${machineId}
-    `;
-
-    if (existing.length > 0) {
-      // Update existing session
-      await this.sql`
-        UPDATE sessions.sessions SET
-          project_path = ${projectPath},
-          git_branch = ${parsed.gitBranch},
-          started_at = ${startedAt},
-          ended_at = ${endedAt},
-          user_messages = ${this.sql.json(parsed.userMessages)},
-          tools_used = ${this.sql.json(parsed.toolsUsed)},
-          files_touched = ${this.sql.json(parsed.filesTouched as any)},
-          input_tokens = ${parsed.inputTokens},
-          output_tokens = ${parsed.outputTokens},
-          cache_read_tokens = ${parsed.cacheReadTokens},
-          transcript_path = ${transcriptPath},
-          transcript_hash = ${transcriptHash},
-          raw_transcript = ${transcriptContent},
-          search_text = ${searchText},
-          message_count = ${parsed.messageCount},
-          user_message_count = ${parsed.userMessages.length},
-          claude_version = ${parsed.claudeVersion},
-          models_used = ${this.sql.json(parsed.modelsUsed)},
-          model_tokens = ${this.sql.json(parsed.modelTokens as any)},
-          activity_ranges = ${this.sql.json(parsed.activityRanges as any)},
-          session_name = ${parsed.sessionName},
-          context_final_tokens = ${parsed.contextFinalTokens},
-          context_peak_tokens = ${parsed.contextPeakTokens},
-          context_limit_tokens = ${parsed.contextLimitTokens},
-          context_model = ${parsed.contextModel},
-          synced_at = NOW()
+    // One transaction: a failed tool-call write must not leave the row
+    // claiming a transcript hash whose index was never written.
+    return this.sql.begin(async (rawTx) => {
+      // postgres.js's TransactionSql type drops the tagged-template call
+      // signature (it's built via Omit<Sql, ...>); the runtime object is callable.
+      const tx = rawTx as unknown as postgres.Sql;
+      // Check if session already exists
+      const existing = await tx<{ id: string }[]>`
+        SELECT id FROM sessions.sessions
         WHERE id = ${sessionId}::uuid AND machine_id = ${machineId}
       `;
-      await this.writeToolCalls(sessionId, parsed.toolCalls);
-      return false;
-    }
 
-    // Insert new session
-    await this.sql`
-      INSERT INTO sessions.sessions (
-        id, machine_id, project_path, git_branch,
-        started_at, ended_at,
-        user_messages, tools_used, files_touched,
-        input_tokens, output_tokens, cache_read_tokens,
-        transcript_path, transcript_hash, raw_transcript,
-        search_text, message_count, user_message_count, claude_version,
-        models_used, model_tokens, activity_ranges, session_name,
-        context_final_tokens, context_peak_tokens, context_limit_tokens, context_model
-      ) VALUES (
-        ${sessionId}::uuid,
-        ${machineId},
-        ${projectPath},
-        ${parsed.gitBranch},
-        ${startedAt},
-        ${endedAt},
-        ${this.sql.json(parsed.userMessages)},
-        ${this.sql.json(parsed.toolsUsed)},
-        ${this.sql.json(parsed.filesTouched as any)},
-        ${parsed.inputTokens},
-        ${parsed.outputTokens},
-        ${parsed.cacheReadTokens},
-        ${transcriptPath},
-        ${transcriptHash},
-        ${transcriptContent},
-        ${searchText},
-        ${parsed.messageCount},
-        ${parsed.userMessages.length},
-        ${parsed.claudeVersion},
-        ${this.sql.json(parsed.modelsUsed)},
-        ${this.sql.json(parsed.modelTokens as any)},
-        ${this.sql.json(parsed.activityRanges as any)},
-        ${parsed.sessionName},
-        ${parsed.contextFinalTokens},
-        ${parsed.contextPeakTokens},
-        ${parsed.contextLimitTokens},
-        ${parsed.contextModel}
-      )
-    `;
+      if (existing.length > 0) {
+        // Update existing session
+        await tx`
+          UPDATE sessions.sessions SET
+            project_path = ${projectPath},
+            git_branch = ${parsed.gitBranch},
+            started_at = ${startedAt},
+            ended_at = ${endedAt},
+            user_messages = ${tx.json(parsed.userMessages)},
+            tools_used = ${tx.json(parsed.toolsUsed)},
+            files_touched = ${tx.json(parsed.filesTouched as any)},
+            input_tokens = ${parsed.inputTokens},
+            output_tokens = ${parsed.outputTokens},
+            cache_read_tokens = ${parsed.cacheReadTokens},
+            transcript_path = ${transcriptPath},
+            transcript_hash = ${transcriptHash},
+            raw_transcript = ${transcriptContent},
+            search_text = ${searchText},
+            message_count = ${parsed.messageCount},
+            user_message_count = ${parsed.userMessages.length},
+            claude_version = ${parsed.claudeVersion},
+            models_used = ${tx.json(parsed.modelsUsed)},
+            model_tokens = ${tx.json(parsed.modelTokens as any)},
+            activity_ranges = ${tx.json(parsed.activityRanges as any)},
+            session_name = ${parsed.sessionName},
+            context_final_tokens = ${parsed.contextFinalTokens},
+            context_peak_tokens = ${parsed.contextPeakTokens},
+            context_limit_tokens = ${parsed.contextLimitTokens},
+            context_model = ${parsed.contextModel},
+            synced_at = NOW()
+          WHERE id = ${sessionId}::uuid AND machine_id = ${machineId}
+        `;
+        await this.writeToolCalls(tx, sessionId, parsed.toolCalls);
+        return false;
+      }
 
-    await this.writeToolCalls(sessionId, parsed.toolCalls);
-    return true;
+      // Insert new session
+      await tx`
+        INSERT INTO sessions.sessions (
+          id, machine_id, project_path, git_branch,
+          started_at, ended_at,
+          user_messages, tools_used, files_touched,
+          input_tokens, output_tokens, cache_read_tokens,
+          transcript_path, transcript_hash, raw_transcript,
+          search_text, message_count, user_message_count, claude_version,
+          models_used, model_tokens, activity_ranges, session_name,
+          context_final_tokens, context_peak_tokens, context_limit_tokens, context_model
+        ) VALUES (
+          ${sessionId}::uuid,
+          ${machineId},
+          ${projectPath},
+          ${parsed.gitBranch},
+          ${startedAt},
+          ${endedAt},
+          ${tx.json(parsed.userMessages)},
+          ${tx.json(parsed.toolsUsed)},
+          ${tx.json(parsed.filesTouched as any)},
+          ${parsed.inputTokens},
+          ${parsed.outputTokens},
+          ${parsed.cacheReadTokens},
+          ${transcriptPath},
+          ${transcriptHash},
+          ${transcriptContent},
+          ${searchText},
+          ${parsed.messageCount},
+          ${parsed.userMessages.length},
+          ${parsed.claudeVersion},
+          ${tx.json(parsed.modelsUsed)},
+          ${tx.json(parsed.modelTokens as any)},
+          ${tx.json(parsed.activityRanges as any)},
+          ${parsed.sessionName},
+          ${parsed.contextFinalTokens},
+          ${parsed.contextPeakTokens},
+          ${parsed.contextLimitTokens},
+          ${parsed.contextModel}
+        )
+      `;
+
+      await this.writeToolCalls(tx, sessionId, parsed.toolCalls);
+      return true;
+    });
   }
 
   /**
@@ -524,30 +544,35 @@ export class SyncService {
    * ingest/update so the index tracks the current transcript; a force re-parse
    * backfills it for sessions ingested before the index existed.
    */
-  private async writeToolCalls(sessionId: string, toolCalls: ToolCall[]): Promise<void> {
-    await this.sql`DELETE FROM sessions.tool_calls WHERE session_id = ${sessionId}::uuid`;
-    if (toolCalls.length === 0) return;
-    const rows = toolCalls.map((tc) => ({
-      session_id: sessionId,
-      msg_uuid: tc.msgUuid,
-      msg_index: tc.msgIndex,
-      ts: tc.ts,
-      tool_name: tc.toolName,
-      target: tc.target,
-      is_sidechain: tc.isSidechain,
-    }));
-    await this.sql`
-      INSERT INTO sessions.tool_calls ${this.sql(
-        rows,
-        'session_id',
-        'msg_uuid',
-        'msg_index',
-        'ts',
-        'tool_name',
-        'target',
-        'is_sidechain'
-      )}
-    `;
+  private async writeToolCalls(
+    sql: postgres.Sql,
+    sessionId: string,
+    toolCalls: ToolCall[]
+  ): Promise<void> {
+    await sql`DELETE FROM sessions.tool_calls WHERE session_id = ${sessionId}::uuid`;
+    for (let i = 0; i < toolCalls.length; i += TOOL_CALL_INSERT_BATCH) {
+      const rows = toolCalls.slice(i, i + TOOL_CALL_INSERT_BATCH).map((tc) => ({
+        session_id: sessionId,
+        msg_uuid: tc.msgUuid,
+        msg_index: tc.msgIndex,
+        ts: tc.ts,
+        tool_name: tc.toolName,
+        target: tc.target,
+        is_sidechain: tc.isSidechain,
+      }));
+      await sql`
+        INSERT INTO sessions.tool_calls ${sql(
+          rows,
+          'session_id',
+          'msg_uuid',
+          'msg_index',
+          'ts',
+          'tool_name',
+          'target',
+          'is_sidechain'
+        )}
+      `;
+    }
   }
 
   /**

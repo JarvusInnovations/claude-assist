@@ -40,5 +40,15 @@ RestartSec=5
 StandardOutput=journal
 StandardError=journal
 
+# Memory backstop. Unbounded, a runaway allocation swaps the whole host into
+# the ground before anything notices; bounded, the server alone is throttled
+# (MemoryHigh) and then OOM-killed and restarted (MemoryMax + Restart= above).
+# Steady state is well under 1G; size these to your host. Requires the memory
+# controller delegated to user units (check the user@<uid>.service
+# cgroup.subtree_control) — without it these lines are silently ignored.
+MemoryHigh=3G
+MemoryMax=4G
+MemorySwapMax=1G
+
 [Install]
 WantedBy=default.target

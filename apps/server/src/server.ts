@@ -413,6 +413,7 @@ await fastify.register(
           machineId: fastify.config.SESSIONS_MACHINE_ID,
           originalClaudeDir: fastify.config.SESSIONS_ORIGINAL_CLAUDE_DIR,
           minFileSize: fastify.config.SESSIONS_MIN_FILE_SIZE,
+          maxFileSize: fastify.config.SESSIONS_MAX_FILE_SIZE,
           outlineConcurrency: fastify.config.OUTLINE_CONCURRENCY,
           disableLocalIngest:
             fastify.config.DISABLE_SYNCS ||

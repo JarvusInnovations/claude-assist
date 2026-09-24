@@ -44,6 +44,11 @@ export async function push(options: PushOptions): Promise<void> {
   const inventory = await scanner.getSessionInventory();
 
   console.log(`Found ${inventory.length} sessions locally`);
+  for (const skipped of scanner.oversized) {
+    console.log(
+      `  skipped ${skipped.sessionId}: ${Math.round(skipped.bytes / 1048576)}MB exceeds the transcript size limit`
+    );
+  }
 
   if (force) {
     console.log('Force mode: all sessions will be re-parsed regardless of hash');

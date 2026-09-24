@@ -32,11 +32,17 @@ export interface OutlineResult {
   errors: string[];
 }
 
+/**
+ * Deliberately carries no `raw_transcript`. A sweep selects one row per
+ * session needing an outline - every session in the table, on a cold start -
+ * so the transcript blob is fetched per-session inside the concurrency
+ * limiter instead, bounding peak memory to `concurrency` transcripts rather
+ * than the whole table's worth. See fetchCappedTranscript().
+ */
 interface SessionForOutline {
   id: string;
   project_path: string | null;
   git_branch: string | null;
-  raw_transcript: string;
   transcript_hash: string;
   outline: string | null;
   outline_hash: string | null;
@@ -68,6 +74,21 @@ export class OutlineService {
    * dense code-heavy content.
    */
   private static readonly TRANSCRIPT_PROMPT_CHAR_BUDGET = 300_000;
+
+  /**
+   * Max characters of *raw* JSONL pulled out of Postgres for one session.
+   * Sessions are unbounded in size - a long-lived polling bot can append to
+   * one transcript for weeks and reach hundreds of MB - while the prompt
+   * only ever uses TRANSCRIPT_PROMPT_CHAR_BUDGET of the serialized result.
+   * Fetching the whole column just to throw almost all of it away is what
+   * put multiple GB on the heap per sweep, so the slice happens in SQL.
+   *
+   * The margin over the prompt budget is deliberate: serializing strips the
+   * JSON envelope, so raw shrinks substantially on its way to the prompt,
+   * and this has to stay comfortably above the budget for capping to still
+   * have material to work with.
+   */
+  private static readonly RAW_TRANSCRIPT_FETCH_BUDGET = 2_000_000;
 
   /**
    * Sessions that fail outline generation this many times stop being
@@ -224,12 +245,57 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
   }
 
   /**
+   * Read one session's raw transcript, sliced to RAW_TRANSCRIPT_FETCH_BUDGET
+   * in SQL so an oversized session never lands on the heap in full.
+   *
+   * The slice keeps a head and a tail for the same reason
+   * capTranscriptForPrompt() does - the end of a session is usually the part
+   * that says what actually happened - and joins them with a newline so the
+   * partial lines at each cut stay separate. Raw transcripts are JSONL and
+   * serializeTranscript() skips lines it can't parse, so the two fragments
+   * at the seam drop out on their own.
+   */
+  private async fetchCappedTranscript(
+    sessionId: string
+  ): Promise<{ raw: string; fullLength: number }> {
+    const half = Math.floor(OutlineService.RAW_TRANSCRIPT_FETCH_BUDGET / 2);
+
+    const [row] = await this.sql<{ raw: string; full_length: number }[]>`
+      SELECT
+        coalesce(length(raw_transcript), 0) AS full_length,
+        CASE
+          WHEN raw_transcript IS NULL THEN ''
+          WHEN length(raw_transcript) <= ${OutlineService.RAW_TRANSCRIPT_FETCH_BUDGET}
+            THEN raw_transcript
+          ELSE left(raw_transcript, ${half}) || E'\n' || right(raw_transcript, ${half})
+        END AS raw
+      FROM sessions.sessions
+      WHERE id = ${sessionId}::uuid
+    `;
+
+    return { raw: row?.raw ?? '', fullLength: row?.full_length ?? 0 };
+  }
+
+  /**
    * Generate outline and title for a single session
    */
   async generateOutline(
     session: SessionForOutline
   ): Promise<{ title: string | null; outline: string }> {
-    const serializedTranscript = serializeTranscript(session.raw_transcript);
+    const { raw, fullLength } = await this.fetchCappedTranscript(session.id);
+
+    if (fullLength > OutlineService.RAW_TRANSCRIPT_FETCH_BUDGET) {
+      this.log.info(
+        {
+          sessionId: session.id,
+          fullLength,
+          fetchedLength: raw.length,
+        },
+        'Transcript exceeds raw fetch budget, sampling head+tail in SQL'
+      );
+    }
+
+    const serializedTranscript = serializeTranscript(raw);
     const capped = this.capTranscriptForPrompt(serializedTranscript);
 
     if (capped.truncated) {
@@ -315,14 +381,14 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
     try {
       if (sessionIds && sessionIds.length > 0) {
         sessions = await this.sql<SessionForOutline[]>`
-          SELECT id, project_path, git_branch, raw_transcript, transcript_hash, outline, outline_hash, output_tokens, outline_attempts
+          SELECT id, project_path, git_branch, transcript_hash, outline, outline_hash, output_tokens, outline_attempts
           FROM sessions.sessions
           WHERE id = ANY(${sessionIds}::uuid[])
             AND outline_hash IS DISTINCT FROM transcript_hash
         `;
       } else {
         sessions = await this.sql<SessionForOutline[]>`
-          SELECT id, project_path, git_branch, raw_transcript, transcript_hash, outline, outline_hash, output_tokens, outline_attempts
+          SELECT id, project_path, git_branch, transcript_hash, outline, outline_hash, output_tokens, outline_attempts
           FROM sessions.sessions
           WHERE outline_hash IS DISTINCT FROM transcript_hash
             AND outline_attempts < ${OutlineService.MAX_OUTLINE_ATTEMPTS}
@@ -435,14 +501,14 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
     let sessions: SessionForOutline[];
     if (sessionIds && sessionIds.length > 0) {
       sessions = await this.sql<SessionForOutline[]>`
-        SELECT id, project_path, git_branch, raw_transcript, transcript_hash, outline, outline_hash, output_tokens, outline_attempts
+        SELECT id, project_path, git_branch, transcript_hash, outline, outline_hash, output_tokens, outline_attempts
         FROM sessions.sessions
         WHERE id = ANY(${sessionIds}::uuid[])
           AND outline_hash IS DISTINCT FROM transcript_hash
       `;
     } else {
       sessions = await this.sql<SessionForOutline[]>`
-        SELECT id, project_path, git_branch, raw_transcript, transcript_hash, outline, outline_hash, output_tokens, outline_attempts
+        SELECT id, project_path, git_branch, transcript_hash, outline, outline_hash, output_tokens, outline_attempts
         FROM sessions.sessions
         WHERE outline_hash IS DISTINCT FROM transcript_hash
           AND outline_attempts < ${OutlineService.MAX_OUTLINE_ATTEMPTS}

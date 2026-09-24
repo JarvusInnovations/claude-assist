@@ -1,4 +1,6 @@
 import { readdir, readFile, stat } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -20,21 +22,39 @@ export interface ScannerConfig {
   /** Minimum transcript file size in bytes (default 500) */
   minFileSize?: number;
   /**
+   * Maximum transcript file size in bytes (default 128 MiB). Larger files are
+   * skipped without being read: ingest holds a transcript, its parse and its
+   * row in memory at once, so one runaway session can exhaust the host.
+   */
+  maxFileSize?: number;
+  /**
    * Transcript content substrings that mark a session for suppression.
    * Defaults to DEFAULT_SESSION_IGNORE_MARKERS (e.g. M87 triage runner).
    */
   ignoreContentMarkers?: readonly string[];
 }
 
+export const DEFAULT_MAX_TRANSCRIPT_BYTES = 128 * 1024 * 1024;
+
+export interface OversizedTranscript {
+  sessionId: string;
+  transcriptPath: string;
+  bytes: number;
+}
+
 /**
  * Scanner for discovering Claude Code sessions from the local filesystem
  */
 export class SessionScanner {
+  /** Transcripts skipped for exceeding maxFileSize on the most recent scan */
+  oversized: OversizedTranscript[] = [];
+
   private claudeDir: string;
   private signalsDir: string;
   private projectsDir: string;
   private originalClaudeDir: string | null;
   private minFileSize: number;
+  private maxFileSize: number;
   private ignoreContentMarkers: readonly string[];
 
   constructor(config: ScannerConfig = {}) {
@@ -43,6 +63,7 @@ export class SessionScanner {
     this.projectsDir = join(this.claudeDir, 'projects');
     this.originalClaudeDir = config.originalClaudeDir ?? null;
     this.minFileSize = config.minFileSize ?? 500;
+    this.maxFileSize = config.maxFileSize ?? DEFAULT_MAX_TRANSCRIPT_BYTES;
     this.ignoreContentMarkers =
       config.ignoreContentMarkers ?? DEFAULT_SESSION_IGNORE_MARKERS;
   }
@@ -53,6 +74,23 @@ export class SessionScanner {
    * initiating prompt), not raw transcript text — so legitimate sessions that
    * merely quote a marker in tool output or assistant prose are not dropped.
    */
+  /**
+   * MD5 a transcript without holding it in memory.
+   *
+   * Streamed rather than readFile()'d because this runs over every transcript
+   * on disk on each sync, and a long-lived session can reach hundreds of MB -
+   * enough that materializing one as a string spikes the heap on its own.
+   *
+   * Hashing the bytes matches what .update(string) produced for the UTF-8
+   * content this reads, so stored transcript_hash values stay comparable and
+   * a sync does not see every session as changed.
+   */
+  private async hashTranscriptFile(transcriptPath: string): Promise<string> {
+    const hash = createHash('md5');
+    await pipeline(createReadStream(transcriptPath), hash);
+    return hash.digest('hex');
+  }
+
   private isIgnoredTranscript(
     sessionId: string,
     transcriptContent: string
@@ -62,6 +100,17 @@ export class SessionScanner {
     }
     const { userMessages } = parseTranscript(sessionId, transcriptContent);
     return matchesIgnoreMarker(userMessages, this.ignoreContentMarkers);
+  }
+
+  /**
+   * Record and reject a transcript too large to ingest safely.
+   */
+  private isOversized(sessionId: string, transcriptPath: string, bytes: number): boolean {
+    if (bytes <= this.maxFileSize) {
+      return false;
+    }
+    this.oversized.push({ sessionId, transcriptPath, bytes });
+    return true;
   }
 
   /**
@@ -85,6 +134,7 @@ export class SessionScanner {
   async discoverSessions(
     knownHashes: Set<string>
   ): Promise<DiscoveredSession[]> {
+    this.oversized = [];
     const discovered: DiscoveredSession[] = [];
 
     let signalFiles: string[];
@@ -130,22 +180,26 @@ export class SessionScanner {
     if (!transcriptStat) {
       return null;
     }
+    if (this.isOversized(signal.session_id, transcriptPath, transcriptStat.size)) {
+      return null;
+    }
 
     // Read transcript content
     const transcriptContent = await readFile(transcriptPath, 'utf-8');
-
-    // Skip suppressed sessions (e.g. automated triage runners)
-    if (this.isIgnoredTranscript(signal.session_id, transcriptContent)) {
-      return null;
-    }
 
     // Compute MD5 hash for change detection (Kuato pattern)
     const transcriptHash = createHash('md5')
       .update(transcriptContent)
       .digest('hex');
 
-    // Skip if we already have this exact content
+    // Skip if we already have this exact content — before the ignore check,
+    // which parses the whole transcript
     if (knownHashes.has(transcriptHash)) {
+      return null;
+    }
+
+    // Skip suppressed sessions (e.g. automated triage runners)
+    if (this.isIgnoredTranscript(signal.session_id, transcriptContent)) {
       return null;
     }
 
@@ -163,10 +217,15 @@ export class SessionScanner {
    * This finds sessions regardless of whether they have a .ended.json signal
    * Skips subagent sessions (files in /subagents/ directories)
    */
-  async discoverAllSessions(
+  async *discoverAllSessions(
     knownHashes: Set<string>
-  ): Promise<DiscoveredSession[]> {
-    const discovered: DiscoveredSession[] = [];
+  ): AsyncGenerator<DiscoveredSession> {
+    // Yields rather than returning an array: every DiscoveredSession carries
+    // its full transcriptContent, so collecting them first means every
+    // changed transcript is resident at once. Yielding lets the caller ingest
+    // and release each one, which matters because a single actively-appended
+    // session can be hundreds of MB on its own.
+    this.oversized = [];
 
     // First, build a map of session IDs to their signal files (if any)
     const signalMap = await this.loadSignalMap();
@@ -177,7 +236,7 @@ export class SessionScanner {
       projectDirs = await readdir(this.projectsDir);
     } catch {
       // No projects directory means no sessions
-      return discovered;
+      return;
     }
 
     for (const projectDir of projectDirs) {
@@ -209,12 +268,10 @@ export class SessionScanner {
         );
 
         if (session) {
-          discovered.push(session);
+          yield session;
         }
       }
     }
-
-    return discovered;
   }
 
   /**
@@ -286,22 +343,26 @@ export class SessionScanner {
     if (!transcriptStat || transcriptStat.size < this.minFileSize) {
       return null;
     }
+    if (this.isOversized(sessionId, transcriptPath, transcriptStat.size)) {
+      return null;
+    }
 
     // Read transcript content
     const transcriptContent = await readFile(transcriptPath, 'utf-8');
-
-    // Skip suppressed sessions (e.g. automated triage runners)
-    if (this.isIgnoredTranscript(sessionId, transcriptContent)) {
-      return null;
-    }
 
     // Compute MD5 hash for change detection
     const transcriptHash = createHash('md5')
       .update(transcriptContent)
       .digest('hex');
 
-    // Skip if we already have this exact content
+    // Skip if we already have this exact content — before the ignore check,
+    // which parses the whole transcript
     if (knownHashes.has(transcriptHash)) {
+      return null;
+    }
+
+    // Skip suppressed sessions (e.g. automated triage runners)
+    if (this.isIgnoredTranscript(sessionId, transcriptContent)) {
       return null;
     }
 
@@ -322,6 +383,7 @@ export class SessionScanner {
    * Returns session ID, hash, path, and optional signal - but NOT transcript content
    */
   async getSessionInventory(): Promise<SessionInventoryItem[]> {
+    this.oversized = [];
     const inventory: SessionInventoryItem[] = [];
     const signalMap = await this.loadSignalMap();
 
@@ -365,18 +427,22 @@ export class SessionScanner {
         if (!transcriptStat || transcriptStat.size < this.minFileSize) {
           continue;
         }
-
-        // Read and hash transcript (then discard content)
-        const transcriptContent = await readFile(transcriptPath, 'utf-8');
-
-        // Skip suppressed sessions (e.g. automated triage runners)
-        if (this.isIgnoredTranscript(sessionId, transcriptContent)) {
+        if (this.isOversized(sessionId, transcriptPath, transcriptStat.size)) {
           continue;
         }
 
-        const transcriptHash = createHash('md5')
-          .update(transcriptContent)
-          .digest('hex');
+        // Skip suppressed sessions (e.g. automated triage runners). This is
+        // the one check here that needs the transcript body, so it only reads
+        // the file when markers are actually configured - otherwise the
+        // inventory pass never materializes a transcript at all.
+        if (this.ignoreContentMarkers.length > 0) {
+          const transcriptContent = await readFile(transcriptPath, 'utf-8');
+          if (this.isIgnoredTranscript(sessionId, transcriptContent)) {
+            continue;
+          }
+        }
+
+        const transcriptHash = await this.hashTranscriptFile(transcriptPath);
 
         inventory.push({
           sessionId,
@@ -394,6 +460,7 @@ export class SessionScanner {
    * Load specific sessions by ID (for selective push after inventory check)
    */
   async getSessionsByIds(sessionIds: Set<string>): Promise<DiscoveredSession[]> {
+    this.oversized = [];
     const sessions: DiscoveredSession[] = [];
     const signalMap = await this.loadSignalMap();
 
@@ -432,6 +499,13 @@ export class SessionScanner {
         }
 
         const transcriptPath = join(projectPath, file);
+        const transcriptStat = await stat(transcriptPath).catch(() => null);
+        if (!transcriptStat) {
+          continue;
+        }
+        if (this.isOversized(sessionId, transcriptPath, transcriptStat.size)) {
+          continue;
+        }
         const transcriptContent = await readFile(transcriptPath, 'utf-8');
 
         // Skip suppressed sessions (e.g. automated triage runners)
