@@ -647,7 +647,7 @@ export interface SerializedDelta {
 }
 
 /** Default char budget for a classification delta window (well under Haiku's context). */
-const DELTA_CHAR_BUDGET = 200_000;
+export const DELTA_CHAR_BUDGET = 200_000;
 
 /**
  * Serialize only the messages *after* `afterSeq` — the delta a per-session
