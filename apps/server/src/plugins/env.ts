@@ -64,6 +64,18 @@ const schema = {
     // Unset — the normal case — lets MODEL_TIER_SYNTHESIZE / the built-in tier
     // map decide, so a model swap is one edit instead of one per call site.
     SESSIONS_SYNTHESIS_MODEL: { type: 'string' },
+    // Windowed outlines (specs/behaviors/session-outlines.md): thresholds
+    // deciding whether a session is windowed, and window sizing/throttling.
+    // Grouped together here — a sibling migration (transcript-chunked-ingest)
+    // adds its own env vars nearby; keep these appended as one block so a
+    // merge conflict there resolves mechanically.
+    SESSIONS_OUTLINE_WINDOW_THRESHOLD_MESSAGES: { type: 'number', default: 400 },
+    SESSIONS_OUTLINE_WINDOW_THRESHOLD_BYTES: { type: 'number', default: 2_000_000 },
+    SESSIONS_OUTLINE_WINDOW_MAX_MESSAGES: { type: 'number', default: 200 },
+    SESSIONS_OUTLINE_WINDOW_MAX_BYTES: { type: 'number', default: 500_000 },
+    SESSIONS_OUTLINE_WINDOW_MAX_SPAN_MS: { type: 'number', default: 21_600_000 }, // 6 hours
+    SESSIONS_OUTLINE_WINDOW_SWEEP_CAP: { type: 'number', default: 20 },
+    SESSIONS_OUTLINE_WINDOW_MAX_ATTEMPTS: { type: 'number', default: 5 },
 
     // The one metered credential. Read by the invoker module and nothing else:
     // every module that needs a model reaches it through `fastify.invoker`, so
@@ -478,6 +490,13 @@ declare module 'fastify' {
       SESSIONS_CLASSIFICATION_CRON?: string;
       SESSIONS_SYNTHESIS_CRON?: string;
       SESSIONS_SYNTHESIS_MODEL?: string;
+      SESSIONS_OUTLINE_WINDOW_THRESHOLD_MESSAGES: number;
+      SESSIONS_OUTLINE_WINDOW_THRESHOLD_BYTES: number;
+      SESSIONS_OUTLINE_WINDOW_MAX_MESSAGES: number;
+      SESSIONS_OUTLINE_WINDOW_MAX_BYTES: number;
+      SESSIONS_OUTLINE_WINDOW_MAX_SPAN_MS: number;
+      SESSIONS_OUTLINE_WINDOW_SWEEP_CAP: number;
+      SESSIONS_OUTLINE_WINDOW_MAX_ATTEMPTS: number;
 
       // AI Features
       ANTHROPIC_API_KEY?: string;

@@ -714,7 +714,19 @@ export function serializeMessageRange(
   fromSeq: number,
   toSeq?: number
 ): MessageRangeResult {
-  const msgs = parseMessages(rawTranscript);
+  return serializeMessageSlice(parseMessages(rawTranscript), fromSeq, toSeq);
+}
+
+/**
+ * `serializeMessageRange` over already-parsed messages, for a caller that
+ * serializes several ranges of one transcript and must not re-parse it for
+ * each (the windowed outline pass).
+ */
+export function serializeMessageSlice(
+  msgs: TranscriptMessage[],
+  fromSeq: number,
+  toSeq?: number
+): MessageRangeResult {
   const lastSeq = msgs.length - 1;
   if (lastSeq < 0) return { text: '', seqStart: -1, seqEnd: -1, count: 0 };
 

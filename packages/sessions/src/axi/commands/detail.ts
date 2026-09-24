@@ -1,12 +1,14 @@
 import { api } from "../client.js";
 import { parseArgs, requirePositional, rawJson } from "../args.js";
-import { renderDetail, renderOutput, renderHelp, field, count, custom, type FieldDef } from "../toon.js";
+import { renderDetail, renderList, renderOutput, renderHelp, field, count, custom, truncate, type FieldDef } from "../toon.js";
 import { cliInvocation } from "../invocation.js";
 
 export const DETAILS_HELP = `sessions-axi details <session-id> [--raw] [--json]
 
   Session metadata (tokens, tools, files, models). --raw includes the parsed
-  raw message array (large); --json returns the raw API object.`;
+  raw message array (large); --json returns the raw API object.
+  A windowed session (specs/behaviors/session-outlines.md) also shows its
+  per-window summaries.`;
 
 const SCHEMA: FieldDef[] = [
   field("id"),
@@ -28,6 +30,14 @@ const SCHEMA: FieldDef[] = [
   field("outline"),
 ];
 
+const WINDOW_SCHEMA: FieldDef[] = [
+  field("window_index", "window"),
+  custom("range", (w) => `${w.from_seq}-${w.to_seq}`),
+  custom("state", (w) => (w.closed ? "closed" : "open")),
+  field("status"),
+  truncate("summary", 200),
+];
+
 export async function detailsCommand(args: string[]): Promise<string> {
   const { positionals, flags } = parseArgs(args, ["json", "raw"]);
   const id = requirePositional(positionals, 0, "session id", DETAILS_HELP);
@@ -38,8 +48,10 @@ export async function detailsCommand(args: string[]): Promise<string> {
   if (flags.json || flags.raw) return rawJson(session);
 
   const cli = cliInvocation();
-  return renderOutput([
-    renderDetail("session", session, SCHEMA),
-    renderHelp([`Run \`${cli} transcript ${id}\` to read the conversation`]),
-  ]);
+  const blocks = [renderDetail("session", session, SCHEMA)];
+  if (Array.isArray(session.outline_windows) && session.outline_windows.length > 0) {
+    blocks.push(renderList("outline_windows", session.outline_windows, WINDOW_SCHEMA));
+  }
+  blocks.push(renderHelp([`Run \`${cli} transcript ${id}\` to read the conversation`]));
+  return renderOutput(blocks);
 }

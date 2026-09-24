@@ -1,9 +1,22 @@
+import { createHash } from 'node:crypto';
 import pLimit from 'p-limit';
 import type postgres from 'postgres';
 import type { FastifyBaseLogger } from 'fastify';
 import type { ModelInvoker } from '@jarvus/claude-assist-core';
-import { serializeTranscript } from './transcript.js';
+import { serializeTranscript, serializeMessageSlice } from './transcript.js';
 import { TranscriptReader } from './transcript-reader.js';
+import {
+  OutlineWindowStore,
+  DEFAULT_OUTLINE_WINDOW_CONFIG,
+  planWindows,
+  isWindowedSession,
+  approxMessageBytes,
+  windowsSignature,
+  buildComposePrompt,
+  buildWindowPrompt,
+  type OutlineWindowConfig,
+  type SummarizedWindowForCompose,
+} from './outline-windows.js';
 
 export interface OutlineServiceConfig {
   /** The single metered-model choke point (specs/modules/invoker.md). */
@@ -16,6 +29,12 @@ export interface OutlineServiceConfig {
   maxTokens?: number;
   /** Disable outline generation */
   disableGenerateOutlines?: boolean;
+  /**
+   * Windowed-outline thresholds and window sizing
+   * (specs/behaviors/session-outlines.md). Defaults to
+   * `DEFAULT_OUTLINE_WINDOW_CONFIG`; individual fields may be overridden.
+   */
+  windowConfig?: Partial<OutlineWindowConfig>;
 }
 
 export interface OutlineProgress {
@@ -50,6 +69,10 @@ interface SessionForOutline {
   // postgres.js returns BIGINT as string to avoid JS number precision loss
   output_tokens: string;
   outline_attempts: number;
+  /** Windowing decision input (specs/behaviors/session-outlines.md). */
+  message_count: number;
+  /** Signature of the window summaries that produced the current composed outline, if any. */
+  outline_windows_hash: string | null;
 }
 
 /**
@@ -102,15 +125,51 @@ export class OutlineService {
    */
   static readonly MAX_OUTLINE_ATTEMPTS = 5;
 
+  /** Lease duration for a claimed window's summarization (specs/behaviors/scheduled-work-leases.md). */
+  private static readonly WINDOW_LEASE_MS = 10 * 60 * 1000;
+  /**
+   * Largest inline transcript the windowed path will parse. Over the inline
+   * storage backend a window read is a whole-transcript parse, and a parse
+   * costs many times the raw size in heap; past this ceiling a session keeps
+   * the single-pass head+tail outline (computed in SQL) until chunked
+   * storage makes window reads bounded (specs/behaviors/session-transcript-storage.md).
+   */
+  private static readonly WINDOW_MAX_INLINE_BYTES = 64 * 1024 * 1024;
+
   private sql: postgres.Sql;
   private log: FastifyBaseLogger;
   private reader: TranscriptReader;
   private invoker: ModelInvoker;
   private limit: ReturnType<typeof pLimit>;
+  /**
+   * Windowed sessions run one at a time: each parses its whole transcript
+   * (over inline storage), and the sweep's session concurrency would
+   * otherwise hold several parses in memory at once. Serializing also makes
+   * the per-sweep budget check exact.
+   */
+  private windowedLimit = pLimit(1);
   private model: string | undefined;
   private maxTokens: number;
   private progress: OutlineProgress;
   private disableGenerateOutlines: boolean;
+
+  // ── Windowed outlines (specs/behaviors/session-outlines.md) ──────────────
+  private windowStore: OutlineWindowStore;
+  private windowConfig: OutlineWindowConfig;
+  /** This process's lease-owner id, so a reclaim can tell a live lease from a crashed one. */
+  private ownerId: string;
+  /**
+   * Windows summarized this sweep, across every session processed — the
+   * shared backfill throttle. Reset to `windowConfig.sweepCap` at the start
+   * of each `queueOutlineGeneration`/`generateOutlinesSync` call. A plain
+   * instance field is safe here: the per-session tasks it's shared across all
+   * run on this one process's event loop, and each decrements it
+   * synchronously before its next `await` — the cross-process race this
+   * doesn't (and doesn't need to) cover is guarded separately, per window, by
+   * `OutlineWindowStore.claimOne`'s atomic `UPDATE ... WHERE status =
+   * 'pending'`.
+   */
+  private windowBudget = 0;
 
   constructor(
     sql: postgres.Sql,
@@ -124,6 +183,10 @@ export class OutlineService {
     this.model = config.model;
     this.maxTokens = config.maxTokens ?? 1024;
     this.disableGenerateOutlines = config.disableGenerateOutlines ?? false;
+
+    this.windowStore = new OutlineWindowStore(sql);
+    this.windowConfig = { ...DEFAULT_OUTLINE_WINDOW_CONFIG, ...config.windowConfig };
+    this.ownerId = `${process.env.HOSTNAME ?? 'host'}-${process.pid}`;
 
     // Initialize concurrency limiter
     this.limit = pLimit(config.concurrency ?? 5);
@@ -344,6 +407,215 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
   }
 
   /**
+   * Whether a session is over the windowing threshold
+   * (specs/behaviors/session-outlines.md). Message count is already on the
+   * selected row, so a session obviously over that threshold short-circuits
+   * without an extra query; the byte check only runs for a session that's
+   * short on messages but could still be large (a few huge pasted blocks) —
+   * `rawByteLength` is a scalar read, never a content fetch.
+   */
+  private async isWindowed(session: SessionForOutline): Promise<boolean> {
+    const bytes = await this.reader.rawByteLength(session.id);
+    if (bytes > OutlineService.WINDOW_MAX_INLINE_BYTES) return false;
+    return isWindowedSession(session.message_count, bytes, this.windowConfig);
+  }
+
+  /**
+   * Windowed generation for a long session: maintain window boundaries
+   * (cheap, no model calls, reads only what's new via
+   * `TranscriptReader.messagesSince`), summarize windows up to the shared
+   * per-sweep budget (`this.windowBudget`), and recompose the session
+   * outline from the window summaries when their signature has changed.
+   *
+   * `caughtUp` tells the caller whether it's safe to advance `outline_hash`
+   * to `transcript_hash` — only once boundaries reflect the transcript's
+   * current end (always true right after the boundary pass above, since
+   * `messagesSince` has no upper bound) AND every window is resolved
+   * (`summarized`, `failed`, or a tail that was actually processed this
+   * pass rather than skipped for lack of budget or lost a claim race).
+   */
+  private async generateWindowedOutline(session: SessionForOutline): Promise<{
+    generated: { title: string | null; outline: string } | null;
+    newWindowsHash: string | null;
+    caughtUp: boolean;
+  }> {
+    // Budget spent this sweep: touch no content at all. Boundary planning reads
+    // and parses the transcript, so running it for every remaining windowed
+    // session after the budget is gone would cost a full parse each for no
+    // summarization progress.
+    if (this.windowBudget <= 0) {
+      return { generated: null, newWindowsHash: null, caughtUp: false };
+    }
+
+    const { lastClosedToSeq, closedCount } = await this.windowStore.boundaryState(session.id);
+    // One parse per session per sweep: boundary planning and every window's
+    // text below slice this same array rather than re-reading the transcript.
+    const allMessages = await this.reader.messagesSince(session.id, -1);
+    const newMessages = allMessages.slice(lastClosedToSeq + 1);
+    if (newMessages.length > 0) {
+      const boundaries = planWindows(
+        closedCount,
+        lastClosedToSeq + 1,
+        newMessages.map((m) => ({ timestamp: m.timestamp, approxBytes: approxMessageBytes(m) })),
+        this.windowConfig
+      );
+      for (const boundary of boundaries) {
+        await this.windowStore.upsertBoundary(session.id, boundary);
+      }
+    }
+
+    const windows = await this.windowStore.listWindows(session.id);
+    let caughtUp = true;
+
+    for (const w of windows) {
+      if (w.status === 'summarized' || w.status === 'failed') continue; // resolved, immutable or given up
+      if (w.status === 'summarizing') {
+        caughtUp = false; // another process (or a stuck lease) currently owns it
+        continue;
+      }
+      // status === 'pending'
+      if (this.windowBudget <= 0) {
+        caughtUp = false; // budget exhausted this sweep; carries to the next one
+        continue;
+      }
+      this.windowBudget--;
+
+      const claimed = await this.windowStore.claimOne(w.id, this.ownerId, OutlineService.WINDOW_LEASE_MS);
+      if (!claimed) {
+        caughtUp = false; // lost a claim race to a concurrent sweep
+        continue;
+      }
+
+      const isTail = w.closed_at === null;
+      try {
+        const range = serializeMessageSlice(allMessages, w.from_seq, w.to_seq);
+        const contentHash = createHash('md5').update(range.text).digest('hex');
+
+        if (isTail && w.content_hash !== null && w.content_hash === contentHash) {
+          // Nothing new since the tail's last summary — no model call.
+          await this.windowStore.releaseUnchanged(w.id);
+          continue;
+        }
+
+        const prompt = buildWindowPrompt(
+          session.project_path,
+          session.git_branch,
+          w.window_index,
+          !isTail,
+          range.text
+        );
+        const result = await this.invoker.invoke({
+          task: 'sessions.outline.window',
+          tier: 'extract',
+          maxTokens: this.maxTokens,
+          ...(this.model ? { model: this.model } : {}),
+          messages: [{ role: 'user', content: prompt }],
+        });
+        const summary = result.text.trim();
+        await this.windowStore.completeSummary(w.id, {
+          summary,
+          model: this.invoker.modelFor('extract'),
+          contentHash,
+          closed: !isTail,
+        });
+        w.status = isTail ? 'pending' : 'summarized';
+        w.summary = summary;
+        w.content_hash = contentHash;
+      } catch (error) {
+        caughtUp = false;
+        await this.windowStore.failSummary(w.id, String(error), this.windowConfig.maxAttempts);
+        this.log.error({ error, sessionId: session.id, windowIndex: w.window_index }, 'Failed to summarize outline window');
+      }
+    }
+
+    const summarized: SummarizedWindowForCompose[] = windows
+      .filter((w) => w.summary !== null)
+      .map((w) => ({
+        windowIndex: w.window_index,
+        fromTs: w.from_ts,
+        toTs: w.to_ts,
+        closed: w.closed_at !== null,
+        summary: w.summary as string,
+      }));
+
+    let generated: { title: string | null; outline: string } | null = null;
+    let newWindowsHash: string | null = null;
+    if (summarized.length > 0) {
+      const sig = windowsSignature(summarized);
+      if (sig !== session.outline_windows_hash) {
+        const prompt = buildComposePrompt(session.project_path, session.git_branch, summarized);
+        const result = await this.invoker.invoke({
+          task: 'sessions.outline.compose',
+          tier: 'extract',
+          maxTokens: this.maxTokens,
+          ...(this.model ? { model: this.model } : {}),
+          messages: [{ role: 'user', content: prompt }],
+        });
+        generated = this.parseOutlineResponse(result.text);
+        newWindowsHash = sig;
+      }
+    }
+
+    return { generated, newWindowsHash, caughtUp };
+  }
+
+  /**
+   * Everything that happens to ONE session in a sweep: decide the path
+   * (empty / single-pass / windowed), generate accordingly, and persist.
+   * `queueOutlineGeneration` and `generateOutlinesSync` both call this so
+   * the windowing branch exists in exactly one place; each keeps its own
+   * progress/result bookkeeping around the call. The short-pass branch below
+   * is byte-identical to the pre-windowing code: same query, same
+   * `generateOutline` call, same UPDATE.
+   */
+  private async processOneSession(session: SessionForOutline): Promise<void> {
+    const isEmpty = isEmptySession(session);
+    if (isEmpty) {
+      await this.sql`
+        UPDATE sessions.sessions
+        SET outline = NULL,
+            title = NULL,
+            outline_hash = ${session.transcript_hash},
+            outline_attempts = 0
+        WHERE id = ${session.id}::uuid
+      `;
+      this.log.debug({ sessionId: session.id, skipped: true }, 'Skipped empty session');
+      return;
+    }
+
+    if (!(await this.isWindowed(session))) {
+      const generated = await this.generateOutline(session);
+      await this.sql`
+        UPDATE sessions.sessions
+        SET outline = ${generated.outline},
+            title = ${generated.title},
+            outline_hash = ${session.transcript_hash},
+            outline_attempts = 0
+        WHERE id = ${session.id}::uuid
+      `;
+      this.log.debug({ sessionId: session.id, skipped: false }, 'Generated outline');
+      return;
+    }
+
+    const { generated, newWindowsHash, caughtUp } = await this.windowedLimit(() =>
+      this.generateWindowedOutline(session)
+    );
+    await this.sql`
+      UPDATE sessions.sessions SET
+        ${generated
+          ? this.sql`outline = ${generated.outline}, title = ${generated.title}, outline_windows_hash = ${newWindowsHash},`
+          : this.sql``}
+        ${caughtUp ? this.sql`outline_hash = ${session.transcript_hash},` : this.sql``}
+        outline_attempts = 0
+      WHERE id = ${session.id}::uuid
+    `;
+    this.log.debug(
+      { sessionId: session.id, composed: generated !== null, caughtUp },
+      'Processed windowed outline'
+    );
+  }
+
+  /**
    * Process sessions that need outline generation (async/non-blocking)
    * Returns immediately, processing happens in background
    */
@@ -369,14 +641,14 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
     try {
       if (sessionIds && sessionIds.length > 0) {
         sessions = await this.sql<SessionForOutline[]>`
-          SELECT id, project_path, git_branch, transcript_hash, outline, outline_hash, output_tokens, outline_attempts
+          SELECT id, project_path, git_branch, transcript_hash, outline, outline_hash, output_tokens, outline_attempts, message_count, outline_windows_hash
           FROM sessions.sessions
           WHERE id = ANY(${sessionIds}::uuid[])
             AND outline_hash IS DISTINCT FROM transcript_hash
         `;
       } else {
         sessions = await this.sql<SessionForOutline[]>`
-          SELECT id, project_path, git_branch, transcript_hash, outline, outline_hash, output_tokens, outline_attempts
+          SELECT id, project_path, git_branch, transcript_hash, outline, outline_hash, output_tokens, outline_attempts, message_count, outline_windows_hash
           FROM sessions.sessions
           WHERE outline_hash IS DISTINCT FROM transcript_hash
             AND outline_attempts < ${OutlineService.MAX_OUTLINE_ATTEMPTS}
@@ -404,6 +676,14 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
       inProgress: true,
     };
 
+    // Per-sweep windowing bookkeeping: reclaim any lease a crashed prior
+    // sweep left stuck, then reset the shared backfill budget this sweep may
+    // spend across every windowed session below.
+    await this.windowStore.reclaimExpired().catch((error) => {
+      this.log.warn({ error }, 'Failed to reclaim expired outline-window leases');
+    });
+    this.windowBudget = this.windowConfig.sweepCap;
+
     this.log.info({ count: sessions.length }, 'Queuing outline generation');
 
     // Queue all sessions with concurrency limit (non-blocking)
@@ -411,27 +691,8 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
       this.limit(async () => {
         try {
           this.progress.currentSession = session.id;
-
-          // Skip API call for sessions with no assistant output
-          const isEmpty = isEmptySession(session);
-          const generated = isEmpty ? null : await this.generateOutline(session);
-
-          // Store the outline and title (null for empty sessions), and
-          // reset the retry counter now that generation succeeded
-          await this.sql`
-            UPDATE sessions.sessions
-            SET outline = ${generated?.outline ?? null},
-                title = ${generated?.title ?? null},
-                outline_hash = ${session.transcript_hash},
-                outline_attempts = 0
-            WHERE id = ${session.id}::uuid
-          `;
-
+          await this.processOneSession(session);
           this.progress.completed++;
-          this.log.debug(
-            { sessionId: session.id, skipped: isEmpty },
-            generated ? 'Generated outline' : 'Skipped empty session'
-          );
         } catch (error) {
           this.progress.errors++;
           this.log.error(
@@ -489,14 +750,14 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
     let sessions: SessionForOutline[];
     if (sessionIds && sessionIds.length > 0) {
       sessions = await this.sql<SessionForOutline[]>`
-        SELECT id, project_path, git_branch, transcript_hash, outline, outline_hash, output_tokens, outline_attempts
+        SELECT id, project_path, git_branch, transcript_hash, outline, outline_hash, output_tokens, outline_attempts, message_count, outline_windows_hash
         FROM sessions.sessions
         WHERE id = ANY(${sessionIds}::uuid[])
           AND outline_hash IS DISTINCT FROM transcript_hash
       `;
     } else {
       sessions = await this.sql<SessionForOutline[]>`
-        SELECT id, project_path, git_branch, transcript_hash, outline, outline_hash, output_tokens, outline_attempts
+        SELECT id, project_path, git_branch, transcript_hash, outline, outline_hash, output_tokens, outline_attempts, message_count, outline_windows_hash
         FROM sessions.sessions
         WHERE outline_hash IS DISTINCT FROM transcript_hash
           AND outline_attempts < ${OutlineService.MAX_OUTLINE_ATTEMPTS}
@@ -515,25 +776,18 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
       inProgress: true,
     };
 
+    // Per-sweep windowing bookkeeping — see queueOutlineGeneration.
+    await this.windowStore.reclaimExpired().catch((error) => {
+      this.log.warn({ error }, 'Failed to reclaim expired outline-window leases');
+    });
+    this.windowBudget = this.windowConfig.sweepCap;
+
     // Process with concurrency limit
     const promises = sessions.map((session) =>
       this.limit(async () => {
         try {
           this.progress.currentSession = session.id;
-
-          // Skip API call for sessions with no assistant output
-          const isEmpty = isEmptySession(session);
-          const generated = isEmpty ? null : await this.generateOutline(session);
-
-          await this.sql`
-            UPDATE sessions.sessions
-            SET outline = ${generated?.outline ?? null},
-                title = ${generated?.title ?? null},
-                outline_hash = ${session.transcript_hash},
-                outline_attempts = 0
-            WHERE id = ${session.id}::uuid
-          `;
-
+          await this.processOneSession(session);
           result.outlinesGenerated++;
           this.progress.completed++;
         } catch (error) {

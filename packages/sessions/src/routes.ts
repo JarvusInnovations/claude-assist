@@ -544,6 +544,41 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       result.raw_messages = await reader.readRawMessages(id);
     }
 
+    // Additive: window summaries for a windowed session (specs/behaviors/
+    // session-outlines.md). `[]` for a short session (never windowed) or one
+    // not yet swept — never omitted, so a consumer can rely on the shape.
+    const windows = await fastify.sql<
+      {
+        window_index: number;
+        from_seq: number;
+        to_seq: number;
+        from_ts: string | null;
+        to_ts: string | null;
+        closed_at: string | null;
+        status: string;
+        summary: string | null;
+        model: string | null;
+        summarized_at: string | null;
+      }[]
+    >`
+      SELECT window_index, from_seq, to_seq, from_ts, to_ts, closed_at, status, summary, model, summarized_at
+      FROM sessions.outline_windows
+      WHERE session_id = ${id}::uuid
+      ORDER BY window_index ASC
+    `;
+    result.outline_windows = windows.map((w) => ({
+      window_index: w.window_index,
+      from_seq: w.from_seq,
+      to_seq: w.to_seq,
+      from_ts: w.from_ts,
+      to_ts: w.to_ts,
+      closed: w.closed_at !== null,
+      status: w.status,
+      summary: w.summary,
+      model: w.model,
+      summarized_at: w.summarized_at,
+    }));
+
     return result;
   });
 
