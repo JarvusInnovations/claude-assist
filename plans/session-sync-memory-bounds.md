@@ -29,9 +29,14 @@ In scope (containment):
    transaction.
 4. The `tool_calls` insert is batched at 5,000 rows (35,000 parameters).
 5. `MemoryHigh` / `MemoryMax` / `MemorySwapMax` in the shipped systemd unit.
+6. Folded in from an earlier unshipped branch: discovery yields sessions one
+   at a time instead of buffering the changed set, the push inventory hashes
+   by stream, and the outline sweep stops loading every `raw_transcript` at
+   once.
 
-Out of scope: streaming hash/parse, and not holding every changed session's
-content at once during discovery. See Follow-ups.
+Out of scope: incremental (append-only, chunked) transcript storage, which
+removes the need to re-read and rewrite a growing transcript whole. See
+Follow-ups.
 
 ## Implements
 
@@ -50,7 +55,7 @@ content at once during discovery. See Follow-ups.
 
 ## Follow-ups
 
-- Stream transcript hashing and discovery so changed sessions aren't held in
-  memory together, and the size limit can rise.
+- Chunked, incrementally ingested transcript storage (its own spec + plan),
+  after which the size limit becomes a per-cycle ingest budget.
 - Ingest oversized sessions in a bounded form (metadata and tool-call index
   without `raw_transcript`) instead of skipping them outright.
