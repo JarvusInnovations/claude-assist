@@ -1,5 +1,5 @@
-import type { FastifyInstance } from 'fastify';
-import { serializeTranscript } from './transcript.js';
+import type { FastifyPluginAsync } from 'fastify';
+import type { TranscriptReader } from './transcript-reader.js';
 
 function escapeHtml(str: string): string {
   return str
@@ -165,20 +165,26 @@ ${renderedItems}
 </html>`;
 }
 
-export async function registerPublicShareRoutes(fastify: FastifyInstance) {
+export interface ShareRoutesConfig {
+  reader: TranscriptReader;
+}
+
+export const registerPublicShareRoutes: FastifyPluginAsync<ShareRoutesConfig> = async (
+  fastify,
+  { reader }
+) => {
   // GET /share/:auth_code — rendered HTML transcript page (no auth required)
   fastify.get<{ Params: { auth_code: string } }>('/share/:auth_code', async (request, reply) => {
     const { auth_code } = request.params;
 
     const rows = await fastify.sql<{
       session_id: string;
-      raw_transcript: string;
       title: string | null;
       session_name: string | null;
       project_path: string | null;
       started_at: Date;
     }[]>`
-      SELECT s.id AS session_id, s.raw_transcript, s.title, s.session_name, s.project_path, s.started_at
+      SELECT s.id AS session_id, s.title, s.session_name, s.project_path, s.started_at
       FROM sessions.shares sh
       JOIN sessions.sessions s ON s.id = sh.session_id
       WHERE sh.auth_code = ${auth_code}
@@ -190,7 +196,7 @@ export async function registerPublicShareRoutes(fastify: FastifyInstance) {
     }
 
     const row = rows[0]!;
-    const transcript = serializeTranscript(row.raw_transcript);
+    const transcript = await reader.serialize(row.session_id);
 
     const proto = (request.headers['x-forwarded-proto'] as string) ?? 'https';
     const host = (request.headers['x-forwarded-host'] as string) ?? request.headers.host ?? 'localhost';
@@ -214,8 +220,8 @@ export async function registerPublicShareRoutes(fastify: FastifyInstance) {
   fastify.get<{ Params: { auth_code: string } }>('/share/:auth_code/text', async (request, reply) => {
     const { auth_code } = request.params;
 
-    const rows = await fastify.sql<{ raw_transcript: string }[]>`
-      SELECT s.raw_transcript
+    const rows = await fastify.sql<{ session_id: string }[]>`
+      SELECT s.id AS session_id
       FROM sessions.shares sh
       JOIN sessions.sessions s ON s.id = sh.session_id
       WHERE sh.auth_code = ${auth_code}
@@ -226,8 +232,8 @@ export async function registerPublicShareRoutes(fastify: FastifyInstance) {
       return 'Share link not found';
     }
 
-    const transcript = serializeTranscript(rows[0]!.raw_transcript);
+    const transcript = await reader.serialize(rows[0]!.session_id);
     reply.type('text/plain');
     return transcript;
   });
-}
+};

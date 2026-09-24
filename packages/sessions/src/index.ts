@@ -1,6 +1,7 @@
 import { createPlugin } from '@jarvus/claude-assist-core';
 import { SyncService } from './sync.js';
 import { OutlineService } from './outline.js';
+import { TranscriptReader } from './transcript-reader.js';
 import { registerRoutes } from './routes.js';
 import {
   ClassificationStore,
@@ -22,6 +23,11 @@ import {
  */
 export default createPlugin('sessions', async (fastify, options) => {
   const config = options.sessionsConfig ?? {};
+
+  // The single choke point for reading raw_transcript (specs/behaviors/
+  // session-transcript-storage.md: "Readers take ranges"). Shared across the
+  // route handlers, the outline sweep, and the classification pipeline.
+  const transcriptReader = new TranscriptReader(fastify.sql);
 
   // Initialize sync service with optional path mapping for Docker
   // originalClaudeDir: The original path on host (e.g., /Users/<user>/.claude)
@@ -63,6 +69,7 @@ export default createPlugin('sessions', async (fastify, options) => {
     classificationService = new ClassificationService(
       classificationStore,
       classifier,
+      transcriptReader,
       fastify.log,
       {
         concurrency: config.classificationConcurrency,
@@ -89,6 +96,7 @@ export default createPlugin('sessions', async (fastify, options) => {
   await fastify.register(registerRoutes, {
     syncService,
     outlineService,
+    reader: transcriptReader,
     classificationService,
     synthesisService,
     classificationStore,
@@ -232,6 +240,7 @@ export { OutlineService } from './outline.js';
 export { SessionScanner } from './scanner.js';
 export { parseTranscript } from './parser.js';
 export { serializeTranscript } from './transcript.js';
+export { TranscriptReader } from './transcript-reader.js';
 export { normalizeProjectPaths } from './project-names.js';
 export { registerPublicShareRoutes } from './share-routes.js';
 export {

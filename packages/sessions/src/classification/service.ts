@@ -11,7 +11,7 @@
 
 import pLimit from 'p-limit';
 import type { FastifyBaseLogger } from 'fastify';
-import { serializeSince } from '../transcript.js';
+import type { TranscriptReader } from '../transcript-reader.js';
 import type { ClassificationEventClassifier } from './events.js';
 import type { ClassificationStore } from './store.js';
 import type { SessionForClassification } from './types.js';
@@ -62,6 +62,7 @@ export class ClassificationService {
   constructor(
     private store: ClassificationStore,
     private classifier: ClassificationEventClassifier,
+    private reader: TranscriptReader,
     private log: FastifyBaseLogger,
     config: ClassificationServiceConfig = {}
   ) {
@@ -159,7 +160,7 @@ export class ClassificationService {
    */
   private async classifyOne(s: SessionForClassification): Promise<number | 'skipped'> {
     const fromSeq = s.cursor_last_seq ?? -1;
-    const delta = serializeSince(s.raw_transcript, fromSeq);
+    const delta = await this.reader.since(s.id, fromSeq);
 
     // No new messages at all (idempotent no-op) — advance the hash so we don't
     // re-select this unchanged transcript next cycle.

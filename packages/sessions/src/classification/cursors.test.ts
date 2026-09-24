@@ -1,10 +1,24 @@
 import { describe, expect, it, mock } from 'bun:test';
 import type { FastifyBaseLogger } from 'fastify';
 import { serializeSince, lastMessageSeq } from '../transcript.js';
+import type { TranscriptReader } from '../transcript-reader.js';
 import { ClassificationService } from './service.js';
 import type { ClassificationEventClassifier } from './events.js';
 import type { ClassificationStore } from './store.js';
 import type { DetectedEvent, SessionForClassification } from './types.js';
+
+/**
+ * A reader double serving a single fixed transcript regardless of session id
+ * — every test here uses one session, so `since()` just replays
+ * `serializeSince` over whatever transcript the test built.
+ */
+function makeFakeReader(rawTranscript: string): TranscriptReader {
+  return {
+    since: mock(async (_sessionId: string, afterSeq: number) =>
+      serializeSince(rawTranscript, afterSeq)
+    ),
+  } as unknown as TranscriptReader;
+}
 
 /** Build a JSONL transcript line. */
 function line(obj: Record<string, unknown>): string {
@@ -113,7 +127,6 @@ function sessionRow(overrides: Partial<SessionForClassification> = {}): SessionF
     id: '00000000-0000-0000-0000-000000000001',
     project_path: '/repo/thing',
     git_branch: 'main',
-    raw_transcript: BASE,
     transcript_hash: 'hashA',
     ended_at: new Date('2026-07-01T10:01:05Z'), // long quiet → final pass
     output_tokens: '100',
@@ -132,7 +145,7 @@ describe('ClassificationService.classifyOne (via classifyBatch)', () => {
   it('classifies a fresh session, appends events, and advances the cursor to seqEnd', async () => {
     const { store, appended, advanced } = makeRecordingStore();
     const { classifier, calls } = makeClassifier(detected);
-    const svc = new ClassificationService(store, classifier, makeLogger());
+    const svc = new ClassificationService(store, classifier, makeFakeReader(BASE), makeLogger());
 
     const result = await (svc as unknown as {
       classifyBatch(s: SessionForClassification[]): Promise<{ sessionsClassified: number; eventsAppended: number }>;
@@ -154,7 +167,7 @@ describe('ClassificationService.classifyOne (via classifyBatch)', () => {
   it('re-ingest with no new messages is a no-op call: advances hash, appends nothing, no model spend', async () => {
     const { store, appended, advanced } = makeRecordingStore();
     const { classifier, calls } = makeClassifier(detected);
-    const svc = new ClassificationService(store, classifier, makeLogger());
+    const svc = new ClassificationService(store, classifier, makeFakeReader(BASE), makeLogger());
 
     // Cursor already at the end of this transcript (seq 3).
     await (svc as unknown as {
@@ -170,7 +183,7 @@ describe('ClassificationService.classifyOne (via classifyBatch)', () => {
   it('holds a small, still-active delta without spending on the model', async () => {
     const { store, appended, advanced } = makeRecordingStore();
     const { classifier, calls } = makeClassifier(detected);
-    const svc = new ClassificationService(store, classifier, makeLogger(), { minDelta: 6 });
+    const svc = new ClassificationService(store, classifier, makeFakeReader(BASE), makeLogger(), { minDelta: 6 });
 
     // Active session (ended just now), only a 2-message delta < minDelta.
     const result = await (svc as unknown as {
@@ -220,16 +233,15 @@ describe('ClassificationService — resumed session after a final pass', () => {
   it('(a) large resumed delta classifies fully and RESETS final_pass_done while active', async () => {
     const { store, appended, advanced } = makeRecordingStore();
     const { classifier, calls } = makeClassifier(detected);
-    const svc = new ClassificationService(store, classifier, makeLogger(), { minDelta: 6 });
 
     // 8 new messages (seqs 4..11), session active again (ended just now).
     const resumed = grow(BASE, 8, 0, new Date().toISOString());
+    const svc = new ClassificationService(store, classifier, makeFakeReader(resumed), makeLogger(), { minDelta: 6 });
     const result = await (svc as unknown as {
       classifyBatch(s: SessionForClassification[]): Promise<{ sessionsClassified: number }>;
     }).classifyBatch([
       sessionRow({
         ...finalPassedCursor,
-        raw_transcript: resumed,
         transcript_hash: 'hashResumed',
         ended_at: new Date(),
       }),
@@ -252,17 +264,17 @@ describe('ClassificationService — resumed session after a final pass', () => {
   it('(b) a 2-message resumed tail is held while active, then flushed by the quiet pass as a fresh final pass', async () => {
     const { store, appended, advanced } = makeRecordingStore();
     const { classifier, calls } = makeClassifier(detected);
-    const svc = new ClassificationService(store, classifier, makeLogger(), { minDelta: 6 });
+
+    // Resumed with only 2 new messages (seqs 4..5).
+    const resumed = grow(BASE, 2, 0, new Date().toISOString());
+    const svc = new ClassificationService(store, classifier, makeFakeReader(resumed), makeLogger(), { minDelta: 6 });
     const batch = (s: SessionForClassification[]) =>
       (svc as unknown as {
         classifyBatch(s: SessionForClassification[]): Promise<{ sessionsClassified: number; sessionsSkipped: number }>;
       }).classifyBatch(s);
 
-    // Resumed with only 2 new messages (seqs 4..5).
-    const resumed = grow(BASE, 2, 0, new Date().toISOString());
     const row = sessionRow({
       ...finalPassedCursor,
-      raw_transcript: resumed,
       transcript_hash: 'hashResumed',
     });
 

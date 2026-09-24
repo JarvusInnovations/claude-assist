@@ -6,11 +6,12 @@ import type { SyncService } from './sync.js';
 import { OutlineService } from './outline.js';
 import type {
   PushPayload,
-  SessionRecord,
+  SessionSummaryRecord,
   MachineRecord,
   InventoryPayload,
 } from './types.js';
-import { serializeTranscript, findInTranscript, readAround, type MatchDimension } from './transcript.js';
+import { serializeTranscript, type MatchDimension } from './transcript.js';
+import type { TranscriptReader } from './transcript-reader.js';
 import { normalizeProjectPaths } from './project-names.js';
 import type { ClassificationService } from './classification/service.js';
 import type { SynthesisService } from './classification/synthesis.js';
@@ -58,6 +59,7 @@ function serializeMatch(m: import('./transcript.js').TranscriptMatch) {
 export interface RoutesConfig {
   syncService: SyncService;
   outlineService: OutlineService | null;
+  reader: TranscriptReader;
   classificationService?: ClassificationService | null;
   synthesisService?: SynthesisService | null;
   classificationStore?: ClassificationStore | null;
@@ -68,7 +70,7 @@ export interface RoutesConfig {
  */
 export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
   fastify,
-  { syncService, outlineService, classificationService, synthesisService, classificationStore }
+  { syncService, outlineService, reader, classificationService, synthesisService, classificationStore }
 ) => {
   // GET /sessions - Search sessions with full-text search and filters
   fastify.get<{
@@ -369,11 +371,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
     // One transcript resident at a time, rather than all 50. Each is dropped
     // once serialized down to the requested window.
     const serializeOne = async (id: string): Promise<string> => {
-      const [row] = await fastify.sql<{ raw_transcript: string | null }[]>`
-        SELECT raw_transcript FROM sessions.sessions WHERE id = ${id}::uuid
-      `;
-      if (!row?.raw_transcript) return '';
-      return serializeTranscript(row.raw_transcript, {
+      return reader.serialize(id, {
         after: afterDate,
         before: beforeDate,
         includeTools,
@@ -488,8 +486,20 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
     }
     const withRawMessages = request.query.with_raw_messages === 'true';
 
-    const sessions = await fastify.sql<(SessionRecord & { machine_name: string })[]>`
-      SELECT s.*, m.machine_id as machine_name
+    // Excludes raw_transcript — a session's archive can run to hundreds of MB
+    // and this route doesn't otherwise touch it. with_raw_messages fetches it
+    // separately below, through the read layer, only when asked for.
+    const sessions = await fastify.sql<(SessionSummaryRecord & { machine_name: string })[]>`
+      SELECT
+        s.id, s.machine_id, s.project_path, s.git_branch, s.started_at, s.ended_at,
+        s.context_final_tokens, s.context_peak_tokens, s.context_limit_tokens, s.context_model,
+        s.user_messages, s.tools_used, s.files_touched,
+        s.input_tokens, s.output_tokens, s.cache_read_tokens,
+        s.transcript_path, s.transcript_hash, s.search_text,
+        s.message_count, s.user_message_count, s.claude_version, s.synced_at,
+        s.outline, s.title, s.session_name, s.outline_hash, s.outline_attempts,
+        s.models_used, s.model_tokens, s.activity_ranges,
+        m.machine_id as machine_name
       FROM sessions.sessions s
       JOIN sessions.machines m ON s.machine_id = m.id
       WHERE s.id = ${id}::uuid
@@ -531,21 +541,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
     };
 
     if (withRawMessages) {
-      // Parse the raw_transcript JSONL into messages
-      const messages = session.raw_transcript
-        .trim()
-        .split('\n')
-        .filter(Boolean)
-        .map((line) => {
-          try {
-            return JSON.parse(line);
-          } catch {
-            return null;
-          }
-        })
-        .filter(Boolean);
-
-      result.raw_messages = messages;
+      result.raw_messages = await reader.readRawMessages(id);
     }
 
     return result;
@@ -574,13 +570,10 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       if (Number.isNaN(beforeN) || Number.isNaN(afterN) || beforeN < 0 || afterN < 0) {
         return reply.status(400).send({ error: 'before/after must be non-negative integers in around mode' });
       }
-      const rows = await fastify.sql<{ raw_transcript: string }[]>`
-        SELECT raw_transcript FROM sessions.sessions WHERE id = ${id}::uuid
-      `;
-      if (rows.length === 0) {
+      const { sessionFound, window } = await reader.readAround(id, around, beforeN, afterN);
+      if (!sessionFound) {
         return reply.status(404).send({ error: 'Session not found' });
       }
-      const window = readAround(rows[0]!.raw_transcript, around, beforeN, afterN);
       if (!window) {
         return reply.status(404).send({ error: 'Anchor uuid not found in this session' });
       }
@@ -596,19 +589,13 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       return reply.status(400).send({ error: 'Invalid after date format' });
     }
 
-    const sessions = await fastify.sql<{ raw_transcript: string }[]>`
-      SELECT raw_transcript
-      FROM sessions.sessions
-      WHERE id = ${id}::uuid
-    `;
-
-    if (sessions.length === 0) {
+    const raw = await reader.readFull(id);
+    if (raw === null) {
       reply.status(404);
       return { error: 'Session not found' };
     }
 
-    const session = sessions[0]!;
-    const transcript = serializeTranscript(session.raw_transcript, {
+    const transcript = serializeTranscript(raw, {
       before: beforeDate,
       after: afterDate,
       includeTools,
@@ -641,14 +628,7 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       return reply.status(400).send({ error: 'Provide a tool and/or match filter' });
     }
 
-    const rows = await fastify.sql<{ raw_transcript: string }[]>`
-      SELECT raw_transcript FROM sessions.sessions WHERE id = ${id}::uuid
-    `;
-    if (rows.length === 0) {
-      return reply.status(404).send({ error: 'Session not found' });
-    }
-
-    const matches = findInTranscript(rows[0]!.raw_transcript, {
+    const { sessionFound, matches } = await reader.find(id, {
       tool: q.tool,
       match: q.match,
       in: (q.in as MatchDimension) ?? 'any',
@@ -658,6 +638,9 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       limit: q.limit ? parseInt(q.limit, 10) : 10,
       includeSidechain: q.include_sidechain === 'true',
     });
+    if (!sessionFound) {
+      return reply.status(404).send({ error: 'Session not found' });
+    }
 
     return { count: matches.length, matches: matches.map(serializeMatch) };
   });

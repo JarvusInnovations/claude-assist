@@ -3,6 +3,7 @@ import type postgres from 'postgres';
 import type { FastifyBaseLogger } from 'fastify';
 import type { ModelInvoker } from '@jarvus/claude-assist-core';
 import { serializeTranscript } from './transcript.js';
+import { TranscriptReader } from './transcript-reader.js';
 
 export interface OutlineServiceConfig {
   /** The single metered-model choke point (specs/modules/invoker.md). */
@@ -103,6 +104,7 @@ export class OutlineService {
 
   private sql: postgres.Sql;
   private log: FastifyBaseLogger;
+  private reader: TranscriptReader;
   private invoker: ModelInvoker;
   private limit: ReturnType<typeof pLimit>;
   private model: string | undefined;
@@ -117,6 +119,7 @@ export class OutlineService {
   ) {
     this.sql = sql;
     this.log = log;
+    this.reader = new TranscriptReader(sql);
     this.invoker = config.invoker;
     this.model = config.model;
     this.maxTokens = config.maxTokens ?? 1024;
@@ -258,22 +261,7 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
   private async fetchCappedTranscript(
     sessionId: string
   ): Promise<{ raw: string; fullLength: number }> {
-    const half = Math.floor(OutlineService.RAW_TRANSCRIPT_FETCH_BUDGET / 2);
-
-    const [row] = await this.sql<{ raw: string; full_length: number }[]>`
-      SELECT
-        coalesce(length(raw_transcript), 0) AS full_length,
-        CASE
-          WHEN raw_transcript IS NULL THEN ''
-          WHEN length(raw_transcript) <= ${OutlineService.RAW_TRANSCRIPT_FETCH_BUDGET}
-            THEN raw_transcript
-          ELSE left(raw_transcript, ${half}) || E'\n' || right(raw_transcript, ${half})
-        END AS raw
-      FROM sessions.sessions
-      WHERE id = ${sessionId}::uuid
-    `;
-
-    return { raw: row?.raw ?? '', fullLength: row?.full_length ?? 0 };
+    return this.reader.readHeadTail(sessionId, OutlineService.RAW_TRANSCRIPT_FETCH_BUDGET);
   }
 
   /**

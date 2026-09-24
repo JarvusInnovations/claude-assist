@@ -4,6 +4,7 @@ import postgres from 'postgres';
 import { createScheduler } from '@jarvus/claude-assist-core';
 import sessionsPlugin, {
   registerPublicShareRoutes,
+  TranscriptReader,
   DEFAULT_SESSION_IGNORE_MARKERS,
 } from '@jarvus/claude-assist-sessions';
 import googlePlugin from '@jarvus/claude-assist-google';
@@ -823,7 +824,7 @@ if (fastify.config.ENABLE_CHAT) {
 }
 
 // Public share routes — bypass Caddy basic-auth via /share/* path pattern
-await fastify.register(registerPublicShareRoutes);
+await fastify.register(registerPublicShareRoutes, { reader: new TranscriptReader(fastify.sql) });
 
 // Pages public serving surface — GET /pages, /pages/:slug, /pages/_helper.js.
 // Same auth posture as the rest of the app (Tailscale-reachable only, no
