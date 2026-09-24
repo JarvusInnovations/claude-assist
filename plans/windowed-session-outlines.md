@@ -1,8 +1,9 @@
 ---
-status: planned
+status: in-progress
 depends: [transcript-read-layer]
 specs:
   - specs/behaviors/session-transcript-storage.md
+  - specs/behaviors/session-outlines.md
 issues: []
 ---
 
