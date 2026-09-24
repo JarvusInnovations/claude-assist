@@ -37,7 +37,8 @@ how much it grew, never to how large it is.
 byte range `[byte_start, byte_end)` it covers in the source file, the message
 index range it contains, its content, and a content hash. Chunks split only at
 line boundaries: a trailing partial line is left for the next cycle. Chunk size
-is capped (`SESSIONS_CHUNK_MAX_BYTES`) so no single row is large.
+is capped (`SESSIONS_CHUNK_MAX_BYTES`, default 8 MiB) so no single row is large.
+The per-cycle ingest budget `SESSIONS_INGEST_BUDGET_BYTES` defaults to 64 MiB.
 
 **Continuity check.** Before appending, sync confirms that the file still
 begins with what was archived: the file is at least `ingested_bytes` long, and
@@ -46,6 +47,15 @@ If the check fails (the file was rewritten, truncated or replaced), sync
 re-ingests that session from byte zero. It writes the new chunk series under
 the same session in one transaction, replacing the old one. That is the only
 path that removes chunks.
+
+The per-cycle check covers only the tail. A **nightly full verification**
+walks each session active in the last day and compares every stored chunk's
+hash against the same byte range on disk, streaming, never holding more than
+one chunk. A mismatch triggers the same full re-ingest.
+
+**Message index.** Every archived message has a row mapping `(session, seq)` to
+its uuid and the chunk that holds it, so anchor lookups (around-a-message) and
+message-range reads resolve to exactly the chunks they need.
 
 **Incremental derivation.** Session aggregates (tokens, message counts, models,
 activity ranges, context readings, user messages, files touched) are derived by
@@ -59,15 +69,16 @@ a satellite each session's `ingested_bytes` and last-chunk hash. The satellite
 sends only the bytes after that offset, or the whole file if its continuity
 check fails.
 
-**Search text is bounded.** Full-text indexing covers a bounded window of a
-session's user messages (the most recent, up to Postgres's `tsvector` limits),
+**Search text is bounded.** Full-text indexing covers the most recent user
+messages up to 256 KiB of text, well under Postgres's 1 MB `tsvector` limit,
 not an ever-growing concatenation. Exact-match search over full content goes
 through the grep path, which reads chunks.
 
 **Storage tiering is additive [phase 2].** A chunk's content may later live in
 object storage (the row keeping its range, hash and an object reference instead
 of inline content), for cold or very large sessions. Nothing in phase 1 may
-assume chunk content is always inline, beyond the read layer.
+assume chunk content is always inline, beyond the read layer. The trigger
+(database size or session age) is decided when tiering is planned.
 
 ## Principles
 
