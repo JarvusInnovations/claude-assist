@@ -141,6 +141,23 @@ though the row is still `pending` and eligible for claim. This is what keeps
 "at most once per sweep" from also meaning "once per sweep whether or not
 anything changed."
 
+## Memory bounds on the windowed path
+
+- **One windowed session at a time.** The sweep's session concurrency applies
+  to single-pass sessions only; windowed sessions are processed serially, so
+  at most one transcript parse is resident for windowing.
+- **One parse per session per sweep.** Boundary planning and every window's
+  text slice the same parsed messages; the transcript is never re-read per
+  window.
+- **No content read once the budget is spent.** A windowed session reached
+  after the sweep's summarization budget is exhausted is skipped without
+  reading its transcript, and stays selected for the next sweep.
+- **Inline ceiling.** While a session's transcript is stored inline (before
+  chunked storage, specs/behaviors/session-transcript-storage.md), a window
+  read is a whole-transcript parse. A session whose inline transcript exceeds
+  64 MiB keeps the single-pass head+tail outline, computed in SQL, until its
+  storage is chunked.
+
 ## Composition: summary of summaries
 
 The session outline (`sessions.sessions.outline`/`title`) for a windowed

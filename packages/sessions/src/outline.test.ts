@@ -128,8 +128,13 @@ function makeLogger(): FastifyBaseLogger {
   } as unknown as FastifyBaseLogger;
 }
 
-function makeFakeDb(sessions: FakeSession[], windows: FakeWindow[]): postgres.Sql {
+function makeFakeDb(
+  sessions: FakeSession[],
+  windows: FakeWindow[],
+  seen?: { text: string; vals: unknown[] }[]
+): postgres.Sql {
   return makeFakeSql(async (text, vals) => {
+    seen?.push({ text, vals });
     // ── sweep selection ──
     if (text.includes('WHERE outline_hash IS DISTINCT FROM transcript_hash') && text.includes('ORDER BY started_at DESC')) {
       const cap = vals[0] as number;
@@ -440,6 +445,28 @@ describe('OutlineService — windowed generation', () => {
     await svc.generateOutlinesSync();
     expect(windows.every((w) => w.summary !== null)).toBe(true);
     expect(sessions[0]!.outline_hash).toBe('hashA');
+  });
+
+  it('once the sweep budget is spent, remaining windowed sessions are not read at all', async () => {
+    const sessions = [
+      baseSession({ id: 'aaaaaaaa-0000-4000-8000-000000000001', message_count: 500, raw_transcript: bigTranscript(500), started_at: '2026-01-02T00:00:00.000Z' }),
+      baseSession({ id: 'aaaaaaaa-0000-4000-8000-000000000002', message_count: 500, raw_transcript: bigTranscript(500), started_at: '2026-01-01T00:00:00.000Z' }),
+    ];
+    const windows: FakeWindow[] = [];
+    const seen: { text: string; vals: unknown[] }[] = [];
+    const { invoker } = makeFakeInvoker();
+    const svc = new OutlineService(makeFakeDb(sessions, windows, seen), makeLogger(), {
+      invoker,
+      windowConfig: { thresholdMessages: 400, maxMessages: 100, sweepCap: 2 },
+    });
+
+    await svc.generateOutlinesSync();
+
+    const fullReads = seen.filter((q) => q.text.includes('SELECT raw_transcript FROM sessions.sessions'));
+    // The first (newest) session spends the whole budget; it is parsed exactly
+    // once despite having several windows, and the second is never read.
+    expect(fullReads.map((q) => q.vals[0])).toEqual([sessions[0]!.id]);
+    expect(windows.every((w) => w.session_id === sessions[0]!.id)).toBe(true);
   });
 
   it('a closed window is summarized exactly once — fully caught up, the session drops out of the sweep entirely', async () => {

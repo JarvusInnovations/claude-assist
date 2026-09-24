@@ -3,7 +3,7 @@ import pLimit from 'p-limit';
 import type postgres from 'postgres';
 import type { FastifyBaseLogger } from 'fastify';
 import type { ModelInvoker } from '@jarvus/claude-assist-core';
-import { serializeTranscript } from './transcript.js';
+import { serializeTranscript, serializeMessageSlice } from './transcript.js';
 import { TranscriptReader } from './transcript-reader.js';
 import {
   OutlineWindowStore,
@@ -127,12 +127,27 @@ export class OutlineService {
 
   /** Lease duration for a claimed window's summarization (specs/behaviors/scheduled-work-leases.md). */
   private static readonly WINDOW_LEASE_MS = 10 * 60 * 1000;
+  /**
+   * Largest inline transcript the windowed path will parse. Over the inline
+   * storage backend a window read is a whole-transcript parse, and a parse
+   * costs many times the raw size in heap; past this ceiling a session keeps
+   * the single-pass head+tail outline (computed in SQL) until chunked
+   * storage makes window reads bounded (specs/behaviors/session-transcript-storage.md).
+   */
+  private static readonly WINDOW_MAX_INLINE_BYTES = 64 * 1024 * 1024;
 
   private sql: postgres.Sql;
   private log: FastifyBaseLogger;
   private reader: TranscriptReader;
   private invoker: ModelInvoker;
   private limit: ReturnType<typeof pLimit>;
+  /**
+   * Windowed sessions run one at a time: each parses its whole transcript
+   * (over inline storage), and the sweep's session concurrency would
+   * otherwise hold several parses in memory at once. Serializing also makes
+   * the per-sweep budget check exact.
+   */
+  private windowedLimit = pLimit(1);
   private model: string | undefined;
   private maxTokens: number;
   private progress: OutlineProgress;
@@ -400,8 +415,8 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
    * `rawByteLength` is a scalar read, never a content fetch.
    */
   private async isWindowed(session: SessionForOutline): Promise<boolean> {
-    if (session.message_count > this.windowConfig.thresholdMessages) return true;
     const bytes = await this.reader.rawByteLength(session.id);
+    if (bytes > OutlineService.WINDOW_MAX_INLINE_BYTES) return false;
     return isWindowedSession(session.message_count, bytes, this.windowConfig);
   }
 
@@ -424,8 +439,19 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
     newWindowsHash: string | null;
     caughtUp: boolean;
   }> {
+    // Budget spent this sweep: touch no content at all. Boundary planning reads
+    // and parses the transcript, so running it for every remaining windowed
+    // session after the budget is gone would cost a full parse each for no
+    // summarization progress.
+    if (this.windowBudget <= 0) {
+      return { generated: null, newWindowsHash: null, caughtUp: false };
+    }
+
     const { lastClosedToSeq, closedCount } = await this.windowStore.boundaryState(session.id);
-    const newMessages = await this.reader.messagesSince(session.id, lastClosedToSeq);
+    // One parse per session per sweep: boundary planning and every window's
+    // text below slice this same array rather than re-reading the transcript.
+    const allMessages = await this.reader.messagesSince(session.id, -1);
+    const newMessages = allMessages.slice(lastClosedToSeq + 1);
     if (newMessages.length > 0) {
       const boundaries = planWindows(
         closedCount,
@@ -462,7 +488,7 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
 
       const isTail = w.closed_at === null;
       try {
-        const range = await this.reader.messageRange(session.id, w.from_seq, w.to_seq);
+        const range = serializeMessageSlice(allMessages, w.from_seq, w.to_seq);
         const contentHash = createHash('md5').update(range.text).digest('hex');
 
         if (isTail && w.content_hash !== null && w.content_hash === contentHash) {
@@ -571,7 +597,9 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
       return;
     }
 
-    const { generated, newWindowsHash, caughtUp } = await this.generateWindowedOutline(session);
+    const { generated, newWindowsHash, caughtUp } = await this.windowedLimit(() =>
+      this.generateWindowedOutline(session)
+    );
     await this.sql`
       UPDATE sessions.sessions SET
         ${generated
