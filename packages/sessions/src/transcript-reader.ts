@@ -5,6 +5,7 @@ import {
   readAround,
   serializeSince,
   serializeMessageRange,
+  parseMessages,
   type SerializeTranscriptOptions,
   type FindOptions,
   type TranscriptMatch,
@@ -12,6 +13,7 @@ import {
   type SerializedDelta,
   type MessageRangeResult,
 } from './transcript.js';
+import type { TranscriptMessage } from './types.js';
 
 /**
  * The single choke point for reading `sessions.sessions.raw_transcript`.
@@ -173,5 +175,39 @@ export class TranscriptReader {
       WHERE raw_transcript IS NOT NULL AND raw_transcript != ''
     `;
     return rows.map((r) => r.id);
+  }
+
+  // ───────────────────────────────────────────────────────────────────────
+  // Added for windowed outlines (specs/behaviors/session-outlines.md).
+  // Grouped at the end per the read layer's convention: existing methods
+  // above are unchanged, these are additions.
+  // ───────────────────────────────────────────────────────────────────────
+
+  /**
+   * Raw transcript byte length without fetching content — the scalar half of
+   * what `readHeadTail` already computes in SQL. Lets a caller decide whether
+   * a session is large enough to window without paying to fetch bytes it only
+   * needed to count.
+   */
+  async rawByteLength(sessionId: string): Promise<number> {
+    const [row] = await this.sql<{ len: number }[]>`
+      SELECT coalesce(length(raw_transcript), 0) AS len
+      FROM sessions.sessions WHERE id = ${sessionId}::uuid
+    `;
+    return row?.len ?? 0;
+  }
+
+  /**
+   * Parsed messages after `afterSeq` (exclusive) — the windowing sweep's raw
+   * material for boundary decisions (message timestamps, rough per-message
+   * size) that the serialized `[U]`/`[A]`/`[T]` text `messageRange` returns
+   * doesn't carry. Shares the read layer's accepted carve-out: today's inline
+   * backend parses the whole column to slice it; a chunked backend resolves
+   * this to just the bytes after `afterSeq` (see plans/transcript-read-layer.md).
+   */
+  async messagesSince(sessionId: string, afterSeq: number): Promise<TranscriptMessage[]> {
+    const raw = await this.readFull(sessionId);
+    if (!raw) return [];
+    return parseMessages(raw).slice(afterSeq + 1);
   }
 }

@@ -36,6 +36,14 @@ function fakeSql(table: Record<string, string | null>): postgres.Sql {
   const fn = ((strings: TemplateStringsArray, ...values: unknown[]) => {
     const text = strings.join('?');
 
+    if (text.includes('AS len')) {
+      // rawByteLength: values = [sessionId]
+      const [sessionId] = values as [string];
+      if (!(sessionId in table)) return Promise.resolve([{ len: 0 }]);
+      const content = table[sessionId] ?? null;
+      return Promise.resolve([{ len: content === null ? 0 : content.length }]);
+    }
+
     if (text.includes('full_length')) {
       // readHeadTail: values = [budgetBytes, half, half, sessionId]
       const [budgetBytes, half, , sessionId] = values as [number, number, number, string];
@@ -194,6 +202,40 @@ describe('TranscriptReader.readRawMessages', () => {
   it('returns [] for a missing session', async () => {
     const reader = new TranscriptReader(fakeSql({}));
     expect(await reader.readRawMessages(MISSING_ID)).toEqual([]);
+  });
+});
+
+describe('TranscriptReader.rawByteLength', () => {
+  it('returns the byte length without needing the content', async () => {
+    const reader = new TranscriptReader(fakeSql({ [KNOWN_ID]: TRANSCRIPT }));
+    expect(await reader.rawByteLength(KNOWN_ID)).toBe(TRANSCRIPT.length);
+  });
+
+  it('returns 0 for a missing session or a null column', async () => {
+    const reader = new TranscriptReader(fakeSql({ [EMPTY_ID]: null }));
+    expect(await reader.rawByteLength(MISSING_ID)).toBe(0);
+    expect(await reader.rawByteLength(EMPTY_ID)).toBe(0);
+  });
+});
+
+describe('TranscriptReader.messagesSince', () => {
+  it('returns only messages after afterSeq', async () => {
+    const reader = new TranscriptReader(fakeSql({ [KNOWN_ID]: TRANSCRIPT }));
+    const msgs = await reader.messagesSince(KNOWN_ID, 1);
+    expect(msgs).toHaveLength(2);
+    expect(msgs[0]!.uuid).toBe('u2');
+  });
+
+  it('returns all messages when afterSeq is -1', async () => {
+    const reader = new TranscriptReader(fakeSql({ [KNOWN_ID]: TRANSCRIPT }));
+    const msgs = await reader.messagesSince(KNOWN_ID, -1);
+    expect(msgs).toHaveLength(4);
+  });
+
+  it('returns [] for a missing or empty session', async () => {
+    const reader = new TranscriptReader(fakeSql({ [EMPTY_ID]: null }));
+    expect(await reader.messagesSince(MISSING_ID, -1)).toEqual([]);
+    expect(await reader.messagesSince(EMPTY_ID, -1)).toEqual([]);
   });
 });
 
