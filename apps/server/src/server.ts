@@ -431,6 +431,13 @@ await fastify.register(
           classificationCron: fastify.config.SESSIONS_CLASSIFICATION_CRON,
           synthesisCron: fastify.config.SESSIONS_SYNTHESIS_CRON,
           synthesisModel: fastify.config.SESSIONS_SYNTHESIS_MODEL,
+          outlineWindowThresholdMessages: fastify.config.SESSIONS_OUTLINE_WINDOW_THRESHOLD_MESSAGES,
+          outlineWindowThresholdBytes: fastify.config.SESSIONS_OUTLINE_WINDOW_THRESHOLD_BYTES,
+          outlineWindowMaxMessages: fastify.config.SESSIONS_OUTLINE_WINDOW_MAX_MESSAGES,
+          outlineWindowMaxBytes: fastify.config.SESSIONS_OUTLINE_WINDOW_MAX_BYTES,
+          outlineWindowMaxSpanMs: fastify.config.SESSIONS_OUTLINE_WINDOW_MAX_SPAN_MS,
+          outlineWindowSweepCap: fastify.config.SESSIONS_OUTLINE_WINDOW_SWEEP_CAP,
+          outlineWindowMaxAttempts: fastify.config.SESSIONS_OUTLINE_WINDOW_MAX_ATTEMPTS,
           ignoreContentMarkers: [
             ...DEFAULT_SESSION_IGNORE_MARKERS,
             ...(fastify.config.SESSIONS_IGNORE_MARKERS

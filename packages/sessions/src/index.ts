@@ -48,6 +48,15 @@ export default createPlugin('sessions', async (fastify, options) => {
       invoker: fastify.invoker,
       concurrency: config.outlineConcurrency,
       disableGenerateOutlines: config.disableGenerateOutlines,
+      windowConfig: {
+        thresholdMessages: config.outlineWindowThresholdMessages,
+        thresholdBytes: config.outlineWindowThresholdBytes,
+        maxMessages: config.outlineWindowMaxMessages,
+        maxBytes: config.outlineWindowMaxBytes,
+        maxSpanMs: config.outlineWindowMaxSpanMs,
+        sweepCap: config.outlineWindowSweepCap,
+        maxAttempts: config.outlineWindowMaxAttempts,
+      },
     });
     fastify.log.info('Outline service enabled');
   } else {

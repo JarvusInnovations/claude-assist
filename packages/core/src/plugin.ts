@@ -622,6 +622,22 @@ export interface SessionsPluginConfig {
   synthesisCron?: string;
   /** Synthesis model id (default 'claude-sonnet-5'). */
   synthesisModel?: string;
+
+  // ── Windowed outlines (specs/behaviors/session-outlines.md) ──────────────
+  /** Sessions with more messages than this are windowed instead of single-pass (default 400). */
+  outlineWindowThresholdMessages?: number;
+  /** Sessions with a raw transcript larger than this (bytes) are windowed (default 2,000,000). */
+  outlineWindowThresholdBytes?: number;
+  /** A window closes once it reaches this many messages (default 200). */
+  outlineWindowMaxMessages?: number;
+  /** A window closes once its accumulated raw size reaches this many bytes (default 500,000). */
+  outlineWindowMaxBytes?: number;
+  /** A window closes once it spans this many milliseconds (default 6 hours). */
+  outlineWindowMaxSpanMs?: number;
+  /** Windows summarized per sweep, across all sessions — the backfill throttle (default 20). */
+  outlineWindowSweepCap?: number;
+  /** A window's summarization stops being retried automatically past this many failures (default 5). */
+  outlineWindowMaxAttempts?: number;
 }
 
 /**
