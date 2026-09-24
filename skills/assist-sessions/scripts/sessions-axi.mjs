@@ -1278,7 +1278,9 @@ async function grepCross(flags) {
 var DETAILS_HELP = `sessions-axi details <session-id> [--raw] [--json]
 
   Session metadata (tokens, tools, files, models). --raw includes the parsed
-  raw message array (large); --json returns the raw API object.`;
+  raw message array (large); --json returns the raw API object.
+  A windowed session (specs/behaviors/session-outlines.md) also shows its
+  per-window summaries.`;
 var SCHEMA2 = [
   field("id"),
   field("machine"),
@@ -1298,6 +1300,13 @@ var SCHEMA2 = [
   field("title"),
   field("outline")
 ];
+var WINDOW_SCHEMA = [
+  field("window_index", "window"),
+  custom("range", (w) => `${w.from_seq}-${w.to_seq}`),
+  custom("state", (w) => w.closed ? "closed" : "open"),
+  field("status"),
+  truncate("summary", 200)
+];
 async function detailsCommand(args) {
   const { positionals, flags } = parseArgs(args, ["json", "raw"]);
   const id = requirePositional(positionals, 0, "session id", DETAILS_HELP);
@@ -1306,10 +1315,12 @@ async function detailsCommand(args) {
   });
   if (flags.json || flags.raw) return rawJson(session);
   const cli = cliInvocation();
-  return renderOutput2([
-    renderDetail("session", session, SCHEMA2),
-    renderHelp([`Run \`${cli} transcript ${id}\` to read the conversation`])
-  ]);
+  const blocks = [renderDetail("session", session, SCHEMA2)];
+  if (Array.isArray(session.outline_windows) && session.outline_windows.length > 0) {
+    blocks.push(renderList("outline_windows", session.outline_windows, WINDOW_SCHEMA));
+  }
+  blocks.push(renderHelp([`Run \`${cli} transcript ${id}\` to read the conversation`]));
+  return renderOutput2(blocks);
 }
 
 // packages/sessions/src/axi/commands/activity.ts
@@ -1441,7 +1452,7 @@ async function shareCommand(args) {
 }
 
 // packages/sessions/src/axi/cli.ts
-var VERSION = true ? "6c32b6c" : "dev";
+var VERSION = true ? "d592887" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [command] [args] [flags]
        ${CLI}                 # no args \u2192 home (recent activity + next steps)
