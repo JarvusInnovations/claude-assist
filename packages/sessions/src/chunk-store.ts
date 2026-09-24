@@ -27,12 +27,18 @@ import { EMPTY_AGGREGATE, boundedSearchText } from './aggregate-merge.js';
  * shouldn't turn into one unbounded array payload.
  *
  * (`sql(rows, ...columns)` — postgres.js's row-object bulk-insert helper — is
- * deliberately not used here: it throws `UNDEFINED_VALUE` under this repo's
- * Bun + postgres.js combination even for a plain row of defined values, a
- * pre-existing landmine the old whole-content `writeToolCalls` also hit,
- * just never exercised against a real database before this plan's
- * integration tests. `unnest` sidesteps it entirely and is the standard
- * efficient bulk-insert shape besides.)
+ * used elsewhere in this codebase in its bare form, `` INSERT INTO t ${sql(rows,
+ * ...cols)} `` (no literal column list, no explicit `VALUES` keyword; see the
+ * original `SyncService.writeToolCalls` in this file's git history), which
+ * works fine and is how postgres.js expects it to be invoked — it internally
+ * generates both the column list and the `VALUES (...), (...)` text via its
+ * `insert` builder. Combining that helper with an explicit `VALUES` keyword
+ * of our own — `` INSERT INTO t (a, b, ...) VALUES ${sql(rows, ...cols)} ``,
+ * which is what an early draft of this function did — throws `UNDEFINED_VALUE`
+ * even for fully-defined rows (reproduced in isolation: the bare form
+ * succeeds, the explicit-`VALUES` form fails, same rows, same connection).
+ * `unnest` sidesteps needing to choose between those two forms at all, and is
+ * the standard efficient bulk-insert shape besides.)
  */
 const MESSAGE_INDEX_INSERT_BATCH = 20_000;
 const TOOL_CALL_INSERT_BATCH = 20_000;
@@ -338,18 +344,22 @@ export async function writeIngestCycle(sql: postgres.Sql, p: WriteCycleParams): 
       await forEachBatch(p.toolCalls, TOOL_CALL_INSERT_BATCH, (batch) => {
         const msgUuids = batch.map((tc) => tc.msgUuid);
         const msgIndexes = batch.map((tc) => tc.msgIndex);
-        // ISO strings, not raw Date objects: postgres.js in this stack
-        // mis-infers a Date-array parameter's element type as a scalar
-        // timestamptz, which then fails the explicit ::timestamptz[] cast.
-        // A string array through the same cast has no such issue.
+        // ISO strings, not raw Date objects: a bound parameter that is a JS
+        // array of Date objects gets its type inferred from the first
+        // element and sent as a scalar `timestamptz`, so the explicit
+        // `::timestamptz[]` cast then fails with "cannot cast type timestamp
+        // with time zone to timestamp with time zone[]" (reproduced in
+        // isolation: `${[new Date(), new Date()]}::timestamptz[]` errors;
+        // `${[iso, iso]}::timestamptz[]` with the same values as ISO strings
+        // does not). ISO strings infer as a text array and cast cleanly.
         const tsValues = batch.map((tc) => tc.ts?.toISOString() ?? null);
         const toolNames = batch.map((tc) => tc.toolName);
         const targets = batch.map((tc) => tc.target);
-        // 0/1 ints, not booleans: a bound bool[] parameter decodes every
-        // element as false in this stack's postgres.js (scalar bools and
-        // literal bool arrays are unaffected — only a parameterized bool
-        // array is). Casting the int back to boolean in the SELECT list
-        // sidesteps it entirely.
+        // 0/1 ints, not booleans: the same scalar-inference issue hits a
+        // bound array of JS booleans — `${[true, false]}::bool[]` errors
+        // with "cannot cast type boolean to boolean[]" for the same reason
+        // (reproduced in isolation). Binding ints and casting back to
+        // boolean in the SELECT list sidesteps it.
         const isSidechainInts = batch.map((tc) => (tc.isSidechain ? 1 : 0));
         return tx`
           INSERT INTO sessions.tool_calls (session_id, msg_uuid, msg_index, ts, tool_name, target, is_sidechain)

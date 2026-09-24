@@ -120,18 +120,27 @@ rows are left to the backfill plan.
   the *current tip* of an open chain, not the full history `messagesWithUsage`
   gave the original algorithm. This is what makes `MAX_OPEN_CHAINS` (128)
   bound checkpoint size by concurrency instead of by message count.
-- **Three postgres.js landmines**, all specific to this repo's Bun +
-  postgres.js@3.4.8 combination, none related to the schema or logic: the
-  row-object bulk-insert helper (`sql(rows, ...cols)`) throws
-  `UNDEFINED_VALUE` even for fully-defined rows (reproduced with the
-  unmodified pre-existing `writeToolCalls` pattern, so this was always
-  latent — CI has no database, and apparently nothing had exercised this
-  path against a real one before); a bound `boolean[]` parameter decodes
-  every element `false`; a bound `Date[]` parameter mis-infers as a scalar
-  `timestamptz`. All three are worked around in `chunk-store.ts` (unnest
-  arrays instead of row objects; 0/1 ints cast to boolean; ISO strings
-  instead of `Date`) with comments at each call site. Worth knowing before
-  anyone else in this codebase reaches for a bulk insert.
+- **Two precisely-reproduced postgres.js@3.4.8 parameter-binding quirks**
+  (this repo's Bun runtime; not schema/logic bugs), both worked around in
+  `chunk-store.ts`. First: `sql(rows, ...cols)` (postgres.js's row-object
+  bulk-insert helper) works correctly in its bare/canonical form — `` INSERT
+  INTO t ${sql(rows, ...cols)} `` with no literal column list and no explicit
+  `VALUES` keyword, which is how the pre-existing `writeToolCalls` actually
+  invoked it (confirmed by isolated repro: that exact form still succeeds).
+  Combining it with an explicit `VALUES ${sql(rows, ...cols)}` — an early
+  draft of `chunk-store.ts`'s own insert — throws `UNDEFINED_VALUE` on the
+  same rows over the same connection. **Not** a claim that the pre-existing
+  pattern is broken; it isn't. Second: a bound parameter that is a JS array
+  of `boolean`s or `Date`s gets its Postgres type inferred from its first
+  element as a *scalar* (`boolean`/`timestamptz`), so an explicit
+  `::bool[]`/`::timestamptz[]` cast on it fails with "cannot cast type X to
+  X[]" (reproduced in isolation for both). Binding ints (cast back to
+  boolean in the `SELECT` list) and ISO strings respectively avoids it. Both
+  are moot here regardless, since `unnest` was adopted for other reasons
+  (bulk-insert efficiency, and each array column being one bound parameter
+  rather than one per row sidesteps the 65,534-bind-parameter ceiling
+  entirely) — but worth knowing precisely, not overstating, before anyone
+  else in this codebase hits either shape.
 - **A per-cycle ingest budget smaller than a single JSONL line stalls
   forever** for that session: `readBoundedTail`/`capToBudget` only accept
   complete lines, so a budget that can never fit one full line makes zero
