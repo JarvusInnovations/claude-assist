@@ -24,8 +24,8 @@ In scope:
    stopgap skipped) continue from the file through normal incremental ingest.
 3. Progress endpoint or log (converted / remaining / bytes), and a stop switch.
 4. Space reclamation: once all rows are converted, reclaim the dead TOAST space
-   with a scheduled `VACUUM FULL sessions.sessions` in a maintenance window, or
-   `pg_repack` if available. Verify that the database size drops and that the
+   with `VACUUM FULL sessions.sessions`, run by the operator in a quiet window
+   (an exclusive lock for a few minutes at this size). Verify that the database size drops and that the
    next restic snapshot shrinks.
 
 ## Implements
@@ -41,6 +41,8 @@ reported, never partially converted.
 
 ## Validation
 
+- [ ] A verified backup snapshot exists from immediately before the run
+
 - [ ] Every row is `chunked`, and `raw_transcript` is null everywhere
 - [ ] Spot-check: for a sample across size buckets, a transcript served via
   the read layer is byte-identical to a pre-migration dump
@@ -49,8 +51,7 @@ reported, never partially converted.
 ## Risks / unknowns
 
 - `VACUUM FULL` takes an exclusive lock for its duration, which blocks sync and
-  reads. Schedule it, or use `pg_repack` if installable in the postgres
-  container.
+  reads. Stop the server's sync (or the server) for the few minutes it takes.
 - Transcripts older than the local retention window exist only in the
   database, so backfill verification is the only safeguard for them. Take a
   restic snapshot immediately before starting.

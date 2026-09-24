@@ -17,7 +17,10 @@ In scope:
 
 1. Migration: `sessions.transcript_chunks` (session, seq, byte range, message
    range, content, hash), plus on `sessions.sessions`: `storage`
-   (`inline` | `chunked`), `ingested_bytes`, `parse_checkpoint` (jsonb).
+   (`inline` | `chunked`), `ingested_bytes`, `parse_checkpoint` (jsonb); and the
+   message index `sessions.transcript_messages` (session, seq, uuid,
+   chunk_seq), which the read layer uses for anchors and message ranges on
+   chunked sessions.
 2. Incremental parser: `parseTranscript` split into
    `resume(checkpoint) → feed(lines) → checkpoint + deltas`. A property test
    checks that N-way split parsing equals a single full parse.
@@ -38,6 +41,8 @@ In scope:
 7. Bounded `search_text` (the most recent user messages within the
    `tsvector` limit).
 8. The read layer learns `storage = chunked`.
+9. A nightly full-verification task (streamed, one chunk in memory at a time)
+   for sessions active in the last day.
 
 ## Implements
 
@@ -52,6 +57,9 @@ byte zero on first touch after deploy. That touch also clears their
 the backfill plan.
 
 ## Validation
+
+- [ ] Integration tests against a real Postgres (throwaway container), since
+  CI has no database: append, continuity failure, and budgeted catch-up
 
 - [ ] Property test: a split parse equals a full parse, for every aggregate
   and for `tool_calls`
