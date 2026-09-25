@@ -66,9 +66,9 @@ byte length exceeds a threshold (`isWindowedSession` in `outline-windows.ts`):
 | `SESSIONS_OUTLINE_WINDOW_THRESHOLD_MESSAGES` | 400 | Comfortably covers a long single-sitting session; catches a persistent/multi-day session before it grows large enough to hit the byte threshold anyway. |
 | `SESSIONS_OUTLINE_WINDOW_THRESHOLD_BYTES` | 2,000,000 | Exactly `RAW_TRANSCRIPT_FETCH_BUDGET` — the point where the single-pass path already starts sampling head+tail and dropping the middle. Windowing takes over right where that truncation would otherwise start losing content. |
 
-The byte check is a scalar `length(raw_transcript)` read
-(`TranscriptReader.rawByteLength`), never a content fetch — deciding whether to
-window must not itself cost what windowing exists to avoid.
+The byte check is a scalar `ingested_bytes` read (`TranscriptReader.rawByteLength`),
+never a content fetch — deciding whether to window must not itself cost what
+windowing exists to avoid.
 
 ## Window boundaries
 
@@ -159,19 +159,13 @@ anything changed."
 - **No content read once the budget is spent.** A windowed session reached
   after the sweep's summarization budget is exhausted is skipped without
   reading its transcript, and stays selected for the next sweep.
-- **The inline backend still reads the whole transcript regardless of the
-  starting seq** — `messagesSince` on an inline session parses the whole
-  `raw_transcript` column and slices in memory (the read layer's accepted
-  carve-out, specs/behaviors/session-transcript-storage.md: "Readers take
-  ranges"). `WINDOW_MAX_INLINE_BYTES` (64 MiB) exists specifically to bound
-  that: an inline session whose transcript exceeds it keeps the single-pass
-  head+tail outline (computed in SQL) instead of windowing, until its storage
-  is chunked. **This ceiling does not apply to a chunked session** — nothing
-  on the windowed path ever loads a chunked session's whole chunk series
-  (`messagesSince`'s chunked backend resolves to only the chunks the starting
-  seq and onward actually touch), so a chunked session windows purely on
-  `isWindowedSession`'s normal message/byte thresholds, however large it's
-  grown.
+- **No inline ceiling.** `messagesSince` resolves to only the chunks the
+  starting seq and onward actually touch (specs/behaviors/
+  session-transcript-storage.md: "Readers take ranges"), so nothing on the
+  windowed path ever loads a session's whole chunk series. A session windows
+  purely on `isWindowedSession`'s message/byte thresholds, however large it's
+  grown — there is no separate byte ceiling past which windowing is skipped
+  in favor of the single-pass path.
 
 ## Composition: summary of summaries
 

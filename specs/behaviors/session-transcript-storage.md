@@ -7,6 +7,15 @@ of chunks**, and ingested **incrementally**: each sync stores only the bytes
 appended since the last one. The cost of syncing a session is proportional to
 how much it grew, never to how large it is.
 
+**Chunks are the only storage.** Every session — new or historical — is
+archived in `sessions.transcript_chunks` / `sessions.transcript_messages`.
+There is no other transcript representation, transitional or otherwise: the
+legacy whole-value `raw_transcript` column (and the one-time backfill that
+converted every session created before chunking existed) is retired, its
+column dropped by migration 017. A reader or ingest path that branches on
+"is this session chunked yet" is a bug — the read and write layers each have
+exactly one path.
+
 - **Complete.** Every byte of a transcript is archived, however large the
   session grows. There is no size above which a session is skipped or
   truncated. Long-running persistent sessions (bots, loops, always-on agents)
@@ -26,8 +35,7 @@ how much it grew, never to how large it is.
 
 - Local sync and satellite push (ingest).
 - Every reader of transcript content: the transcript, grep, around-anchor and
-  share routes; the outline and classification pipelines; reparse and backfill
-  scripts.
+  share routes; the outline and classification pipelines; reparse scripts.
 - The `tool_calls` index and everything that consumes it by ascending id (the
   audit ledger).
 
@@ -79,6 +87,18 @@ object storage (the row keeping its range, hash and an object reference instead
 of inline content), for cold or very large sessions. Nothing in phase 1 may
 assume chunk content is always inline, beyond the read layer. The trigger
 (database size or session age) is decided when tiering is planned.
+
+**Retired: the inline `raw_transcript` column.** Before chunking existed,
+a session's transcript lived whole in a single `TEXT` column, with a
+`storage` discriminator (`inline` / `catching_up` / `chunked`) tracking a
+row's migration state while a one-time backfill task converted every
+pre-chunking session from that column into chunks. Once the backfill
+converged (every row `storage = 'chunked'`, `raw_transcript IS NULL`),
+migration 017 dropped `raw_transcript`, `storage`, `catchup_threshold_bytes`
+and the backfill's own bookkeeping table, asserting the precondition itself
+rather than trusting the operator's word for it. Nothing described in this
+spec above depends on that history — it is recorded here only so a future
+reader doesn't go looking for a transitional state that no longer exists.
 
 ## Principles
 
