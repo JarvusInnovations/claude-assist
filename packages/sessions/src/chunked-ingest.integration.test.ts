@@ -316,7 +316,7 @@ maybeDescribe('chunked ingest — integration (real Postgres)', () => {
       if (row.storage === 'chunked') {
         // The moment raw_transcript is cleared, chunks must already hold all of it.
         const chunks = await fetchChunks(sessionId);
-        const archived = chunks.map((c: { content: string }) => c.content).join('');
+        const archived = chunks.map((c) => String(c.content)).join('');
         expect(archived.startsWith(original)).toBe(true);
         break;
       }
