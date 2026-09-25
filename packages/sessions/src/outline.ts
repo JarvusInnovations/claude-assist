@@ -456,7 +456,7 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
       const boundaries = planWindows(
         closedCount,
         lastClosedToSeq + 1,
-        newMessages.map((m) => ({ timestamp: m.timestamp, approxBytes: approxMessageBytes(m) })),
+        newMessages.map((m) => ({ timestamp: m.timestamp ?? null, approxBytes: approxMessageBytes(m) })),
         this.windowConfig
       );
       for (const boundary of boundaries) {

@@ -116,12 +116,16 @@ export function planWindows(
 
   for (let i = 0; i < messages.length; i++) {
     const m = messages[i]!;
-    if (segStartTs === null) segStartTs = m.timestamp;
+    // Transcript lines without a timestamp (snapshots, summaries) arrive as
+    // undefined at runtime despite the type; postgres.js rejects undefined
+    // binds (UNDEFINED_VALUE), so normalize to null here.
+    const ts = m.timestamp ?? null;
+    if (segStartTs === null) segStartTs = ts;
     segBytes += m.approxBytes;
 
     const count = i - segStart + 1;
     const spanMs =
-      segStartTs && m.timestamp ? Date.parse(m.timestamp) - Date.parse(segStartTs) : 0;
+      segStartTs && ts ? Date.parse(ts) - Date.parse(segStartTs) : 0;
 
     const hitCap = count >= config.maxMessages || segBytes >= config.maxBytes || spanMs >= config.maxSpanMs;
     const isLast = i === messages.length - 1;
@@ -132,7 +136,7 @@ export function planWindows(
         fromSeq: startSeq + segStart,
         toSeq: startSeq + i,
         fromTs: segStartTs,
-        toTs: m.timestamp,
+        toTs: ts,
         closed: true,
       });
       segStart = i + 1;
@@ -144,7 +148,7 @@ export function planWindows(
         fromSeq: startSeq + segStart,
         toSeq: startSeq + i,
         fromTs: segStartTs,
-        toTs: m.timestamp,
+        toTs: ts,
         closed: false,
       });
     }

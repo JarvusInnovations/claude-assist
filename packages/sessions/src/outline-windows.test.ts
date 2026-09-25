@@ -21,6 +21,22 @@ function msg(ts: string, approxBytes = 10): { timestamp: string | null; approxBy
 describe('planWindows', () => {
   const CFG = { maxMessages: 3, maxBytes: 1_000_000, maxSpanMs: 1_000_000_000 };
 
+  it('never emits undefined timestamps: lines without one become null, and the span starts at the first known one', () => {
+    const messages = [
+      { timestamp: undefined as unknown as string | null, approxBytes: 10 },
+      msg('2026-01-01T00:00:05Z'),
+      { timestamp: undefined as unknown as string | null, approxBytes: 10 },
+    ];
+    const result = planWindows(0, 0, messages, CFG);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.fromTs).toBe('2026-01-01T00:00:05Z');
+    expect(result[0]!.toTs).toBeNull();
+    for (const b of result) {
+      expect(b.fromTs).not.toBeUndefined();
+      expect(b.toTs).not.toBeUndefined();
+    }
+  });
+
   it('returns [] for no messages', () => {
     expect(planWindows(0, 0, [], CFG)).toEqual([]);
   });
