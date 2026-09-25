@@ -413,10 +413,22 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
    * without an extra query; the byte check only runs for a session that's
    * short on messages but could still be large (a few huge pasted blocks) —
    * `rawByteLength` is a scalar read, never a content fetch.
+   *
+   * `WINDOW_MAX_INLINE_BYTES` exists to protect the *inline* backend's
+   * single-pass fallback (`generateOutline`, which loads the whole
+   * `raw_transcript` column) from a session too large to safely load whole —
+   * a session past that ceiling is neither windowed nor single-passed; it's
+   * effectively skipped until it's small enough or converted to chunks. That
+   * ceiling has no meaning for a `chunked` session: nothing here ever loads
+   * its whole transcript (windowed generation reads only the seq range it
+   * needs via `messagesSince`, and the non-windowed fallback is never taken
+   * for something this large), so a chunked session is windowed purely on
+   * `isWindowedSession`'s normal thresholds, however big it's grown.
    */
   private async isWindowed(session: SessionForOutline): Promise<boolean> {
     const bytes = await this.reader.rawByteLength(session.id);
-    if (bytes > OutlineService.WINDOW_MAX_INLINE_BYTES) return false;
+    const chunked = await this.reader.isChunked(session.id);
+    if (!chunked && bytes > OutlineService.WINDOW_MAX_INLINE_BYTES) return false;
     return isWindowedSession(session.message_count, bytes, this.windowConfig);
   }
 
@@ -433,6 +445,22 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
    * `messagesSince` has no upper bound) AND every window is resolved
    * (`summarized`, `failed`, or a tail that was actually processed this
    * pass rather than skipped for lack of budget or lost a claim race).
+   *
+   * Still exactly one content read per session per sweep, but the read's
+   * *starting point* is no longer always the beginning of the transcript.
+   * On an inline session `messagesSince` parses the whole column regardless
+   * (the read layer's accepted carve-out — see `TranscriptReader`), but on a
+   * chunked session it costs only the chunks the returned range actually
+   * touches, so the starting seq matters: reading from seq 0 on a 400 MB
+   * chunked session every sweep would reintroduce the exact cost this plan
+   * eliminated from ingest. The earliest seq this pass can *possibly* need
+   * is `min(lastClosedToSeq + 1, the lowest from_seq among windows still
+   * pending)` — a pending window can predate the last closed boundary (it
+   * was carved in an earlier sweep and simply never got summarized, e.g. the
+   * budget ran out), so boundary state alone isn't enough; existing pending
+   * windows have to be listed first. Newly-carved boundaries from *this*
+   * sweep can never push that floor down further: they're built only from
+   * messages after `lastClosedToSeq`, so their `from_seq` is always >= it.
    */
   private async generateWindowedOutline(session: SessionForOutline): Promise<{
     generated: { title: string | null; outline: string } | null;
@@ -448,10 +476,19 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
     }
 
     const { lastClosedToSeq, closedCount } = await this.windowStore.boundaryState(session.id);
-    // One parse per session per sweep: boundary planning and every window's
+    const existingWindows = await this.windowStore.listWindows(session.id);
+    const pendingFromSeqs = existingWindows.filter((w) => w.status === 'pending').map((w) => w.from_seq);
+    const readFromSeq = Math.min(lastClosedToSeq + 1, ...pendingFromSeqs);
+
+    // One read per session per sweep: boundary planning and every window's
     // text below slice this same array rather than re-reading the transcript.
-    const allMessages = await this.reader.messagesSince(session.id, -1);
-    const newMessages = allMessages.slice(lastClosedToSeq + 1);
+    // `baseSeq` is the absolute seq `windowMessages[0]` actually corresponds
+    // to — on the inline backend this is always 0 (messagesSince(-1) is the
+    // whole transcript), on the chunked backend it's whatever seq the
+    // fetched chunk range happens to start at.
+    const baseSeq = readFromSeq;
+    const windowMessages = await this.reader.messagesSince(session.id, baseSeq - 1);
+    const newMessages = windowMessages.slice(lastClosedToSeq + 1 - baseSeq);
     if (newMessages.length > 0) {
       const boundaries = planWindows(
         closedCount,
@@ -464,6 +501,8 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
       }
     }
 
+    // Re-fetch: the boundary pass above may have inserted new windows (whose
+    // from_seq is always >= baseSeq, so windowMessages already covers them).
     const windows = await this.windowStore.listWindows(session.id);
     let caughtUp = true;
 
@@ -488,7 +527,8 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
 
       const isTail = w.closed_at === null;
       try {
-        const range = serializeMessageSlice(allMessages, w.from_seq, w.to_seq);
+        // windowMessages[0] is absolute seq baseSeq, not seq 0 — rebase.
+        const range = serializeMessageSlice(windowMessages, w.from_seq - baseSeq, w.to_seq - baseSeq);
         const contentHash = createHash('md5').update(range.text).digest('hex');
 
         if (isTail && w.content_hash !== null && w.content_hash === contentHash) {

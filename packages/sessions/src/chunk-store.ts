@@ -35,10 +35,15 @@ import { EMPTY_AGGREGATE, boundedSearchText } from './aggregate-merge.js';
  * `insert` builder. Combining that helper with an explicit `VALUES` keyword
  * of our own — `` INSERT INTO t (a, b, ...) VALUES ${sql(rows, ...cols)} ``,
  * which is what an early draft of this function did — throws `UNDEFINED_VALUE`
- * even for fully-defined rows (reproduced in isolation: the bare form
- * succeeds, the explicit-`VALUES` form fails, same rows, same connection).
- * `unnest` sidesteps needing to choose between those two forms at all, and is
- * the standard efficient bulk-insert shape besides.)
+ * even for fully-defined rows (reproduced in isolation with explicit `null`s,
+ * no undefined fields: the bare form succeeds, the explicit-`VALUES` form
+ * fails, same row objects, same connection — this is a different failure
+ * than #243's, which was a transcript line missing an expected field
+ * yielding a genuine runtime `undefined` despite a `string | null` type;
+ * see the defensive `?? null`/`?? ''` normalization below, added for that
+ * class of bug specifically). `unnest` sidesteps needing to choose between
+ * the two `sql(rows, ...)` forms at all, and is the standard efficient
+ * bulk-insert shape besides.)
  */
 const MESSAGE_INDEX_INSERT_BATCH = 20_000;
 const TOOL_CALL_INSERT_BATCH = 20_000;
@@ -342,8 +347,17 @@ export async function writeIngestCycle(sql: postgres.Sql, p: WriteCycleParams): 
       // so tool_calls.id stays stable and the ledger's ascending-id scan
       // never re-sees an already-derived row.
       await forEachBatch(p.toolCalls, TOOL_CALL_INSERT_BATCH, (batch) => {
-        const msgUuids = batch.map((tc) => tc.msgUuid);
-        const msgIndexes = batch.map((tc) => tc.msgIndex);
+        // `?? ''`/`?? null` on every field here, even though ToolCall's
+        // fields are typed non-optional: a sibling module hit UNDEFINED_VALUE
+        // in production from a transcript line missing an expected field
+        // (e.g. no `timestamp`) yielding `undefined` at runtime despite a
+        // `string | null` type, bound straight into postgres.js (PR #243).
+        // Normalizing defensively here costs nothing and closes off that
+        // whole class of failure regardless of what upstream parsing
+        // guarantees. `msg_uuid`/`msg_index`/`tool_name` are NOT NULL
+        // columns, so they fall back to a value that can't violate that.
+        const msgUuids = batch.map((tc) => tc.msgUuid ?? '');
+        const msgIndexes = batch.map((tc) => tc.msgIndex ?? 0);
         // ISO strings, not raw Date objects: a bound parameter that is a JS
         // array of Date objects gets its type inferred from the first
         // element and sent as a scalar `timestamptz`, so the explicit
@@ -353,8 +367,8 @@ export async function writeIngestCycle(sql: postgres.Sql, p: WriteCycleParams): 
         // `${[iso, iso]}::timestamptz[]` with the same values as ISO strings
         // does not). ISO strings infer as a text array and cast cleanly.
         const tsValues = batch.map((tc) => tc.ts?.toISOString() ?? null);
-        const toolNames = batch.map((tc) => tc.toolName);
-        const targets = batch.map((tc) => tc.target);
+        const toolNames = batch.map((tc) => tc.toolName ?? '');
+        const targets = batch.map((tc) => tc.target ?? null);
         // 0/1 ints, not booleans: the same scalar-inference issue hits a
         // bound array of JS booleans — `${[true, false]}::bool[]` errors
         // with "cannot cast type boolean to boolean[]" for the same reason

@@ -427,14 +427,20 @@ export function feed(checkpoint: ParseCheckpoint, lines: readonly string[]): Fee
 
       const tools = extractToolUses(msg.message.content);
       for (const tool of tools) {
-        toolsUsed.add(tool.name);
+        // tool.name is typed as always-present, but a malformed or exotic
+        // tool_use block in real transcript data can't be relied on for
+        // that at runtime (see PR #243's UNDEFINED_VALUE root cause: a
+        // transcript line missing an expected field). Normalize before it
+        // ever reaches a bind parameter.
+        const toolName = tool.name ?? '';
+        toolsUsed.add(toolName);
         if (msg.uuid) {
           const target = extractToolTarget(tool);
           delta.toolCalls.push({
             msgUuid: msg.uuid,
             msgIndex: seq,
             ts: msg.timestamp ? new Date(msg.timestamp) : null,
-            toolName: sanitizeText(tool.name),
+            toolName: sanitizeText(toolName),
             target: target ? sanitizeText(target) : null,
             isSidechain: msg.isSidechain ?? false,
           });
