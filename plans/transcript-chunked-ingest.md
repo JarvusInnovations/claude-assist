@@ -42,10 +42,16 @@ In scope:
 7. Bounded `search_text` (the most recent user messages within the
    `tsvector` limit).
 8. The read layer learns `storage = chunked`. This is what actually lets
-   around-anchor and grep resolve to only the chunks a range touches instead
-   of loading the whole transcript — the memory-ceiling criterion deferred
-   from [`transcript-read-layer`](transcript-read-layer.md), whose inline
-   backend has no choice but to load the full value for those two ranges.
+   `readAround`/`find`/`messageRange`/`since`/`messagesSince`/`rawByteLength`
+   resolve to only the chunks (or scalar column) a range touches instead of
+   loading the whole transcript — the memory-ceiling criterion deferred from
+   [`transcript-read-layer`](transcript-read-layer.md), whose inline backend
+   has no choice but to load the full value for these. (`messagesSince` and
+   `rawByteLength` were added by the concurrently-landing
+   `windowed-session-outlines` (#240); this plan gives both a chunked
+   backend, and updates `outline.ts`'s windowed-generation path to read from
+   a bounded starting seq instead of always the transcript's start — see
+   Notes.)
 9. A nightly full-verification task (streamed, one chunk in memory at a time)
    for sessions active in the last day.
 
@@ -96,6 +102,19 @@ rows are left to the backfill plan.
 - [ ] Around-anchor and grep on the largest archived session stay under a
   memory ceiling (measured) once its `storage = chunked` (deferred from
   [`transcript-read-layer`](transcript-read-layer.md))
+- [x] `since`/`messageRange`/`messagesSince`/`rawByteLength` never load a
+  chunked session's whole chunk series to answer a bounded range query —
+  each resolves to only the overlapping chunks, with seqs rebased back to
+  absolute session seqs. Proven three ways: a property-style parity
+  integration test across a spread of `fromSeq`/`afterSeq` values on a
+  genuinely multi-chunk session, including several that land strictly
+  inside a chunk rather than on a chunk boundary; a direct proof that
+  corrupting an earlier chunk's content in the database doesn't affect a
+  read scoped after it (while a wider range that legitimately needs that
+  chunk does see the damage, so the proof isn't vacuous); and
+  `outline.ts`'s windowed-generation path verified (via a
+  `messagesSince` spy) to read from `min(lastClosedToSeq + 1, the lowest
+  from_seq among pending windows)` on a second sweep, not from seq 0.
 
 ## Risks / unknowns
 
@@ -140,7 +159,43 @@ rows are left to the backfill plan.
   (bulk-insert efficiency, and each array column being one bound parameter
   rather than one per row sidesteps the 65,534-bind-parameter ceiling
   entirely) — but worth knowing precisely, not overstating, before anyone
-  else in this codebase hits either shape.
+  else in this codebase hits either shape. **Distinct** from the
+  `UNDEFINED_VALUE` #243 hit in production from: a transcript line missing
+  an expected field (e.g. no `timestamp`) yielding a genuine runtime
+  `undefined` despite a `string | null` type, bound straight into
+  postgres.js. That's a real, different bug class — this plan's fields were
+  verified fully-defined (explicit `null`s) when the two quirks above were
+  reproduced — but chunk-store.ts's tool_calls writer now defensively
+  normalizes every field regardless (`?? null`/`?? ''`), and
+  incremental-parser.ts normalizes `tool.name` before it reaches a bind
+  parameter, since nothing here should trust a TS type against real
+  transcript data any more than #243's code did.
+- **`since`'s chunked-tail read had to walk chunks and re-check the actual
+  serialized length, not estimate from raw bytes.** The first version
+  stopped once accumulated raw bytes reached the char budget, reasoning
+  "raw bytes are always >= serialized chars" — true, but the wrong
+  invariant: JSON's per-message overhead means raw bytes run several times
+  the serialized count, so that threshold under-fetched badly (caught by
+  the new parity integration test: a tight budget produced 2 lines on a
+  chunked session where identical inline content produced 10). Fixed by
+  re-serializing the growing tail slice after each chunk and checking its
+  actual length, which can't under-fetch and still stops after the first
+  chunk or two in the case that matters (a session that grew by hundreds of
+  MB since the cursor).
+- **`outline.ts`'s windowed-generation path now reads from a bounded
+  starting seq**, not always the transcript's start: `min(lastClosedToSeq +
+  1, the lowest from_seq among windows still pending)`. A pending window
+  can predate the last closed boundary (carved in an earlier sweep, never
+  summarized because the sweep's budget ran out), so existing pending
+  windows have to be listed before choosing where to start reading; a
+  boundary newly carved this sweep can never need an earlier seq than that
+  minimum, since it's built only from messages after `lastClosedToSeq`.
+  `isWindowed`'s `WINDOW_MAX_INLINE_BYTES` ceiling — which exists to
+  protect the inline backend's whole-column single-pass fallback — no
+  longer applies to a chunked session, since nothing on the windowed path
+  loads a chunked session's whole chunk series regardless of size.
+  `specs/behaviors/session-outlines.md`'s memory-bounds section is updated
+  to match.
 - **A per-cycle ingest budget smaller than a single JSONL line stalls
   forever** for that session: `readBoundedTail`/`capToBudget` only accept
   complete lines, so a budget that can never fit one full line makes zero
@@ -162,10 +217,10 @@ rows are left to the backfill plan.
   Whoever deploys this should watch the first few sync cycles on the
   largest local session and note peak RSS in this plan's history (or a
   follow-up plan) once observed.
-- Tracked as: `windowed-session-outlines` (PR #240, landing concurrently)
-  adds `TranscriptReader.rawByteLength`/`messagesSince` and an inline-only
-  windowing ceiling in `outline.ts`. This PR adds `TranscriptReader.
-  storageKind`/`isChunked` as the seam for that follow-up work, but the
-  actual chunked backends for `rawByteLength`/`messagesSince` and the
-  one-line `outline.ts` change depend on those methods existing first — to
-  be done in the rebase onto `origin/main` after #240 merges, not in this PR.
+- Resolved during review, not deferred: `windowed-session-outlines` (#240)
+  merged to `main` while this plan was in review, adding
+  `TranscriptReader.rawByteLength`/`messagesSince`. This branch was rebased
+  onto `main` and both methods, plus the pre-existing `since`/`messageRange`/
+  `find`, were given chunked backends in this same PR (see the Validation
+  item above and the Notes on the windowed-outline read-bounding fix) —
+  nothing was left for a later rebase.
