@@ -453,7 +453,7 @@ export class TranscriptReader {
    */
   async rawByteLength(sessionId: string): Promise<number> {
     const [row] = await this.sql<{ storage: TranscriptStorage; len: number; ingested_bytes: string | number }[]>`
-      SELECT storage, coalesce(length(raw_transcript), 0) AS len, ingested_bytes
+      SELECT storage, coalesce(octet_length(raw_transcript), 0) AS len, ingested_bytes
       FROM sessions.sessions WHERE id = ${sessionId}::uuid
     `;
     if (!row) return 0;

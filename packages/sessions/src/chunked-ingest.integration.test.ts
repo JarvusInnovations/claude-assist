@@ -263,6 +263,68 @@ maybeDescribe('chunked ingest — integration (real Postgres)', () => {
     expect(full).toBe(grownContent);
   });
 
+  async function insertInlineSession(mid: string, content: string): Promise<string> {
+    createdMachineIds.add(mid);
+    const [machine] = await sql`
+      INSERT INTO sessions.machines (machine_id, hostname, is_localhost) VALUES (${mid}, ${mid}, true) RETURNING id
+    `;
+    if (!machine) throw new Error('machine insert failed');
+    const sessionId = crypto.randomUUID();
+    await sql`
+      INSERT INTO sessions.sessions (id, machine_id, project_path, started_at, transcript_hash, raw_transcript, storage)
+      VALUES (${sessionId}::uuid, ${machine.id}, '/repo', NOW(), 'deadbeef', ${content}, 'inline')
+    `;
+    createdSessionIds.push(sessionId);
+    return sessionId;
+  }
+
+  it('an unchanged inline session with multi-byte text stays inline (byte sizes, not character counts)', async () => {
+    const content = line('em dash \u2014 arrows \u2192 emoji \u{1F642}'.repeat(20)) + line('caf\u00e9 na\u00efve');
+    const sessionId = await insertInlineSession('it-inline-mb-unchanged', content);
+    const projectDir = join(dir, 'projects', '-p-mb1');
+    await Bun.$`mkdir -p ${projectDir}`.quiet();
+    await writeFile(join(projectDir, `${sessionId}.jsonl`), content);
+
+    const sync = new SyncService(sql, noopLog, { claudeDir: dir, machineId: 'it-inline-mb-unchanged', minFileSize: 1 });
+    await sync.syncLocal();
+
+    const row = await fetchSession(sessionId);
+    expect(row.storage).toBe('inline');
+    expect(row.raw_transcript).toBe(content);
+    expect(await fetchChunks(sessionId)).toHaveLength(0);
+  });
+
+  it('catch-up threshold is in bytes: multi-byte inline content is fully chunked before raw_transcript is cleared', async () => {
+    // 4-byte emoji: each is 1 character to Postgres length() but 4 bytes on
+    // disk, so a character-count threshold would flip after the first line.
+    const l1 = line('\u{1F642}'.repeat(300));
+    const l2 = line('\u{1F680}'.repeat(300));
+    const original = l1 + l2;
+    const sessionId = await insertInlineSession('it-inline-mb-grow', original);
+    const projectDir = join(dir, 'projects', '-p-mb2');
+    await Bun.$`mkdir -p ${projectDir}`.quiet();
+    const grown = original + line('new line after archive');
+    await writeFile(join(projectDir, `${sessionId}.jsonl`), grown);
+
+    // Budget admits exactly one of the big lines per cycle.
+    const budget = Buffer.byteLength(l1, 'utf8') + 2;
+    const sync = new SyncService(sql, noopLog, { claudeDir: dir, machineId: 'it-inline-mb-grow', minFileSize: 1, ingestBudgetBytes: budget });
+
+    for (let cycle = 0; cycle < 5; cycle++) {
+      await sync.syncLocal();
+      const row = await fetchSession(sessionId);
+      if (row.storage === 'chunked') {
+        // The moment raw_transcript is cleared, chunks must already hold all of it.
+        const chunks = await fetchChunks(sessionId);
+        const archived = chunks.map((c: { content: string }) => c.content).join('');
+        expect(archived.startsWith(original)).toBe(true);
+        break;
+      }
+      expect(row.raw_transcript).toBe(original);
+    }
+    expect((await fetchSession(sessionId)).storage).toBe('chunked');
+  });
+
   it('continuity failure triggers a full re-ingest, replacing chunks in one transaction', async () => {
     const mid = machineId('it-continuity');
     const sync = new SyncService(sql, noopLog, { claudeDir: dir, machineId: mid, minFileSize: 1 });

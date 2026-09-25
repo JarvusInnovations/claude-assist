@@ -311,7 +311,14 @@ export class SyncService {
       // The satellite has no visibility into the server's inline state; its
       // payload is ground truth for what to (re-)ingest as chunks.
       const threshold = state.rawTranscriptLength ?? 0;
-      const content = this.capToBudget(payloadStartByte === 0 ? transcript : transcript);
+      if (payloadStartByte !== 0) {
+        // Inline rows have no chunks, so only a whole-file payload can start
+        // their chunk series; a tail here would be archived as if it began
+        // at byte 0. The next inventory asks for the whole file.
+        this.log.warn({ sessionId, payloadStartByte }, 'Ignoring tail push for an inline session');
+        return 'skipped';
+      }
+      const content = this.capToBudget(transcript);
       if (content.length === 0) return 'skipped';
       await this.runCycle({
         sessionId,
@@ -504,13 +511,21 @@ export class SyncService {
       if (item.size === undefined) {
         // Legacy inventory item — no cheap comparison available; always ask.
         neededSessionIds.push(item.sessionId);
-        baselines[item.sessionId] = { ingestedBytes: archivedBytes, lastChunkHash: k.lastChunkHash };
+        baselines[item.sessionId] =
+          k.storage === 'inline'
+            ? { ingestedBytes: 0, lastChunkHash: null }
+            : { ingestedBytes: archivedBytes, lastChunkHash: k.lastChunkHash };
         continue;
       }
 
       if (item.size > archivedBytes || item.size < archivedBytes) {
         neededSessionIds.push(item.sessionId);
-        baselines[item.sessionId] = { ingestedBytes: archivedBytes, lastChunkHash: k.lastChunkHash };
+        // An inline session has no chunks to append to: it re-ingests from
+        // byte 0, so the satellite must send the whole file.
+        baselines[item.sessionId] =
+          k.storage === 'inline'
+            ? { ingestedBytes: 0, lastChunkHash: null }
+            : { ingestedBytes: archivedBytes, lastChunkHash: k.lastChunkHash };
       } else {
         upToDateCount++;
       }
@@ -531,7 +546,7 @@ export class SyncService {
     const rows = await this.sql<
       { id: string; storage: TranscriptStorage; ingested_bytes: string | number; raw_len: number | null; last_chunk_hash: string | null }[]
     >`
-      SELECT s.id, s.storage, s.ingested_bytes, length(s.raw_transcript) AS raw_len, lc.content_hash AS last_chunk_hash
+      SELECT s.id, s.storage, s.ingested_bytes, octet_length(s.raw_transcript) AS raw_len, lc.content_hash AS last_chunk_hash
       FROM sessions.sessions s
       LEFT JOIN LATERAL (
         SELECT content_hash FROM sessions.transcript_chunks tc

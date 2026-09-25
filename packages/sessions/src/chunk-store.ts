@@ -104,7 +104,10 @@ export async function getChunkState(sql: postgres.Sql, sessionId: string): Promi
   >`
     SELECT
       machine_id, storage, ingested_bytes, parse_checkpoint, catchup_threshold_bytes,
-      length(raw_transcript) AS raw_transcript_length,
+      -- octet_length, not length: compared against on-disk byte sizes and
+      -- used as the catch-up threshold in bytes. length() counts characters,
+      -- which undercounts any transcript with non-ASCII text.
+      octet_length(raw_transcript) AS raw_transcript_length,
       user_messages, tools_used, files_touched,
       input_tokens, output_tokens, cache_read_tokens,
       context_final_tokens, context_peak_tokens, context_model,
