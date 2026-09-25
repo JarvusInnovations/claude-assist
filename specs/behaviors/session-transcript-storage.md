@@ -72,6 +72,14 @@ the parser needs to continue, such as open chain roots and running totals. The
 result must equal a full parse of the whole transcript. New tool calls are
 appended to `tool_calls`; existing rows are untouched.
 
+**A content-version token signals change.** `transcript_hash` holds
+`md5("<ingested_bytes>:<last chunk hash>")` and is updated by every ingest
+cycle that appends. It changes whenever the archive grows and stays fixed
+otherwise, so consumers that track "processed up to" (the outline sweep's
+`outline_hash`, classification cursors' `last_hash`) detect change by comparing
+against it. It is not a hash of the whole transcript; computing one would mean
+re-reading the archive every cycle.
+
 **Satellite push** follows the same rule. The server's inventory response tells
 a satellite each session's `ingested_bytes` and last-chunk hash. The satellite
 sends only the bytes after that offset, or the whole file if its continuity

@@ -176,6 +176,21 @@ maybeDescribe('chunked ingest — integration (real Postgres)', () => {
     const chunks = await fetchChunks(sessionId);
     expect(chunks.length).toBeGreaterThanOrEqual(2); // at least one chunk per cycle
     expect(chunks[0]!.byte_start).toBe('0');
+
+    // transcript_hash is the content-version token: it must change when the
+    // archive grows (outline/classification sweeps key off it), equal the SQL
+    // formula migration 018 uses, and stay put on a no-op cycle.
+    expect(afterFirst.transcript_hash).not.toBe('');
+    expect(afterSecond.transcript_hash).not.toBe(afterFirst.transcript_hash);
+    const [tokenRow] = await sql<{ expected: string }[]>`
+      SELECT md5(s.ingested_bytes::text || ':' || c.content_hash) AS expected
+      FROM sessions.sessions s
+      JOIN sessions.transcript_chunks c ON c.session_id = s.id
+      WHERE s.id = ${sessionId}::uuid ORDER BY c.seq DESC LIMIT 1
+    `;
+    expect(afterSecond.transcript_hash).toBe(tokenRow!.expected);
+    await sync.syncLocal();
+    expect((await fetchSession(sessionId)).transcript_hash).toBe(afterSecond.transcript_hash);
   });
 
   it('budgeted catch-up: a file bigger than the ingest budget catches up over multiple cycles', async () => {
