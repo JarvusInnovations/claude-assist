@@ -9,7 +9,7 @@
 
 import type postgres from 'postgres';
 import type { ToolCall } from './types.js';
-import type { ChunkPiece } from './chunked-ingest.js';
+import { transcriptVersionToken, type ChunkPiece } from './chunked-ingest.js';
 import type { ParseCheckpoint } from './incremental-parser.js';
 import { EMPTY_CHECKPOINT } from './incremental-parser.js';
 import type { SessionAggregate } from './aggregate-merge.js';
@@ -213,6 +213,8 @@ async function forEachBatch<T>(rows: T[], batchSize: number, run: (batch: T[]) =
  * append only ever inserts.
  */
 export async function writeIngestCycle(sql: postgres.Sql, p: WriteCycleParams): Promise<void> {
+  const lastPiece = p.chunks[p.chunks.length - 1];
+  const versionToken = lastPiece ? transcriptVersionToken(p.ingestedBytes, lastPiece.contentHash) : null;
   await sql.begin(async (rawTx) => {
     const tx = rawTx as unknown as Tx;
 
@@ -245,10 +247,10 @@ export async function writeIngestCycle(sql: postgres.Sql, p: WriteCycleParams): 
           ${startedAt}, ${a.endedAt},
           ${tx.json(a.userMessages)}, ${tx.json(a.toolsUsed)}, ${tx.json(a.filesTouched as any)},
           ${a.inputTokens}, ${a.outputTokens}, ${a.cacheReadTokens},
-          -- transcript_hash is vestigial for a chunked session (change
-          -- detection is size + last-chunk hash, not a whole-content hash);
-          -- left empty rather than dropping the NOT NULL column.
-          ${p.transcriptPath}, ${''},
+          -- transcript_hash is the content-version token (see
+          -- transcriptVersionToken): the outline and classification sweeps
+          -- detect changed sessions by comparing against it.
+          ${p.transcriptPath}, ${versionToken ?? ''},
           ${searchText}, ${a.messageCount}, ${a.userMessages.length}, ${a.claudeVersion},
           ${tx.json(a.modelsUsed)}, ${tx.json(a.modelTokens as any)}, ${tx.json(a.activityRanges as any)}, ${a.sessionName},
           ${a.contextFinalTokens}, ${a.contextPeakTokens}, ${a.contextModel},
@@ -285,6 +287,7 @@ export async function writeIngestCycle(sql: postgres.Sql, p: WriteCycleParams): 
           context_model = ${a.contextModel},
           ingested_bytes = ${p.ingestedBytes},
           parse_checkpoint = ${tx.json(p.checkpoint as any)},
+          transcript_hash = COALESCE(${versionToken}, transcript_hash),
           synced_at = NOW()
         WHERE id = ${p.sessionId}::uuid
       `;

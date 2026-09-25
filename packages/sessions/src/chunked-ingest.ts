@@ -18,6 +18,17 @@ export function hashChunkContent(content: string): string {
   return createHash('sha256').update(content, 'utf8').digest('hex');
 }
 
+/**
+ * A session's content-version token: md5 of `<ingested_bytes>:<last chunk
+ * hash>`. Stored in `sessions.transcript_hash`, it changes whenever the
+ * archive grows, which is what the outline and classification sweeps compare
+ * against to find changed sessions. Migration 018 computes the same value in
+ * SQL (`md5(ingested_bytes::text || ':' || content_hash)`); keep them identical.
+ */
+export function transcriptVersionToken(ingestedBytes: number, lastChunkHash: string): string {
+  return createHash('md5').update(`${ingestedBytes}:${lastChunkHash}`, 'utf8').digest('hex');
+}
+
 export interface ChunkPiece {
   byteStart: number;
   byteEnd: number;
