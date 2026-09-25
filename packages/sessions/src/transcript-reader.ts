@@ -225,11 +225,21 @@ export class TranscriptReader {
    *
    * Chunked sessions never fetch a chunk that ends before `afterSeq` (the
    * hard floor), and — since `serializeSince` keeps only the tail once past
-   * the char budget anyway — walk chunks from the newest backward,
-   * accumulating only up to roughly the budget's worth of raw bytes (always
-   * >= the serialized char count) before stopping. A session that grew by
-   * hundreds of MB since `afterSeq` costs this call only the tail it would
-   * have kept regardless, not a full concatenation.
+   * the char budget anyway — walk chunks from the newest backward, adding one
+   * at a time and re-serializing the growing slice, stopping as soon as the
+   * serialized text reaches the char budget (or every qualifying chunk has
+   * been included). This is what guarantees the result is never short of
+   * what the caller asked for: raw JSONL bytes run several times the
+   * serialized char count (JSON's per-message overhead — uuids, timestamps,
+   * envelope keys), so any fixed raw-byte-to-char ratio either under-fetches
+   * on dense content or over-fetches on sparse content; checking the actual
+   * serialized length after each chunk needs neither guess. In the case this
+   * exists for — a session that grew by hundreds of MB since `afterSeq` —
+   * the newest one or two chunks alone almost always already exceed the char
+   * budget, so this stops immediately; it degrades to walking every
+   * qualifying chunk only when the content since `afterSeq` genuinely
+   * doesn't reach the budget at all, the same case where `serializeSince`
+   * itself would return everything, untruncated.
    */
   async since(
     sessionId: string,
@@ -253,19 +263,21 @@ export class TranscriptReader {
       return { text: '', seqStart: -1, seqEnd: afterSeq, count: 0, truncated: false };
     }
 
-    const picked: Array<{ msg_seq_start: number; content: string }> = [];
-    let bytes = 0;
-    for (const row of qualifying) {
-      picked.push(row);
-      bytes += Buffer.byteLength(row.content, 'utf8');
-      if (bytes >= maxChars) break; // raw bytes are always >= the serialized char count
+    const pickedDesc: Array<{ msg_seq_start: number; content: string }> = [];
+    let droppedOlderChunks = false;
+    let result: SerializedDelta = { text: '', seqStart: -1, seqEnd: afterSeq, count: 0, truncated: false };
+    let chunkBaseSeq = afterSeq + 1;
+    for (let i = 0; i < qualifying.length; i++) {
+      pickedDesc.push(qualifying[i]!);
+      chunkBaseSeq = pickedDesc[pickedDesc.length - 1]!.msg_seq_start;
+      const bounded = [...pickedDesc].reverse().map((r) => r.content).join('');
+      result = serializeSince(bounded, afterSeq - chunkBaseSeq, opts);
+      if (result.text.length >= maxChars) {
+        droppedOlderChunks = i < qualifying.length - 1;
+        break;
+      }
     }
-    const droppedOlderChunks = picked.length < qualifying.length;
-    picked.reverse(); // back to ascending seq order
 
-    const chunkBaseSeq = picked[0]!.msg_seq_start;
-    const bounded = picked.map((r) => r.content).join('');
-    const result = serializeSince(bounded, afterSeq - chunkBaseSeq, opts);
     if (result.seqStart === -1) {
       // No new messages in the fetched slice — restore the caller's absolute afterSeq.
       return { ...result, seqEnd: result.seqEnd + chunkBaseSeq };

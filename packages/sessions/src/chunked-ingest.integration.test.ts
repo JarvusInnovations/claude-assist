@@ -398,4 +398,142 @@ maybeDescribe('chunked ingest — integration (real Postgres)', () => {
     const chunkedFind = await reader.find(chunkedId, { match: 'parity', in: 'text' });
     expect(chunkedFind.matches.map((m) => m.anchor)).toEqual(inlineFind.matches.map((m) => m.anchor));
   });
+
+  it('since/messageRange/messagesSince/rawByteLength are identical between inline and chunked storage on a multi-chunk session, for ranges starting mid-chunk', async () => {
+    const mid = 'it-parity-bounded';
+    createdMachineIds.add(mid);
+    const [machine] = await sql`
+      INSERT INTO sessions.machines (machine_id, hostname, is_localhost) VALUES (${mid}, ${mid}, false) RETURNING id
+    `;
+    if (!machine) throw new Error('machine insert failed');
+
+    // 24 messages, alternating user/assistant-with-tool-call, so a tiny
+    // chunkMaxBytes below forces many small chunks and several mid-chunk seqs.
+    const uuids: string[] = [];
+    let content = '';
+    for (let i = 0; i < 24; i++) {
+      const uuid = crypto.randomUUID();
+      uuids.push(uuid);
+      content += i % 2 === 0 ? line(`user turn ${i}`, { uuid }) : assistantToolLine('Read', `/repo/file-${i}.ts`, uuid);
+    }
+
+    const inlineId = crypto.randomUUID();
+    createdSessionIds.push(inlineId);
+    await sql`
+      INSERT INTO sessions.sessions (id, machine_id, project_path, started_at, transcript_hash, raw_transcript, storage)
+      VALUES (${inlineId}::uuid, ${machine.id}, '/repo', NOW(), 'bbbb', ${content}, 'inline')
+    `;
+
+    const chunkedId = crypto.randomUUID();
+    createdSessionIds.push(chunkedId);
+    // A tiny chunk cap forces several chunks across 24 messages (each line is
+    // ~150-200 bytes), so a good number of the fromSeq/afterSeq values tested
+    // below land in the middle of a chunk, not on a chunk boundary.
+    const sync = new SyncService(sql, noopLog, { chunkMaxBytes: 250 });
+    await sync.processPush({
+      machineId: mid,
+      sessions: [{ sessionId: chunkedId, transcriptPath: '/remote/bounded.jsonl', transcript: content }],
+    });
+    const chunkRows = await fetchChunks(chunkedId);
+    expect(chunkRows.length).toBeGreaterThan(3); // confirms the scenario is genuinely multi-chunk
+
+    const reader = new TranscriptReader(sql);
+
+    // rawByteLength: chunked reports ingested_bytes, inline reports the
+    // column length — both must equal the same total content size.
+    const totalBytes = Buffer.byteLength(content, 'utf8');
+    expect(await reader.rawByteLength(inlineId)).toBe(totalBytes);
+    expect(await reader.rawByteLength(chunkedId)).toBe(totalBytes);
+
+    // A spread of fromSeq/afterSeq values, deliberately including several
+    // that land strictly inside a chunk (not at any chunk's msg_seq_start).
+    const seqsToTry = [0, 1, 2, 5, 7, 11, 12, 15, 19, 22, 23];
+
+    for (const seq of seqsToTry) {
+      const inlineRange = await reader.messageRange(inlineId, seq, seq + 3);
+      const chunkedRange = await reader.messageRange(chunkedId, seq, seq + 3);
+      expect(chunkedRange).toEqual(inlineRange);
+
+      const inlineSince = await reader.since(inlineId, seq);
+      const chunkedSince = await reader.since(chunkedId, seq);
+      expect(chunkedSince).toEqual(inlineSince);
+
+      const inlineMsgs = await reader.messagesSince(inlineId, seq);
+      const chunkedMsgs = await reader.messagesSince(chunkedId, seq);
+      expect(chunkedMsgs.map((m) => m.uuid)).toEqual(inlineMsgs.map((m) => m.uuid));
+    }
+
+    // Open-ended messageRange (no toSeq) and a tight since() char budget
+    // (forcing serializeSince's tail-keeping truncation) — same parity.
+    const inlineOpenRange = await reader.messageRange(inlineId, 10);
+    const chunkedOpenRange = await reader.messageRange(chunkedId, 10);
+    expect(chunkedOpenRange).toEqual(inlineOpenRange);
+
+    const inlineTightSince = await reader.since(inlineId, 2, { maxChars: 200 });
+    const chunkedTightSince = await reader.since(chunkedId, 2, { maxChars: 200 });
+    expect(chunkedTightSince.text).toBe(inlineTightSince.text);
+    expect(chunkedTightSince.truncated).toBe(true);
+    expect(inlineTightSince.truncated).toBe(true);
+  });
+
+  it('since/messageRange/messagesSince never depend on a chunk that ends before the requested seq', async () => {
+    const mid = 'it-never-reads-before-seq';
+    createdMachineIds.add(mid);
+
+    let content = '';
+    const uuids: string[] = [];
+    for (let i = 0; i < 20; i++) {
+      const uuid = crypto.randomUUID();
+      uuids.push(uuid);
+      content += line(`turn ${i}`, { uuid });
+    }
+
+    const sessionId = crypto.randomUUID();
+    createdSessionIds.push(sessionId);
+    const sync = new SyncService(sql, noopLog, { chunkMaxBytes: 200 });
+    await sync.processPush({
+      machineId: mid,
+      sessions: [{ sessionId, transcriptPath: '/remote/before-seq.jsonl', transcript: content }],
+    });
+
+    const chunks = await fetchChunks(sessionId);
+    expect(chunks.length).toBeGreaterThan(3);
+    const firstChunk = chunks[0]!;
+    const lastSeqInFirstChunk = Number(firstChunk.msg_seq_end);
+    expect(lastSeqInFirstChunk).toBeGreaterThanOrEqual(0);
+
+    // Take baselines from strictly after the first chunk, AND a wide range
+    // that legitimately needs the first chunk too — both computed BEFORE
+    // corrupting anything, so the wide one can serve as a "would have been
+    // correct" reference for the sanity check below.
+    const requestSeq = lastSeqInFirstChunk + 1;
+    const reader = new TranscriptReader(sql);
+    const baselineRange = await reader.messageRange(sessionId, requestSeq, requestSeq + 2);
+    const baselineSince = await reader.since(sessionId, requestSeq);
+    const baselineMsgs = await reader.messagesSince(sessionId, requestSeq);
+    const baselineWideRange = await reader.messageRange(sessionId, 0, requestSeq + 2);
+    expect(baselineRange.count).toBeGreaterThan(0);
+
+    // Corrupt the FIRST chunk's content directly — if any of the three reads
+    // below touched it, parsing would blow up or silently return garbage.
+    await sql`
+      UPDATE sessions.transcript_chunks SET content = 'this is not valid JSONL at all, {{{'
+      WHERE session_id = ${sessionId}::uuid AND seq = ${firstChunk.seq}
+    `;
+
+    const afterCorruptionRange = await reader.messageRange(sessionId, requestSeq, requestSeq + 2);
+    const afterCorruptionSince = await reader.since(sessionId, requestSeq);
+    const afterCorruptionMsgs = await reader.messagesSince(sessionId, requestSeq);
+
+    expect(afterCorruptionRange).toEqual(baselineRange);
+    expect(afterCorruptionSince).toEqual(baselineSince);
+    expect(afterCorruptionMsgs.map((m) => m.uuid)).toEqual(baselineMsgs.map((m) => m.uuid));
+
+    // Sanity check that the corruption would in fact have mattered: a read
+    // that DOES need the first chunk (fromSeq 0) must now differ from what
+    // the identical range returned before corrupting it — otherwise the
+    // three equalities above would be vacuously true (nothing to detect).
+    const rangeIncludingCorruptChunk = await reader.messageRange(sessionId, 0, requestSeq + 2);
+    expect(rangeIncludingCorruptChunk.text).not.toEqual(baselineWideRange.text);
+  });
 });
