@@ -9,7 +9,7 @@ import { detailsCommand, DETAILS_HELP } from "./commands/detail.js";
 import { activityCommand, ACTIVITY_HELP } from "./commands/activity.js";
 import { statsCommand, STATS_HELP } from "./commands/stats.js";
 import { machinesCommand, MACHINES_HELP } from "./commands/machines.js";
-import { outlinesCommand, OUTLINES_HELP, syncCommand, SYNC_HELP, shareCommand, SHARE_HELP } from "./commands/manage.js";
+import { outlinesCommand, OUTLINES_HELP, syncCommand, SYNC_HELP, shareCommand, SHARE_HELP, backfillCommand, BACKFILL_HELP } from "./commands/manage.js";
 
 // Injected at build time by scripts/build-cli.ts (from `git describe`).
 declare const __AXI_VERSION__: string;
@@ -57,6 +57,7 @@ const COMMAND_HELP: Record<string, string> = {
   outlines: OUTLINES_HELP,
   sync: SYNC_HELP,
   share: SHARE_HELP,
+  backfill: BACKFILL_HELP,
 };
 
 const COMMANDS: Record<string, AxiCliCommand<undefined>> = {
@@ -74,6 +75,7 @@ const COMMANDS: Record<string, AxiCliCommand<undefined>> = {
   outlines: outlinesCommand,
   sync: syncCommand,
   share: shareCommand,
+  backfill: backfillCommand,
 };
 
 export async function main(argv?: string[]): Promise<void> {
