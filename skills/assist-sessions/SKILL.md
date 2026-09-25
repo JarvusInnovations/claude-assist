@@ -119,7 +119,6 @@ and return a continuation anchor rather than dumping the whole session.
 - `scripts/sessions-axi outlines progress` — check background outline-generation progress
 - `scripts/sessions-axi sync [--force]` — trigger an immediate local session sync (--force re-parses all)
 - `scripts/sessions-axi share <session-id>` — mint a shareable auth code for a session transcript
-- `scripts/sessions-axi backfill status` — progress of the legacy-transcript chunk backfill (converted/remaining/failures)
 
 <!-- END GENERATED: command-reference -->
 
