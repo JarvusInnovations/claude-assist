@@ -36,9 +36,10 @@ export default createPlugin('sessions', async (fastify, options) => {
     machineId: config.machineId,
     originalClaudeDir: config.originalClaudeDir,
     minFileSize: config.minFileSize,
-    maxFileSize: config.maxFileSize,
     disableLocalIngest: config.disableLocalIngest,
     ignoreContentMarkers: config.ignoreContentMarkers,
+    chunkMaxBytes: config.chunkMaxBytes,
+    ingestBudgetBytes: config.ingestBudgetBytes,
   });
 
   // Initialize outline service (optional - requires the model invoker)
@@ -122,6 +123,24 @@ export default createPlugin('sessions', async (fastify, options) => {
       const result = await syncService.backfillContextWindow();
       if (result.scanned > 0) {
         fastify.log.info({ result }, `Context backfill: ${result.measured}/${result.scanned} measured`);
+      }
+    },
+  });
+
+  // Nightly full verification (specs/behaviors/session-transcript-storage.md):
+  // streamed, one chunk in memory at a time, over locally-ingested chunked
+  // sessions active in the last day. A mismatch triggers a full re-ingest —
+  // the same repair a per-cycle continuity failure performs.
+  fastify.scheduler.register({
+    name: 'sessions:verify-chunks',
+    schedule: '17 3 * * *',
+    runOnStartup: false,
+    handler: async () => {
+      const result = await syncService.verifyRecentSessions();
+      if (result.mismatches > 0) {
+        fastify.log.warn({ result }, `Nightly verification: ${result.mismatches}/${result.checked} sessions re-ingested`);
+      } else {
+        fastify.log.info({ result }, `Nightly verification: ${result.checked} sessions clean`);
       }
     },
   });

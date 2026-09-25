@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'bun:test';
 import type postgres from 'postgres';
 import { TranscriptReader } from './transcript-reader.js';
+import { feed, EMPTY_CHECKPOINT } from './incremental-parser.js';
+import { chunkLines, splitLinesWithTerminators } from './chunked-ingest.js';
 
 /** Build a JSONL transcript line. */
 function line(obj: Record<string, unknown>): string {
@@ -25,27 +27,50 @@ const EMPTY_ID = '00000000-0000-0000-0000-000000000002';
 const MISSING_ID = '00000000-0000-0000-0000-000000000099';
 
 /**
- * A fake `sessions.sessions` table keyed by id: `raw_transcript` string,
- * `null` (row exists, no content — never happens in practice, TEXT NOT NULL,
- * but the reader is written to tolerate it), or absent (no such session).
- * Recognizes the three query shapes `TranscriptReader` issues by a substring
- * of the SQL text, since a real Postgres isn't available in CI (see
+ * A fake `sessions.sessions`/`transcript_chunks`/`transcript_messages` set
+ * keyed by id, storage always 'inline' unless the id is in `chunkedIds`.
+ * Recognizes the query shapes `TranscriptReader` issues by a substring of
+ * the SQL text, since a real Postgres isn't available in CI (see
  * plans/transcript-read-layer.md's `bun test` note).
  */
-function fakeSql(table: Record<string, string | null>): postgres.Sql {
+function fakeSql(table: Record<string, string | null>, chunkedIds: Set<string> = new Set()): postgres.Sql {
   const fn = ((strings: TemplateStringsArray, ...values: unknown[]) => {
     const text = strings.join('?');
 
-    if (text.includes('AS len')) {
+    if (text.includes('ingested_bytes') && text.includes('AS len')) {
       // rawByteLength: values = [sessionId]
       const [sessionId] = values as [string];
-      if (!(sessionId in table)) return Promise.resolve([{ len: 0 }]);
+      if (!(sessionId in table)) return Promise.resolve([]);
       const content = table[sessionId] ?? null;
-      return Promise.resolve([{ len: content === null ? 0 : content.length }]);
+      const storage = chunkedIds.has(sessionId) ? 'chunked' : 'inline';
+      return Promise.resolve([
+        { storage, len: content === null ? 0 : content.length, ingested_bytes: content === null ? 0 : content.length },
+      ]);
+    }
+
+    if (text.includes('SELECT id FROM sessions.sessions')) {
+      const ids = Object.entries(table)
+        .filter(([, content]) => content !== null && content !== '')
+        .map(([id]) => ({ id }));
+      return Promise.resolve(ids);
+    }
+
+    if (text.includes('SELECT storage, raw_transcript')) {
+      const [sessionId] = values as [string];
+      if (!(sessionId in table)) return Promise.resolve([]);
+      return Promise.resolve([
+        { storage: chunkedIds.has(sessionId) ? 'chunked' : 'inline', raw_transcript: table[sessionId] },
+      ]);
+    }
+
+    if (text.includes('SELECT storage FROM sessions.sessions')) {
+      const [sessionId] = values as [string];
+      if (!(sessionId in table)) return Promise.resolve([]);
+      return Promise.resolve([{ storage: chunkedIds.has(sessionId) ? 'chunked' : 'inline' }]);
     }
 
     if (text.includes('full_length')) {
-      // readHeadTail: values = [budgetBytes, half, half, sessionId]
+      // inline readHeadTail: values = [budgetBytes, half, half, sessionId]
       const [budgetBytes, half, , sessionId] = values as [number, number, number, string];
       if (!(sessionId in table)) return Promise.resolve([]);
       const content = table[sessionId] ?? null;
@@ -56,14 +81,6 @@ function fakeSql(table: Record<string, string | null>): postgres.Sql {
           ? content
           : content.slice(0, half) + '\n' + content.slice(content.length - half);
       return Promise.resolve([{ raw, full_length: fullLength }]);
-    }
-
-    if (text.includes('SELECT id FROM sessions.sessions')) {
-      // listSessionIdsWithContent: no interpolated values.
-      const ids = Object.entries(table)
-        .filter(([, content]) => content !== null && content !== '')
-        .map(([id]) => ({ id }));
-      return Promise.resolve(ids);
     }
 
     // readFull: values = [sessionId]
@@ -149,7 +166,7 @@ describe('TranscriptReader.messageRange and since', () => {
   });
 });
 
-describe('TranscriptReader.readAround', () => {
+describe('TranscriptReader.readAround (inline backend)', () => {
   it('finds a window around an anchor uuid', async () => {
     const reader = new TranscriptReader(fakeSql({ [KNOWN_ID]: TRANSCRIPT }));
     const { sessionFound, window } = await reader.readAround(KNOWN_ID, 'u1', 1, 1);
@@ -169,7 +186,7 @@ describe('TranscriptReader.readAround', () => {
   });
 });
 
-describe('TranscriptReader.find', () => {
+describe('TranscriptReader.find (inline backend)', () => {
   it('returns matches for an existing session', async () => {
     const reader = new TranscriptReader(fakeSql({ [KNOWN_ID]: TRANSCRIPT }));
     const { sessionFound, matches } = await reader.find(KNOWN_ID, { match: 'second', in: 'text' });
@@ -186,6 +203,22 @@ describe('TranscriptReader.find', () => {
     const missing = await reader.find(MISSING_ID, { match: 'second', in: 'text' });
     expect(missing.sessionFound).toBe(false);
     expect(missing.matches).toHaveLength(0);
+  });
+});
+
+describe('TranscriptReader.storageKind / isChunked', () => {
+  it('reports inline for an inline session and chunked for a chunked one', async () => {
+    const reader = new TranscriptReader(fakeSql({ [KNOWN_ID]: TRANSCRIPT, [EMPTY_ID]: null }, new Set([EMPTY_ID])));
+    expect(await reader.storageKind(KNOWN_ID)).toBe('inline');
+    expect(await reader.isChunked(KNOWN_ID)).toBe(false);
+    expect(await reader.storageKind(EMPTY_ID)).toBe('chunked');
+    expect(await reader.isChunked(EMPTY_ID)).toBe(true);
+  });
+
+  it('returns null for a missing session', async () => {
+    const reader = new TranscriptReader(fakeSql({}));
+    expect(await reader.storageKind(MISSING_ID)).toBeNull();
+    expect(await reader.isChunked(MISSING_ID)).toBe(false);
   });
 });
 
@@ -246,5 +279,117 @@ describe('TranscriptReader.listSessionIdsWithContent', () => {
     );
     const ids = await reader.listSessionIdsWithContent();
     expect(ids).toEqual([KNOWN_ID]);
+  });
+});
+
+// ── Chunked backend ─────────────────────────────────────────────────────────
+
+/** Chunk a transcript with the real production chunker/parser, for a
+ * realistic chunked-session fixture (not a hand-rolled approximation). */
+function buildChunks(transcript: string, chunkMaxBytes: number) {
+  const lines = splitLinesWithTerminators(transcript);
+  const { lineSeqs } = feed(EMPTY_CHECKPOINT, lines);
+  return chunkLines(lines, lineSeqs, 0, chunkMaxBytes).map((c, i) => ({ ...c, seq: i }));
+}
+
+/** A fake session backed by chunk rows + a message index, matching the
+ * chunked-backend query shapes `TranscriptReader` issues. */
+function fakeChunkedSql(
+  sessionId: string,
+  chunks: ReturnType<typeof buildChunks>,
+  messages: Array<{ seq: number; uuid: string; chunkSeq: number }>
+): postgres.Sql {
+  const fn = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+    const text = strings.join('?');
+
+    if (text.includes('SELECT storage, raw_transcript')) {
+      return Promise.resolve([{ storage: 'chunked', raw_transcript: null }]);
+    }
+    if (text.includes('SELECT storage FROM sessions.sessions')) {
+      return Promise.resolve([{ storage: 'chunked' }]);
+    }
+    if (text.includes('ORDER BY seq DESC LIMIT 1') && text.includes('byte_end')) {
+      const last = chunks[chunks.length - 1];
+      return Promise.resolve(last ? [{ byte_end: last.byteEnd }] : []);
+    }
+    if (text.includes('byte_start < ?')) {
+      const [, half] = values as [string, number];
+      return Promise.resolve(chunks.filter((c) => c.byteStart < half).map((c) => ({ content: c.content })));
+    }
+    if (text.includes('byte_end > ?')) {
+      const [, threshold] = values as [string, number];
+      return Promise.resolve(chunks.filter((c) => c.byteEnd > threshold).map((c) => ({ content: c.content })));
+    }
+    if (text.includes('SELECT seq FROM sessions.transcript_messages')) {
+      const [, uuid] = values as [string, string];
+      const row = messages.find((m) => m.uuid === uuid);
+      return Promise.resolve(row ? [{ seq: row.seq }] : []);
+    }
+    if (text.includes('msg_seq_end >=') && text.includes('msg_seq_start <=')) {
+      // readAround / find range-bounded chunk fetch: values = [sessionId, seqStart, seqEnd].
+      const [, seqStart, seqEnd] = values as [string, number, number];
+      const filtered = chunks.filter((c) => c.msgSeqEnd >= seqStart && c.msgSeqStart <= seqEnd);
+      return Promise.resolve(filtered.map((c) => ({ content: c.content })));
+    }
+    if (text.includes('SELECT content FROM sessions.transcript_chunks')) {
+      // readFullChunked, or find()'s unbounded fallback
+      return Promise.resolve(chunks.map((c) => ({ content: c.content })));
+    }
+
+    throw new Error(`fakeChunkedSql: unrecognized query: ${text}`);
+  }) as unknown as postgres.Sql;
+  void sessionId;
+  return fn;
+}
+
+describe('TranscriptReader chunked backend', () => {
+  const chunks = buildChunks(TRANSCRIPT, 40); // tiny cap forces several chunks
+  const messages = [
+    { seq: 0, uuid: 'u0', chunkSeq: 0 },
+    { seq: 1, uuid: 'u1', chunkSeq: chunks.length > 1 ? 1 : 0 },
+    { seq: 2, uuid: 'u2', chunkSeq: chunks.length > 2 ? 2 : 0 },
+    { seq: 3, uuid: 'u3', chunkSeq: chunks[chunks.length - 1]!.seq },
+  ];
+
+  it('readFull concatenates every chunk in order', async () => {
+    const reader = new TranscriptReader(fakeChunkedSql(KNOWN_ID, chunks, messages));
+    expect(await reader.readFull(KNOWN_ID)).toBe(TRANSCRIPT);
+  });
+
+  it('serialize works over the concatenated chunked content', async () => {
+    const reader = new TranscriptReader(fakeChunkedSql(KNOWN_ID, chunks, messages));
+    const text = await reader.serialize(KNOWN_ID);
+    expect(text).toContain('[U] first task');
+    expect(text).toContain('[A] done');
+  });
+
+  it('readHeadTail samples from boundary chunks only, matching the inline result', async () => {
+    const reader = new TranscriptReader(fakeChunkedSql(KNOWN_ID, chunks, messages));
+    const { raw, fullLength } = await reader.readHeadTail(KNOWN_ID, 20);
+    expect(fullLength).toBe(Buffer.byteLength(TRANSCRIPT, 'utf8'));
+    expect(raw.length).toBeGreaterThan(0);
+  });
+
+  it('readAround resolves the anchor via the message index and returns the same window shape', async () => {
+    const reader = new TranscriptReader(fakeChunkedSql(KNOWN_ID, chunks, messages));
+    const { sessionFound, window } = await reader.readAround(KNOWN_ID, 'u1', 1, 1);
+    expect(sessionFound).toBe(true);
+    expect(window?.anchor).toBe('u1');
+    expect(window?.lines.some((l) => l.includes('first task'))).toBe(true);
+    expect(window?.lines.some((l) => l.includes('second task'))).toBe(true);
+  });
+
+  it('readAround reports a missing anchor without a missing session', async () => {
+    const reader = new TranscriptReader(fakeChunkedSql(KNOWN_ID, chunks, messages));
+    const { sessionFound, window } = await reader.readAround(KNOWN_ID, 'does-not-exist', 1, 1);
+    expect(sessionFound).toBe(true);
+    expect(window).toBeNull();
+  });
+
+  it('find (unbounded) matches the same as the inline backend', async () => {
+    const reader = new TranscriptReader(fakeChunkedSql(KNOWN_ID, chunks, messages));
+    const { sessionFound, matches } = await reader.find(KNOWN_ID, { match: 'second', in: 'text' });
+    expect(sessionFound).toBe(true);
+    expect(matches).toHaveLength(1);
   });
 });

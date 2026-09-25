@@ -145,18 +145,33 @@ anything changed."
 
 - **One windowed session at a time.** The sweep's session concurrency applies
   to single-pass sessions only; windowed sessions are processed serially, so
-  at most one transcript parse is resident for windowing.
-- **One parse per session per sweep.** Boundary planning and every window's
-  text slice the same parsed messages; the transcript is never re-read per
-  window.
+  at most one transcript read is resident for windowing.
+- **One read per session per sweep, from the earliest seq this pass can
+  possibly need.** Boundary planning and every window's text slice the same
+  `TranscriptReader.messagesSince` result; the transcript is never re-read per
+  window. That starting seq is `min(lastClosedToSeq + 1, the lowest from_seq
+  among windows still pending)` — not always the transcript's start. A
+  pending window can predate the last closed boundary (carved in an earlier
+  sweep, never summarized because the budget ran out), so existing pending
+  windows are listed *before* choosing where to start reading; a boundary
+  newly carved this sweep can never need an earlier seq than that minimum,
+  since it's built only from messages after `lastClosedToSeq`.
 - **No content read once the budget is spent.** A windowed session reached
   after the sweep's summarization budget is exhausted is skipped without
   reading its transcript, and stays selected for the next sweep.
-- **Inline ceiling.** While a session's transcript is stored inline (before
-  chunked storage, specs/behaviors/session-transcript-storage.md), a window
-  read is a whole-transcript parse. A session whose inline transcript exceeds
-  64 MiB keeps the single-pass head+tail outline, computed in SQL, until its
-  storage is chunked.
+- **The inline backend still reads the whole transcript regardless of the
+  starting seq** — `messagesSince` on an inline session parses the whole
+  `raw_transcript` column and slices in memory (the read layer's accepted
+  carve-out, specs/behaviors/session-transcript-storage.md: "Readers take
+  ranges"). `WINDOW_MAX_INLINE_BYTES` (64 MiB) exists specifically to bound
+  that: an inline session whose transcript exceeds it keeps the single-pass
+  head+tail outline (computed in SQL) instead of windowing, until its storage
+  is chunked. **This ceiling does not apply to a chunked session** — nothing
+  on the windowed path ever loads a chunked session's whole chunk series
+  (`messagesSince`'s chunked backend resolves to only the chunks the starting
+  seq and onward actually touch), so a chunked session windows purely on
+  `isWindowedSession`'s normal message/byte thresholds, however large it's
+  grown.
 
 ## Composition: summary of summaries
 

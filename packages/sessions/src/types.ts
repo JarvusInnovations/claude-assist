@@ -120,6 +120,38 @@ export interface ToolCall {
 }
 
 /**
+ * A session's transcript storage discriminator
+ * (specs/behaviors/session-transcript-storage.md).
+ *
+ * - `inline`: legacy — content lives only in `raw_transcript`.
+ * - `catching_up`: an inline row whose on-disk file changed; chunks are
+ *   back-filling from byte zero while `raw_transcript` still holds the
+ *   complete record (readers keep using it until catch-up completes).
+ * - `chunked`: chunks are the only archive; `raw_transcript` is null.
+ */
+export type TranscriptStorage = 'inline' | 'catching_up' | 'chunked';
+
+/** One row of `sessions.transcript_chunks` — an immutable slice of the archive. */
+export interface TranscriptChunkRecord {
+  id: number;
+  sessionId: string;
+  seq: number;
+  byteStart: number;
+  byteEnd: number;
+  msgSeqStart: number;
+  msgSeqEnd: number;
+  content: string;
+  contentHash: string;
+}
+
+/** One row of `sessions.transcript_messages` — (session, seq) -> uuid + chunk. */
+export interface TranscriptMessageIndexRow {
+  seq: number;
+  uuid: string | null;
+  chunkSeq: number;
+}
+
+/**
  * Parsed session data extracted from transcript
  */
 export interface ParsedSession {
@@ -160,19 +192,6 @@ export interface ParsedSession {
 }
 
 /**
- * Discovered session from filesystem scan
- * Signal is optional - sessions may be discovered by scanning projects directory
- * without a corresponding .ended.json signal file
- */
-export interface DiscoveredSession {
-  signal?: SessionSignal;
-  sessionId: string;
-  transcriptPath: string;
-  transcriptContent: string;
-  transcriptHash: string;
-}
-
-/**
  * Push payload from satellite machines
  */
 export interface PushPayload {
@@ -187,7 +206,19 @@ export interface SessionPushData {
   signal?: SessionSignal;
   sessionId: string;
   transcriptPath: string;
-  transcript: string; // Raw JSONL content
+  /**
+   * Raw JSONL content. A CLI built for the chunked-ingest protocol sends only
+   * the tail after `sinceBytes` (from the inventory response's baseline for
+   * this session); an older CLI sends the whole file and omits `sinceBytes`
+   * (specs/behaviors/session-transcript-storage.md: "Satellite push"). The
+   * server accepts both shapes — see `SyncService.processPush`.
+   */
+  transcript: string;
+  /**
+   * Byte offset in the on-disk file where `transcript` begins. Omitted means
+   * `transcript` is the whole file (the legacy shape).
+   */
+  sinceBytes?: number;
 }
 
 /**
@@ -233,8 +264,17 @@ export interface SessionRecord {
   cache_read_tokens: number;
   transcript_path: string | null;
   transcript_hash: string;
-  raw_transcript: string;
+  raw_transcript: string | null;
   search_text: string | null;
+  /** specs/behaviors/session-transcript-storage.md storage discriminator */
+  storage: TranscriptStorage;
+  /** Bytes of the on-disk transcript archived as chunks so far */
+  ingested_bytes: number;
+  /** Opaque incremental-parser resume state; null before the first chunked cycle */
+  parse_checkpoint: unknown | null;
+  /** Set while `storage = 'catching_up'`: the raw_transcript length that must
+   * be covered before the row can flip to `chunked` and null raw_transcript. */
+  catchup_threshold_bytes: number | null;
   message_count: number;
   user_message_count: number;
   claude_version: string | null;
@@ -268,14 +308,22 @@ export interface SessionRecord {
 export type SessionSummaryRecord = Omit<SessionRecord, 'raw_transcript'>;
 
 /**
- * Lightweight session inventory item for two-phase sync
- * Contains hash without full transcript content
+ * Lightweight session inventory item for two-phase sync. `size` (the on-disk
+ * byte count) is the chunked-ingest change signal — cheap (`stat` only) and
+ * what lets the server tell the satellite exactly how many bytes to send
+ * (specs/behaviors/session-transcript-storage.md: "Change detection uses size
+ * and the last-chunk hash, not a whole-file MD5"). `transcriptHash` is kept
+ * only so an older CLI's inventory item (no `size`) still round-trips; the
+ * server falls back to whole-content hash comparison for those.
  */
 export interface SessionInventoryItem {
   sessionId: string;
-  transcriptHash: string;
   transcriptPath: string;
+  /** On-disk file size in bytes. Absent only from a pre-chunking CLI. */
+  size?: number;
   signal?: SessionSignal;
+  /** @deprecated legacy whole-file MD5, sent only by a pre-chunking CLI. */
+  transcriptHash?: string;
 }
 
 /**
@@ -289,12 +337,28 @@ export interface InventoryPayload {
   forceReparse?: boolean;
 }
 
+/** Per-session baseline a satellite needs to send only its tail. */
+export interface InventoryBaseline {
+  /** Bytes already archived — the offset the satellite should read from. */
+  ingestedBytes: number;
+  /** Content hash of the last archived chunk, for the satellite's own
+   * continuity check before it decides to trust `ingestedBytes` (optional —
+   * today's CLI trusts the server and always sends from `ingestedBytes`). */
+  lastChunkHash: string | null;
+}
+
 /**
  * Server response to inventory request
  */
 export interface InventoryResponse {
-  /** Session IDs that the server needs (new or changed hash) */
+  /** Session IDs that the server needs (new or changed) */
   neededSessionIds: string[];
   /** Sessions already up-to-date on server */
   upToDateCount: number;
+  /**
+   * Per-needed-session baseline so a chunked-ingest-aware CLI sends only the
+   * tail. A session absent from this map (e.g. one the server has never seen)
+   * has no baseline — the satellite sends the whole file from byte zero.
+   */
+  baselines: Record<string, InventoryBaseline>;
 }

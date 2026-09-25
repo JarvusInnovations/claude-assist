@@ -1,8 +1,8 @@
 import { hostname as getHostname } from 'node:os';
 import { SessionScanner } from './scanner.js';
+import { DEFAULT_INGEST_BUDGET_BYTES } from './chunked-ingest.js';
 import type {
   PushPayload,
-  SessionPushData,
   SyncResult,
   InventoryPayload,
   InventoryResponse,
@@ -44,11 +44,6 @@ export async function push(options: PushOptions): Promise<void> {
   const inventory = await scanner.getSessionInventory();
 
   console.log(`Found ${inventory.length} sessions locally`);
-  for (const skipped of scanner.oversized) {
-    console.log(
-      `  skipped ${skipped.sessionId}: ${Math.round(skipped.bytes / 1048576)}MB exceeds the transcript size limit`
-    );
-  }
 
   if (force) {
     console.log('Force mode: all sessions will be re-parsed regardless of hash');
@@ -108,19 +103,20 @@ export async function push(options: PushOptions): Promise<void> {
 
   log(`Loading ${inventoryResult.neededSessionIds.length} sessions to push...`);
   const neededIds = new Set(inventoryResult.neededSessionIds);
-  const sessionsToSend = await scanner.getSessionsByIds(neededIds);
-
-  const sessions: SessionPushData[] = sessionsToSend.map((session) => {
-    log(
-      `  ${session.sessionId} (${Math.round(session.transcriptContent.length / 1024)}KB)`
-    );
-    return {
-      signal: session.signal,
-      sessionId: session.sessionId,
-      transcriptPath: session.transcriptPath,
-      transcript: session.transcriptContent,
-    };
-  });
+  // Per-session baseline from the inventory response tells us how much of
+  // each file the server already has, so we send only the tail
+  // (specs/behaviors/session-transcript-storage.md: "Satellite push"). A
+  // session missing from `baselines` (new to the server) sends from byte
+  // zero, itself capped at the ingest budget — the rest follows over
+  // subsequent push cycles as the server's `ingested_bytes` advances.
+  const sessions = await scanner.getSessionsByIds(
+    neededIds,
+    inventoryResult.baselines,
+    DEFAULT_INGEST_BUDGET_BYTES
+  );
+  for (const session of sessions) {
+    log(`  ${session.sessionId} (${Math.round(session.transcript.length / 1024)}KB from byte ${session.sinceBytes ?? 0})`);
+  }
 
   const payload: PushPayload = {
     machineId,

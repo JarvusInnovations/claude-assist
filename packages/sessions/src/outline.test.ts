@@ -1,8 +1,10 @@
-import { describe, expect, it, mock } from 'bun:test';
+import { describe, expect, it, mock, spyOn } from 'bun:test';
 import type postgres from 'postgres';
 import type { FastifyBaseLogger } from 'fastify';
 import type { ModelInvoker, InvokeRequest, InvokeResult } from '@jarvus/claude-assist-core';
 import { OutlineService } from './outline.js';
+import { TranscriptReader } from './transcript-reader.js';
+import { parseMessages } from './transcript.js';
 
 /**
  * A minimal postgres.js-compatible fake: the tag function returns a
@@ -75,6 +77,18 @@ interface FakeSession {
   outline_windows_hash: string | null;
   output_tokens: string;
   started_at: string;
+  /** Defaults to 'inline' in `baseSession`; a 'chunked' fake session reports
+   * its `raw_transcript` length as `ingested_bytes` via rawByteLength, and
+   * `readFull`'s `storage` column comes back 'chunked' (its `raw_transcript`
+   * is otherwise unused by TranscriptReader for that session, matching a
+   * real chunked row's null column — the fake still needs *some* content to
+   * hand `messagesSince` for these tests, since simulating real chunk rows is
+   * out of scope here). */
+  storage?: 'inline' | 'chunked';
+  /** Overrides what `rawByteLength` reports, decoupled from the real
+   * `raw_transcript` string length — lets a test exercise the
+   * WINDOW_MAX_INLINE_BYTES ceiling without actually building a 64+ MiB string. */
+  fakeByteLength?: number;
 }
 
 interface FakeWindow {
@@ -144,12 +158,19 @@ function makeFakeDb(
         .map((s) => ({ ...s }));
     }
 
+    // ── TranscriptReader.getStorage ──
+    if (text.includes('SELECT storage FROM sessions.sessions')) {
+      const [id] = vals as [string];
+      const s = sessions.find((x) => x.id === id);
+      return s ? [{ storage: s.storage ?? 'inline' }] : [];
+    }
+
     // ── TranscriptReader.readFull ──
-    if (text.includes('SELECT raw_transcript FROM sessions.sessions')) {
+    if (text.includes('SELECT storage, raw_transcript')) {
       const [id] = vals as [string];
       const s = sessions.find((x) => x.id === id);
       if (!s) return [];
-      return [{ raw_transcript: s.raw_transcript }];
+      return [{ storage: s.storage ?? 'inline', raw_transcript: s.raw_transcript }];
     }
 
     // ── TranscriptReader.readHeadTail ──
@@ -164,10 +185,12 @@ function makeFakeDb(
     }
 
     // ── TranscriptReader.rawByteLength ──
-    if (text.includes('AS len')) {
+    if (text.includes('ingested_bytes') && text.includes('AS len')) {
       const [id] = vals as [string];
       const s = sessions.find((x) => x.id === id);
-      return [{ len: s ? s.raw_transcript.length : 0 }];
+      const storage = s?.storage ?? 'inline';
+      const len = s ? (s.fakeByteLength ?? s.raw_transcript.length) : 0;
+      return [{ storage, len, ingested_bytes: len }];
     }
 
     // ── OutlineService.bumpOutlineAttempts ──
@@ -415,6 +438,59 @@ describe('OutlineService — windowing decision', () => {
   });
 });
 
+// ── WINDOW_MAX_INLINE_BYTES applies only to the inline backend ─────────────
+
+describe('OutlineService — the inline size ceiling does not apply to chunked storage', () => {
+  it('an inline session over WINDOW_MAX_INLINE_BYTES falls back to the single-pass path', async () => {
+    const sessions = [
+      baseSession({ message_count: 500, raw_transcript: bigTranscript(500), fakeByteLength: 100 * 1024 * 1024 }),
+    ];
+    const { invoker, callsByTask } = makeFakeInvoker();
+    const svc = new OutlineService(makeFakeDb(sessions, []), makeLogger(), {
+      invoker,
+      windowConfig: { thresholdMessages: 400, maxMessages: 100, sweepCap: 1000 },
+    });
+
+    await svc.generateOutlinesSync();
+
+    // Over the message threshold, but the inline ceiling wins: single-pass, not windowed.
+    expect(callsByTask['sessions.outline']).toBe(1);
+    expect(callsByTask['sessions.outline.window']).toBeUndefined();
+  });
+
+  it('a chunked session over the same byte count still takes the windowed path', async () => {
+    const sessions = [
+      baseSession({
+        message_count: 500,
+        raw_transcript: bigTranscript(500),
+        storage: 'chunked',
+        fakeByteLength: 100 * 1024 * 1024,
+      }),
+    ];
+    const { invoker, callsByTask } = makeFakeInvoker();
+    // messagesSince's real chunked-backend SQL shape isn't simulated by this
+    // fake db (that's covered by transcript-reader.test.ts and the
+    // integration suite); stub it to the same inline-equivalent slice so this
+    // test isolates outline.ts's ceiling *decision*, not messagesSince itself.
+    const spy = spyOn(TranscriptReader.prototype, 'messagesSince').mockImplementation(
+      async (_id: string, afterSeq: number) => parseMessages(bigTranscript(500)).slice(afterSeq + 1)
+    );
+    try {
+      const svc = new OutlineService(makeFakeDb(sessions, []), makeLogger(), {
+        invoker,
+        windowConfig: { thresholdMessages: 400, maxMessages: 100, sweepCap: 1000 },
+      });
+
+      await svc.generateOutlinesSync();
+
+      expect(callsByTask['sessions.outline']).toBeUndefined();
+      expect(callsByTask['sessions.outline.window']).toBeGreaterThan(0);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
 // ── Windowed generation: boundaries, idempotency, composition ──────────────
 
 describe('OutlineService — windowed generation', () => {
@@ -447,6 +523,44 @@ describe('OutlineService — windowed generation', () => {
     expect(sessions[0]!.outline_hash).toBe('hashA');
   });
 
+  it('reads from the earliest seq a pending window needs, not from the transcript start, once boundaries have advanced', async () => {
+    const sessions = [baseSession({ message_count: 500, raw_transcript: bigTranscript(500) })];
+    const windows: FakeWindow[] = [];
+    const { invoker } = makeFakeInvoker();
+    const svc = new OutlineService(makeFakeDb(sessions, windows), makeLogger(), {
+      invoker,
+      windowConfig: { thresholdMessages: 400, maxMessages: 100, sweepCap: 2 },
+    });
+
+    const spy = spyOn(TranscriptReader.prototype, 'messagesSince');
+    try {
+      // Sweep 1: boundaries for all 5 windows get planned (cheap, unbudgeted);
+      // only windows 0 and 1 get summarized (sweepCap: 2). Reading everything
+      // is unavoidable here — nothing has been closed yet.
+      await svc.generateOutlinesSync();
+      expect(spy.mock.calls.at(-1)?.[1]).toBe(-1);
+      const closedWindows = windows.filter((w) => w.closed_at !== null).sort((a, b) => a.from_seq - b.from_seq);
+      expect(closedWindows.length).toBeGreaterThan(0);
+      const lastClosedToSeq = Math.max(...closedWindows.map((w) => w.to_seq));
+      const pendingFromSeqs = windows.filter((w) => w.status === 'pending').map((w) => w.from_seq);
+      const expectedReadFromSeq = Math.min(lastClosedToSeq + 1, ...pendingFromSeqs);
+      // The scenario is only meaningful if boundaries actually advanced past
+      // seq 0 and there's still an earlier pending window than the boundary —
+      // otherwise this assertion would pass trivially.
+      expect(expectedReadFromSeq).toBeGreaterThan(0);
+      expect(pendingFromSeqs.some((s) => s < lastClosedToSeq + 1)).toBe(true);
+
+      // Sweep 2: must read starting from expectedReadFromSeq, not from 0 —
+      // the whole point of listing pending windows before choosing the read's
+      // starting point (see generateWindowedOutline's doc comment).
+      await svc.generateOutlinesSync();
+      expect(spy.mock.calls.at(-1)?.[1]).toBe(expectedReadFromSeq - 1);
+      expect(spy.mock.calls.at(-1)?.[1]).not.toBe(-1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('once the sweep budget is spent, remaining windowed sessions are not read at all', async () => {
     const sessions = [
       baseSession({ id: 'aaaaaaaa-0000-4000-8000-000000000001', message_count: 500, raw_transcript: bigTranscript(500), started_at: '2026-01-02T00:00:00.000Z' }),
@@ -462,7 +576,7 @@ describe('OutlineService — windowed generation', () => {
 
     await svc.generateOutlinesSync();
 
-    const fullReads = seen.filter((q) => q.text.includes('SELECT raw_transcript FROM sessions.sessions'));
+    const fullReads = seen.filter((q) => q.text.includes('SELECT storage, raw_transcript'));
     // The first (newest) session spends the whole budget; it is parsed exactly
     // once despite having several windows, and the second is never read.
     expect(fullReads.map((q) => q.vals[0])).toEqual([sessions[0]!.id]);
