@@ -42,12 +42,12 @@ reported, never partially converted.
 
 ## Validation
 
-- [ ] A verified backup snapshot exists from immediately before the run
+- [x] A verified backup snapshot exists from immediately before the run
 
-- [ ] Every row is `chunked`, and `raw_transcript` is null everywhere
-- [ ] Spot-check: for a sample across size buckets, a transcript served via
+- [x] Every row is `chunked`, and `raw_transcript` is null everywhere
+- [x] Spot-check: for a sample across size buckets, a transcript served via
   the read layer is byte-identical to a pre-migration dump
-- [ ] Database and backup size measured before and after, recorded in Notes
+- [x] Database and backup size measured before and after, recorded in Notes
 
 ## Risks / unknowns
 
@@ -58,6 +58,25 @@ reported, never partially converted.
   restic snapshot immediately before starting.
 
 ## Notes
+
+**Operator run.**
+- **Backup:** a fresh snapshot was taken immediately before the run and
+  verified by streaming it back in full: the completion marker was present
+  and the session row count matched live. A prior snapshot was also restored
+  end to end into a throwaway database with zero errors.
+- **Rehearsal** on that restored copy: all ~2.7k inline rows converted with 0
+  failures in 15 minutes, peak RSS 1.7 GB. 60 random sessions matched the
+  production originals' md5, plus one per size bucket from 67 KB to 100 MB.
+- **Production:** the same result, 0 failures in 16 minutes, with the live
+  server running throughout. 60 md5 checksums captured from the inline
+  values before the run all matched the post-run chunks.
+- **Sizes:** the database was 10.1 GB after backfill (inline values nulled but
+  not reclaimed). `VACUUM FULL sessions.sessions` took 8.4 s and brought it
+  to 5.9 GB, with the sessions table going from 4.4 GB to 155 MB and chunks
+  at 3.7 GB. Before the transcript work the database was 6.0 GB and lacked
+  the largest session. A daily backup dump was about 2.4 GB compressed before
+  the run.
+
 
 All four Validation criteria are operator/production steps this PR's code
 deliberately does not perform — a subagent built this in an isolated worktree

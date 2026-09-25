@@ -28,9 +28,18 @@ pr: 245
 ## Validation
 
 - [x] Migration drops the column; no code references it
-- [ ] Full test suite and a deployed smoke test of every transcript route pass
+- [x] Full test suite and a deployed smoke test of every transcript route pass
 
 ## Notes
+
+**Operator verification.**
+- Migration 017 was rehearsed on the restored production copy (all rows
+  chunked). After it, the new code synced (first cycle 7.6 s at 401 MB peak,
+  then 0.9 s steady) and read the largest session in 123 ms at 81 MB.
+- Deployed after production reported 0 remaining and 0 failures.
+- Smoke test via the sessions CLI against production: search, per-session
+  grep with windowed matches, and session details all returned correct data.
+
 
 - **`backfillContextWindow` removed, not reimplemented.** It only ever
   targeted `raw_transcript IS NOT NULL AND context_final_tokens IS NULL`

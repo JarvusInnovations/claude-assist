@@ -94,12 +94,12 @@ rows are left to the backfill plan.
   correctness now actually depends on `tool_calls` being append-only, which
   this plan makes true (previously the whole index was deleted and
   reinserted every ingest)
-- [ ] Deployed: the largest live session catches up over several cycles; peak
+- [x] Deployed: the largest live session catches up over several cycles; peak
   RSS stays under the budget-derived ceiling; steady-state cycles on it are
   sub-second
 - [x] A satellite on the old CLI still syncs; on the new CLI it pushes the tail
   only
-- [ ] Around-anchor and grep on the largest archived session stay under a
+- [x] Around-anchor and grep on the largest archived session stay under a
   memory ceiling (measured) once its `storage = chunked` (deferred from
   [`transcript-read-layer`](transcript-read-layer.md))
 - [x] `since`/`messageRange`/`messagesSince`/`rawByteLength` never load a
@@ -125,6 +125,23 @@ rows are left to the backfill plan.
   removes the stopgap skip rather than layering a second limit on it.
 
 ## Notes
+
+**Operator verification.**
+- Rehearsed on a restored copy of production before deploy, reading real
+  transcript files: 8 cycles. A ~400 MB transcript caught up in 64 MiB steps
+  over 6 cycles and flipped to chunked on cycle 7. Its chunks matched the
+  on-disk file byte for byte (same md5 over ~420 MB), and the retired inline
+  value matched the file's prefix exactly. Peak RSS was 1.6 GB, and a steady
+  cycle took about 1 s.
+- Deployed: the same session caught up in about 26 minutes with server memory
+  peaking under 1 GB and no restarts. It idles at about 180 MB.
+- Bounded reads on the chunked ~420 MB session: `since`, `messagesSince`,
+  `rawByteLength` and around-anchor completed in 120–240 ms with process RSS
+  of 80–120 MB.
+- Review fixes before merge: byte-accurate `octet_length` for inline sizes and
+  the catch-up threshold (`length()` counts characters), a byte-0 push
+  baseline for inline sessions, and warnings on continuity mismatch.
+
 
 - **The incremental parser is independently implemented, not a refactor of
   `parseTranscript`.** `resume`/`feed`/`finalize` live in

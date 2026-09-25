@@ -1,9 +1,10 @@
 ---
-status: in-progress
+status: done
 depends: []
 specs:
   - specs/behaviors/session-sync-memory-bounds.md
 issues: []
+pr: 237
 ---
 
 # Plan: Contain session-sync memory
@@ -48,9 +49,9 @@ Follow-ups.
   inventory and by-id loading; the oversized report resets per scan; the
   default limit admits normal transcripts
 - [x] Existing sessions tests pass; workspace build is clean
-- [ ] Deployed: warning logged for the oversized session, and no multi-GB spike
+- [x] Deployed: warning logged for the oversized session, and no multi-GB spike
   across several sync cycles
-- [ ] Deployed: the unit's memory limits are in effect
+- [x] Deployed: the unit's memory limits are in effect
   (`systemctl --user show -p MemoryMax`)
 
 ## Follow-ups
@@ -59,3 +60,13 @@ Follow-ups.
   after which the size limit becomes a per-cycle ingest budget.
 - Ingest oversized sessions in a bounded form (metadata and tool-call index
   without `raw_transcript`) instead of skipping them outright.
+
+## Notes
+
+**Operator verification (deployed).** Every sync cycle logged the size-limit
+warning for the oversized session. Across two observed 5-minute cycles, peaks
+fell from about 8 GB RSS plus about 8 GB swap to 2.0–3.1 GB (page cache
+included), with cycles finishing in about 35 s instead of stalling the event
+loop for minutes. `MemoryHigh`/`MemoryMax`/`MemorySwapMax` were confirmed in the
+live cgroup after `daemon-reload`. Superseded by chunked ingest, which retired
+the size skip; see [transcript-chunked-ingest](transcript-chunked-ingest.md).
