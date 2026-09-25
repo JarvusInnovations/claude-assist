@@ -192,7 +192,16 @@ export class SyncService {
     let fresh = forceReparse;
     if (!fresh && state.lastChunk) {
       const cont = await checkContinuity(file.transcriptPath, state.ingestedBytes, state.lastChunk);
-      if (cont === 'mismatch') fresh = true;
+      if (cont === 'mismatch') {
+        // Transcripts are append-only, so this should be rare; when it fires,
+        // the stored chunks are replaced and any content no longer in the
+        // file is gone from the archive — make that visible.
+        this.log.warn(
+          { sessionId: file.sessionId, ingestedBytes: state.ingestedBytes, fileSize: file.size },
+          'Transcript continuity mismatch; re-ingesting from byte 0'
+        );
+        fresh = true;
+      }
     }
 
     const fromByte = fresh ? 0 : state.ingestedBytes;
@@ -348,6 +357,7 @@ export class SyncService {
         // payload itself (no disk access on this side).
         const cont = checkContinuityInPayload(transcript, payloadStartByte, state.lastChunk);
         if (cont === 'mismatch') {
+          this.log.warn({ sessionId, ingestedBytes: state.ingestedBytes }, 'Pushed transcript continuity mismatch; re-ingesting from byte 0');
           fresh = true;
         } else {
           effectiveStart = state.ingestedBytes;
