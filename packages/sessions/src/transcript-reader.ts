@@ -253,7 +253,7 @@ export class TranscriptReader {
       return { text: '', seqStart: -1, seqEnd: afterSeq, count: 0, truncated: false };
     }
 
-    const picked: typeof qualifying = [];
+    const picked: Array<{ msg_seq_start: number; content: string }> = [];
     let bytes = 0;
     for (const row of qualifying) {
       picked.push(row);

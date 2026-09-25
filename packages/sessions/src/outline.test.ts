@@ -144,12 +144,19 @@ function makeFakeDb(
         .map((s) => ({ ...s }));
     }
 
+    // ── TranscriptReader.getStorage (all fake sessions are the inline backend) ──
+    if (text.includes('SELECT storage FROM sessions.sessions')) {
+      const [id] = vals as [string];
+      const s = sessions.find((x) => x.id === id);
+      return s ? [{ storage: 'inline' }] : [];
+    }
+
     // ── TranscriptReader.readFull ──
-    if (text.includes('SELECT raw_transcript FROM sessions.sessions')) {
+    if (text.includes('SELECT storage, raw_transcript')) {
       const [id] = vals as [string];
       const s = sessions.find((x) => x.id === id);
       if (!s) return [];
-      return [{ raw_transcript: s.raw_transcript }];
+      return [{ storage: 'inline', raw_transcript: s.raw_transcript }];
     }
 
     // ── TranscriptReader.readHeadTail ──
@@ -164,10 +171,10 @@ function makeFakeDb(
     }
 
     // ── TranscriptReader.rawByteLength ──
-    if (text.includes('AS len')) {
+    if (text.includes('ingested_bytes') && text.includes('AS len')) {
       const [id] = vals as [string];
       const s = sessions.find((x) => x.id === id);
-      return [{ len: s ? s.raw_transcript.length : 0 }];
+      return [{ storage: 'inline', len: s ? s.raw_transcript.length : 0, ingested_bytes: 0 }];
     }
 
     // ── OutlineService.bumpOutlineAttempts ──
@@ -462,7 +469,7 @@ describe('OutlineService — windowed generation', () => {
 
     await svc.generateOutlinesSync();
 
-    const fullReads = seen.filter((q) => q.text.includes('SELECT raw_transcript FROM sessions.sessions'));
+    const fullReads = seen.filter((q) => q.text.includes('SELECT storage, raw_transcript'));
     // The first (newest) session spends the whole budget; it is parsed exactly
     // once despite having several windows, and the second is never read.
     expect(fullReads.map((q) => q.vals[0])).toEqual([sessions[0]!.id]);
