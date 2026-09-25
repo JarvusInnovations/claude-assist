@@ -53,11 +53,11 @@ export interface OutlineResult {
 }
 
 /**
- * Deliberately carries no `raw_transcript`. A sweep selects one row per
+ * Deliberately carries no archive content. A sweep selects one row per
  * session needing an outline - every session in the table, on a cold start -
- * so the transcript blob is fetched per-session inside the concurrency
- * limiter instead, bounding peak memory to `concurrency` transcripts rather
- * than the whole table's worth. See fetchCappedTranscript().
+ * so the transcript is fetched per-session inside the concurrency limiter
+ * instead, bounding peak memory to `concurrency` transcripts rather than the
+ * whole table's worth. See fetchCappedTranscript().
  */
 interface SessionForOutline {
   id: string;
@@ -127,14 +127,6 @@ export class OutlineService {
 
   /** Lease duration for a claimed window's summarization (specs/behaviors/scheduled-work-leases.md). */
   private static readonly WINDOW_LEASE_MS = 10 * 60 * 1000;
-  /**
-   * Largest inline transcript the windowed path will parse. Over the inline
-   * storage backend a window read is a whole-transcript parse, and a parse
-   * costs many times the raw size in heap; past this ceiling a session keeps
-   * the single-pass head+tail outline (computed in SQL) until chunked
-   * storage makes window reads bounded (specs/behaviors/session-transcript-storage.md).
-   */
-  private static readonly WINDOW_MAX_INLINE_BYTES = 64 * 1024 * 1024;
 
   private sql: postgres.Sql;
   private log: FastifyBaseLogger;
@@ -142,10 +134,11 @@ export class OutlineService {
   private invoker: ModelInvoker;
   private limit: ReturnType<typeof pLimit>;
   /**
-   * Windowed sessions run one at a time: each parses its whole transcript
-   * (over inline storage), and the sweep's session concurrency would
-   * otherwise hold several parses in memory at once. Serializing also makes
-   * the per-sweep budget check exact.
+   * Windowed sessions run one at a time: the first time an existing long
+   * session is windowed at all, boundary planning walks its full backlog
+   * once, and the sweep's session concurrency would otherwise hold several
+   * such walks in memory at once. Serializing also makes the per-sweep
+   * budget check exact.
    */
   private windowedLimit = pLimit(1);
   private model: string | undefined;
@@ -414,21 +407,13 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
    * short on messages but could still be large (a few huge pasted blocks) —
    * `rawByteLength` is a scalar read, never a content fetch.
    *
-   * `WINDOW_MAX_INLINE_BYTES` exists to protect the *inline* backend's
-   * single-pass fallback (`generateOutline`, which loads the whole
-   * `raw_transcript` column) from a session too large to safely load whole —
-   * a session past that ceiling is neither windowed nor single-passed; it's
-   * effectively skipped until it's small enough or converted to chunks. That
-   * ceiling has no meaning for a `chunked` session: nothing here ever loads
-   * its whole transcript (windowed generation reads only the seq range it
-   * needs via `messagesSince`, and the non-windowed fallback is never taken
-   * for something this large), so a chunked session is windowed purely on
-   * `isWindowedSession`'s normal thresholds, however big it's grown.
+   * Nothing here ever loads a session's whole transcript to decide (windowed
+   * generation reads only the seq range it needs via `messagesSince`), so a
+   * session is windowed purely on `isWindowedSession`'s thresholds, however
+   * big it's grown.
    */
   private async isWindowed(session: SessionForOutline): Promise<boolean> {
     const bytes = await this.reader.rawByteLength(session.id);
-    const chunked = await this.reader.isChunked(session.id);
-    if (!chunked && bytes > OutlineService.WINDOW_MAX_INLINE_BYTES) return false;
     return isWindowedSession(session.message_count, bytes, this.windowConfig);
   }
 

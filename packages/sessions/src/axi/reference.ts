@@ -68,7 +68,6 @@ export const COMMAND_GROUPS: CommandGroup[] = [
       { usage: "outlines progress", summary: "check background outline-generation progress" },
       { usage: "sync [--force]", summary: "trigger an immediate local session sync (--force re-parses all)" },
       { usage: "share <session-id>", summary: "mint a shareable auth code for a session transcript" },
-      { usage: "backfill status", summary: "progress of the legacy-transcript chunk backfill (converted/remaining/failures)" },
     ],
   },
 ];

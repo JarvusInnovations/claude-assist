@@ -38,9 +38,6 @@ function baseParams(overrides: Partial<WriteCycleParams> = {}): WriteCycleParams
     messageIndexRows: [],
     checkpoint: EMPTY_CHECKPOINT,
     ingestedBytes: 0,
-    storage: 'chunked',
-    catchupThresholdBytes: null,
-    clearRawTranscript: false,
     isNew: true,
     fresh: true,
     nextChunkSeq: 0,
@@ -92,31 +89,6 @@ describe('writeIngestCycle', () => {
     expect(calls.some((c) => c.text.includes('UPDATE sessions.sessions'))).toBe(true);
   });
 
-  it('clearRawTranscript nulls raw_transcript in the same UPDATE (the catching_up -> chunked flip)', async () => {
-    const { sql, calls } = recordingSql();
-    await writeIngestCycle(
-      sql,
-      baseParams({ isNew: false, fresh: false, storage: 'chunked', catchupThresholdBytes: null, clearRawTranscript: true })
-    );
-    const update = calls.find((c) => c.text.includes('UPDATE sessions.sessions'))!;
-    expect(update.text).toContain('raw_transcript = ?');
-    // NULL is spliced in as a raw SQL fragment (not a bound value), so the
-    // interpolated value for that slot is the postgres.js NULL fragment
-    // object our fake just echoes back — the important thing is the clause
-    // text itself resolves to NULL rather than the no-op `raw_transcript`.
-  });
-
-  it('a not-yet-caught-up cycle leaves raw_transcript untouched', async () => {
-    const { sql, calls } = recordingSql();
-    await writeIngestCycle(
-      sql,
-      baseParams({ isNew: false, fresh: false, storage: 'catching_up', catchupThresholdBytes: 5_000_000, clearRawTranscript: false })
-    );
-    const update = calls.find((c) => c.text.includes('UPDATE sessions.sessions'))!;
-    expect(update.values).toContain(null); // catchup_threshold_bytes bound value
-    expect(update.text).toContain('storage = ?');
-  });
-
   it('batches tool_calls inserts so no single statement holds an unbounded row count', async () => {
     const { sql, calls } = recordingSql();
     const manyToolCalls: ToolCall[] = Array.from({ length: 45_000 }, (_, i) => ({
@@ -146,11 +118,8 @@ describe('getChunkState', () => {
       'FROM sessions.sessions': [
         {
           machine_id: 1,
-          storage: 'chunked',
           ingested_bytes: '12345',
           parse_checkpoint: { v: 1, msgIndex: 10, openChains: [], lastActivityEnd: null },
-          catchup_threshold_bytes: null,
-          raw_transcript_length: null,
           user_messages: JSON.stringify(['hi']),
           tools_used: JSON.stringify(['Read']),
           files_touched: JSON.stringify({ reads: ['/a.ts'], writes: [] }),
@@ -177,7 +146,6 @@ describe('getChunkState', () => {
 
     const state = await getChunkState(sql, SESSION_ID);
     expect(state).not.toBeNull();
-    expect(state!.storage).toBe('chunked');
     expect(state!.ingestedBytes).toBe(12345);
     expect(state!.lastChunk).toEqual({ seq: 3, byteStart: 1000, byteEnd: 2000, contentHash: 'abc123' });
     expect(state!.aggregate.userMessages).toEqual(['hi']);

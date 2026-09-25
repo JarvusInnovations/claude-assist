@@ -14,7 +14,7 @@ import {
   type SerializedDelta,
   type MessageRangeResult,
 } from './transcript.js';
-import type { TranscriptMessage, TranscriptStorage } from './types.js';
+import type { TranscriptMessage } from './types.js';
 
 /**
  * The single choke point for reading a session's archived transcript.
@@ -26,38 +26,26 @@ import type { TranscriptMessage, TranscriptStorage } from './types.js';
  * transcript to use a part of it. That is what lets the storage backend
  * change shape inside this one module instead of across every call site.
  *
- * Two backends, selected per session by its `storage` column:
+ * Chunks (`sessions.transcript_chunks` + `sessions.transcript_messages`) are
+ * the only archive — every session is ingested this way (the legacy inline
+ * `raw_transcript` column and its `catching_up` transition were retired once
+ * the one-time backfill converted every pre-chunking row; see migration 017).
+ * Every range operation — `readAround`, `find`, `messageRange`, `since`,
+ * `messagesSince`, `rawByteLength` — resolves to only the chunks the
+ * requested range touches, via the message index (`transcript_messages`) and
+ * each chunk's own `[msg_seq_start, msg_seq_end]`, never by concatenating the
+ * whole chunk series. `readFull`/`serialize`/`readRawMessages` are the
+ * exception: they're inherently whole-transcript operations (a caller asking
+ * for everything), so they still concatenate every chunk.
  *
- * - **inline** (`storage IN ('inline', 'catching_up')`): the legacy
- *   `raw_transcript` TEXT column. Unchanged from `transcript-read-layer` — a
- *   `catching_up` row's `raw_transcript` still holds the complete record
- *   (chunks are a backfill in progress; readers stay on the old column until
- *   the flip to `chunked`).
- * - **chunked** (`storage = 'chunked'`): `sessions.transcript_chunks` +
- *   `sessions.transcript_messages`. Every range operation — `readAround`,
- *   `find`, `messageRange`, `since`, `messagesSince`, `rawByteLength` —
- *   resolves to only the chunks (or the scalar column) the requested range
- *   touches, via the message index (`transcript_messages`) and each chunk's
- *   own `[msg_seq_start, msg_seq_end]`, never by concatenating the whole
- *   chunk series. This is the memory-ceiling win deferred from
- *   `transcript-read-layer` (see that plan's Follow-ups) — a ~400 MB chunked
- *   session costs these readers only what the requested range actually
- *   spans, the same as it always has for the inline backend's SQL
- *   `left`/`right` sampling. `readFull`/`serialize`/`readRawMessages` are the
- *   exception: they're inherently whole-transcript operations (a caller
- *   asking for everything), so the chunked backend still concatenates every
- *   chunk for those — same cost profile as an inline full read.
- *
- * A chunked range read rebases the pure functions in `transcript.ts` (which
- * parse from index 0 = seq 0) onto whatever chunks were actually fetched: it
+ * A range read rebases the pure functions in `transcript.ts` (which parse
+ * from index 0 = seq 0) onto whatever chunks were actually fetched: it
  * fetches only chunks overlapping the requested seq range, computes
  * `chunkBaseSeq` (the absolute seq the fetched slice's first message
  * actually starts at), calls the pure function with seq arguments shifted by
  * `-chunkBaseSeq`, then shifts the result's `seqStart`/`seqEnd` back by
  * `+chunkBaseSeq` before returning — so every caller-visible seq stays an
- * absolute session seq, identical to what the inline backend (which never
- * needs this rebasing, since it always parses from real seq 0) returns for
- * the same query.
+ * absolute session seq.
  */
 
 /** `msg_seq_start`/`msg_seq_end` are Postgres INTEGER (int4) columns, so any
@@ -68,31 +56,15 @@ const INT4_MAX = 2147483647;
 export class TranscriptReader {
   constructor(private sql: postgres.Sql) {}
 
-  /**
-   * Public storage-kind lookup for callers that need to branch on it
-   * (e.g. a windowing/outline ceiling that only makes sense for the inline
-   * backend's whole-value read — a chunked session has no such ceiling to
-   * apply). `null` if no such session exists.
-   */
-  async storageKind(sessionId: string): Promise<TranscriptStorage | null> {
-    return this.getStorage(sessionId);
-  }
-
-  /** Convenience wrapper over `storageKind` for a simple yes/no check. */
-  async isChunked(sessionId: string): Promise<boolean> {
-    return (await this.getStorage(sessionId)) === 'chunked';
-  }
-
-  /** `null` if no such session; otherwise its storage discriminator. */
-  private async getStorage(sessionId: string): Promise<TranscriptStorage | null> {
-    const [row] = await this.sql<{ storage: TranscriptStorage }[]>`
-      SELECT storage FROM sessions.sessions WHERE id = ${sessionId}::uuid
+  /** `true` if a session with this id exists. */
+  private async sessionExists(sessionId: string): Promise<boolean> {
+    const [row] = await this.sql<{ id: string }[]>`
+      SELECT id FROM sessions.sessions WHERE id = ${sessionId}::uuid
     `;
-    return row?.storage ?? null;
+    return !!row;
   }
 
-  /** Concatenate every chunk's content, in order. Only for a session already
-   * known to be `storage = 'chunked'`. */
+  /** Concatenate every chunk's content, in order. */
   private async readFullChunked(sessionId: string): Promise<string> {
     const rows = await this.sql<{ content: string }[]>`
       SELECT content FROM sessions.transcript_chunks
@@ -107,44 +79,21 @@ export class TranscriptReader {
    * (as opposed to `''`, an existing session with an empty archive).
    */
   async readFull(sessionId: string): Promise<string | null> {
-    const [row] = await this.sql<{ storage: TranscriptStorage; raw_transcript: string | null }[]>`
-      SELECT storage, raw_transcript FROM sessions.sessions WHERE id = ${sessionId}::uuid
-    `;
-    if (!row) return null;
-    if (row.storage === 'chunked') return this.readFullChunked(sessionId);
-    return row.raw_transcript ?? '';
+    if (!(await this.sessionExists(sessionId))) return null;
+    return this.readFullChunked(sessionId);
   }
 
   /**
-   * Head+tail sample within a byte budget. The inline backend computes it in
-   * SQL (`left`/`right`) so an oversized value never lands on the heap in
-   * full; the chunked backend fetches only the boundary chunks (by byte
-   * range), never the whole chunk series. Returns the sample plus the
-   * column's true length so a caller can tell whether it was sampled
+   * Head+tail sample within a byte budget: fetches only the boundary chunks
+   * (by byte range), never the whole chunk series. Returns the sample plus
+   * the transcript's true length so a caller can tell whether it was sampled
    * (`fullLength > budgetBytes`).
    */
   async readHeadTail(
     sessionId: string,
     budgetBytes: number
   ): Promise<{ raw: string; fullLength: number }> {
-    const storage = await this.getStorage(sessionId);
-    if (storage === null) return { raw: '', fullLength: 0 };
-
-    if (storage !== 'chunked') {
-      const half = Math.floor(budgetBytes / 2);
-      const [row] = await this.sql<{ raw: string; full_length: number }[]>`
-        SELECT
-          coalesce(length(raw_transcript), 0) AS full_length,
-          CASE
-            WHEN raw_transcript IS NULL THEN ''
-            WHEN length(raw_transcript) <= ${budgetBytes} THEN raw_transcript
-            ELSE left(raw_transcript, ${half}) || E'\n' || right(raw_transcript, ${half})
-          END AS raw
-        FROM sessions.sessions
-        WHERE id = ${sessionId}::uuid
-      `;
-      return { raw: row?.raw ?? '', fullLength: row?.full_length ?? 0 };
-    }
+    if (!(await this.sessionExists(sessionId))) return { raw: '', fullLength: 0 };
 
     const [last] = await this.sql<{ byte_end: string | number }[]>`
       SELECT byte_end FROM sessions.transcript_chunks
@@ -184,18 +133,13 @@ export class TranscriptReader {
     return raw ? serializeTranscript(raw, opts) : '';
   }
 
-/**
+  /**
    * A bounded message range `[fromSeq, toSeq]` (`toSeq` omitted reads to the
-   * end). Chunked sessions fetch only chunks whose `[msg_seq_start,
-   * msg_seq_end]` overlaps the request, never the whole chunk series.
+   * end). Fetches only chunks whose `[msg_seq_start, msg_seq_end]` overlaps
+   * the request, never the whole chunk series.
    */
   async messageRange(sessionId: string, fromSeq: number, toSeq?: number): Promise<MessageRangeResult> {
-    const storage = await this.getStorage(sessionId);
-    if (storage === null) return { text: '', seqStart: -1, seqEnd: -1, count: 0 };
-    if (storage !== 'chunked') {
-      const raw = await this.readFull(sessionId);
-      return serializeMessageRange(raw ?? '', fromSeq, toSeq);
-    }
+    if (!(await this.sessionExists(sessionId))) return { text: '', seqStart: -1, seqEnd: -1, count: 0 };
 
     const seqEndBound = toSeq ?? INT4_MAX;
     const chunkRows = await this.sql<{ msg_seq_start: number; content: string }[]>`
@@ -223,34 +167,31 @@ export class TranscriptReader {
    * it from a prior select); a missing row degrades to an empty transcript
    * rather than throwing.
    *
-   * Chunked sessions never fetch a chunk that ends before `afterSeq` (the
-   * hard floor), and — since `serializeSince` keeps only the tail once past
-   * the char budget anyway — walk chunks from the newest backward, adding one
-   * at a time and re-serializing the growing slice, stopping as soon as the
-   * serialized text reaches the char budget (or every qualifying chunk has
-   * been included). This is what guarantees the result is never short of
-   * what the caller asked for: raw JSONL bytes run several times the
-   * serialized char count (JSON's per-message overhead — uuids, timestamps,
-   * envelope keys), so any fixed raw-byte-to-char ratio either under-fetches
-   * on dense content or over-fetches on sparse content; checking the actual
-   * serialized length after each chunk needs neither guess. In the case this
-   * exists for — a session that grew by hundreds of MB since `afterSeq` —
-   * the newest one or two chunks alone almost always already exceed the char
-   * budget, so this stops immediately; it degrades to walking every
-   * qualifying chunk only when the content since `afterSeq` genuinely
-   * doesn't reach the budget at all, the same case where `serializeSince`
-   * itself would return everything, untruncated.
+   * Never fetches a chunk that ends before `afterSeq` (the hard floor), and
+   * — since `serializeSince` keeps only the tail once past the char budget
+   * anyway — walks chunks from the newest backward, adding one at a time and
+   * re-serializing the growing slice, stopping as soon as the serialized
+   * text reaches the char budget (or every qualifying chunk has been
+   * included). This is what guarantees the result is never short of what
+   * the caller asked for: raw JSONL bytes run several times the serialized
+   * char count (JSON's per-message overhead — uuids, timestamps, envelope
+   * keys), so any fixed raw-byte-to-char ratio either under-fetches on dense
+   * content or over-fetches on sparse content; checking the actual
+   * serialized length after each chunk needs neither guess. In the case
+   * this exists for — a session that grew by hundreds of MB since
+   * `afterSeq` — the newest one or two chunks alone almost always already
+   * exceed the char budget, so this stops immediately; it degrades to
+   * walking every qualifying chunk only when the content since `afterSeq`
+   * genuinely doesn't reach the budget at all, the same case where
+   * `serializeSince` itself would return everything, untruncated.
    */
   async since(
     sessionId: string,
     afterSeq: number,
     opts?: { maxChars?: number }
   ): Promise<SerializedDelta> {
-    const storage = await this.getStorage(sessionId);
-    if (storage === null) return { text: '', seqStart: -1, seqEnd: afterSeq, count: 0, truncated: false };
-    if (storage !== 'chunked') {
-      const raw = await this.readFull(sessionId);
-      return serializeSince(raw ?? '', afterSeq, opts);
+    if (!(await this.sessionExists(sessionId))) {
+      return { text: '', seqStart: -1, seqEnd: afterSeq, count: 0, truncated: false };
     }
 
     const maxChars = opts?.maxChars ?? DELTA_CHAR_BUDGET;
@@ -295,9 +236,9 @@ export class TranscriptReader {
    * `find`). `sessionFound: false` distinguishes a missing session from a
    * session whose transcript doesn't contain the anchor uuid (`window: null`).
    *
-   * Chunked sessions resolve the anchor's seq via `transcript_messages` and
-   * fetch only the chunks whose message range overlaps `[seq-before,
-   * seq+after]` — never the whole chunk series.
+   * Resolves the anchor's seq via `transcript_messages` and fetches only the
+   * chunks whose message range overlaps `[seq-before, seq+after]` — never
+   * the whole chunk series.
    */
   async readAround(
     sessionId: string,
@@ -305,14 +246,7 @@ export class TranscriptReader {
     before: number,
     after: number
   ): Promise<{ sessionFound: boolean; window: MessageWindow | null }> {
-    const storage = await this.getStorage(sessionId);
-    if (storage === null) return { sessionFound: false, window: null };
-
-    if (storage !== 'chunked') {
-      const raw = await this.readFull(sessionId);
-      if (raw === null) return { sessionFound: false, window: null };
-      return { sessionFound: true, window: readAround(raw, anchorUuid, before, after) };
-    }
+    if (!(await this.sessionExists(sessionId))) return { sessionFound: false, window: null };
 
     const [anchor] = await this.sql<{ seq: number }[]>`
       SELECT seq FROM sessions.transcript_messages
@@ -342,32 +276,20 @@ export class TranscriptReader {
    * `sessionFound: false` distinguishes a missing session (404) from a
    * session with zero matches (200, empty list).
    *
-   * Chunked sessions resolve `afterUuid`/`beforeUuid` (if given) to a seq
-   * range via `transcript_messages` and grep only the chunks that range
-   * overlaps; an unbounded search (no afterUuid/beforeUuid) still has to
-   * cover the whole transcript, so it fetches every chunk — matching what an
-   * unbounded search over `raw_transcript` already costs on the inline
-   * backend.
+   * Resolves `afterUuid`/`beforeUuid` (if given) to a seq range via
+   * `transcript_messages` and greps only the chunks that range overlaps; an
+   * unbounded search (no afterUuid/beforeUuid) still has to cover the whole
+   * transcript, so it fetches every chunk.
    */
   async find(
     sessionId: string,
     opts: FindOptions
   ): Promise<{ sessionFound: boolean; matches: TranscriptMatch[] }> {
-    const storage = await this.getStorage(sessionId);
-    if (storage === null) return { sessionFound: false, matches: [] };
-
-    if (storage !== 'chunked') {
-      const raw = await this.readFull(sessionId);
-      if (raw === null) return { sessionFound: false, matches: [] };
-      return { sessionFound: true, matches: findInTranscript(raw, opts) };
-    }
+    if (!(await this.sessionExists(sessionId))) return { sessionFound: false, matches: [] };
 
     // Sentinel bounds rather than conditional SQL fragments: an absent
     // afterUuid/beforeUuid just means "no lower/upper bound", so the same
-    // unconditional query shape covers a bounded or fully unbounded search
-    // (which still has to cover the whole transcript, matching what an
-    // unbounded search over `raw_transcript` already costs on the inline
-    // backend).
+    // unconditional query shape covers a bounded or fully unbounded search.
     let seqStart = 0;
     let seqEnd = INT4_MAX;
     if (opts.afterUuid) {
@@ -392,8 +314,7 @@ export class TranscriptReader {
     const chunkBaseSeq = chunkRows[0]!.msg_seq_start;
     const bounded = chunkRows.map((r) => r.content).join('');
     // findInTranscript's `.index` is an ordinal into whatever text it's given
-    // — rebase it back to an absolute session seq so a chunked session's
-    // matches carry the same `index` an inline session's would.
+    // — rebase it back to an absolute session seq.
     const matches = findInTranscript(bounded, opts).map((m) => ({ ...m, index: m.index + chunkBaseSeq }));
     return { sessionFound: true, matches };
   }
@@ -429,9 +350,7 @@ export class TranscriptReader {
    */
   async listSessionIdsWithContent(): Promise<string[]> {
     const rows = await this.sql<{ id: string }[]>`
-      SELECT id FROM sessions.sessions
-      WHERE (raw_transcript IS NOT NULL AND raw_transcript != '')
-         OR storage = 'chunked'
+      SELECT DISTINCT session_id AS id FROM sessions.transcript_chunks
     `;
     return rows.map((r) => r.id);
   }
@@ -443,21 +362,16 @@ export class TranscriptReader {
   // ───────────────────────────────────────────────────────────────────────
 
   /**
-   * Raw transcript byte length without fetching content — the scalar half of
-   * what `readHeadTail` already computes in SQL. Lets a caller decide whether
-   * a session is large enough to window without paying to fetch bytes it only
-   * needed to count. For a chunked session this is `ingested_bytes`, not
-   * `length(raw_transcript)` — that column is null once a session is
-   * chunked, and returning 0 there would silently defeat any ceiling a
-   * caller applies against this value (see `outline.ts`'s `isWindowed`).
+   * A session's archived byte length without fetching content — lets a
+   * caller decide whether a session is large enough to window without
+   * paying to fetch bytes it only needed to count (see `outline.ts`'s
+   * `isWindowed`).
    */
   async rawByteLength(sessionId: string): Promise<number> {
-    const [row] = await this.sql<{ storage: TranscriptStorage; len: number; ingested_bytes: string | number }[]>`
-      SELECT storage, coalesce(octet_length(raw_transcript), 0) AS len, ingested_bytes
-      FROM sessions.sessions WHERE id = ${sessionId}::uuid
+    const [row] = await this.sql<{ ingested_bytes: string | number }[]>`
+      SELECT ingested_bytes FROM sessions.sessions WHERE id = ${sessionId}::uuid
     `;
-    if (!row) return 0;
-    return row.storage === 'chunked' ? Number(row.ingested_bytes) : row.len;
+    return row ? Number(row.ingested_bytes) : 0;
   }
 
   /**
@@ -469,19 +383,13 @@ export class TranscriptReader {
    * The returned array's contract has always been "a slice starting at
    * `afterSeq + 1`", not a globally-seq-indexed array — `messagesSince(id,
    * -1)` (today's only caller shape) happens to make those the same thing.
-   * The chunked backend honors that same contract: it fetches only chunks
-   * whose `msg_seq_end >= afterSeq + 1` (never a chunk that ends before
-   * `afterSeq`), so a caller passing a large `afterSeq` into a session that
-   * has grown far past it costs only the tail, not the whole chunk series.
+   * Fetches only chunks whose `msg_seq_end >= afterSeq + 1` (never a chunk
+   * that ends before `afterSeq`), so a caller passing a large `afterSeq`
+   * into a session that has grown far past it costs only the tail, not the
+   * whole chunk series.
    */
   async messagesSince(sessionId: string, afterSeq: number): Promise<TranscriptMessage[]> {
-    const storage = await this.getStorage(sessionId);
-    if (storage === null) return [];
-    if (storage !== 'chunked') {
-      const raw = await this.readFull(sessionId);
-      if (!raw) return [];
-      return parseMessages(raw).slice(afterSeq + 1);
-    }
+    if (!(await this.sessionExists(sessionId))) return [];
 
     const chunkRows = await this.sql<{ msg_seq_start: number; content: string }[]>`
       SELECT msg_seq_start, content FROM sessions.transcript_chunks
@@ -495,7 +403,7 @@ export class TranscriptReader {
     // may be < afterSeq + 1 when the earliest qualifying chunk also holds
     // some already-consumed messages before the boundary); slice the extra
     // off so index 0 of the RETURNED array is exactly afterSeq + 1, matching
-    // the inline path's contract.
+    // this method's contract.
     return parseMessages(bounded).slice(Math.max(0, afterSeq + 1 - chunkBaseSeq));
   }
 }

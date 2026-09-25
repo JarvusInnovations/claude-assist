@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 /**
  * One-time migration script to reparse files_touched for all existing sessions.
- * Re-extracts file operations from raw_transcript to properly classify reads vs writes.
+ * Re-extracts file operations from the archived transcript (via TranscriptReader)
+ * to properly classify reads vs writes.
  *
  * Usage: bun packages/sessions/scripts/reparse-files-touched.ts
  *

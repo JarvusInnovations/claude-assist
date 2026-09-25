@@ -12,7 +12,6 @@ import type {
 } from './types.js';
 import { serializeTranscript, type MatchDimension } from './transcript.js';
 import type { TranscriptReader } from './transcript-reader.js';
-import type { ChunkBackfillService } from './chunk-backfill.js';
 import { normalizeProjectPaths } from './project-names.js';
 import type { ClassificationService } from './classification/service.js';
 import type { SynthesisService } from './classification/synthesis.js';
@@ -61,7 +60,6 @@ export interface RoutesConfig {
   syncService: SyncService;
   outlineService: OutlineService | null;
   reader: TranscriptReader;
-  backfillService?: ChunkBackfillService | null;
   classificationService?: ClassificationService | null;
   synthesisService?: SynthesisService | null;
   classificationStore?: ClassificationStore | null;
@@ -72,7 +70,7 @@ export interface RoutesConfig {
  */
 export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
   fastify,
-  { syncService, outlineService, reader, backfillService, classificationService, synthesisService, classificationStore }
+  { syncService, outlineService, reader, classificationService, synthesisService, classificationStore }
 ) => {
   // GET /sessions - Search sessions with full-text search and filters
   fastify.get<{
@@ -488,9 +486,10 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
     }
     const withRawMessages = request.query.with_raw_messages === 'true';
 
-    // Excludes raw_transcript — a session's archive can run to hundreds of MB
-    // and this route doesn't otherwise touch it. with_raw_messages fetches it
-    // separately below, through the read layer, only when asked for.
+    // The archive itself (which can run to hundreds of MB) lives entirely in
+    // sessions.transcript_chunks, not a column on this row, so this select
+    // never touches it. with_raw_messages fetches it separately below,
+    // through the read layer, only when asked for.
     const sessions = await fastify.sql<(SessionSummaryRecord & { machine_name: string })[]>`
       SELECT
         s.id, s.machine_id, s.project_path, s.git_branch, s.started_at, s.ended_at,
@@ -903,20 +902,6 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       return {
         ...outlineService.getProgress(),
         capped_count: parseInt(capped?.capped_count ?? '0', 10),
-      };
-    });
-  }
-
-  // GET /sessions/backfill/status - legacy-transcript chunk backfill progress
-  // (specs/behaviors/session-transcript-storage.md; plans/transcript-chunk-backfill.md)
-  if (backfillService) {
-    fastify.get('/sessions/backfill/status', async () => {
-      const status = await backfillService.status();
-      return {
-        remaining: status.remaining,
-        remaining_bytes: status.remainingBytes,
-        converted: status.converted,
-        failures: status.failed,
       };
     });
   }

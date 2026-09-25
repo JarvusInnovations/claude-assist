@@ -119,18 +119,6 @@ export interface ToolCall {
   isSidechain: boolean;
 }
 
-/**
- * A session's transcript storage discriminator
- * (specs/behaviors/session-transcript-storage.md).
- *
- * - `inline`: legacy — content lives only in `raw_transcript`.
- * - `catching_up`: an inline row whose on-disk file changed; chunks are
- *   back-filling from byte zero while `raw_transcript` still holds the
- *   complete record (readers keep using it until catch-up completes).
- * - `chunked`: chunks are the only archive; `raw_transcript` is null.
- */
-export type TranscriptStorage = 'inline' | 'catching_up' | 'chunked';
-
 /** One row of `sessions.transcript_chunks` — an immutable slice of the archive. */
 export interface TranscriptChunkRecord {
   id: number;
@@ -264,17 +252,11 @@ export interface SessionRecord {
   cache_read_tokens: number;
   transcript_path: string | null;
   transcript_hash: string;
-  raw_transcript: string | null;
   search_text: string | null;
-  /** specs/behaviors/session-transcript-storage.md storage discriminator */
-  storage: TranscriptStorage;
   /** Bytes of the on-disk transcript archived as chunks so far */
   ingested_bytes: number;
-  /** Opaque incremental-parser resume state; null before the first chunked cycle */
+  /** Opaque incremental-parser resume state */
   parse_checkpoint: unknown | null;
-  /** Set while `storage = 'catching_up'`: the raw_transcript length that must
-   * be covered before the row can flip to `chunked` and null raw_transcript. */
-  catchup_threshold_bytes: number | null;
   message_count: number;
   user_message_count: number;
   claude_version: string | null;
@@ -298,14 +280,16 @@ export interface SessionRecord {
 }
 
 /**
- * `SessionRecord` without the archive blob — the projection for routes that
- * need a session's metadata but not its content (specs/behaviors/
- * session-transcript-storage.md: "Readers take ranges"). A caller that also
- * needs transcript content fetches it separately through `TranscriptReader`,
- * so a session-detail lookup never pulls a potentially multi-GB column over
- * the wire just to answer "what tools did this session use."
+ * `SessionRecord` has no archive-content column to begin with — the archive
+ * lives entirely in `sessions.transcript_chunks` (specs/behaviors/
+ * session-transcript-storage.md: "Readers take ranges"). A caller that needs
+ * transcript content fetches it separately through `TranscriptReader`, so a
+ * session-detail lookup never pulls a potentially multi-GB archive over the
+ * wire just to answer "what tools did this session use." Kept as its own
+ * alias (rather than inlining `SessionRecord`) so routes that only need
+ * metadata say so at the type level.
  */
-export type SessionSummaryRecord = Omit<SessionRecord, 'raw_transcript'>;
+export type SessionSummaryRecord = SessionRecord;
 
 /**
  * Lightweight session inventory item for two-phase sync. `size` (the on-disk

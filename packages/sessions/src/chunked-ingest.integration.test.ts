@@ -17,6 +17,7 @@ import { join } from 'node:path';
 import postgres from 'postgres';
 import { SyncService } from './sync.js';
 import { TranscriptReader } from './transcript-reader.js';
+import { serializeMessageRange, serializeSince, parseMessages } from './transcript.js';
 
 const DB_URL = process.env.SESSIONS_TEST_DATABASE_URL;
 const maybeDescribe = DB_URL ? describe : describe.skip;
@@ -130,8 +131,6 @@ maybeDescribe('chunked ingest — integration (real Postgres)', () => {
     expect(result.sessionsIngested).toBe(1);
 
     const row = await fetchSession(sessionId);
-    expect(row.storage).toBe('chunked');
-    expect(row.raw_transcript).toBeNull();
     expect(Number(row.ingested_bytes)).toBeGreaterThan(0);
 
     const chunks = await fetchChunks(sessionId);
@@ -205,124 +204,11 @@ maybeDescribe('chunked ingest — integration (real Postgres)', () => {
 
     expect(cycles).toBeGreaterThan(1); // genuinely took more than one cycle
     expect(Number(row!.ingested_bytes)).toBe(Buffer.byteLength(content, 'utf8'));
-    expect(row!.storage).toBe('chunked');
 
     // The read layer sees the complete, correctly-ordered content once caught up.
     const reader = new TranscriptReader(sql);
     const full = await reader.readFull(sessionId);
     expect(full).toBe(content);
-  });
-
-  it('legacy inline -> catching_up -> chunked: raw_transcript stays intact until chunks fully cover it', async () => {
-    const mid = 'it-inline';
-    createdMachineIds.add(mid);
-    const [machine] = await sql`
-      INSERT INTO sessions.machines (machine_id, hostname, is_localhost) VALUES (${mid}, ${mid}, true) RETURNING id
-    `;
-    if (!machine) throw new Error('machine insert failed');
-    const sessionId = crypto.randomUUID();
-    const originalContent = line('legacy message one') + line('legacy message two');
-    await sql`
-      INSERT INTO sessions.sessions (id, machine_id, project_path, started_at, transcript_hash, raw_transcript, storage)
-      VALUES (${sessionId}::uuid, ${machine.id}, '/repo', NOW(), 'deadbeef', ${originalContent}, 'inline')
-    `;
-    createdSessionIds.push(sessionId);
-
-    const projectDir = join(dir, 'projects', '-p4');
-    await Bun.$`mkdir -p ${projectDir}`.quiet();
-    const filePath = join(projectDir, `${sessionId}.jsonl`);
-    // The on-disk file has grown beyond what raw_transcript captured.
-    const grownContent = originalContent + line('legacy message three (new)');
-    await writeFile(filePath, grownContent);
-
-    // Smaller than the threshold (originalContent's length), so the first
-    // cycle genuinely can't reach it — cutAtLastNewline stops at the first
-    // line only, leaving the row in catching_up for at least one more cycle.
-    const budget = Buffer.byteLength(line('legacy message one'), 'utf8') + 2;
-    const sync = new SyncService(sql, noopLog, { claudeDir: dir, machineId: mid, minFileSize: 1, ingestBudgetBytes: budget });
-
-    await sync.syncLocal();
-    const mid1 = await fetchSession(sessionId);
-    expect(mid1.storage).toBe('catching_up');
-    expect(mid1.raw_transcript).toBe(originalContent); // untouched — still the complete record so far
-
-    await sync.syncLocal(); // catches up through the rest of originalContent — flips to chunked
-    const mid2 = await fetchSession(sessionId);
-    expect(mid2.storage).toBe('chunked');
-    expect(mid2.raw_transcript).toBeNull();
-
-    // A generous budget for the final pickup — the tiny catch-up budget above
-    // is smaller than the third line itself, which would never make progress.
-    const syncNormalBudget = new SyncService(sql, noopLog, { claudeDir: dir, machineId: mid, minFileSize: 1 });
-    await syncNormalBudget.syncLocal(); // picks up the third (new, post-transition) line
-    const final = await fetchSession(sessionId);
-    expect(final.storage).toBe('chunked');
-
-    const reader = new TranscriptReader(sql);
-    const full = await reader.readFull(sessionId);
-    expect(full).toBe(grownContent);
-  });
-
-  async function insertInlineSession(mid: string, content: string): Promise<string> {
-    createdMachineIds.add(mid);
-    const [machine] = await sql`
-      INSERT INTO sessions.machines (machine_id, hostname, is_localhost) VALUES (${mid}, ${mid}, true) RETURNING id
-    `;
-    if (!machine) throw new Error('machine insert failed');
-    const sessionId = crypto.randomUUID();
-    await sql`
-      INSERT INTO sessions.sessions (id, machine_id, project_path, started_at, transcript_hash, raw_transcript, storage)
-      VALUES (${sessionId}::uuid, ${machine.id}, '/repo', NOW(), 'deadbeef', ${content}, 'inline')
-    `;
-    createdSessionIds.push(sessionId);
-    return sessionId;
-  }
-
-  it('an unchanged inline session with multi-byte text stays inline (byte sizes, not character counts)', async () => {
-    const content = line('em dash \u2014 arrows \u2192 emoji \u{1F642}'.repeat(20)) + line('caf\u00e9 na\u00efve');
-    const sessionId = await insertInlineSession('it-inline-mb-unchanged', content);
-    const projectDir = join(dir, 'projects', '-p-mb1');
-    await Bun.$`mkdir -p ${projectDir}`.quiet();
-    await writeFile(join(projectDir, `${sessionId}.jsonl`), content);
-
-    const sync = new SyncService(sql, noopLog, { claudeDir: dir, machineId: 'it-inline-mb-unchanged', minFileSize: 1 });
-    await sync.syncLocal();
-
-    const row = await fetchSession(sessionId);
-    expect(row.storage).toBe('inline');
-    expect(row.raw_transcript).toBe(content);
-    expect(await fetchChunks(sessionId)).toHaveLength(0);
-  });
-
-  it('catch-up threshold is in bytes: multi-byte inline content is fully chunked before raw_transcript is cleared', async () => {
-    // 4-byte emoji: each is 1 character to Postgres length() but 4 bytes on
-    // disk, so a character-count threshold would flip after the first line.
-    const l1 = line('\u{1F642}'.repeat(300));
-    const l2 = line('\u{1F680}'.repeat(300));
-    const original = l1 + l2;
-    const sessionId = await insertInlineSession('it-inline-mb-grow', original);
-    const projectDir = join(dir, 'projects', '-p-mb2');
-    await Bun.$`mkdir -p ${projectDir}`.quiet();
-    const grown = original + line('new line after archive');
-    await writeFile(join(projectDir, `${sessionId}.jsonl`), grown);
-
-    // Budget admits exactly one of the big lines per cycle.
-    const budget = Buffer.byteLength(l1, 'utf8') + 2;
-    const sync = new SyncService(sql, noopLog, { claudeDir: dir, machineId: 'it-inline-mb-grow', minFileSize: 1, ingestBudgetBytes: budget });
-
-    for (let cycle = 0; cycle < 5; cycle++) {
-      await sync.syncLocal();
-      const row = await fetchSession(sessionId);
-      if (row.storage === 'chunked') {
-        // The moment raw_transcript is cleared, chunks must already hold all of it.
-        const chunks = await fetchChunks(sessionId);
-        const archived = chunks.map((c) => String(c.content)).join('');
-        expect(archived.startsWith(original)).toBe(true);
-        break;
-      }
-      expect(row.raw_transcript).toBe(original);
-    }
-    expect((await fetchSession(sessionId)).storage).toBe('chunked');
   });
 
   it('continuity failure triggers a full re-ingest, replacing chunks in one transaction', async () => {
@@ -371,7 +257,7 @@ maybeDescribe('chunked ingest — integration (real Postgres)', () => {
     });
     expect(legacyResult.sessionsIngested).toBe(1);
     const legacyRow = await fetchSession(legacySessionId);
-    expect(legacyRow.storage).toBe('chunked');
+    expect(Number(legacyRow.ingested_bytes)).toBeGreaterThan(0);
 
     // Same satellite, next cycle: legacy client sends the WHOLE file again
     // (grown), still no sinceBytes — server should splice in only the tail
@@ -415,13 +301,10 @@ maybeDescribe('chunked ingest — integration (real Postgres)', () => {
     expect(await reader.readFull(newSessionId)).toBe(firstPart + secondPart);
   });
 
-  it('read-layer outputs are identical between inline and chunked storage for the same transcript', async () => {
+  it('read-layer outputs are correct for a chunked session (readFull, serialize, readAround, find)', async () => {
     const mid = 'it-parity';
     createdMachineIds.add(mid);
-    const [machine] = await sql`
-      INSERT INTO sessions.machines (machine_id, hostname, is_localhost) VALUES (${mid}, ${mid}, false) RETURNING id
-    `;
-    if (!machine) throw new Error('machine insert failed');
+
     const uuidA = crypto.randomUUID();
     const uuidB = crypto.randomUUID();
     const content =
@@ -430,14 +313,6 @@ maybeDescribe('chunked ingest — integration (real Postgres)', () => {
       line('second task about parity checks', { uuid: uuidB }) +
       assistantToolLine('Edit', '/repo/parity.ts');
 
-    const inlineId = crypto.randomUUID();
-    createdSessionIds.push(inlineId);
-    await sql`
-      INSERT INTO sessions.sessions (id, machine_id, project_path, started_at, transcript_hash, raw_transcript, storage)
-      VALUES (${inlineId}::uuid, ${machine.id}, '/repo', NOW(), 'aaaa', ${content}, 'inline')
-    `;
-
-    // Ingest the identical content as a chunked session via a direct push.
     const chunkedId = crypto.randomUUID();
     createdSessionIds.push(chunkedId);
     const sync = new SyncService(sql, noopLog, {});
@@ -445,29 +320,26 @@ maybeDescribe('chunked ingest — integration (real Postgres)', () => {
       machineId: mid,
       sessions: [{ sessionId: chunkedId, transcriptPath: '/remote/parity.jsonl', transcript: content }],
     });
-    const chunkedRow = await fetchSession(chunkedId);
-    expect(chunkedRow.storage).toBe('chunked');
 
     const reader = new TranscriptReader(sql);
-    expect(await reader.readFull(chunkedId)).toBe(await reader.readFull(inlineId));
-    expect(await reader.serialize(chunkedId)).toBe(await reader.serialize(inlineId));
+    expect(await reader.readFull(chunkedId)).toBe(content);
 
-    const inlineAround = await reader.readAround(inlineId, uuidA, 1, 1);
-    const chunkedAround = await reader.readAround(chunkedId, uuidA, 1, 1);
-    expect(chunkedAround.window?.lines).toEqual(inlineAround.window?.lines);
+    const text = await reader.serialize(chunkedId);
+    expect(text).toContain('[U] first task here');
+    expect(text).toContain('[U] second task about parity checks');
 
-    const inlineFind = await reader.find(inlineId, { match: 'parity', in: 'text' });
-    const chunkedFind = await reader.find(chunkedId, { match: 'parity', in: 'text' });
-    expect(chunkedFind.matches.map((m) => m.anchor)).toEqual(inlineFind.matches.map((m) => m.anchor));
+    const around = await reader.readAround(chunkedId, uuidA, 1, 1);
+    expect(around.sessionFound).toBe(true);
+    expect(around.window?.anchor).toBe(uuidA);
+
+    const found = await reader.find(chunkedId, { match: 'parity', in: 'text' });
+    expect(found.sessionFound).toBe(true);
+    expect(found.matches.map((m) => m.anchor)).toEqual([uuidB]);
   });
 
-  it('since/messageRange/messagesSince/rawByteLength are identical between inline and chunked storage on a multi-chunk session, for ranges starting mid-chunk', async () => {
+  it('since/messageRange/messagesSince/rawByteLength match the pure serializer functions on a multi-chunk session, for ranges starting mid-chunk', async () => {
     const mid = 'it-parity-bounded';
     createdMachineIds.add(mid);
-    const [machine] = await sql`
-      INSERT INTO sessions.machines (machine_id, hostname, is_localhost) VALUES (${mid}, ${mid}, false) RETURNING id
-    `;
-    if (!machine) throw new Error('machine insert failed');
 
     // 24 messages, alternating user/assistant-with-tool-call, so a tiny
     // chunkMaxBytes below forces many small chunks and several mid-chunk seqs.
@@ -478,13 +350,6 @@ maybeDescribe('chunked ingest — integration (real Postgres)', () => {
       uuids.push(uuid);
       content += i % 2 === 0 ? line(`user turn ${i}`, { uuid }) : assistantToolLine('Read', `/repo/file-${i}.ts`, uuid);
     }
-
-    const inlineId = crypto.randomUUID();
-    createdSessionIds.push(inlineId);
-    await sql`
-      INSERT INTO sessions.sessions (id, machine_id, project_path, started_at, transcript_hash, raw_transcript, storage)
-      VALUES (${inlineId}::uuid, ${machine.id}, '/repo', NOW(), 'bbbb', ${content}, 'inline')
-    `;
 
     const chunkedId = crypto.randomUUID();
     createdSessionIds.push(chunkedId);
@@ -501,41 +366,43 @@ maybeDescribe('chunked ingest — integration (real Postgres)', () => {
 
     const reader = new TranscriptReader(sql);
 
-    // rawByteLength: chunked reports ingested_bytes, inline reports the
-    // column length — both must equal the same total content size.
+    // rawByteLength reports ingested_bytes, which must equal the total content size.
     const totalBytes = Buffer.byteLength(content, 'utf8');
-    expect(await reader.rawByteLength(inlineId)).toBe(totalBytes);
     expect(await reader.rawByteLength(chunkedId)).toBe(totalBytes);
 
     // A spread of fromSeq/afterSeq values, deliberately including several
     // that land strictly inside a chunk (not at any chunk's msg_seq_start).
+    // Ground truth for each comes from the pure functions in transcript.ts
+    // (the same functions the chunked backend rebases onto fetched chunks),
+    // called directly over the full content — never from a second, inline
+    // copy of the session.
     const seqsToTry = [0, 1, 2, 5, 7, 11, 12, 15, 19, 22, 23];
 
     for (const seq of seqsToTry) {
-      const inlineRange = await reader.messageRange(inlineId, seq, seq + 3);
+      const expectedRange = serializeMessageRange(content, seq, seq + 3);
       const chunkedRange = await reader.messageRange(chunkedId, seq, seq + 3);
-      expect(chunkedRange).toEqual(inlineRange);
+      expect(chunkedRange).toEqual(expectedRange);
 
-      const inlineSince = await reader.since(inlineId, seq);
+      const expectedSince = serializeSince(content, seq);
       const chunkedSince = await reader.since(chunkedId, seq);
-      expect(chunkedSince).toEqual(inlineSince);
+      expect(chunkedSince).toEqual(expectedSince);
 
-      const inlineMsgs = await reader.messagesSince(inlineId, seq);
+      const expectedMsgs = parseMessages(content).slice(seq + 1);
       const chunkedMsgs = await reader.messagesSince(chunkedId, seq);
-      expect(chunkedMsgs.map((m) => m.uuid)).toEqual(inlineMsgs.map((m) => m.uuid));
+      expect(chunkedMsgs.map((m) => m.uuid)).toEqual(expectedMsgs.map((m) => m.uuid));
     }
 
     // Open-ended messageRange (no toSeq) and a tight since() char budget
     // (forcing serializeSince's tail-keeping truncation) — same parity.
-    const inlineOpenRange = await reader.messageRange(inlineId, 10);
+    const expectedOpenRange = serializeMessageRange(content, 10);
     const chunkedOpenRange = await reader.messageRange(chunkedId, 10);
-    expect(chunkedOpenRange).toEqual(inlineOpenRange);
+    expect(chunkedOpenRange).toEqual(expectedOpenRange);
 
-    const inlineTightSince = await reader.since(inlineId, 2, { maxChars: 200 });
+    const expectedTightSince = serializeSince(content, 2, { maxChars: 200 });
     const chunkedTightSince = await reader.since(chunkedId, 2, { maxChars: 200 });
-    expect(chunkedTightSince.text).toBe(inlineTightSince.text);
+    expect(chunkedTightSince.text).toBe(expectedTightSince.text);
     expect(chunkedTightSince.truncated).toBe(true);
-    expect(inlineTightSince.truncated).toBe(true);
+    expect(expectedTightSince.truncated).toBe(true);
   });
 
   it('since/messageRange/messagesSince never depend on a chunk that ends before the requested seq', async () => {
