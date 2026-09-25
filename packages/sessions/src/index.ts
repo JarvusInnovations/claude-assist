@@ -2,6 +2,7 @@ import { createPlugin } from '@jarvus/claude-assist-core';
 import { SyncService } from './sync.js';
 import { OutlineService } from './outline.js';
 import { TranscriptReader } from './transcript-reader.js';
+import { ChunkBackfillService } from './chunk-backfill.js';
 import { registerRoutes } from './routes.js';
 import {
   ClassificationStore,
@@ -102,11 +103,23 @@ export default createPlugin('sessions', async (fastify, options) => {
     fastify.log.info('Classification pipeline disabled via disableClassification config');
   }
 
+  // Legacy-transcript chunk backfill (specs/behaviors/session-transcript-storage.md;
+  // plans/transcript-chunk-backfill.md). Disabled by default
+  // (SESSIONS_BACKFILL_ENABLED) — the operator turns it on deliberately, after
+  // a fresh backup, since raw_transcript is the only remaining copy for
+  // sessions whose file has already aged off disk.
+  const backfillService = new ChunkBackfillService(fastify.sql, fastify.log, {
+    runBudgetBytes: config.backfillRunBudgetBytes,
+    sessionBudgetBytes: config.backfillSessionBudgetBytes,
+    chunkMaxBytes: config.chunkMaxBytes,
+  });
+
   // Register API routes
   await fastify.register(registerRoutes, {
     syncService,
     outlineService,
     reader: transcriptReader,
+    backfillService,
     classificationService,
     synthesisService,
     classificationStore,
@@ -144,6 +157,28 @@ export default createPlugin('sessions', async (fastify, options) => {
       }
     },
   });
+
+  // Legacy-transcript chunk backfill sweep — disabled by default (see the
+  // service construction above). `runOnStartup: true` mirrors sync-local: by
+  // the time this flag is on, the operator has already decided this instance
+  // should be converting rows, so the first tick doesn't wait for the cron.
+  if (config.backfillEnabled) {
+    fastify.scheduler.register({
+      name: 'sessions:backfill-chunks',
+      schedule: config.backfillCron ?? '*/10 * * * *',
+      runOnStartup: true,
+      handler: async () => {
+        const result = await backfillService.runOnce();
+        if (result.sessionsConsidered > 0) {
+          fastify.log.info(
+            { result: { ...result, details: undefined } },
+            `Chunk backfill: ${result.sessionsFlipped} converted, ${result.sessionsProgressed} progressed, ${result.sessionsFailed} failed, ${result.sessionsSkipped} skipped`
+          );
+        }
+      },
+    });
+    fastify.log.info('Chunk backfill sweep scheduled (SESSIONS_BACKFILL_ENABLED=true)');
+  }
 
   // Register scheduled sync task for localhost (unless disabled)
   if (!config.disableLocalIngest) {
@@ -269,6 +304,7 @@ export { SessionScanner } from './scanner.js';
 export { parseTranscript } from './parser.js';
 export { serializeTranscript } from './transcript.js';
 export { TranscriptReader } from './transcript-reader.js';
+export { ChunkBackfillService } from './chunk-backfill.js';
 export { normalizeProjectPaths } from './project-names.js';
 export { registerPublicShareRoutes } from './share-routes.js';
 export {

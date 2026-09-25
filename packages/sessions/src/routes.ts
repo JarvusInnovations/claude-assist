@@ -12,6 +12,7 @@ import type {
 } from './types.js';
 import { serializeTranscript, type MatchDimension } from './transcript.js';
 import type { TranscriptReader } from './transcript-reader.js';
+import type { ChunkBackfillService } from './chunk-backfill.js';
 import { normalizeProjectPaths } from './project-names.js';
 import type { ClassificationService } from './classification/service.js';
 import type { SynthesisService } from './classification/synthesis.js';
@@ -60,6 +61,7 @@ export interface RoutesConfig {
   syncService: SyncService;
   outlineService: OutlineService | null;
   reader: TranscriptReader;
+  backfillService?: ChunkBackfillService | null;
   classificationService?: ClassificationService | null;
   synthesisService?: SynthesisService | null;
   classificationStore?: ClassificationStore | null;
@@ -70,7 +72,7 @@ export interface RoutesConfig {
  */
 export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
   fastify,
-  { syncService, outlineService, reader, classificationService, synthesisService, classificationStore }
+  { syncService, outlineService, reader, backfillService, classificationService, synthesisService, classificationStore }
 ) => {
   // GET /sessions - Search sessions with full-text search and filters
   fastify.get<{
@@ -901,6 +903,20 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       return {
         ...outlineService.getProgress(),
         capped_count: parseInt(capped?.capped_count ?? '0', 10),
+      };
+    });
+  }
+
+  // GET /sessions/backfill/status - legacy-transcript chunk backfill progress
+  // (specs/behaviors/session-transcript-storage.md; plans/transcript-chunk-backfill.md)
+  if (backfillService) {
+    fastify.get('/sessions/backfill/status', async () => {
+      const status = await backfillService.status();
+      return {
+        remaining: status.remaining,
+        remaining_bytes: status.remainingBytes,
+        converted: status.converted,
+        failures: status.failed,
       };
     });
   }

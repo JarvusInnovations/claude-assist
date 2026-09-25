@@ -80,6 +80,17 @@ const schema = {
     SESSIONS_OUTLINE_WINDOW_SWEEP_CAP: { type: 'number', default: 20 },
     SESSIONS_OUTLINE_WINDOW_MAX_ATTEMPTS: { type: 'number', default: 5 },
 
+    // Legacy-transcript chunk backfill (plans/transcript-chunk-backfill.md):
+    // converts remaining storage='inline' sessions to chunks from
+    // raw_transcript (never disk — many of these sessions' files are already
+    // gone). Off by default; the operator enables it deliberately after a
+    // fresh backup, since raw_transcript is the only remaining copy for some
+    // of these sessions until the conversion is verified.
+    SESSIONS_BACKFILL_ENABLED: { type: 'boolean', default: false },
+    SESSIONS_BACKFILL_CRON: { type: 'string' },
+    SESSIONS_BACKFILL_RUN_BUDGET_BYTES: { type: 'number', default: 268_435_456 }, // 256 MiB
+    SESSIONS_BACKFILL_SESSION_BUDGET_BYTES: { type: 'number', default: 67_108_864 }, // 64 MiB
+
     // The one metered credential. Read by the invoker module and nothing else:
     // every module that needs a model reaches it through `fastify.invoker`, so
     // spend has a single accounted-for path (specs/modules/invoker.md).
@@ -501,6 +512,10 @@ declare module 'fastify' {
       SESSIONS_OUTLINE_WINDOW_MAX_SPAN_MS: number;
       SESSIONS_OUTLINE_WINDOW_SWEEP_CAP: number;
       SESSIONS_OUTLINE_WINDOW_MAX_ATTEMPTS: number;
+      SESSIONS_BACKFILL_ENABLED: boolean;
+      SESSIONS_BACKFILL_CRON?: string;
+      SESSIONS_BACKFILL_RUN_BUDGET_BYTES: number;
+      SESSIONS_BACKFILL_SESSION_BUDGET_BYTES: number;
 
       // AI Features
       ANTHROPIC_API_KEY?: string;

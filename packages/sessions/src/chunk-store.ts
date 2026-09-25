@@ -65,69 +65,53 @@ export interface ChunkState {
   lastChunk: LastChunkInfo | null;
   aggregate: SessionAggregate;
   machineId: number;
+  /** Set only by `getChunkStateForUpdate` (chunk-backfill.ts's row lock read);
+   * `false` on the plain `getChunkState` path, which never needs it. */
+  backfillOwned: boolean;
+  /** Existing `transcript_path` column value — a backfill cycle has no file
+   * of its own and must round-trip this unchanged (`writeIngestCycleTx`'s
+   * UPDATE assigns it directly, not via COALESCE, unlike `project_path`). */
+  transcriptPath: string | null;
 }
 
 /** A `postgres.Sql` usable inside `sql.begin`'s callback (the tagged-template
  * call signature the transaction object actually has at runtime). */
 type Tx = postgres.Sql;
 
-/** Read a session's current chunk-ingest state, or `null` if no row exists yet. */
-export async function getChunkState(sql: postgres.Sql, sessionId: string): Promise<ChunkState | null> {
-  const [row] = await sql<
-    {
-      machine_id: number;
-      storage: TranscriptStorage;
-      ingested_bytes: string | number;
-      parse_checkpoint: unknown;
-      catchup_threshold_bytes: string | number | null;
-      raw_transcript_length: number | null;
-      user_messages: unknown;
-      tools_used: unknown;
-      files_touched: unknown;
-      input_tokens: string | number;
-      output_tokens: string | number;
-      cache_read_tokens: string | number;
-      context_final_tokens: number | null;
-      context_peak_tokens: number | null;
-      context_model: string | null;
-      started_at: Date | null;
-      ended_at: Date | null;
-      message_count: number;
-      git_branch: string | null;
-      claude_version: string | null;
-      project_path: string | null;
-      models_used: unknown;
-      model_tokens: unknown;
-      activity_ranges: unknown;
-      session_name: string | null;
-    }[]
-  >`
-    SELECT
-      machine_id, storage, ingested_bytes, parse_checkpoint, catchup_threshold_bytes,
-      -- octet_length, not length: compared against on-disk byte sizes and
-      -- used as the catch-up threshold in bytes. length() counts characters,
-      -- which undercounts any transcript with non-ASCII text.
-      octet_length(raw_transcript) AS raw_transcript_length,
-      user_messages, tools_used, files_touched,
-      input_tokens, output_tokens, cache_read_tokens,
-      context_final_tokens, context_peak_tokens, context_model,
-      started_at, ended_at, message_count, git_branch, claude_version, project_path,
-      models_used, model_tokens, activity_ranges, session_name
-    FROM sessions.sessions
-    WHERE id = ${sessionId}::uuid
-  `;
-  if (!row) return null;
+interface ChunkStateRow {
+  machine_id: number;
+  storage: TranscriptStorage;
+  ingested_bytes: string | number;
+  parse_checkpoint: unknown;
+  catchup_threshold_bytes: string | number | null;
+  raw_transcript_length: number | null;
+  backfill_owned: boolean;
+  transcript_path: string | null;
+  user_messages: unknown;
+  tools_used: unknown;
+  files_touched: unknown;
+  input_tokens: string | number;
+  output_tokens: string | number;
+  cache_read_tokens: string | number;
+  context_final_tokens: number | null;
+  context_peak_tokens: number | null;
+  context_model: string | null;
+  started_at: Date | null;
+  ended_at: Date | null;
+  message_count: number;
+  git_branch: string | null;
+  claude_version: string | null;
+  project_path: string | null;
+  models_used: unknown;
+  model_tokens: unknown;
+  activity_ranges: unknown;
+  session_name: string | null;
+}
 
-  const [lastChunk] = await sql<
-    { seq: number; byte_start: string | number; byte_end: string | number; content_hash: string }[]
-  >`
-    SELECT seq, byte_start, byte_end, content_hash
-    FROM sessions.transcript_chunks
-    WHERE session_id = ${sessionId}::uuid
-    ORDER BY seq DESC
-    LIMIT 1
-  `;
-
+function toChunkState(
+  row: ChunkStateRow,
+  lastChunk: { seq: number; byte_start: string | number; byte_end: string | number; content_hash: string } | undefined
+): ChunkState {
   const asArray = (v: unknown): string[] => (typeof v === 'string' ? JSON.parse(v) : ((v ?? []) as string[]));
   const asObj = (v: unknown): Record<string, unknown> =>
     typeof v === 'string' ? JSON.parse(v) : ((v as Record<string, unknown>) ?? {});
@@ -141,6 +125,8 @@ export async function getChunkState(sql: postgres.Sql, sessionId: string): Promi
     parseCheckpoint: (row.parse_checkpoint as ParseCheckpoint | null) ?? EMPTY_CHECKPOINT,
     catchupThresholdBytes: row.catchup_threshold_bytes === null ? null : Number(row.catchup_threshold_bytes),
     rawTranscriptLength: row.raw_transcript_length,
+    backfillOwned: row.backfill_owned,
+    transcriptPath: row.transcript_path,
     lastChunk: lastChunk
       ? {
           seq: lastChunk.seq,
@@ -173,6 +159,83 @@ export async function getChunkState(sql: postgres.Sql, sessionId: string): Promi
       sessionName: row.session_name,
     },
   };
+}
+
+// A `sql`-tagged fragment (not a plain string — postgres.js only splices
+// another tagged-template fragment into a query as raw SQL text; a plain JS
+// string interpolated with `${...}` would be bound as a parameter instead,
+// which can't stand in for a column list). Bound to whichever query object
+// (`sql` or an open transaction) the caller passes, so the same column list
+// serves both the plain and row-locked reads below.
+function chunkStateColumns(q: postgres.Sql) {
+  return q`
+      machine_id, storage, ingested_bytes, parse_checkpoint, catchup_threshold_bytes, backfill_owned,
+      -- octet_length, not length: compared against on-disk byte sizes and
+      -- used as the catch-up threshold in bytes. length() counts characters,
+      -- which undercounts any transcript with non-ASCII text.
+      octet_length(raw_transcript) AS raw_transcript_length,
+      user_messages, tools_used, files_touched,
+      input_tokens, output_tokens, cache_read_tokens,
+      context_final_tokens, context_peak_tokens, context_model,
+      started_at, ended_at, message_count, git_branch, claude_version, project_path,
+      transcript_path,
+      models_used, model_tokens, activity_ranges, session_name`;
+}
+
+/** Read a session's current chunk-ingest state, or `null` if no row exists yet. */
+export async function getChunkState(sql: postgres.Sql, sessionId: string): Promise<ChunkState | null> {
+  const [row] = await sql<ChunkStateRow[]>`
+    SELECT ${chunkStateColumns(sql)}
+    FROM sessions.sessions
+    WHERE id = ${sessionId}::uuid
+  `;
+  if (!row) return null;
+
+  const [lastChunk] = await sql<
+    { seq: number; byte_start: string | number; byte_end: string | number; content_hash: string }[]
+  >`
+    SELECT seq, byte_start, byte_end, content_hash
+    FROM sessions.transcript_chunks
+    WHERE session_id = ${sessionId}::uuid
+    ORDER BY seq DESC
+    LIMIT 1
+  `;
+
+  return toChunkState(row, lastChunk);
+}
+
+/**
+ * The row-locked analogue of `getChunkState`, for a caller that must decide
+ * what to write next based on state that cannot change out from under it
+ * before the write lands — the chunk backfill (`chunk-backfill.ts`), which
+ * shares session rows with local sync's own writes. `FOR UPDATE` takes (and
+ * this function's caller holds, for the rest of its transaction) Postgres's
+ * ordinary row lock, the same lock local sync's `writeIngestCycleTx` UPDATE
+ * already takes implicitly — so the two can never interleave a read and a
+ * write on the same session row. Must be called from inside an open
+ * transaction (`tx`), never on a bare pooled `sql`, or the lock would be
+ * released the instant this query completes.
+ */
+export async function getChunkStateForUpdate(tx: Tx, sessionId: string): Promise<ChunkState | null> {
+  const [row] = await tx<ChunkStateRow[]>`
+    SELECT ${chunkStateColumns(tx)}
+    FROM sessions.sessions
+    WHERE id = ${sessionId}::uuid
+    FOR UPDATE
+  `;
+  if (!row) return null;
+
+  const [lastChunk] = await tx<
+    { seq: number; byte_start: string | number; byte_end: string | number; content_hash: string }[]
+  >`
+    SELECT seq, byte_start, byte_end, content_hash
+    FROM sessions.transcript_chunks
+    WHERE session_id = ${sessionId}::uuid
+    ORDER BY seq DESC
+    LIMIT 1
+  `;
+
+  return toChunkState(row, lastChunk);
 }
 
 export interface WriteCycleParams {
@@ -215,7 +278,20 @@ async function forEachBatch<T>(rows: T[], batchSize: number, run: (batch: T[]) =
 export async function writeIngestCycle(sql: postgres.Sql, p: WriteCycleParams): Promise<void> {
   await sql.begin(async (rawTx) => {
     const tx = rawTx as unknown as Tx;
+    await writeIngestCycleTx(tx, p);
+  });
+}
 
+/**
+ * The body of `writeIngestCycle`, taking an already-open transaction instead
+ * of opening its own. Exists so a caller that needs to do MORE inside the same
+ * transaction — the chunk backfill (`chunk-backfill.ts`) takes a `SELECT ...
+ * FOR UPDATE` row lock on the session first, and on the session's final cycle
+ * runs a verify-then-flip step after this write, all before committing — can
+ * compose this write into its own transaction instead of nesting a second
+ * `sql.begin`.
+ */
+export async function writeIngestCycleTx(tx: Tx, p: WriteCycleParams): Promise<void> {
     if (p.fresh) {
       await tx`DELETE FROM sessions.transcript_chunks WHERE session_id = ${p.sessionId}::uuid`;
       await tx`DELETE FROM sessions.transcript_messages WHERE session_id = ${p.sessionId}::uuid`;
@@ -388,5 +464,4 @@ export async function writeIngestCycle(sql: postgres.Sql, p: WriteCycleParams): 
         `;
       });
     }
-  });
 }
