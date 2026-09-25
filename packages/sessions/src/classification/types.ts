@@ -92,7 +92,7 @@ export interface SynthesisPayload {
 
 /**
  * A session row the sweep needs to classify a delta. Deliberately carries no
- * `raw_transcript` — the classifier reads the session's delta through the
+ * archive content — the classifier reads the session's delta through the
  * `TranscriptReader` (specs/behaviors/session-transcript-storage.md: "Readers
  * take ranges"), one session at a time, rather than the store's select
  * pulling every selected session's whole archive into memory at once.

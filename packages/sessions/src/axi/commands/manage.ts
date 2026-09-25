@@ -52,21 +52,3 @@ export async function shareCommand(args: string[]): Promise<string> {
   if (flags.json) return rawJson(result);
   return renderObject({ session: id, auth_code: result?.auth_code ?? null });
 }
-
-export const BACKFILL_HELP = `sessions-axi backfill status [--json]
-
-  Progress of the legacy-transcript chunk backfill (converts remaining
-  storage='inline' sessions to chunks from raw_transcript — disabled by
-  default server-side; this only reports status, it never triggers a run).`;
-
-export async function backfillCommand(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"]);
-  if (positionals[0] && positionals[0] !== "status") {
-    return renderHelp([BACKFILL_HELP]);
-  }
-  const status = await api.get("/api/sessions/backfill/status");
-  if (flags.json) return rawJson(status);
-  return renderObject(
-    status ?? { remaining: 0, remaining_bytes: 0, converted: 0, failures: 0 }
-  );
-}

@@ -613,8 +613,7 @@ var COMMAND_GROUPS = [
       { usage: "outlines [<session-id>...]", summary: "generate AI outlines for sessions missing/stale ones (needs the server's model invoker)" },
       { usage: "outlines progress", summary: "check background outline-generation progress" },
       { usage: "sync [--force]", summary: "trigger an immediate local session sync (--force re-parses all)" },
-      { usage: "share <session-id>", summary: "mint a shareable auth code for a session transcript" },
-      { usage: "backfill status", summary: "progress of the legacy-transcript chunk backfill (converted/remaining/failures)" }
+      { usage: "share <session-id>", summary: "mint a shareable auth code for a session transcript" }
     ]
   }
 ];
@@ -1451,25 +1450,9 @@ async function shareCommand(args) {
   if (flags.json) return rawJson(result);
   return renderObject({ session: id, auth_code: result?.auth_code ?? null });
 }
-var BACKFILL_HELP = `sessions-axi backfill status [--json]
-
-  Progress of the legacy-transcript chunk backfill (converts remaining
-  storage='inline' sessions to chunks from raw_transcript \u2014 disabled by
-  default server-side; this only reports status, it never triggers a run).`;
-async function backfillCommand(args) {
-  const { positionals, flags } = parseArgs(args, ["json"]);
-  if (positionals[0] && positionals[0] !== "status") {
-    return renderHelp([BACKFILL_HELP]);
-  }
-  const status = await api.get("/api/sessions/backfill/status");
-  if (flags.json) return rawJson(status);
-  return renderObject(
-    status ?? { remaining: 0, remaining_bytes: 0, converted: 0, failures: 0 }
-  );
-}
 
 // packages/sessions/src/axi/cli.ts
-var VERSION = true ? "e02f6f3" : "dev";
+var VERSION = true ? "2a1a5a4" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [command] [args] [flags]
        ${CLI}                 # no args \u2192 home (recent activity + next steps)
@@ -1509,8 +1492,7 @@ var COMMAND_HELP = {
   machines: MACHINES_HELP,
   outlines: OUTLINES_HELP,
   sync: SYNC_HELP,
-  share: SHARE_HELP,
-  backfill: BACKFILL_HELP
+  share: SHARE_HELP
 };
 var COMMANDS = {
   // Also exposed as a command so its flags can be passed (the bare invocation
@@ -1526,8 +1508,7 @@ var COMMANDS = {
   machines: machinesCommand,
   outlines: outlinesCommand,
   sync: syncCommand,
-  share: shareCommand,
-  backfill: backfillCommand
+  share: shareCommand
 };
 async function main(argv) {
   await runAxiCli({

@@ -1,9 +1,10 @@
 ---
-status: planned
+status: done
 depends: [transcript-chunk-backfill]
 specs:
   - specs/behaviors/session-transcript-storage.md
 issues: []
+pr: 245
 ---
 
 # Plan: Retire the inline raw_transcript column
@@ -26,5 +27,41 @@ issues: []
 
 ## Validation
 
-- [ ] Migration drops the column; no code references it
+- [x] Migration drops the column; no code references it
 - [ ] Full test suite and a deployed smoke test of every transcript route pass
+
+## Notes
+
+- **`backfillContextWindow` removed, not reimplemented.** It only ever
+  targeted `raw_transcript IS NOT NULL AND context_final_tokens IS NULL`
+  rows — sessions ingested before migration 013 added the context-window
+  columns. Once `raw_transcript` is gone nothing matches that predicate
+  anymore, and ordinary chunked ingest already populates the context columns
+  as it parses. There was no remaining job to preserve.
+- **`specs/behaviors/session-sync-memory-bounds.md` left untouched.**
+  Re-read end to end: none of its rules (atomic transaction, batched
+  `tool_calls` insert, stat-only unchanged-transcript check, systemd memory
+  caps) reference `raw_transcript`/`storage`/`catching_up` — an earlier plan
+  already wrote it purely in terms of the chunked ingest cycle. Its owning
+  plan (`plans/session-sync-memory-bounds.md`) is also still
+  `status: in-progress` with unchecked "Deployed" validation boxes, so per
+  the plan protocol ("flag the owner rather than rewriting under them") it
+  was left alone rather than folded or slimmed.
+- **Migration 017's precondition is self-checking, not trust-based.** A `DO`
+  block re-verifies every row is `storage = 'chunked'` /
+  `raw_transcript IS NULL` and `sessions.backfill_failures` is empty, and
+  `RAISE EXCEPTION`s (never recording the migration, leaving the schema
+  untouched) if not. Verified against a throwaway Postgres: aborts with an
+  inline row present, succeeds once fully converted, and the resulting
+  schema passes the full chunked-ingest integration suite plus a live-route
+  smoke test (session list/detail/transcript) — see PR #245's description
+  for the full account.
+- **The validation box for the deployed smoke test is left unchecked
+  deliberately.** This PR must not be deployed until the production backfill
+  reports `remaining=0, failures=0` (migration 017 enforces this itself, but
+  there's no reason to race it) — the deployed half of that criterion can
+  only close out after that deploy actually happens.
+
+## Follow-ups
+
+None.

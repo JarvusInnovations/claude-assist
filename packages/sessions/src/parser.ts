@@ -314,8 +314,8 @@ export function parseTranscript(
   // turns those into real NUL/lone-surrogate characters, which Postgres's
   // jsonb parser then rejects on insert ("unsupported Unicode escape
   // sequence"). Sanitize every extracted string field here, once, so
-  // nothing downstream has to think about it. raw_transcript itself is
-  // untouched (that's the original JSONL text, not JSON.parse() output).
+  // nothing downstream has to think about it. The archived transcript itself
+  // is untouched (that's the original JSONL text, not JSON.parse() output).
   return {
     sessionId,
     userMessages: sanitizeStringArray(userMessages),

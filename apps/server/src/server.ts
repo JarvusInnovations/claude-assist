@@ -439,10 +439,6 @@ await fastify.register(
           outlineWindowMaxSpanMs: fastify.config.SESSIONS_OUTLINE_WINDOW_MAX_SPAN_MS,
           outlineWindowSweepCap: fastify.config.SESSIONS_OUTLINE_WINDOW_SWEEP_CAP,
           outlineWindowMaxAttempts: fastify.config.SESSIONS_OUTLINE_WINDOW_MAX_ATTEMPTS,
-          backfillEnabled: fastify.config.SESSIONS_BACKFILL_ENABLED,
-          backfillCron: fastify.config.SESSIONS_BACKFILL_CRON,
-          backfillRunBudgetBytes: fastify.config.SESSIONS_BACKFILL_RUN_BUDGET_BYTES,
-          backfillSessionBudgetBytes: fastify.config.SESSIONS_BACKFILL_SESSION_BUDGET_BYTES,
           ignoreContentMarkers: [
             ...DEFAULT_SESSION_IGNORE_MARKERS,
             ...(fastify.config.SESSIONS_IGNORE_MARKERS

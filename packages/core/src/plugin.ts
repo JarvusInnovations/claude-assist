@@ -649,26 +649,6 @@ export interface SessionsPluginConfig {
   outlineWindowSweepCap?: number;
   /** A window's summarization stops being retried automatically past this many failures (default 5). */
   outlineWindowMaxAttempts?: number;
-
-  // ── Legacy-transcript chunk backfill (plans/transcript-chunk-backfill.md) ─
-  /**
-   * Enables the scheduled backfill sweep that converts remaining
-   * `storage = 'inline'` sessions to chunks, sourced from `raw_transcript`
-   * rather than disk (default false — an operator turns this on deliberately,
-   * after a fresh backup, since raw_transcript is the only remaining copy for
-   * sessions whose file has aged off disk).
-   */
-  backfillEnabled?: boolean;
-  /** Cron for the backfill sweep (default every 10 minutes). */
-  backfillCron?: string;
-  /** Total bytes processed across all sessions in one run (default 256 MiB). */
-  backfillRunBudgetBytes?: number;
-  /**
-   * Bytes read from raw_transcript for a single session in a single cycle —
-   * aligned with (and defaulted to) `ingestBudgetBytes`, so a giant legacy
-   * session catches up over the same shape of steps live ingest would take.
-   */
-  backfillSessionBudgetBytes?: number;
 }
 
 /**

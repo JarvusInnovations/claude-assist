@@ -2,7 +2,6 @@ import type postgres from 'postgres';
 import type { FastifyBaseLogger } from 'fastify';
 import { hostname as getHostname } from 'node:os';
 import { SessionScanner, type ScannerConfig, type LocalTranscriptFile } from './scanner.js';
-import { parseTranscript } from './parser.js';
 import {
   DEFAULT_SESSION_IGNORE_MARKERS,
 } from './ignore.js';
@@ -31,7 +30,6 @@ import type {
   InventoryPayload,
   InventoryResponse,
   InventoryBaseline,
-  TranscriptStorage,
 } from './types.js';
 
 export interface SyncServiceConfig extends ScannerConfig {
@@ -133,7 +131,7 @@ export class SyncService {
     return result;
   }
 
-  /** One local-transcript file's ingest decision: unchanged / append / catch-up / re-ingest. */
+  /** One local-transcript file's ingest decision: unchanged / append / re-ingest. */
   private async ingestLocalFile(
     machineId: number,
     file: LocalTranscriptFile,
@@ -157,36 +155,13 @@ export class SyncService {
         fresh: true,
         newContent: content,
         baseByteOffset: 0,
-        catchupThresholdBytes: null,
       });
       return 'ingested';
     }
 
-    if (state.storage === 'inline') {
-      // Cheap change signal: compare on-disk size to the archived
-      // raw_transcript length — no read (specs/behaviors/
-      // session-sync-memory-bounds.md: "Unchanged transcripts cost a stat").
-      if (!forceReparse && file.size === (state.rawTranscriptLength ?? 0)) return 'skipped';
-
-      const threshold = state.rawTranscriptLength ?? 0;
-      const { content } = await readBoundedTail(file.transcriptPath, 0, this.ingestBudgetBytes);
-      if (content.length === 0) return 'skipped';
-      await this.runCycle({
-        sessionId: file.sessionId,
-        machineId,
-        transcriptPath: file.transcriptPath,
-        signal: file.signal,
-        isNewSession: false,
-        priorState: null,
-        fresh: true,
-        newContent: content,
-        baseByteOffset: 0,
-        catchupThresholdBytes: threshold,
-      });
-      return 'updated';
-    }
-
-    // catching_up or chunked.
+    // Cheap change signal: compare on-disk size to what's already archived —
+    // no read (specs/behaviors/session-sync-memory-bounds.md: "Unchanged
+    // transcripts cost a stat").
     if (!forceReparse && file.size === state.ingestedBytes) return 'skipped';
 
     let fresh = forceReparse;
@@ -218,7 +193,6 @@ export class SyncService {
       fresh,
       newContent: content,
       baseByteOffset: fromByte,
-      catchupThresholdBytes: state.storage === 'catching_up' ? state.catchupThresholdBytes : null,
     });
     return 'updated';
   }
@@ -280,6 +254,15 @@ export class SyncService {
     return cut;
   }
 
+  /**
+   * Process one satellite-pushed session. A session the server has never
+   * seen is a fresh chunked ingest, same as local sync's first cycle. An
+   * already-known session accepts a tail-only payload from a chunked-ingest-
+   * aware CLI (`sinceBytes` matches `ingestedBytes`) or a legacy whole-file
+   * payload from an older CLI (`sinceBytes` absent) — see the splice-in-tail
+   * logic below, which re-verifies continuity against the payload itself
+   * (no disk access on this side) before trusting either shape.
+   */
   private async ingestPushedSession(
     machineId: number,
     sessionData: SessionPushData,
@@ -311,37 +294,8 @@ export class SyncService {
         fresh: true,
         newContent: content,
         baseByteOffset: 0,
-        catchupThresholdBytes: null,
       });
       return 'ingested';
-    }
-
-    if (state.storage === 'inline') {
-      // The satellite has no visibility into the server's inline state; its
-      // payload is ground truth for what to (re-)ingest as chunks.
-      const threshold = state.rawTranscriptLength ?? 0;
-      if (payloadStartByte !== 0) {
-        // Inline rows have no chunks, so only a whole-file payload can start
-        // their chunk series; a tail here would be archived as if it began
-        // at byte 0. The next inventory asks for the whole file.
-        this.log.warn({ sessionId, payloadStartByte }, 'Ignoring tail push for an inline session');
-        return 'skipped';
-      }
-      const content = this.capToBudget(transcript);
-      if (content.length === 0) return 'skipped';
-      await this.runCycle({
-        sessionId,
-        machineId,
-        transcriptPath,
-        signal,
-        isNewSession: false,
-        priorState: null,
-        fresh: true,
-        newContent: content,
-        baseByteOffset: 0,
-        catchupThresholdBytes: threshold,
-      });
-      return 'updated';
     }
 
     let fresh = forceReparse;
@@ -393,7 +347,6 @@ export class SyncService {
       fresh,
       newContent: content,
       baseByteOffset: effectiveStart,
-      catchupThresholdBytes: state.storage === 'catching_up' ? state.catchupThresholdBytes : null,
     });
     return 'updated';
   }
@@ -412,13 +365,11 @@ export class SyncService {
     isNewSession: boolean;
     /** Non-null only when `fresh` is false — the state to resume from. */
     priorState: ChunkState | null;
-    /** True to replace the chunk series from scratch (continuity failure,
-     * inline->catching_up transition, or a forced reparse). */
+    /** True to replace the chunk series from scratch (continuity failure or
+     * a forced reparse). */
     fresh: boolean;
     newContent: string;
     baseByteOffset: number;
-    /** Non-null while this session is in (or entering) catch-up. */
-    catchupThresholdBytes: number | null;
   }): Promise<void> {
     const startCheckpoint = params.fresh ? EMPTY_CHECKPOINT : params.priorState!.parseCheckpoint;
     const priorAggregate = params.fresh ? EMPTY_AGGREGATE : params.priorState!.aggregate;
@@ -446,23 +397,6 @@ export class SyncService {
     const consumedBytes = Buffer.byteLength(params.newContent, 'utf8');
     const ingestedBytes = params.baseByteOffset + consumedBytes;
 
-    let storage: TranscriptStorage;
-    let catchupThresholdBytesOut: number | null;
-    let clearRawTranscript = false;
-    if (params.catchupThresholdBytes !== null) {
-      if (ingestedBytes >= params.catchupThresholdBytes) {
-        storage = 'chunked';
-        catchupThresholdBytesOut = null;
-        clearRawTranscript = true;
-      } else {
-        storage = 'catching_up';
-        catchupThresholdBytesOut = params.catchupThresholdBytes;
-      }
-    } else {
-      storage = 'chunked';
-      catchupThresholdBytesOut = null;
-    }
-
     const projectPath = params.signal?.cwd ?? aggregate.cwd ?? null;
 
     await writeIngestCycle(this.sql, {
@@ -477,9 +411,6 @@ export class SyncService {
       messageIndexRows: feedDelta.messageIndexRows,
       checkpoint: finalCheckpoint,
       ingestedBytes,
-      storage,
-      catchupThresholdBytes: catchupThresholdBytesOut,
-      clearRawTranscript,
       isNew: params.isNewSession,
       fresh: params.fresh,
       nextChunkSeq,
@@ -516,26 +447,16 @@ export class SyncService {
         continue;
       }
 
-      const archivedBytes = k.storage === 'inline' ? k.rawLen : k.ingestedBytes;
-
       if (item.size === undefined) {
         // Legacy inventory item — no cheap comparison available; always ask.
         neededSessionIds.push(item.sessionId);
-        baselines[item.sessionId] =
-          k.storage === 'inline'
-            ? { ingestedBytes: 0, lastChunkHash: null }
-            : { ingestedBytes: archivedBytes, lastChunkHash: k.lastChunkHash };
+        baselines[item.sessionId] = { ingestedBytes: k.ingestedBytes, lastChunkHash: k.lastChunkHash };
         continue;
       }
 
-      if (item.size > archivedBytes || item.size < archivedBytes) {
+      if (item.size !== k.ingestedBytes) {
         neededSessionIds.push(item.sessionId);
-        // An inline session has no chunks to append to: it re-ingests from
-        // byte 0, so the satellite must send the whole file.
-        baselines[item.sessionId] =
-          k.storage === 'inline'
-            ? { ingestedBytes: 0, lastChunkHash: null }
-            : { ingestedBytes: archivedBytes, lastChunkHash: k.lastChunkHash };
+        baselines[item.sessionId] = { ingestedBytes: k.ingestedBytes, lastChunkHash: k.lastChunkHash };
       } else {
         upToDateCount++;
       }
@@ -552,11 +473,11 @@ export class SyncService {
   /** One row per session on a machine: current archived-bytes signal + last chunk hash. */
   private async getMachineChunkSummary(
     machineId: number
-  ): Promise<Map<string, { storage: TranscriptStorage; ingestedBytes: number; rawLen: number; lastChunkHash: string | null }>> {
+  ): Promise<Map<string, { ingestedBytes: number; lastChunkHash: string | null }>> {
     const rows = await this.sql<
-      { id: string; storage: TranscriptStorage; ingested_bytes: string | number; raw_len: number | null; last_chunk_hash: string | null }[]
+      { id: string; ingested_bytes: string | number; last_chunk_hash: string | null }[]
     >`
-      SELECT s.id, s.storage, s.ingested_bytes, octet_length(s.raw_transcript) AS raw_len, lc.content_hash AS last_chunk_hash
+      SELECT s.id, s.ingested_bytes, lc.content_hash AS last_chunk_hash
       FROM sessions.sessions s
       LEFT JOIN LATERAL (
         SELECT content_hash FROM sessions.transcript_chunks tc
@@ -564,12 +485,10 @@ export class SyncService {
       ) lc ON true
       WHERE s.machine_id = ${machineId}
     `;
-    const map = new Map<string, { storage: TranscriptStorage; ingestedBytes: number; rawLen: number; lastChunkHash: string | null }>();
+    const map = new Map<string, { ingestedBytes: number; lastChunkHash: string | null }>();
     for (const r of rows) {
       map.set(r.id, {
-        storage: r.storage,
         ingestedBytes: Number(r.ingested_bytes),
-        rawLen: r.raw_len ?? 0,
         lastChunkHash: r.last_chunk_hash,
       });
     }
@@ -630,67 +549,12 @@ export class SyncService {
   }
 
   /**
-   * Backfill context-window readings for sessions ingested before the columns
-   * existed (specs/behaviors/session-context-window.md).
-   *
-   * Re-parses the stored raw_transcript rather than the file on disk: Claude
-   * prunes transcripts after ~a month, so the archive is the only copy for
-   * older sessions. Only inline rows carry a raw_transcript at all; chunked
-   * sessions already get their context readings from ordinary ingest.
-   */
-  async backfillContextWindow(batchSize = 25): Promise<{ scanned: number; measured: number }> {
-    let scanned = 0;
-    let measured = 0;
-
-    for (;;) {
-      const rows = await this.sql<{ id: string; raw_transcript: string }[]>`
-        SELECT id, raw_transcript
-        FROM sessions.sessions
-        WHERE context_final_tokens IS NULL
-          AND context_backfilled_at IS NULL
-          AND raw_transcript IS NOT NULL
-        ORDER BY started_at DESC
-        LIMIT ${batchSize}
-      `;
-      if (rows.length === 0) break;
-
-      for (const row of rows) {
-        scanned++;
-        let parsed;
-        try {
-          parsed = parseTranscript(row.id, row.raw_transcript);
-        } catch {
-          // A transcript we cannot parse stays unmeasured, but gets stamped so
-          // the next pass does not retry it forever.
-          await this.sql`
-            UPDATE sessions.sessions SET context_backfilled_at = NOW()
-            WHERE id = ${row.id}::uuid
-          `;
-          continue;
-        }
-        if (parsed.contextFinalTokens !== null) measured++;
-        await this.sql`
-          UPDATE sessions.sessions SET
-            context_final_tokens = ${parsed.contextFinalTokens},
-            context_peak_tokens = ${parsed.contextPeakTokens},
-            context_limit_tokens = ${parsed.contextLimitTokens},
-            context_model = ${parsed.contextModel},
-            context_backfilled_at = NOW()
-          WHERE id = ${row.id}::uuid
-        `;
-      }
-    }
-
-    return { scanned, measured };
-  }
-
-  /**
    * Nightly full verification (specs/behaviors/session-transcript-storage.md:
    * "Continuity check" — the full-verification companion to the per-cycle
-   * tail-only check). Walks every locally-ingested `chunked` session active
-   * in the last day and compares each stored chunk's hash against the same
-   * byte range on disk, streaming — never more than one chunk's bytes in
-   * memory at a time. A mismatch triggers the same full re-ingest a per-cycle
+   * tail-only check). Walks every locally-ingested session active in the
+   * last day and compares each stored chunk's hash against the same byte
+   * range on disk, streaming — never more than one chunk's bytes in memory
+   * at a time. A mismatch triggers the same full re-ingest a per-cycle
    * continuity failure does.
    *
    * Scoped to `is_localhost` machines only: a satellite-pushed session's
@@ -702,8 +566,7 @@ export class SyncService {
       SELECT s.id, s.transcript_path
       FROM sessions.sessions s
       JOIN sessions.machines m ON s.machine_id = m.id
-      WHERE s.storage = 'chunked'
-        AND m.is_localhost = TRUE
+      WHERE m.is_localhost = TRUE
         AND s.transcript_path IS NOT NULL
         AND s.synced_at > NOW() - ${activeWithin}::interval
     `;
@@ -765,7 +628,6 @@ export class SyncService {
       fresh: true,
       newContent: content,
       baseByteOffset: 0,
-      catchupThresholdBytes: null,
     });
   }
 

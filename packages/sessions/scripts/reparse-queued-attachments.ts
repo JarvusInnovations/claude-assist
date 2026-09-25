@@ -6,8 +6,8 @@
  * Claude Code persists prompts typed while the assistant is busy as
  * `type: "attachment"` with `attachment.type === "queued_command"`, which were
  * silently dropped from user_messages and the serialized transcript. This script
- * re-extracts user_messages from raw_transcript so historical sessions reflect
- * the corrected parsing.
+ * re-extracts user_messages from the archived transcript (via TranscriptReader)
+ * so historical sessions reflect the corrected parsing.
  *
  * Updates: user_messages, user_message_count, message_count, search_text,
  * activity_ranges (new user timestamps shift the ranges).
