@@ -10,6 +10,8 @@ function emptyDelta(overrides: Partial<ParseDelta> = {}): ParseDelta {
     filesWritten: [],
     toolCalls: [],
     messageIndexRows: [],
+    contextReadings: [],
+    compactions: [],
     inputTokens: 0,
     outputTokens: 0,
     cacheReadTokens: 0,

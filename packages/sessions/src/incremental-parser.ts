@@ -56,6 +56,8 @@ import type {
   ModelTokens,
   ActivityRange,
   ToolCall,
+  ContextReading,
+  ContextCompaction,
 } from './types.js';
 import { extractToolTarget } from './transcript.js';
 import { sanitizeText, sanitizeStringArray } from './sanitize.js';
@@ -104,6 +106,12 @@ export interface ParseDelta {
   toolCalls: ToolCall[];
   /** (seq, uuid) for every message this feed processed that carried a uuid. */
   messageIndexRows: Array<{ seq: number; uuid: string }>;
+  /** specs/behaviors/session-context-window.md's "Timeline": one entry per
+   * main-chain API call in this feed (same gating as contextFinalTokens/
+   * contextPeakCandidate below — only a real, positive reading is recorded). */
+  contextReadings: ContextReading[];
+  /** One entry per `system`/`compact_boundary` line in this feed. */
+  compactions: ContextCompaction[];
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
@@ -143,6 +151,8 @@ function emptyDelta(): ParseDelta {
     filesWritten: [],
     toolCalls: [],
     messageIndexRows: [],
+    contextReadings: [],
+    compactions: [],
     inputTokens: 0,
     outputTokens: 0,
     cacheReadTokens: 0,
@@ -355,6 +365,17 @@ export function feed(checkpoint: ParseCheckpoint, lines: readonly string[]): Fee
     if (msg.type === 'queue-operation') continue;
     delta.messageCount++;
 
+    if (msg.type === 'system' && msg.subtype === 'compact_boundary' && msg.compactMetadata) {
+      const cm = msg.compactMetadata;
+      delta.compactions.push({
+        seq,
+        ts: msg.timestamp ? new Date(msg.timestamp) : null,
+        trigger: typeof cm.trigger === 'string' ? cm.trigger : 'auto',
+        preTokens: typeof cm.preTokens === 'number' ? cm.preTokens : 0,
+        postTokens: typeof cm.postTokens === 'number' ? cm.postTokens : 0,
+      });
+    }
+
     if (msg.type === 'user' && msg.message) {
       const text = extractTextContent(msg.message.content);
       if (text) {
@@ -396,6 +417,11 @@ export function feed(checkpoint: ParseCheckpoint, lines: readonly string[]): Fee
             delta.contextFinalTokens = contextTokens;
             delta.contextPeakCandidate = Math.max(delta.contextPeakCandidate ?? 0, contextTokens);
             if (model) delta.contextModel = model;
+            delta.contextReadings.push({
+              seq,
+              ts: msg.timestamp ? new Date(msg.timestamp) : null,
+              tokens: contextTokens,
+            });
           }
         }
 

@@ -7,6 +7,7 @@ import type {
   OutlineProgress,
   ActivitySession,
   SessionShare,
+  ContextTimeline,
 } from "@/types/api";
 
 export const sessionsApi = {
@@ -65,4 +66,8 @@ export const sessionsApi = {
 
   // Share
   createShare: (id: string) => api.post<SessionShare>(`/sessions/${id}/share`),
+
+  // Context timeline
+  getContextTimeline: (id: string) =>
+    api.get<ContextTimeline>(`/sessions/${id}/context-timeline`),
 };

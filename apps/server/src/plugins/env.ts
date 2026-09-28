@@ -50,6 +50,14 @@ const schema = {
     // larger one just catches up over more cycles, bounded by the budget.
     SESSIONS_CHUNK_MAX_BYTES: { type: 'number', default: 8388608 }, // 8 MiB
     SESSIONS_INGEST_BUDGET_BYTES: { type: 'number', default: 67108864 }, // 64 MiB
+    // Context timeline backfill (specs/behaviors/session-context-window.md's
+    // "Timeline" section) — resumable sweep deriving readings/compactions for
+    // sessions ingested before this feature existed. Smaller budget than
+    // ingest: a lower-priority sweep of historical content, not the
+    // live-ingest hot path.
+    SESSIONS_DISABLE_TIMELINE_BACKFILL: { type: 'boolean', default: false },
+    SESSIONS_TIMELINE_BACKFILL_BUDGET_BYTES: { type: 'number', default: 16777216 }, // 16 MiB
+    SESSIONS_TIMELINE_BACKFILL_CRON: { type: 'string' },
     SESSIONS_DISABLE_LOCAL_INGEST: { type: 'boolean', default: false },
     SESSIONS_DISABLE_GENERATE_OUTLINES: { type: 'boolean', default: false },
     // Newline-separated prompt substrings; sessions containing any are
@@ -484,6 +492,9 @@ declare module 'fastify' {
       SESSIONS_MIN_FILE_SIZE: number;
       SESSIONS_CHUNK_MAX_BYTES: number;
       SESSIONS_INGEST_BUDGET_BYTES: number;
+      SESSIONS_DISABLE_TIMELINE_BACKFILL: boolean;
+      SESSIONS_TIMELINE_BACKFILL_BUDGET_BYTES: number;
+      SESSIONS_TIMELINE_BACKFILL_CRON?: string;
       SESSIONS_DISABLE_LOCAL_INGEST: boolean;
       SESSIONS_DISABLE_GENERATE_OUTLINES: boolean;
       SESSIONS_IGNORE_MARKERS?: string;

@@ -3,7 +3,7 @@ import type postgres from 'postgres';
 import { getChunkState, writeIngestCycle, type WriteCycleParams } from './chunk-store.js';
 import { EMPTY_CHECKPOINT } from './incremental-parser.js';
 import { EMPTY_AGGREGATE } from './aggregate-merge.js';
-import type { ToolCall } from './types.js';
+import type { ToolCall, ContextReading, ContextCompaction } from './types.js';
 
 /** A recording sql double, in the shape `LedgerStore.test.ts` uses: captures
  * every tagged-template query's text + interpolated values, and models
@@ -36,6 +36,8 @@ function baseParams(overrides: Partial<WriteCycleParams> = {}): WriteCycleParams
     aggregate: EMPTY_AGGREGATE,
     toolCalls: [],
     messageIndexRows: [],
+    contextReadings: [],
+    compactions: [],
     checkpoint: EMPTY_CHECKPOINT,
     ingestedBytes: 0,
     isNew: true,
@@ -46,14 +48,15 @@ function baseParams(overrides: Partial<WriteCycleParams> = {}): WriteCycleParams
 }
 
 describe('writeIngestCycle', () => {
-  it('a fresh cycle deletes existing chunk/message/tool_calls rows first', async () => {
+  it('a fresh cycle deletes existing chunk/message/tool_calls/context_events rows first', async () => {
     const { sql, calls } = recordingSql();
     await writeIngestCycle(sql, baseParams({ fresh: true, isNew: false }));
     const deletes = calls.filter((c) => c.text.startsWith('DELETE FROM'));
-    expect(deletes).toHaveLength(3);
+    expect(deletes).toHaveLength(4);
     expect(deletes.some((c) => c.text.includes('transcript_chunks'))).toBe(true);
     expect(deletes.some((c) => c.text.includes('transcript_messages'))).toBe(true);
     expect(deletes.some((c) => c.text.includes('tool_calls'))).toBe(true);
+    expect(deletes.some((c) => c.text.includes('context_events'))).toBe(true);
   });
 
   it('an ordinary append (fresh: false) never deletes — tool_calls stays append-only', async () => {
@@ -103,6 +106,69 @@ describe('writeIngestCycle', () => {
     const inserts = calls.filter((c) => c.text.includes('INSERT INTO sessions.tool_calls'));
     // 45,000 rows / 20,000-row batches = 3 statements (matches TOOL_CALL_INSERT_BATCH in chunk-store.ts).
     expect(inserts).toHaveLength(3);
+  });
+
+  const oneReading: ContextReading[] = [{ seq: 1, ts: new Date('2026-01-01T00:00:00Z'), tokens: 1000 }];
+  const oneCompaction: ContextCompaction[] = [
+    { seq: 2, ts: new Date('2026-01-01T00:01:00Z'), trigger: 'auto', preTokens: 900_000, postTokens: 20_000 },
+  ];
+
+  describe('timeline live-ingest/backfill handoff', () => {
+    it('a brand-new session (isNew) writes context_events without checking the flag', async () => {
+      const { sql, calls } = recordingSql();
+      await writeIngestCycle(
+        sql,
+        baseParams({ isNew: true, fresh: true, contextReadings: oneReading, compactions: oneCompaction })
+      );
+      expect(calls.some((c) => c.text.includes('SELECT timeline_backfill_done'))).toBe(false);
+      expect(calls.some((c) => c.text.includes('INSERT INTO sessions.context_events') && c.text.includes("'reading'"))).toBe(true);
+      expect(calls.some((c) => c.text.includes('INSERT INTO sessions.context_events') && c.text.includes("'compaction'"))).toBe(true);
+      // The new-session INSERT marks the row caught up (no backlog to backfill).
+      const insert = calls.find((c) => c.text.includes('INSERT INTO sessions.sessions'))!;
+      expect(insert.values.at(-1)).toBe(true);
+    });
+
+    it('a fresh re-ingest of an existing session writes events and resets the backfill cursor', async () => {
+      const { sql, calls } = recordingSql();
+      await writeIngestCycle(
+        sql,
+        baseParams({ isNew: false, fresh: true, contextReadings: oneReading, compactions: oneCompaction })
+      );
+      expect(calls.some((c) => c.text.includes('SELECT timeline_backfill_done'))).toBe(false);
+      expect(calls.some((c) => c.text.includes('INSERT INTO sessions.context_events'))).toBe(true);
+      expect(
+        calls.some(
+          (c) =>
+            c.text.includes('UPDATE sessions.sessions') &&
+            c.text.includes('timeline_backfill_done') &&
+            c.text.includes('timeline_backfill_next_chunk_seq')
+        )
+      ).toBe(true);
+    });
+
+    it('an ordinary append checks the flag first and skips writing events when backfill is not yet done', async () => {
+      const { sql, calls } = recordingSql({ 'SELECT timeline_backfill_done': [{ timeline_backfill_done: false }] });
+      await writeIngestCycle(
+        sql,
+        baseParams({ isNew: false, fresh: false, contextReadings: oneReading, compactions: oneCompaction })
+      );
+      expect(calls.some((c) => c.text.includes('SELECT timeline_backfill_done'))).toBe(true);
+      expect(calls.some((c) => c.text.includes('INSERT INTO sessions.context_events'))).toBe(false);
+      // The flag-check must be the FIRST statement touching the session row —
+      // ordering is what makes the handoff race-free (see writeIngestCycle's
+      // doc comment).
+      expect(calls[0]!.text).toContain('SELECT timeline_backfill_done');
+    });
+
+    it('an ordinary append writes events once backfill has already finished', async () => {
+      const { sql, calls } = recordingSql({ 'SELECT timeline_backfill_done': [{ timeline_backfill_done: true }] });
+      await writeIngestCycle(
+        sql,
+        baseParams({ isNew: false, fresh: false, contextReadings: oneReading, compactions: oneCompaction })
+      );
+      expect(calls.some((c) => c.text.includes('INSERT INTO sessions.context_events') && c.text.includes("'reading'"))).toBe(true);
+      expect(calls.some((c) => c.text.includes('INSERT INTO sessions.context_events') && c.text.includes("'compaction'"))).toBe(true);
+    });
   });
 });
 

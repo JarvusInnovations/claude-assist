@@ -10,6 +10,7 @@ import {
   SynthesisService,
   lastWeekPeriod,
 } from './classification/index.js';
+import { runTimelineBackfillCycle, DEFAULT_TIMELINE_BACKFILL_BUDGET_BYTES } from './timeline-backfill.js';
 
 /**
  * Sessions plugin for archiving Claude Code transcripts
@@ -130,6 +131,29 @@ export default createPlugin('sessions', async (fastify, options) => {
       }
     },
   });
+
+  // Context timeline backfill (specs/behaviors/session-context-window.md's
+  // "Timeline" section): resumable, one-chunk-at-a-time derivation of
+  // readings/compactions for sessions ingested before this feature existed.
+  // A brand-new session starts already caught up (chunk-store.ts sets
+  // timeline_backfill_done=true on insert), so this sweep only ever has work
+  // when there's a pre-existing backlog.
+  if (!config.disableTimelineBackfill) {
+    fastify.scheduler.register({
+      name: 'sessions:timeline-backfill',
+      schedule: config.timelineBackfillCron ?? '*/2 * * * *',
+      runOnStartup: true,
+      handler: async () => {
+        const result = await runTimelineBackfillCycle(
+          fastify.sql,
+          config.timelineBackfillBudgetBytes ?? DEFAULT_TIMELINE_BACKFILL_BUDGET_BYTES
+        );
+        if (result.chunksProcessed > 0 || result.sessionsCompleted > 0) {
+          fastify.log.info({ result }, 'Timeline backfill cycle complete');
+        }
+      },
+    });
+  }
 
   // Register scheduled sync task for localhost (unless disabled)
   if (!config.disableLocalIngest) {
@@ -262,3 +286,5 @@ export {
   matchesIgnoreMarker,
 } from './ignore.js';
 export * from './classification/index.js';
+export { runTimelineBackfillCycle, DEFAULT_TIMELINE_BACKFILL_BUDGET_BYTES } from './timeline-backfill.js';
+export { computeTimelineSegments, downsampleReadings } from './timeline.js';

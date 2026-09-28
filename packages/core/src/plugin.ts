@@ -649,6 +649,19 @@ export interface SessionsPluginConfig {
   outlineWindowSweepCap?: number;
   /** A window's summarization stops being retried automatically past this many failures (default 5). */
   outlineWindowMaxAttempts?: number;
+
+  // ── Context timeline backfill (specs/behaviors/session-context-window.md's
+  // "Timeline" section — existing sessions ingested before this feature). ──
+  /** Disable the resumable backfill sweep for pre-existing sessions. */
+  disableTimelineBackfill?: boolean;
+  /**
+   * Per-run byte budget for the backfill sweep, in bytes (default 16 MiB).
+   * Deliberately smaller than `ingestBudgetBytes` — this is a lower-priority
+   * sweep of historical content, not the live-ingest hot path.
+   */
+  timelineBackfillBudgetBytes?: number;
+  /** Cron for the timeline backfill sweep (default every 2 minutes). */
+  timelineBackfillCron?: string;
 }
 
 /**

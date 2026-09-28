@@ -417,6 +417,11 @@ await fastify.register(
           chunkMaxBytes: fastify.config.SESSIONS_CHUNK_MAX_BYTES,
           ingestBudgetBytes: fastify.config.SESSIONS_INGEST_BUDGET_BYTES,
           outlineConcurrency: fastify.config.OUTLINE_CONCURRENCY,
+          disableTimelineBackfill:
+            fastify.config.DISABLE_SYNCS ||
+            fastify.config.SESSIONS_DISABLE_TIMELINE_BACKFILL,
+          timelineBackfillBudgetBytes: fastify.config.SESSIONS_TIMELINE_BACKFILL_BUDGET_BYTES,
+          timelineBackfillCron: fastify.config.SESSIONS_TIMELINE_BACKFILL_CRON,
           disableLocalIngest:
             fastify.config.DISABLE_SYNCS ||
             fastify.config.SESSIONS_DISABLE_LOCAL_INGEST,

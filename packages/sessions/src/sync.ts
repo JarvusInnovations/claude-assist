@@ -409,6 +409,8 @@ export class SyncService {
       aggregate,
       toolCalls: feedDelta.toolCalls,
       messageIndexRows: feedDelta.messageIndexRows,
+      contextReadings: feedDelta.contextReadings,
+      compactions: feedDelta.compactions,
       checkpoint: finalCheckpoint,
       ingestedBytes,
       isNew: params.isNewSession,
