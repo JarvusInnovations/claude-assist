@@ -450,36 +450,49 @@ describe('OutlineService — windowing decision', () => {
 // ── Windowed generation: boundaries, idempotency, composition ──────────────
 
 describe('OutlineService — windowed generation', () => {
-  it('carves windows, summarizes within the sweep cap, and leaves outline_hash stale until fully caught up', async () => {
+  it('carves and summarizes within the sweep cap, reading only what the sweep can use, and catches up over sweeps', async () => {
     const sessions = [baseSession({ message_count: 500, content: bigTranscript(500) })];
     const windows: FakeWindow[] = [];
     const { invoker, callsByTask } = makeFakeInvoker();
     const svc = new OutlineService(makeFakeDb(sessions, windows), makeLogger(), {
       invoker,
-      windowConfig: { thresholdMessages: 400, maxMessages: 100, sweepCap: 2 }, // 500 msgs / 100 = 4 closed + 1 open tail; cap=2 forces a partial sweep
+      windowConfig: { thresholdMessages: 400, maxMessages: 100, sweepCap: 2 }, // cap=2 x 100 msgs: each sweep reads at most 200 messages
     });
 
-    await svc.generateOutlinesSync();
+    const spy = spyOn(TranscriptReader.prototype, 'messagesSince');
+    try {
+      await svc.generateOutlinesSync();
 
-    // 5 windows total (4 closed + 1 open tail), but only 2 summarized this sweep.
-    expect(windows).toHaveLength(5);
-    const summarizedCount = windows.filter((w) => w.summary !== null).length;
-    expect(summarizedCount).toBe(2);
-    expect(callsByTask['sessions.outline.window']).toBe(2);
-    // Not fully caught up — outline_hash must NOT advance, so the next sweep re-selects it.
-    expect(sessions[0]!.outline_hash).toBeNull();
-    // Some summaries exist, so composition ran once over what's available so far.
-    expect(callsByTask['sessions.outline.compose']).toBe(1);
-    expect(sessions[0]!.outline).toContain('composed summary');
+      // Sweep 1 reads 200 of 500 messages: two closed windows, both summarized,
+      // and no open tail recorded (the read was truncated, so its last segment
+      // is not the session's real tail).
+      expect(spy.mock.calls[0]?.[2]).toBe(200);
+      expect(windows).toHaveLength(2);
+      expect(windows.every((w) => w.closed_at !== null && w.summary !== null)).toBe(true);
+      expect(callsByTask['sessions.outline.window']).toBe(2);
+      // Not caught up: outline_hash must not advance, so the next sweep re-selects it.
+      expect(sessions[0]!.outline_hash).toBeNull();
+      expect(callsByTask['sessions.outline.compose']).toBe(1);
+      expect(sessions[0]!.outline).toContain('composed summary');
 
-    // A second sweep with the same cap makes further progress and eventually catches up.
-    await svc.generateOutlinesSync();
-    await svc.generateOutlinesSync();
-    expect(windows.every((w) => w.summary !== null)).toBe(true);
-    expect(sessions[0]!.outline_hash).toBe('hashA');
+      for (let i = 0; i < 6 && sessions[0]!.outline_hash !== 'hashA'; i++) {
+        await svc.generateOutlinesSync();
+      }
+      expect(sessions[0]!.outline_hash).toBe('hashA');
+      expect(windows.every((w) => w.summary !== null)).toBe(true);
+      // Every window summarized exactly once, and they tile seqs 0..499 with no gaps.
+      const sorted = [...windows].sort((a, b) => a.from_seq - b.from_seq);
+      expect(sorted[0]!.from_seq).toBe(0);
+      expect(sorted.at(-1)!.to_seq).toBe(499);
+      for (let i = 1; i < sorted.length; i++) expect(sorted[i]!.from_seq).toBe(sorted[i - 1]!.to_seq + 1);
+      // No read ever asked for more than the sweep's cap.
+      expect(spy.mock.calls.every((c) => c[2] === 200)).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
-  it('reads from the earliest seq a pending window needs, not from the transcript start, once boundaries have advanced', async () => {
+  it('each sweep reads a bounded range starting from the earliest seq still needed', async () => {
     const sessions = [baseSession({ message_count: 500, content: bigTranscript(500) })];
     const windows: FakeWindow[] = [];
     const { invoker } = makeFakeInvoker();
@@ -490,28 +503,11 @@ describe('OutlineService — windowed generation', () => {
 
     const spy = spyOn(TranscriptReader.prototype, 'messagesSince');
     try {
-      // Sweep 1: boundaries for all 5 windows get planned (cheap, unbudgeted);
-      // only windows 0 and 1 get summarized (sweepCap: 2). Reading everything
-      // is unavoidable here — nothing has been closed yet.
       await svc.generateOutlinesSync();
-      expect(spy.mock.calls.at(-1)?.[1]).toBe(-1);
-      const closedWindows = windows.filter((w) => w.closed_at !== null).sort((a, b) => a.from_seq - b.from_seq);
-      expect(closedWindows.length).toBeGreaterThan(0);
-      const lastClosedToSeq = Math.max(...closedWindows.map((w) => w.to_seq));
-      const pendingFromSeqs = windows.filter((w) => w.status === 'pending').map((w) => w.from_seq);
-      const expectedReadFromSeq = Math.min(lastClosedToSeq + 1, ...pendingFromSeqs);
-      // The scenario is only meaningful if boundaries actually advanced past
-      // seq 0 and there's still an earlier pending window than the boundary —
-      // otherwise this assertion would pass trivially.
-      expect(expectedReadFromSeq).toBeGreaterThan(0);
-      expect(pendingFromSeqs.some((s) => s < lastClosedToSeq + 1)).toBe(true);
-
-      // Sweep 2: must read starting from expectedReadFromSeq, not from 0 —
-      // the whole point of listing pending windows before choosing the read's
-      // starting point (see generateWindowedOutline's doc comment).
       await svc.generateOutlinesSync();
-      expect(spy.mock.calls.at(-1)?.[1]).toBe(expectedReadFromSeq - 1);
-      expect(spy.mock.calls.at(-1)?.[1]).not.toBe(-1);
+      await svc.generateOutlinesSync();
+      // afterSeq advances by what each sweep consumed; it never restarts at -1.
+      expect(spy.mock.calls.map((c) => c[1])).toEqual([-1, 199, 399]);
     } finally {
       spy.mockRestore();
     }
@@ -523,25 +519,22 @@ describe('OutlineService — windowed generation', () => {
       baseSession({ id: 'aaaaaaaa-0000-4000-8000-000000000002', message_count: 500, content: bigTranscript(500), started_at: '2026-01-01T00:00:00.000Z' }),
     ];
     const windows: FakeWindow[] = [];
-    const seen: { text: string; vals: unknown[] }[] = [];
     const { invoker } = makeFakeInvoker();
-    const svc = new OutlineService(makeFakeDb(sessions, windows, seen), makeLogger(), {
+    const svc = new OutlineService(makeFakeDb(sessions, windows), makeLogger(), {
       invoker,
       windowConfig: { thresholdMessages: 400, maxMessages: 100, sweepCap: 2 },
     });
 
-    await svc.generateOutlinesSync();
-
-    // messagesSince's chunked-backend query shape: a lower seq bound only
-    // (no upper bound, no ORDER BY seq DESC — those belong to
-    // messageRange/readAround/find and since(), respectively).
-    const fullReads = seen.filter(
-      (q) => q.text.includes('msg_seq_end >=') && !q.text.includes('msg_seq_start <=') && !q.text.includes('ORDER BY seq DESC')
-    );
-    // The first (newest) session spends the whole budget; it is parsed exactly
-    // once despite having several windows, and the second is never read.
-    expect(fullReads.map((q) => q.vals[0])).toEqual([sessions[0]!.id]);
-    expect(windows.every((w) => w.session_id === sessions[0]!.id)).toBe(true);
+    const spy = spyOn(TranscriptReader.prototype, 'messagesSince');
+    try {
+      await svc.generateOutlinesSync();
+      // The first (newest) session spends the whole budget in one read; the
+      // second is never read.
+      expect(spy.mock.calls.map((c) => c[0])).toEqual([sessions[0]!.id]);
+      expect(windows.every((w) => w.session_id === sessions[0]!.id)).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('a closed window is summarized exactly once — fully caught up, the session drops out of the sweep entirely', async () => {

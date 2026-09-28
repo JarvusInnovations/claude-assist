@@ -472,15 +472,25 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
     // whole transcript), on the chunked backend it's whatever seq the
     // fetched chunk range happens to start at.
     const baseSeq = readFromSeq;
-    const windowMessages = await this.reader.messagesSince(session.id, baseSeq - 1);
+    // Read no more than this sweep can summarize: each window holds at most
+    // maxMessages, and at most windowBudget windows are summarized. A session
+    // with a large backlog (first sight of a long-running session) otherwise
+    // reads its whole transcript every sweep.
+    const readLimit = this.windowBudget * this.windowConfig.maxMessages;
+    const windowMessages = await this.reader.messagesSince(session.id, baseSeq - 1, readLimit);
+    const truncated = windowMessages.length >= readLimit;
+    const lastReadSeq = baseSeq + windowMessages.length - 1;
     const newMessages = windowMessages.slice(lastClosedToSeq + 1 - baseSeq);
     if (newMessages.length > 0) {
-      const boundaries = planWindows(
+      const planned = planWindows(
         closedCount,
         lastClosedToSeq + 1,
         newMessages.map((m) => ({ timestamp: m.timestamp ?? null, approxBytes: approxMessageBytes(m) })),
         this.windowConfig
       );
+      // A truncated read's final segment is not the session's real tail, so
+      // don't record it as the open window; the next sweep carves it.
+      const boundaries = truncated ? planned.filter((b) => b.closed) : planned;
       for (const boundary of boundaries) {
         await this.windowStore.upsertBoundary(session.id, boundary);
       }
@@ -489,7 +499,7 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
     // Re-fetch: the boundary pass above may have inserted new windows (whose
     // from_seq is always >= baseSeq, so windowMessages already covers them).
     const windows = await this.windowStore.listWindows(session.id);
-    let caughtUp = true;
+    let caughtUp = !truncated;
 
     for (const w of windows) {
       if (w.status === 'summarized' || w.status === 'failed') continue; // resolved, immutable or given up
@@ -498,6 +508,12 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
         continue;
       }
       // status === 'pending'
+      if (w.to_seq > lastReadSeq) {
+        // Not fully covered by this sweep's bounded read: summarizing it now
+        // would permanently record a summary of a partial window.
+        caughtUp = false;
+        continue;
+      }
       if (this.windowBudget <= 0) {
         caughtUp = false; // budget exhausted this sweep; carries to the next one
         continue;

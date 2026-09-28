@@ -388,14 +388,25 @@ export class TranscriptReader {
    * into a session that has grown far past it costs only the tail, not the
    * whole chunk series.
    */
-  async messagesSince(sessionId: string, afterSeq: number): Promise<TranscriptMessage[]> {
+  async messagesSince(sessionId: string, afterSeq: number, limit?: number): Promise<TranscriptMessage[]> {
     if (!(await this.sessionExists(sessionId))) return [];
 
-    const chunkRows = await this.sql<{ msg_seq_start: number; content: string }[]>`
-      SELECT msg_seq_start, content FROM sessions.transcript_chunks
-      WHERE session_id = ${sessionId}::uuid AND msg_seq_end >= ${afterSeq + 1}
-      ORDER BY seq ASC
-    `;
+    // With a limit, stop at the last chunk that can hold seq afterSeq + limit,
+    // so a caller asking for a bounded window never reads the rest of a large
+    // transcript.
+    const chunkRows =
+      limit === undefined
+        ? await this.sql<{ msg_seq_start: number; content: string }[]>`
+            SELECT msg_seq_start, content FROM sessions.transcript_chunks
+            WHERE session_id = ${sessionId}::uuid AND msg_seq_end >= ${afterSeq + 1}
+            ORDER BY seq ASC
+          `
+        : await this.sql<{ msg_seq_start: number; content: string }[]>`
+            SELECT msg_seq_start, content FROM sessions.transcript_chunks
+            WHERE session_id = ${sessionId}::uuid AND msg_seq_end >= ${afterSeq + 1}
+              AND msg_seq_start <= ${afterSeq + limit}
+            ORDER BY seq ASC
+          `;
     if (chunkRows.length === 0) return [];
     const chunkBaseSeq = chunkRows[0]!.msg_seq_start;
     const bounded = chunkRows.map((r) => r.content).join('');
@@ -404,6 +415,7 @@ export class TranscriptReader {
     // some already-consumed messages before the boundary); slice the extra
     // off so index 0 of the RETURNED array is exactly afterSeq + 1, matching
     // this method's contract.
-    return parseMessages(bounded).slice(Math.max(0, afterSeq + 1 - chunkBaseSeq));
+    const start = Math.max(0, afterSeq + 1 - chunkBaseSeq);
+    return parseMessages(bounded).slice(start, limit === undefined ? undefined : start + limit);
   }
 }
