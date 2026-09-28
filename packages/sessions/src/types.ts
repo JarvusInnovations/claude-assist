@@ -48,9 +48,11 @@ export interface TokenUsage {
  * specs/behaviors/session-context-window.md's "Timeline" section.
  */
 export interface CompactMetadata {
-  trigger: 'auto' | 'manual' | string;
-  preTokens: number;
-  postTokens: number;
+  trigger?: 'auto' | 'manual' | string;
+  /** Absent from some older transcripts. */
+  preTokens?: number;
+  /** Absent from some older transcripts. */
+  postTokens?: number;
   [key: string]: unknown;
 }
 
@@ -153,9 +155,10 @@ export interface ContextReading {
 export interface ContextCompaction {
   seq: number;
   ts: Date | null;
-  trigger: string;
-  preTokens: number;
-  postTokens: number;
+  /** Null when the transcript didn't record it — never a guessed value. */
+  trigger: string | null;
+  preTokens: number | null;
+  postTokens: number | null;
 }
 
 /** One row of `sessions.transcript_chunks` — an immutable slice of the archive. */

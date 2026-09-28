@@ -370,9 +370,10 @@ export function feed(checkpoint: ParseCheckpoint, lines: readonly string[]): Fee
       delta.compactions.push({
         seq,
         ts: msg.timestamp ? new Date(msg.timestamp) : null,
-        trigger: typeof cm.trigger === 'string' ? cm.trigger : 'auto',
-        preTokens: typeof cm.preTokens === 'number' ? cm.preTokens : 0,
-        postTokens: typeof cm.postTokens === 'number' ? cm.postTokens : 0,
+        // Older transcripts omit some of these; record null, never a guess.
+        trigger: typeof cm.trigger === 'string' ? cm.trigger : null,
+        preTokens: typeof cm.preTokens === 'number' ? cm.preTokens : null,
+        postTokens: typeof cm.postTokens === 'number' ? cm.postTokens : null,
       });
     }
 
