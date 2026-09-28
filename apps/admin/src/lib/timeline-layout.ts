@@ -118,3 +118,50 @@ export function dayBoundaryIndices(timestampsMs: readonly number[]): number[] {
   });
   return indices;
 }
+
+export interface LabelCandidate {
+  /** Anchor x (center) in the same units as the chart. */
+  x: number;
+  text: string;
+  /** Lower wins when two labels would overlap. */
+  priority: number;
+}
+
+export interface PlacedLabel extends LabelCandidate {
+  anchor: 'start' | 'middle' | 'end';
+}
+
+/**
+ * Choose which axis labels to draw so none overlap. Candidates are placed in
+ * priority order (ties: wider span first, then left to right); one that would
+ * overlap an already-placed label, including `gap` units of padding, is
+ * dropped. Labels near an edge are anchored to stay inside `[min, max]`.
+ * Width is estimated from character count (`charWidth` units per character).
+ */
+export function placeLabels(
+  candidates: readonly LabelCandidate[],
+  bounds: { min: number; max: number },
+  charWidth = 5,
+  gap = 6
+): PlacedLabel[] {
+  const placed: Array<PlacedLabel & { left: number; right: number }> = [];
+  const order = [...candidates].sort((a, b) => a.priority - b.priority || a.x - b.x);
+  for (const c of order) {
+    const width = c.text.length * charWidth;
+    let anchor: PlacedLabel['anchor'] = 'middle';
+    let left = c.x - width / 2;
+    if (left < bounds.min) {
+      anchor = 'start';
+      left = Math.max(bounds.min, c.x);
+    } else if (c.x + width / 2 > bounds.max) {
+      anchor = 'end';
+      left = Math.min(bounds.max, c.x) - width;
+    }
+    const right = left + width;
+    if (placed.some((p) => left < p.right + gap && right > p.left - gap)) continue;
+    placed.push({ ...c, anchor, left, right });
+  }
+  return placed
+    .sort((a, b) => a.x - b.x)
+    .map(({ left: _left, right: _right, ...label }) => label);
+}
