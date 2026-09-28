@@ -8,7 +8,7 @@
  */
 
 import type postgres from 'postgres';
-import type { ToolCall } from './types.js';
+import type { ToolCall, ContextReading, ContextCompaction } from './types.js';
 import { transcriptVersionToken, type ChunkPiece } from './chunked-ingest.js';
 import type { ParseCheckpoint } from './incremental-parser.js';
 import { EMPTY_CHECKPOINT } from './incremental-parser.js';
@@ -47,6 +47,7 @@ import { EMPTY_AGGREGATE, boundedSearchText } from './aggregate-merge.js';
  */
 const MESSAGE_INDEX_INSERT_BATCH = 20_000;
 const TOOL_CALL_INSERT_BATCH = 20_000;
+const CONTEXT_EVENT_INSERT_BATCH = 20_000;
 
 export interface LastChunkInfo {
   seq: number;
@@ -189,6 +190,11 @@ export interface WriteCycleParams {
   aggregate: SessionAggregate;
   toolCalls: ToolCall[];
   messageIndexRows: Array<{ seq: number; uuid: string }>;
+  /** specs/behaviors/session-context-window.md's "Timeline" — this cycle's
+   * new readings/compactions. Written iff the live-ingest/backfill handoff
+   * (see `writeIngestCycle`) says this session's timeline is caught up. */
+  contextReadings: ContextReading[];
+  compactions: ContextCompaction[];
   checkpoint: ParseCheckpoint;
   ingestedBytes: number;
   /** `true` for a brand-new session (INSERT); `false` to UPDATE an existing row. */
@@ -199,7 +205,7 @@ export interface WriteCycleParams {
   nextChunkSeq: number;
 }
 
-async function forEachBatch<T>(rows: T[], batchSize: number, run: (batch: T[]) => Promise<unknown>): Promise<void> {
+async function forEachBatch<T>(rows: readonly T[], batchSize: number, run: (batch: T[]) => Promise<unknown>): Promise<void> {
   for (let i = 0; i < rows.length; i += batchSize) {
     await run(rows.slice(i, i + batchSize));
   }
@@ -211,6 +217,22 @@ async function forEachBatch<T>(rows: T[], batchSize: number, run: (batch: T[]) =
  * ingest bookkeeping). `fresh` is the only path that deletes existing
  * chunk/message/tool_calls rows (a continuity-failure re-ingest); an ordinary
  * append only ever inserts.
+ *
+ * **Timeline live-ingest/backfill handoff.** A brand-new session (`isNew`)
+ * has no backlog, so its context_events are written from cycle 1 and it's
+ * marked `timeline_backfill_done` immediately. A `fresh` re-ingest of an
+ * existing row recomputes the *whole* transcript in this one cycle (sync.ts's
+ * `runCycle` feeds byte 0..end in a single `feed()` call for `fresh`), so
+ * this cycle's readings/compactions already are that session's complete
+ * timeline — write them, mark done, and reset the backfill cursor (whatever
+ * partial progress it had no longer means anything against the rewritten
+ * chunk series). An ordinary append only writes events once the backfill
+ * task has already finished this session's backlog: `SELECT ...
+ * timeline_backfill_done FOR UPDATE` is the *first* statement to touch this
+ * session row in that branch, so it orders correctly (via Postgres's
+ * row-level lock) against the backfill task's own "no chunks left, mark
+ * done" step in timeline-backfill.ts, which takes the same lock before
+ * deciding — whichever transaction commits first is the one the other sees.
  */
 export async function writeIngestCycle(sql: postgres.Sql, p: WriteCycleParams): Promise<void> {
   const lastPiece = p.chunks[p.chunks.length - 1];
@@ -218,10 +240,23 @@ export async function writeIngestCycle(sql: postgres.Sql, p: WriteCycleParams): 
   await sql.begin(async (rawTx) => {
     const tx = rawTx as unknown as Tx;
 
+    let writeTimelineEvents = p.isNew || p.fresh;
+    if (!writeTimelineEvents) {
+      // First touch of this session's row in this transaction — see the
+      // handoff note above for why ordering matters here.
+      const [row] = await tx<{ timeline_backfill_done: boolean }[]>`
+        SELECT timeline_backfill_done FROM sessions.sessions
+        WHERE id = ${p.sessionId}::uuid
+        FOR UPDATE
+      `;
+      writeTimelineEvents = row?.timeline_backfill_done === true;
+    }
+
     if (p.fresh) {
       await tx`DELETE FROM sessions.transcript_chunks WHERE session_id = ${p.sessionId}::uuid`;
       await tx`DELETE FROM sessions.transcript_messages WHERE session_id = ${p.sessionId}::uuid`;
       await tx`DELETE FROM sessions.tool_calls WHERE session_id = ${p.sessionId}::uuid`;
+      await tx`DELETE FROM sessions.context_events WHERE session_id = ${p.sessionId}::uuid`;
     }
 
     const a = p.aggregate;
@@ -241,7 +276,7 @@ export async function writeIngestCycle(sql: postgres.Sql, p: WriteCycleParams): 
           search_text, message_count, user_message_count, claude_version,
           models_used, model_tokens, activity_ranges, session_name,
           context_final_tokens, context_peak_tokens, context_model,
-          ingested_bytes, parse_checkpoint
+          ingested_bytes, parse_checkpoint, timeline_backfill_done
         ) VALUES (
           ${p.sessionId}::uuid, ${p.machineId}, ${p.projectPath}, ${a.gitBranch},
           ${startedAt}, ${a.endedAt},
@@ -254,7 +289,9 @@ export async function writeIngestCycle(sql: postgres.Sql, p: WriteCycleParams): 
           ${searchText}, ${a.messageCount}, ${a.userMessages.length}, ${a.claudeVersion},
           ${tx.json(a.modelsUsed)}, ${tx.json(a.modelTokens as any)}, ${tx.json(a.activityRanges as any)}, ${a.sessionName},
           ${a.contextFinalTokens}, ${a.contextPeakTokens}, ${a.contextModel},
-          ${p.ingestedBytes}, ${tx.json(p.checkpoint as any)}
+          ${p.ingestedBytes}, ${tx.json(p.checkpoint as any)},
+          -- A brand-new session has no pre-timeline backlog to backfill.
+          ${true}
         )
       `;
     } else {
@@ -291,6 +328,20 @@ export async function writeIngestCycle(sql: postgres.Sql, p: WriteCycleParams): 
           synced_at = NOW()
         WHERE id = ${p.sessionId}::uuid
       `;
+
+      if (p.fresh) {
+        // This cycle just recomputed the whole transcript's timeline in one
+        // feed() (see the handoff note above) — any prior backfill progress
+        // against the now-replaced chunk series is meaningless; done and
+        // reset rather than resumed.
+        await tx`
+          UPDATE sessions.sessions SET
+            timeline_backfill_done = true,
+            timeline_backfill_next_chunk_seq = 0,
+            timeline_backfill_checkpoint = NULL
+          WHERE id = ${p.sessionId}::uuid
+        `;
+      }
     }
 
     if (p.chunks.length > 0) {
@@ -387,5 +438,59 @@ export async function writeIngestCycle(sql: postgres.Sql, p: WriteCycleParams): 
         `;
       });
     }
+
+    if (writeTimelineEvents) {
+      await insertContextEvents(tx, p.sessionId, p.contextReadings, p.compactions);
+    }
   });
+}
+
+/**
+ * Append-only insert of context_events rows (readings + compactions),
+ * batched and idempotent (`ON CONFLICT (session_id, seq, kind) DO NOTHING` —
+ * belt-and-suspenders alongside the live-ingest/backfill handoff, which
+ * shouldn't produce overlapping seq ranges in the first place). Shared by
+ * `writeIngestCycle` (live ingest) and `timeline-backfill.ts` (the resumable
+ * background backfill for pre-existing sessions) so the two paths write
+ * identically-shaped rows.
+ */
+export async function insertContextEvents(
+  tx: postgres.Sql,
+  sessionId: string,
+  contextReadings: readonly ContextReading[],
+  compactions: readonly ContextCompaction[]
+): Promise<void> {
+  if (contextReadings.length > 0) {
+    await forEachBatch(contextReadings, CONTEXT_EVENT_INSERT_BATCH, (batch) => {
+      const seqs = batch.map((r) => r.seq);
+      const tsValues = batch.map((r) => r.ts?.toISOString() ?? null);
+      const tokensValues = batch.map((r) => r.tokens);
+      return tx`
+        INSERT INTO sessions.context_events (session_id, seq, kind, ts, tokens)
+        SELECT ${sessionId}::uuid, seq, 'reading', ts, tokens
+        FROM unnest(${seqs}::int[], ${tsValues}::timestamptz[], ${tokensValues}::int[])
+          AS u(seq, ts, tokens)
+        ON CONFLICT (session_id, seq, kind) DO NOTHING
+      `;
+    });
+  }
+
+  if (compactions.length > 0) {
+    await forEachBatch(compactions, CONTEXT_EVENT_INSERT_BATCH, (batch) => {
+      const seqs = batch.map((c) => c.seq);
+      const tsValues = batch.map((c) => c.ts?.toISOString() ?? null);
+      const triggers = batch.map((c) => c.trigger);
+      const preTokens = batch.map((c) => c.preTokens);
+      const postTokens = batch.map((c) => c.postTokens);
+      return tx`
+        INSERT INTO sessions.context_events (session_id, seq, kind, ts, trigger, pre_tokens, post_tokens)
+        SELECT ${sessionId}::uuid, seq, 'compaction', ts, trigger, pre_tokens, post_tokens
+        FROM unnest(
+          ${seqs}::int[], ${tsValues}::timestamptz[], ${triggers}::text[],
+          ${preTokens}::int[], ${postTokens}::int[]
+        ) AS u(seq, ts, trigger, pre_tokens, post_tokens)
+        ON CONFLICT (session_id, seq, kind) DO NOTHING
+      `;
+    });
+  }
 }
