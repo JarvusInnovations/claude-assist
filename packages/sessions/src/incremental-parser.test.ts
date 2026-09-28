@@ -280,10 +280,23 @@ describe('incremental-parser: split parse equals full parse', () => {
     }
   });
 
+  it('records null, not a guess, for compaction fields an older transcript omits', () => {
+    const line = JSON.stringify({
+      type: 'system',
+      subtype: 'compact_boundary',
+      uuid: 'cb-old',
+      timestamp: '2026-01-01T00:00:00.000Z',
+      isSidechain: false,
+      compactMetadata: { preTokens: 168891 },
+    });
+    const [c] = runFull([line]).compactions;
+    expect(c).toMatchObject({ preTokens: 168891, postTokens: null, trigger: null });
+  });
+
   it('records every compact_boundary line as a compaction with its trigger and token counts', () => {
     const result = runFull(lines);
     expect(result.compactions.length).toBeGreaterThan(0);
-    expect(result.compactions.every((c) => c.preTokens > c.postTokens)).toBe(true);
+    expect(result.compactions.every((c) => c.preTokens !== null && c.postTokens !== null && c.preTokens > c.postTokens)).toBe(true);
     expect(result.compactions.some((c) => c.trigger === 'manual')).toBe(true);
     expect(result.compactions.some((c) => c.trigger === 'auto')).toBe(true);
   });

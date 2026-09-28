@@ -8,6 +8,7 @@ import {
   timeToX,
   isGapBlock,
   dayBoundaryIndices,
+  placeLabels,
   type LayoutBlock,
 } from "@/lib/timeline-layout";
 
@@ -27,6 +28,11 @@ function formatGap(ms: number): string {
   const hours = ms / 3_600_000;
   if (hours < 24) return `⋯ ${Math.max(1, Math.round(hours))}h`;
   return `⋯ ${Math.round(hours / 24)}d`;
+}
+
+function formatCompaction(c: { pre_tokens: number | null; post_tokens: number | null; trigger: string | null }): string {
+  if (c.pre_tokens === null) return c.trigger ?? "compaction";
+  return `${formatTokens(c.pre_tokens)} → ${c.post_tokens === null ? "?" : formatTokens(c.post_tokens)}`;
 }
 
 function formatDayLabel(tsMs: number): string {
@@ -86,6 +92,44 @@ export function ContextTimeline({ sessionId }: { sessionId: string }) {
 
   const gapBlocks = layout.filter(isGapBlock);
 
+  // Axis labels: day boundaries first, then longer gaps; anything that would
+  // overlap an already-placed label is dropped.
+  // A gap of a day or more that ends at a day boundary shares its label
+  // ("⋯ 23d · Aug 4"), so the longest idles aren't the ones that go unlabeled.
+  const mergedGaps = new Set<number>();
+  const dayCandidates = dayLabels.map((d) => {
+    const gi = gapBlocks.findIndex(
+      (g, i) => !mergedGaps.has(i) && g.durationMs >= 86_400_000 && Math.abs(PAD.left + g.x1 - d.x) < 2
+    );
+    if (gi < 0) return { x: d.x, text: d.label, priority: 0 };
+    mergedGaps.add(gi);
+    // A jump of a day or more outranks a plain day label.
+    return { x: d.x, text: `${formatGap(gapBlocks[gi]!.durationMs)} · ${d.label}`, priority: -1 };
+  });
+  const axisLabels = placeLabels(
+    [
+      ...dayCandidates,
+      ...gapBlocks.filter((_, i) => !mergedGaps.has(i)).map((g) => ({
+        x: PAD.left + (g.x0 + g.x1) / 2,
+        text: formatGap(g.durationMs),
+        priority: g.durationMs >= 86_400_000 ? 1 : 2,
+      })),
+    ],
+    { min: PAD.left, max: VIEW_WIDTH - PAD.right }
+  );
+
+  const compactionMarks = data.compactions
+    .filter((c) => c.ts)
+    .map((c) => ({ x: xFor(c.ts!), text: formatCompaction(c), trigger: c.trigger, pre: c.pre_tokens ?? 0 }));
+  // Annotate the biggest drops first when markers crowd each other; every
+  // marker still carries a hover title.
+  const compactionLabels = placeLabels(
+    compactionMarks.map((m) => ({ x: m.x, text: m.text, priority: -m.pre })),
+    { min: PAD.left, max: VIEW_WIDTH - PAD.right }
+  );
+
+  const yTicks = [0, yMax / 2, yMax];
+
   const handleMouseMove = (event: MouseEvent<SVGSVGElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
     if (rect.width === 0) return;
@@ -135,27 +179,43 @@ export function ContextTimeline({ sessionId }: { sessionId: string }) {
                 height={PLOT_HEIGHT}
                 className="fill-muted"
               />
+            </g>
+          ))}
+
+          {/* y-axis ticks and gridlines */}
+          {yTicks.map((t, i) => (
+            <g key={`ytick-${i}`}>
+              {i > 0 && (
+                <line
+                  x1={PAD.left}
+                  x2={VIEW_WIDTH - PAD.right}
+                  y1={yFor(t)}
+                  y2={yFor(t)}
+                  className="stroke-border"
+                  strokeOpacity={0.5}
+                />
+              )}
               <text
-                x={PAD.left + (g.x0 + g.x1) / 2}
-                y={VIEW_HEIGHT - PAD.bottom + 14}
-                textAnchor="middle"
+                x={PAD.left - 6}
+                y={yFor(t) + 3}
+                textAnchor="end"
                 className="fill-muted-foreground text-[9px]"
               >
-                {formatGap(g.durationMs)}
+                {formatTokens(t)}
               </text>
             </g>
           ))}
 
-          {/* day labels */}
-          {dayLabels.map((d, i) => (
+          {/* x-axis: day and gap labels, collision-free */}
+          {axisLabels.map((l, i) => (
             <text
-              key={`day-${i}`}
-              x={d.x}
+              key={`axis-${i}`}
+              x={l.x}
               y={VIEW_HEIGHT - PAD.bottom + 14}
-              textAnchor="middle"
+              textAnchor={l.anchor}
               className="fill-muted-foreground text-[9px]"
             >
-              {d.label}
+              {l.text}
             </text>
           ))}
 
@@ -171,9 +231,9 @@ export function ContextTimeline({ sessionId }: { sessionId: string }) {
                 strokeDasharray="4 3"
               />
               <text
-                x={VIEW_WIDTH - PAD.right}
-                y={yFor(data.limit) - 4}
-                textAnchor="end"
+                x={PAD.left + 4}
+                y={yFor(data.limit) + 10}
+                textAnchor="start"
                 className="fill-muted-foreground text-[9px]"
               >
                 limit {formatTokens(data.limit)}
@@ -181,29 +241,32 @@ export function ContextTimeline({ sessionId }: { sessionId: string }) {
             </>
           )}
 
-          {/* compaction markers, annotated with their drop */}
-          {data.compactions.map((c, i) => {
-            if (!c.ts) return null;
-            const x = xFor(c.ts);
-            return (
-              <g key={`compaction-${i}`}>
-                <line
-                  x1={x}
-                  x2={x}
-                  y1={PAD.top}
-                  y2={VIEW_HEIGHT - PAD.bottom}
-                  className="stroke-destructive"
-                  strokeDasharray="2 3"
-                  strokeOpacity={0.7}
-                />
-                <text x={x} y={PAD.top - 5} textAnchor="middle" className="fill-destructive text-[9px]">
-                  {c.pre_tokens !== null && c.post_tokens !== null
-                    ? `${formatTokens(c.pre_tokens)} → ${formatTokens(c.post_tokens)}`
-                    : (c.trigger ?? "compaction")}
-                </text>
-              </g>
-            );
-          })}
+          {/* compaction markers; the biggest drops get a label, all get a hover title */}
+          {compactionMarks.map((m, i) => (
+            <g key={`compaction-${i}`}>
+              <title>{`Compaction (${m.trigger ?? "unknown trigger"}): ${m.text}`}</title>
+              <line
+                x1={m.x}
+                x2={m.x}
+                y1={PAD.top}
+                y2={VIEW_HEIGHT - PAD.bottom}
+                className="stroke-destructive"
+                strokeDasharray="2 3"
+                strokeOpacity={0.7}
+              />
+            </g>
+          ))}
+          {compactionLabels.map((l, i) => (
+            <text
+              key={`compaction-label-${i}`}
+              x={l.x}
+              y={PAD.top - 5}
+              textAnchor={l.anchor}
+              className="fill-destructive text-[9px]"
+            >
+              {l.text}
+            </text>
+          ))}
 
           {/* the context-token line */}
           <path d={pathD} fill="none" className="stroke-chart-1" strokeWidth={1.5} />

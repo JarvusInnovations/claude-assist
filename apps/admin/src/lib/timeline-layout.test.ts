@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { buildTimelineLayout, timeToX, isGapBlock, isSegmentBlock, dayBoundaryIndices } from './timeline-layout';
+import { buildTimelineLayout, timeToX, isGapBlock, isSegmentBlock, dayBoundaryIndices, placeLabels } from './timeline-layout';
 
 describe('buildTimelineLayout', () => {
   it('returns nothing for no segments or a zero-width plot', () => {
@@ -136,5 +136,41 @@ describe('dayBoundaryIndices', () => {
 
   it('returns an empty array for no timestamps', () => {
     expect(dayBoundaryIndices([])).toEqual([]);
+  });
+});
+
+describe('placeLabels', () => {
+  const bounds = { min: 0, max: 1000 };
+
+  it('keeps higher-priority labels and drops ones that would overlap them', () => {
+    const placed = placeLabels(
+      [
+        { x: 100, text: '⋯ 1h', priority: 2 },
+        { x: 104, text: 'Sep 21', priority: 0 },
+        { x: 400, text: '⋯ 2d', priority: 1 },
+      ],
+      bounds
+    );
+    expect(placed.map((l) => l.text)).toEqual(['Sep 21', '⋯ 2d']);
+  });
+
+  it('never returns overlapping labels, however dense the candidates', () => {
+    const candidates = Array.from({ length: 200 }, (_, i) => ({ x: i * 5, text: '⋯ 1h', priority: 1 }));
+    const placed = placeLabels(candidates, bounds);
+    for (let i = 1; i < placed.length; i++) {
+      expect(placed[i]!.x - placed[i - 1]!.x).toBeGreaterThanOrEqual('⋯ 1h'.length * 5 + 6);
+    }
+    expect(placed.length).toBeGreaterThan(10);
+  });
+
+  it('anchors labels at the edges so they stay inside the bounds', () => {
+    const placed = placeLabels(
+      [
+        { x: 2, text: 'Jul 10', priority: 0 },
+        { x: 998, text: '⋯ 2h', priority: 1 },
+      ],
+      bounds
+    );
+    expect(placed.map((l) => l.anchor)).toEqual(['start', 'end']);
   });
 });
