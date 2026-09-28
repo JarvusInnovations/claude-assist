@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'bun:test';
-import { buildTimelineLayout, timeToX, isGapBlock, isSegmentBlock, dayBoundaryIndices, placeLabels } from './timeline-layout';
+import {
+  buildTimelineLayout,
+  timeToX,
+  isGapBlock,
+  isSegmentBlock,
+  dayBoundaryIndices,
+  placeLabels,
+  gapWeightMs,
+  gapShade,
+  calendarX,
+  calendarTicks,
+} from './timeline-layout';
 
 describe('buildTimelineLayout', () => {
   it('returns nothing for no segments or a zero-width plot', () => {
@@ -35,24 +46,27 @@ describe('buildTimelineLayout', () => {
     expect(blocks[1]!.x1).toBeCloseTo(blocks[2]!.x0, 5);
   });
 
-  it('every gap gets the same fixed width regardless of real duration', () => {
-    const blocks9h = buildTimelineLayout(
+  it('a longer gap gets a wider break, growing logarithmically rather than proportionally', () => {
+    const H = 3_600_000;
+    const blocks = buildTimelineLayout(
       [
         { start: 0, end: 60_000, gapBeforeMs: null },
-        { start: 9 * 3_600_000, end: 9 * 3_600_000 + 60_000, gapBeforeMs: 9 * 3_600_000 },
+        { start: 1 * H, end: 1 * H + 60_000, gapBeforeMs: 1 * H },
+        { start: 600 * H, end: 600 * H + 60_000, gapBeforeMs: 504 * H },
       ],
       1000
     );
-    const blocksBig = buildTimelineLayout(
-      [
-        { start: 0, end: 60_000, gapBeforeMs: null },
-        { start: 200 * 3_600_000, end: 200 * 3_600_000 + 60_000, gapBeforeMs: 200 * 3_600_000 },
-      ],
-      1000
-    );
-    const gap9h = blocks9h.find(isGapBlock)!;
-    const gapBig = blocksBig.find(isGapBlock)!;
-    expect(gap9h.x1 - gap9h.x0).toBeCloseTo(gapBig.x1 - gapBig.x0, 5);
+    const [hourGap, threeWeekGap] = blocks.filter(isGapBlock).map((g) => g.x1 - g.x0);
+    expect(threeWeekGap!).toBeGreaterThan(hourGap! * 2);
+    // Three weeks is ~500x an hour, but the break is nowhere near 500x wider.
+    expect(threeWeekGap!).toBeLessThan(hourGap! * 10);
+  });
+
+  it('gapWeightMs is monotonic and floors at the 30-minute collapse threshold', () => {
+    const M = 60_000;
+    expect(gapWeightMs(10 * M)).toBe(gapWeightMs(30 * M));
+    expect(gapWeightMs(2 * 60 * M)).toBeGreaterThan(gapWeightMs(60 * M));
+    expect(gapWeightMs(7 * 24 * 60 * M)).toBeGreaterThan(gapWeightMs(24 * 60 * M));
   });
 
   it('a very short segment is floored to a minimum visible width, not squeezed to zero', () => {
@@ -172,5 +186,36 @@ describe('placeLabels', () => {
       bounds
     );
     expect(placed.map((l) => l.anchor)).toEqual(['start', 'end']);
+  });
+});
+
+describe('gapShade', () => {
+  const H = 3_600_000;
+  it('steps at 3h, 1d and 1w', () => {
+    expect(gapShade(2.9 * H)).toBe(0);
+    expect(gapShade(3 * H)).toBe(1);
+    expect(gapShade(23.9 * H)).toBe(1);
+    expect(gapShade(24 * H)).toBe(2);
+    expect(gapShade(7 * 24 * H - 1)).toBe(2);
+    expect(gapShade(7 * 24 * H)).toBe(3);
+  });
+});
+
+describe('calendar scale', () => {
+  const D = 24 * 3_600_000;
+  it('maps the ends of the span to the plot edges', () => {
+    expect(calendarX(1000, 2000, 500, 1000)).toBe(0);
+    expect(calendarX(1000, 2000, 500, 2000)).toBe(500);
+    expect(calendarX(1000, 2000, 500, 1500)).toBe(250);
+    expect(calendarX(1000, 1000, 500, 1000)).toBe(0);
+  });
+
+  it('steps ticks by 6h, a day or a week to fit the span, all inside it', () => {
+    const t0 = new Date(2026, 0, 1, 9).getTime();
+    expect(calendarTicks(t0, t0 + 2 * D).stepMs).toBe(6 * 3_600_000);
+    expect(calendarTicks(t0, t0 + 10 * D).stepMs).toBe(D);
+    const weeks = calendarTicks(t0, t0 + 30 * D);
+    expect(weeks.stepMs).toBe(7 * D);
+    expect(weeks.times.every((t) => t >= t0 && t <= t0 + 30 * D)).toBe(true);
   });
 });
