@@ -8,7 +8,8 @@ export const DETAILS_HELP = `sessions-axi details <session-id> [--raw] [--json]
   Session metadata (tokens, tools, files, models). --raw includes the parsed
   raw message array (large); --json returns the raw API object.
   A windowed session (specs/behaviors/session-outlines.md) also shows its
-  per-window summaries.`;
+  per-window summaries, and — once it's grown enough windows — the chapter
+  rollups summarizing groups of them.`;
 
 const SCHEMA: FieldDef[] = [
   field("id"),
@@ -38,6 +39,14 @@ const WINDOW_SCHEMA: FieldDef[] = [
   truncate("summary", 200),
 ];
 
+const ROLLUP_SCHEMA: FieldDef[] = [
+  field("level"),
+  field("rollup_index", "chapter"),
+  custom("range", (r) => `${r.from_seq}-${r.to_seq}`),
+  field("status"),
+  truncate("summary", 200),
+];
+
 export async function detailsCommand(args: string[]): Promise<string> {
   const { positionals, flags } = parseArgs(args, ["json", "raw"]);
   const id = requirePositional(positionals, 0, "session id", DETAILS_HELP);
@@ -51,6 +60,9 @@ export async function detailsCommand(args: string[]): Promise<string> {
   const blocks = [renderDetail("session", session, SCHEMA)];
   if (Array.isArray(session.outline_windows) && session.outline_windows.length > 0) {
     blocks.push(renderList("outline_windows", session.outline_windows, WINDOW_SCHEMA));
+  }
+  if (Array.isArray(session.outline_rollups) && session.outline_rollups.length > 0) {
+    blocks.push(renderList("outline_rollups", session.outline_rollups, ROLLUP_SCHEMA));
   }
   blocks.push(renderHelp([`Run \`${cli} transcript ${id}\` to read the conversation`]));
   return renderOutput(blocks);

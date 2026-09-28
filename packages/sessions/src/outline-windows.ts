@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type postgres from 'postgres';
 import type { TranscriptMessage } from './types.js';
+import type { ComposeInput } from './outline-rollups.js';
 
 /**
  * Rolling window outlines for long-running sessions.
@@ -32,6 +33,15 @@ export interface OutlineWindowConfig {
   sweepCap: number;
   /** A window's summarization stops being retried automatically past this many failures. */
   maxAttempts: number;
+  /**
+   * Rollup fan-in (specs/behaviors/session-outlines.md's "Rollups" section):
+   * each run of this many consecutive closed, resolved windows (or, one
+   * level up, level-(n-1) rollups) becomes one rollup. Grouped here with the
+   * other window settings rather than a separate config object — a rollup's
+   * summarization shares this service's per-sweep budget and attempt cap, so
+   * there's no independent knob to add beyond the fan-in itself.
+   */
+  rollupFanin: number;
 }
 
 /**
@@ -56,6 +66,10 @@ export interface OutlineWindowConfig {
  *   spreading even a large pre-existing archive over days instead of bursting
  *   the model budget in one cycle.
  * - `maxAttempts` (5) mirrors `OutlineService.MAX_OUTLINE_ATTEMPTS`.
+ * - `rollupFanin` (40) keeps a rollup's own prompt small (40 window/rollup
+ *   summaries is comfortably inside the extract-tier prompt budget) while
+ *   still collapsing a large session fast: 40^2 = 1,600 windows compose from
+ *   a level-2 tree of at most ~40 top-level items.
  */
 export const DEFAULT_OUTLINE_WINDOW_CONFIG: OutlineWindowConfig = {
   thresholdMessages: 400,
@@ -65,6 +79,7 @@ export const DEFAULT_OUTLINE_WINDOW_CONFIG: OutlineWindowConfig = {
   maxSpanMs: 6 * 60 * 60 * 1000,
   sweepCap: 20,
   maxAttempts: 5,
+  rollupFanin: 40,
 };
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -179,43 +194,58 @@ export interface SummarizedWindowForCompose {
 }
 
 /**
- * A stable signature over a session's currently-summarized windows. The
- * composed outline is only regenerated when this changes — a new window
- * closed, or the tail's summary changed — never on every sweep just because
- * the transcript grew. `sessions.sessions.outline_windows_hash` holds the
- * signature that produced the outline currently stored.
+ * A stable signature over a session's current compose inputs — top-level
+ * rollups, ungrouped lower-level rollups, and loose windows (see
+ * `buildComposeInputs` in outline-rollups.ts). The composed outline is only
+ * regenerated when this changes — a new window closed, a rollup formed, or
+ * the tail's summary changed — never on every sweep just because the
+ * transcript grew. `sessions.sessions.outline_windows_hash` holds the
+ * signature that produced the outline currently stored (the column name
+ * predates rollups; its semantics — "what compose was last run against" —
+ * are unchanged).
  */
-export function windowsSignature(windows: ReadonlyArray<SummarizedWindowForCompose>): string {
-  const material = windows
-    .map((w) => `${w.windowIndex}:${w.closed ? 'c' : 'o'}:${w.summary}`)
+export function windowsSignature(inputs: ReadonlyArray<ComposeInput>): string {
+  const material = inputs
+    .map((i) =>
+      i.kind === 'window' ? `w:${i.index}:${i.closed ? 'c' : 'o'}:${i.summary}` : `r:${i.level}:${i.index}:${i.summary}`
+    )
     .join('\u0001');
   return createHash('md5').update(material).digest('hex');
 }
 
-/** Build the "summary of summaries" prompt composing the session outline from window summaries. */
+/**
+ * Build the "summary of summaries" prompt composing the session outline from
+ * compose inputs — a mix of window summaries and, once the session is large
+ * enough, chapter (rollup) summaries standing in for many windows at once.
+ */
 export function buildComposePrompt(
   projectPath: string | null,
   gitBranch: string | null,
-  windows: ReadonlyArray<SummarizedWindowForCompose>
+  inputs: ReadonlyArray<ComposeInput>
 ): string {
-  const sections = windows
-    .map((w) => {
-      const span = w.fromTs && w.toTs ? `${w.fromTs} → ${w.toTs}` : 'unknown time span';
-      const state = w.closed ? '' : ' (in progress)';
-      return `<window index="${w.windowIndex}" span="${span}"${state}>\n${w.summary}\n</window>`;
+  const sections = inputs
+    .map((i) => {
+      const span = i.fromTs && i.toTs ? `${i.fromTs} → ${i.toTs}` : 'unknown time span';
+      if (i.kind === 'window') {
+        const state = i.closed ? '' : ' (in progress)';
+        return `<window index="${i.index}" span="${span}"${state}>\n${i.summary}\n</window>`;
+      }
+      return `<chapter level="${i.level}" index="${i.index}" span="${span}">\n${i.summary}\n</chapter>`;
     })
     .join('\n\n');
 
   return `Compose a single outline for this long-running Claude Code session from its
-chronological window summaries below. Each window already summarizes a
-contiguous slice of the session; synthesize them into one coherent account
-of the whole session so far — do not just concatenate them.
+chronological summaries below. Most are window summaries, each covering a
+contiguous slice of the session; a session large enough to need it also has
+chapter summaries, each already synthesizing many windows (or smaller
+chapters) into one account of a wider span. Synthesize all of them into one
+coherent account of the whole session so far — do not just concatenate them.
 
 SESSION:
 - Project: ${projectPath ?? 'unknown'}
 - Branch: ${gitBranch ?? 'unknown'}
 
-WINDOW SUMMARIES (chronological):
+SUMMARIES (chronological):
 ${sections}
 
 Respond with exactly this format:

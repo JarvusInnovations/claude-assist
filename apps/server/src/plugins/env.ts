@@ -87,6 +87,9 @@ const schema = {
     SESSIONS_OUTLINE_WINDOW_MAX_SPAN_MS: { type: 'number', default: 21_600_000 }, // 6 hours
     SESSIONS_OUTLINE_WINDOW_SWEEP_CAP: { type: 'number', default: 20 },
     SESSIONS_OUTLINE_WINDOW_MAX_ATTEMPTS: { type: 'number', default: 5 },
+    // Rollups (specs/behaviors/session-outlines.md's "Rollups" section): the
+    // fan-in that bounds the compose call's input for any session length.
+    SESSIONS_OUTLINE_ROLLUP_FANIN: { type: 'number', default: 40 },
 
     // The one metered credential. Read by the invoker module and nothing else:
     // every module that needs a model reaches it through `fastify.invoker`, so
@@ -512,6 +515,7 @@ declare module 'fastify' {
       SESSIONS_OUTLINE_WINDOW_MAX_SPAN_MS: number;
       SESSIONS_OUTLINE_WINDOW_SWEEP_CAP: number;
       SESSIONS_OUTLINE_WINDOW_MAX_ATTEMPTS: number;
+      SESSIONS_OUTLINE_ROLLUP_FANIN: number;
 
       // AI Features
       ANTHROPIC_API_KEY?: string;

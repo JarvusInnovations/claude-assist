@@ -59,6 +59,7 @@ export default createPlugin('sessions', async (fastify, options) => {
         maxSpanMs: config.outlineWindowMaxSpanMs,
         sweepCap: config.outlineWindowSweepCap,
         maxAttempts: config.outlineWindowMaxAttempts,
+        rollupFanin: config.outlineRollupFanin,
       },
     });
     fastify.log.info('Outline service enabled');

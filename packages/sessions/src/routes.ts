@@ -581,6 +581,42 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       summarized_at: w.summarized_at,
     }));
 
+    // Additive: chapter rollups for a windowed session (specs/behaviors/
+    // session-outlines.md's "Rollups" section) — `[]` for a session that
+    // hasn't grown enough windows to form one yet. Ordered by level then
+    // index, same as OutlineRollupStore.listRollups.
+    const rollups = await fastify.sql<
+      {
+        level: number;
+        rollup_index: number;
+        from_seq: number;
+        to_seq: number;
+        from_ts: string | null;
+        to_ts: string | null;
+        status: string;
+        summary: string | null;
+        model: string | null;
+        summarized_at: string | null;
+      }[]
+    >`
+      SELECT level, rollup_index, from_seq, to_seq, from_ts, to_ts, status, summary, model, summarized_at
+      FROM sessions.outline_rollups
+      WHERE session_id = ${id}::uuid
+      ORDER BY level ASC, rollup_index ASC
+    `;
+    result.outline_rollups = rollups.map((r) => ({
+      level: r.level,
+      rollup_index: r.rollup_index,
+      from_seq: r.from_seq,
+      to_seq: r.to_seq,
+      from_ts: r.from_ts,
+      to_ts: r.to_ts,
+      status: r.status,
+      summary: r.summary,
+      model: r.model,
+      summarized_at: r.summarized_at,
+    }));
+
     return result;
   });
 

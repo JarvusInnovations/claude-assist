@@ -178,14 +178,16 @@ anything changed."
 ## Composition: summary of summaries
 
 The session outline (`sessions.sessions.outline`/`title`) for a windowed
-session is composed from all of its window summaries in chronological order
+session is composed from its **top-level summaries** (see Rollups below) in
+chronological order
 (`buildComposePrompt`), one model call (`sessions.outline.compose` task,
 `extract` tier — composing already-extracted summaries is still extractive
 work, not the `synthesize` tier's once-per-batch narrative judgment).
 
 Composition is **not** re-run every sweep just because the transcript grew.
-`windowsSignature` hashes the ordered set of `(window_index, closed, summary)`
-tuples; the outline is recomposed only when this signature differs from
+`windowsSignature` hashes the ordered set of compose inputs (each rollup's
+`(level, index, summary)` and each loose window's `(window_index, closed,
+summary)`); the outline is recomposed only when this signature differs from
 `sessions.sessions.outline_windows_hash`, which is stamped after a successful
 compose. A sweep where no window closed and the tail's summary didn't change
 recomputes the signature (cheap — no model call) and finds it unchanged.
@@ -205,6 +207,45 @@ summarized. If the sweep cap left windows pending, `outline_hash` is left
 alone so the session stays selected by the existing pending-outline query
 (`WHERE outline_hash IS DISTINCT FROM transcript_hash`) and its backfill
 continues on the next sweep.
+
+## Rollups: bounded composition for any session length
+
+Composing every window summary in one call does not scale: a multi-week
+session reaches hundreds of windows, and the combined summaries exceed the
+model's input. Summaries therefore form a hierarchy with fan-in
+`SESSIONS_OUTLINE_ROLLUP_FANIN` (default 40):
+
+- **Level 1, chapters.** Each run of `fanin` consecutive **closed, summarized**
+  windows (window indexes `[k·fanin, (k+1)·fanin)`) is summarized once into a
+  chapter. A chapter covers exactly those windows, so its message range and time
+  span are theirs.
+- **Level n.** Each run of `fanin` consecutive closed level-(n−1) rollups is
+  summarized once into a level-n rollup, the same way. Levels appear only as
+  needed; each level divides the count by `fanin`.
+- **Rollups are immutable** once summarized, exactly like closed windows: they
+  are claimed under the same lease/attempt rules, summarized at most once, and
+  count against the same per-sweep summarization budget. A failed rollup
+  retries up to the same attempt cap.
+- **Compose inputs** are, in chronological order: the highest-level rollups,
+  then at each lower level the rollups not yet grouped into a higher one, then
+  the windows not yet in a chapter (the current chapter's closed windows and
+  the open tail). At most about `fanin` items per level therefore reach the
+  compose call, whatever the session's length.
+- **Compose waits for rollups.** While any rollup is pending or being
+  summarized, the session is not recomposed; the previous outline stays until
+  every rollup is resolved. A rollup replaces its children in the compose input
+  as soon as it exists, so composing earlier would drop their content.
+- **A rollup is only built from resolved children.** A group containing a
+  window or rollup that is `failed` is still rolled up, from the summaries that
+  exist, noting the gap. A group still `pending` or `summarizing` waits.
+- **A backstop char budget on the compose call itself.** Fan-in already bounds
+  the compose input's *item count*; if the composed text still exceeds a char
+  budget regardless (unusually long individual summaries), the oldest inputs
+  are trimmed until it fits, and a warning is logged — never a crash.
+
+Rollup prompts say which level they summarize and ask for a chronological
+account of that span. They use the `sessions.outline.rollup` task at the
+`extract` tier.
 
 ## Principles
 
