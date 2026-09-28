@@ -37,6 +37,9 @@ describe('contextWindowFor', () => {
   test('resolves current models', () => {
     expect(contextWindowFor('claude-opus-5')).toBe(1_000_000);
     expect(contextWindowFor('claude-fable-5')).toBe(1_000_000);
+    // Point releases are distinct ids, not date snapshots to strip.
+    expect(contextWindowFor('claude-fable-5-1')).toBe(1_000_000);
+    expect(contextWindowFor('claude-opus-5-5')).toBe(1_000_000);
     expect(contextWindowFor('claude-sonnet-4-6')).toBe(1_000_000);
   });
 
