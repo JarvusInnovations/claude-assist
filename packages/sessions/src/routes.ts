@@ -17,6 +17,7 @@ import type { ClassificationService } from './classification/service.js';
 import type { SynthesisService } from './classification/synthesis.js';
 import { lastWeekPeriod, type Period } from './classification/synthesis.js';
 import type { ClassificationStore } from './classification/store.js';
+import { computeTimelineSegments, downsampleReadings } from './timeline.js';
 
 /**
  * Parse model_tokens JSONB field, ensuring all nested values are integers.
@@ -638,6 +639,73 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
 
     reply.type('text/plain');
     return transcript;
+  });
+
+  // GET /sessions/:id/context-timeline — specs/behaviors/session-context-window.md's
+  // "Timeline" section: active-time-axis segments, downsampled readings
+  // (bucket max + last, ≤ ~600), every compaction, and the limit.
+  fastify.get<{ Params: { id: string } }>('/sessions/:id/context-timeline', async (request, reply) => {
+    const { id } = request.params;
+    if (!UUID_RE.test(id)) {
+      return reply.status(400).send({ error: 'Invalid session id' });
+    }
+
+    const [session] = await fastify.sql<{ context_limit_tokens: number | null }[]>`
+      SELECT context_limit_tokens FROM sessions.sessions WHERE id = ${id}::uuid
+    `;
+    if (!session) {
+      reply.status(404);
+      return { error: 'Session not found' };
+    }
+
+    // context_events rows are small, derived, per-call metadata — bounded by
+    // how many main-chain API calls the session made, not by transcript
+    // size. Measured against the largest real session (508 MB transcript,
+    // ~134K transcript messages, ~18.5K tool calls): its reading count is on
+    // the order of tens of thousands, not millions, so one query here costs
+    // a few hundred KB, nothing like loading transcript content
+    // (specs/behaviors/session-transcript-storage.md's "readers take
+    // ranges" governs the transcript archive itself, which this endpoint
+    // never touches).
+    const rows = await fastify.sql<
+      {
+        kind: 'reading' | 'compaction';
+        ts: string | null;
+        tokens: number | null;
+        trigger: string | null;
+        pre_tokens: number | null;
+        post_tokens: number | null;
+      }[]
+    >`
+      SELECT kind, ts, tokens, trigger, pre_tokens, post_tokens
+      FROM sessions.context_events
+      WHERE session_id = ${id}::uuid
+      ORDER BY ts ASC NULLS FIRST, seq ASC
+    `;
+
+    const allTimestamps = rows.filter((r) => r.ts !== null).map((r) => new Date(r.ts!));
+    const segments = computeTimelineSegments(allTimestamps);
+
+    const readings = rows
+      .filter((r) => r.kind === 'reading' && r.ts !== null && r.tokens !== null)
+      .map((r) => ({ ts: new Date(r.ts!), tokens: r.tokens! }));
+    const downsampled = downsampleReadings(readings);
+
+    const compactions = rows
+      .filter((r) => r.kind === 'compaction')
+      .map((r) => ({
+        ts: r.ts,
+        trigger: r.trigger,
+        pre_tokens: r.pre_tokens,
+        post_tokens: r.post_tokens,
+      }));
+
+    return {
+      limit: session.context_limit_tokens ?? null,
+      segments: segments.map((s) => ({ start: s.start, end: s.end, gap_before_ms: s.gapBeforeMs })),
+      readings: downsampled.map((r) => ({ ts: r.ts.toISOString(), tokens: r.tokens })),
+      compactions,
+    };
   });
 
   // GET /sessions/:id/find - Search within one transcript, windowed matches (#48)
