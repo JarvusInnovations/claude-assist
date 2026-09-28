@@ -110,6 +110,16 @@ compaction is a vertical marker annotated with its drop (`968K → 21K`, auto or
 manual). Hovering a point shows its time and token count. A session with fewer
 than two readings shows no chart.
 
+**Labels never overlap.** Axis and compaction labels that would collide are
+dropped rather than drawn on top of each other, in priority order: a gap of a
+day or more merged with the day it ends on (`⋯ 23d · Aug 3`), then day
+boundaries, then gaps by length. Crowded compactions label the biggest drops;
+every marker keeps a hover title. The y-axis shows 0, half and the maximum.
+
+**Unknown stays unknown.** Some older transcripts record a compaction's
+`preTokens` but not `postTokens` or `trigger`. Those are stored as null and
+shown as `?`, never as 0 or a default trigger.
+
 ## Principles
 
 **Local** — measure what the number will be used for. Two readings exist
