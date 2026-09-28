@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import { useParams, Link } from "react-router";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { ArrowLeft, Sparkles, FileText, Clock, Hash, Activity } from "lucide-react";
@@ -14,6 +15,15 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { sessionsApi } from "@/api/sessions";
 
 import { TranscriptViewer } from "@/components/TranscriptViewer";
+import { JumpToLatest } from "@/components/JumpToLatest";
+
+// Tabs live in the URL hash so a reload stays put (specs/behaviors/session-detail-page.md).
+const TABS = ["outline", "transcript", "tools", "files"] as const;
+type Tab = (typeof TABS)[number];
+const tabFromHash = (): Tab => {
+  const hash = window.location.hash.slice(1);
+  return (TABS as readonly string[]).includes(hash) ? (hash as Tab) : "outline";
+};
 
 const contextTone = (fraction: number) =>
   fraction >= 0.85
@@ -26,6 +36,20 @@ const contextTone = (fraction: number) =>
 export function SessionDetailPage() {
   const { id } = useParams();
   const sessionId = id!;
+  const [tab, setTab] = useState<Tab>(tabFromHash);
+  const transcriptEnd = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const onHashChange = () => setTab(tabFromHash());
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+
+  const selectTab = (value: string) => {
+    const next = (TABS as readonly string[]).includes(value) ? (value as Tab) : "outline";
+    setTab(next);
+    window.history.replaceState(null, "", `#${next}`);
+  };
 
   const { data: session, isLoading, refetch } = useQuery({
     queryKey: ["sessions", sessionId],
@@ -311,7 +335,7 @@ export function SessionDetailPage() {
       {/* Outline & Transcript */}
       <Card>
         <CardContent className="p-0">
-          <Tabs defaultValue="outline">
+          <Tabs value={tab} onValueChange={selectTab}>
             <TabsList className="w-full justify-start rounded-none border-b bg-transparent p-0">
               <TabsTrigger
                 value="outline"
@@ -363,7 +387,13 @@ export function SessionDetailPage() {
 
             <TabsContent value="transcript" className="p-4">
                 {transcript ? (
-                  <TranscriptViewer transcript={transcript} />
+                  <>
+                    <TranscriptViewer transcript={transcript} />
+                    <div ref={transcriptEnd} />
+                    {tab === "transcript" && (
+                      <JumpToLatest target={transcriptEnd} latestAt={session.ended_at} />
+                    )}
+                  </>
                 ) : (
                   <p className="text-muted-foreground">Loading transcript...</p>
                 )}

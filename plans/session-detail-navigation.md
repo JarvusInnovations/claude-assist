@@ -1,9 +1,10 @@
 ---
-status: planned
+status: done
 depends: []
 specs:
   - specs/behaviors/session-detail-page.md
 issues: []
+pr: 252
 ---
 
 # Plan: Session detail tab hash and Jump to Latest
@@ -30,7 +31,15 @@ end with `IntersectionObserver`, and scrolls it into view on click.
 
 ## Validation
 
-- [ ] Reloading on each tab stays on that tab; an unknown hash opens Outline
-- [ ] The button shows only while the end is out of view, jumps to the end, and
+- [x] Reloading on each tab stays on that tab; an unknown hash opens Outline
+- [x] The button shows only while the end is out of view, jumps to the end, and
   shows `ended_at` as relative plus absolute time
-- [ ] Admin build is clean
+- [x] Admin build is clean
+
+## Notes
+
+Verified in a browser against a live ~500 MB session: hash-driven tabs (reload stays, no history growth, unknown hash falls back to Outline) and the Jump to Latest button (appears when the end is out of view, scrolls to it, then hides). The admin type-check has 3 errors on main, unrelated.
+
+## Follow-ups
+
+None.
