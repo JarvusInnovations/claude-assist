@@ -1,9 +1,10 @@
 ---
-status: in-progress
+status: done
 depends: [session-timeline-time-scale]
 specs:
   - specs/behaviors/session-context-window.md
 issues: []
+pr: 258
 ---
 
 # Plan: Context timeline, two views
@@ -24,3 +25,7 @@ tooltips. A remembered "condensed" or "ruler" maps to Active.
 - [x] Admin build, type-check (no new errors) and layout tests pass
 - [x] Server-rendered check: default and legacy stored values open Active with
   the strip; Calendar unchanged; two buttons; no NaN
+
+## Follow-ups
+
+None.
