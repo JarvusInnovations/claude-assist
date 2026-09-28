@@ -234,6 +234,10 @@ model's input. Summaries therefore form a hierarchy with fan-in
 - **A rollup is only built from resolved children.** A group containing a
   window or rollup that is `failed` is still rolled up, from the summaries that
   exist, noting the gap. A group still `pending` or `summarizing` waits.
+- **A backstop char budget on the compose call itself.** Fan-in already bounds
+  the compose input's *item count*; if the composed text still exceeds a char
+  budget regardless (unusually long individual summaries), the oldest inputs
+  are trimmed until it fits, and a warning is logged — never a crash.
 
 Rollup prompts say which level they summarize and ask for a chronological
 account of that span. They use the `sessions.outline.rollup` task at the
