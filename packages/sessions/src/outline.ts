@@ -725,7 +725,14 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
 
     let generated: { title: string | null; outline: string } | null = null;
     let newWindowsHash: string | null = null;
-    if (composeInputs.length > 0) {
+    // A rollup row replaces its children in the compose input as soon as it
+    // exists, so composing while any rollup is still unsummarized would drop
+    // those children's content from the outline (and overwrite a good one).
+    // Keep the previous outline until every rollup is resolved.
+    const rollupPending = [...rollupsByLevel.values()]
+      .flat()
+      .some((r) => r.status === 'pending' || r.status === 'summarizing');
+    if (composeInputs.length > 0 && !rollupPending) {
       const sig = windowsSignature(composeInputs);
       if (sig !== session.outline_windows_hash) {
         const { inputs: cappedInputs, trimmed } = capComposeInputs(composeInputs, OutlineService.COMPOSE_PROMPT_CHAR_BUDGET);

@@ -756,6 +756,30 @@ describe('OutlineService — rollups', () => {
     expect(callsByTask).toEqual(callsBefore);
   });
 
+  it('does not compose while any rollup is still pending, so an outline never loses the content of unsummarized chapters', async () => {
+    // 8 windows, fanin 4 -> 2 chapters. sweepCap 9 = all 8 windows + only 1
+    // chapter in the first sweep, leaving the second chapter pending.
+    const sessions = [baseSession({ message_count: 800, content: bigTranscript(800) })];
+    const windows: FakeWindow[] = [];
+    const rollups: FakeRollup[] = [];
+    const { invoker, callsByTask } = makeFakeInvoker();
+    const svc = new OutlineService(makeFakeDb(sessions, windows, undefined, rollups), makeLogger(), {
+      invoker,
+      windowConfig: { thresholdMessages: 400, maxMessages: 100, sweepCap: 9, rollupFanin: 4 },
+    });
+    const outlineBefore = sessions[0]!.outline;
+
+    await svc.generateOutlinesSync();
+    expect(rollups).toHaveLength(2);
+    expect(rollups.filter((r) => r.status === 'summarized')).toHaveLength(1);
+    expect(callsByTask['sessions.outline.compose'] ?? 0).toBe(0);
+    expect(sessions[0]!.outline).toBe(outlineBefore);
+
+    await svc.generateOutlinesSync();
+    expect(rollups.every((r) => r.status === 'summarized')).toBe(true);
+    expect(callsByTask['sessions.outline.compose']).toBe(1);
+  });
+
   it('a level-1 chapter stands in for its windows in the compose call once summarized', async () => {
     const sessions = [baseSession({ message_count: 800, content: bigTranscript(800) })];
     const windows: FakeWindow[] = [];

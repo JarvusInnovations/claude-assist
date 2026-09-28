@@ -231,6 +231,10 @@ model's input. Summaries therefore form a hierarchy with fan-in
   the windows not yet in a chapter (the current chapter's closed windows and
   the open tail). At most about `fanin` items per level therefore reach the
   compose call, whatever the session's length.
+- **Compose waits for rollups.** While any rollup is pending or being
+  summarized, the session is not recomposed; the previous outline stays until
+  every rollup is resolved. A rollup replaces its children in the compose input
+  as soon as it exists, so composing earlier would drop their content.
 - **A rollup is only built from resolved children.** A group containing a
   window or rollup that is `failed` is still rolled up, from the summaries that
   exist, noting the gap. A group still `pending` or `summarizing` waits.
