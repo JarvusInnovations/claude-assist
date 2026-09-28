@@ -74,6 +74,42 @@ null reading or null limit show no bar.
 and the model the limit came from. When peak exceeds final, the gap is what
 compaction reclaimed.
 
+## Timeline
+
+Beyond the two summary readings, every archived session records its **context
+timeline**: one reading per main-chain API call (same definition and
+`isFirstInChain` rule as above, with the call's timestamp) plus one event per
+**compaction**, the transcript's `system` / `compact_boundary` records, carrying
+timestamp, trigger (`auto` / `manual`), `preTokens` and `postTokens`.
+
+- **Recorded at ingest, append-only.** The incremental parser emits readings
+  and compactions for the lines it feeds, and ingest appends them in the same
+  transaction as the chunks. A cycle never recomputes earlier points.
+- **Existing sessions are backfilled** by a background task that feeds each
+  session's chunks through the incremental parser one chunk at a time (bounded
+  memory), with a per-run byte budget, marking a session done when its
+  timeline covers `ingested_bytes`.
+- **Served downsampled.** `GET /sessions/:id/context-timeline` returns at most
+  ~600 reading points plus every compaction event. Downsampling buckets along
+  the active-time axis (below) and keeps each bucket's **maximum** and its
+  **last** reading, so peaks and post-compaction drops survive. It also returns
+  the context limit (null when unknown) and the axis segments.
+
+**The axis is active time.** Sessions range from one dense day to weeks of
+bursts separated by long idles, and neither calendar time nor message count
+serves both. The x-axis is real time, except that any gap between consecutive
+events longer than 30 minutes collapses to a fixed-width break labeled with
+its duration (`⋯ 9h`, `⋯ 2d`). Day boundaries are marked with a date label. A
+continuous one-day session therefore reads as an ordinary time axis, and a
+multi-week session shows its active bursts side by side.
+
+**Chart.** On session detail, below the Context Window card and spanning the
+page width: a line of context tokens over the active-time axis. The limit is
+drawn as a horizontal ceiling line, but only when known (see Principles). Each
+compaction is a vertical marker annotated with its drop (`968K → 21K`, auto or
+manual). Hovering a point shows its time and token count. A session with fewer
+than two readings shows no chart.
+
 ## Principles
 
 **Local** — measure what the number will be used for. Two readings exist
