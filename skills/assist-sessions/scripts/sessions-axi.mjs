@@ -1280,7 +1280,8 @@ var DETAILS_HELP = `sessions-axi details <session-id> [--raw] [--json]
   Session metadata (tokens, tools, files, models). --raw includes the parsed
   raw message array (large); --json returns the raw API object.
   A windowed session (specs/behaviors/session-outlines.md) also shows its
-  per-window summaries.`;
+  per-window summaries, and \u2014 once it's grown enough windows \u2014 the chapter
+  rollups summarizing groups of them.`;
 var SCHEMA2 = [
   field("id"),
   field("machine"),
@@ -1307,6 +1308,13 @@ var WINDOW_SCHEMA = [
   field("status"),
   truncate("summary", 200)
 ];
+var ROLLUP_SCHEMA = [
+  field("level"),
+  field("rollup_index", "chapter"),
+  custom("range", (r) => `${r.from_seq}-${r.to_seq}`),
+  field("status"),
+  truncate("summary", 200)
+];
 async function detailsCommand(args) {
   const { positionals, flags } = parseArgs(args, ["json", "raw"]);
   const id = requirePositional(positionals, 0, "session id", DETAILS_HELP);
@@ -1318,6 +1326,9 @@ async function detailsCommand(args) {
   const blocks = [renderDetail("session", session, SCHEMA2)];
   if (Array.isArray(session.outline_windows) && session.outline_windows.length > 0) {
     blocks.push(renderList("outline_windows", session.outline_windows, WINDOW_SCHEMA));
+  }
+  if (Array.isArray(session.outline_rollups) && session.outline_rollups.length > 0) {
+    blocks.push(renderList("outline_rollups", session.outline_rollups, ROLLUP_SCHEMA));
   }
   blocks.push(renderHelp([`Run \`${cli} transcript ${id}\` to read the conversation`]));
   return renderOutput2(blocks);
@@ -1452,7 +1463,7 @@ async function shareCommand(args) {
 }
 
 // packages/sessions/src/axi/cli.ts
-var VERSION = true ? "2a1a5a4" : "dev";
+var VERSION = true ? "1e02946" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [command] [args] [flags]
        ${CLI}                 # no args \u2192 home (recent activity + next steps)
