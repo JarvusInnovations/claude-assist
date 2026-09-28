@@ -109,17 +109,17 @@ shading darkens in four steps (under 3h, 3h–1d, 1d–1w, over a week), and
 labels for gaps of a day or more are bold. Day boundaries are marked with a
 date label.
 
-**Three views.** A switch on the chart selects the view, remembered per viewer
+**Two views.** A switch on the chart selects the view, remembered per viewer
 in the browser:
 
-- **Condensed** (default): the active-time axis above.
-- **Ruler**: Condensed, plus a thin strip below the chart in true calendar time
-  showing where each active stretch falls, with faint connectors from each
-  stretch on the chart to its place on the strip.
-- **Calendar**: the x-axis is true calendar time. Idle periods between active
-  stretches are shaded, and the line breaks across them rather than drawing a
-  slope through time nobody was working. Axis ticks step by hours, days or
-  weeks to fit the span.
+- **Active time** (default): the active-time axis above, plus a thin strip
+  below the chart in true calendar time showing where each active stretch
+  falls, with faint connectors from each stretch on the chart to its place on
+  the strip.
+- **Calendar time**: the x-axis is true calendar time. Idle periods between
+  active stretches are shaded, and the line breaks across them rather than
+  drawing a slope through time nobody was working. Axis ticks step by hours,
+  days or weeks to fit the span.
 
 **Chart.** On session detail, below the Context Window card and spanning the
 page width: a line of context tokens over the active-time axis. The limit is

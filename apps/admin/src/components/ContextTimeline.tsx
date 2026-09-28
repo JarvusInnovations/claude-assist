@@ -30,20 +30,20 @@ const IDLE_MS = 30 * 60 * 1000;
 const SHADE_OPACITY = [0.06, 0.14, 0.28, 0.45] as const;
 const SHADE_LEGEND = ["under 3h", "3h–1d", "1d–1w", "over 1w"] as const;
 
-type View = "condensed" | "ruler" | "calendar";
-const VIEWS: { id: View; label: string }[] = [
-  { id: "condensed", label: "Condensed" },
-  { id: "ruler", label: "Ruler" },
-  { id: "calendar", label: "Calendar" },
+type View = "active" | "calendar";
+const VIEWS: { id: View; label: string; title: string }[] = [
+  { id: "active", label: "Active", title: "Active time: idle gaps collapsed, with a calendar strip below" },
+  { id: "calendar", label: "Calendar", title: "Calendar time: true time, idle periods included" },
 ];
 const VIEW_KEY = "claude-assist.context-timeline.view";
 
 function loadView(): View {
   try {
     const v = window.localStorage.getItem(VIEW_KEY);
-    return v === "ruler" || v === "calendar" ? v : "condensed";
+    // Earlier "condensed"/"ruler" views are both the Active view now.
+    return v === "calendar" ? "calendar" : "active";
   } catch {
-    return "condensed";
+    return "active";
   }
 }
 
@@ -85,9 +85,9 @@ interface AxisLabel {
 
 /**
  * The context-timeline chart (specs/behaviors/session-context-window.md's
- * "Timeline" section). Three views: Condensed (active-time axis with
- * log-scaled, graded gap breaks), Ruler (Condensed plus a true-time strip),
- * and Calendar (true time, line broken across idles). Inline SVG, no chart
+ * "Timeline" section). Two views: Active time (active-time axis with
+ * log-scaled, graded gap breaks, plus a true-time strip below) and Calendar
+ * time (true time, line broken across idles). Inline SVG, no chart
  * dependency — the geometry lives in `@/lib/timeline-layout` so it's testable
  * without React.
  */
@@ -115,7 +115,7 @@ export function ContextTimeline({ sessionId }: { sessionId: string }) {
   if (!data || data.readings.length < 2) return null;
 
   const calendar = view === "calendar";
-  const viewHeight = CHART_HEIGHT + (view === "ruler" ? RULER_HEIGHT : 0);
+  const viewHeight = CHART_HEIGHT + (calendar ? 0 : RULER_HEIGHT);
   const t0 = Date.parse(data.segments[0]?.start ?? data.readings[0]!.ts);
   const t1 = Date.parse(data.segments.at(-1)?.end ?? data.readings.at(-1)!.ts);
 
@@ -132,7 +132,7 @@ export function ContextTimeline({ sessionId }: { sessionId: string }) {
   const yFor = (tokens: number) => PAD.top + (1 - tokens / yMax) * PLOT_HEIGHT;
 
   const points = data.readings.map((r) => ({ x: xFor(r.ts), y: yFor(r.tokens), t: Date.parse(r.ts), reading: r }));
-  // Calendar breaks the line across idle time; the condensed views connect
+  // Calendar breaks the line across idle time; the active view connects
   // through the collapsed breaks.
   const pathD = points
     .map((p, i) => {
@@ -144,7 +144,7 @@ export function ContextTimeline({ sessionId }: { sessionId: string }) {
   const gapBlocks = layout.filter(isGapBlock);
   const bounds = { min: PAD.left, max: VIEW_WIDTH - PAD.right };
 
-  // Axis labels. Condensed/Ruler: day boundaries and gap breaks; a gap of a
+  // Axis labels. Active: day boundaries and gap breaks; a gap of a
   // day or more that ends at a day boundary shares its label ("⋯ 23d · Aug 3")
   // and outranks a plain day label. Calendar: evenly stepped ticks.
   let axisCandidates: AxisLabel[];
@@ -208,18 +208,18 @@ export function ContextTimeline({ sessionId }: { sessionId: string }) {
       }))
     : [];
 
-  // Ruler: each active stretch in true time, below the condensed chart.
+  // Active view's calendar strip: each active stretch in true time, below the chart.
   const rulerTop = CHART_HEIGHT + 6;
   const rulerX = (t: number) => PAD.left + calendarX(t0, t1, PLOT_WIDTH, t);
   const rulerSegments =
-    view === "ruler"
+    !calendar
       ? layout.filter(isSegmentBlock).map((b) => {
           const a = rulerX(b.start);
           return { cx0: PAD.left + b.x0, cx1: PAD.left + b.x1, rx0: a, rx1: Math.max(rulerX(b.end), a + 1) };
         })
       : [];
   const rulerLabels =
-    view === "ruler"
+    !calendar
       ? placeLabels(
           calendarTicks(t0, t1).times.map((t) => ({ x: rulerX(t), text: formatDayLabel(t), priority: 0 })),
           bounds
@@ -261,6 +261,7 @@ export function ContextTimeline({ sessionId }: { sessionId: string }) {
               size="sm"
               variant={view === v.id ? "secondary" : "ghost"}
               aria-pressed={view === v.id}
+              title={v.title}
               onClick={() => selectView(v.id)}
             >
               {v.label}
@@ -278,7 +279,7 @@ export function ContextTimeline({ sessionId }: { sessionId: string }) {
           {/* plot border */}
           <rect x={PAD.left} y={PAD.top} width={PLOT_WIDTH} height={PLOT_HEIGHT} className="fill-none stroke-border" />
 
-          {/* condensed/ruler: collapsed-gap breaks, shaded darker with duration */}
+          {/* active view: collapsed-gap breaks, shaded darker with duration */}
           {!calendar &&
             gapBlocks.map((g, i) => (
               <rect
@@ -389,8 +390,8 @@ export function ContextTimeline({ sessionId }: { sessionId: string }) {
           {/* the context-token line */}
           <path d={pathD} fill="none" className="stroke-chart-1" strokeWidth={1.5} />
 
-          {/* ruler: true-time strip with connectors from each active stretch */}
-          {view === "ruler" && (
+          {/* active view: true-time strip with connectors from each active stretch */}
+          {!calendar && (
             <g>
               {rulerSegments.map((s, i) => (
                 <polygon
