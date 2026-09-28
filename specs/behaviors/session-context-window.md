@@ -98,13 +98,28 @@ timestamp, trigger (`auto` / `manual`), `preTokens` and `postTokens`.
   **last** reading, so peaks and post-compaction drops survive. It also returns
   the context limit (null when unknown) and the axis segments.
 
-**The axis is active time.** Sessions range from one dense day to weeks of
-bursts separated by long idles, and neither calendar time nor message count
-serves both. The x-axis is real time, except that any gap between consecutive
-events longer than 30 minutes collapses to a fixed-width break labeled with
-its duration (`⋯ 9h`, `⋯ 2d`). Day boundaries are marked with a date label. A
-continuous one-day session therefore reads as an ordinary time axis, and a
-multi-week session shows its active bursts side by side.
+**The axis is active time by default, with the time scale still visible.**
+Sessions range from one dense day to weeks of bursts separated by long idles,
+and neither calendar time nor message count serves both. The default x-axis
+is real time, except that any gap between consecutive events longer than 30
+minutes collapses to a break labeled with its duration (`⋯ 9h`, `⋯ 2d`). The
+break's width grows with the logarithm of the gap's length, so a three-week
+idle is visibly wider than an hour's pause without dominating the chart. Its
+shading darkens in four steps (under 3h, 3h–1d, 1d–1w, over a week), and
+labels for gaps of a day or more are bold. Day boundaries are marked with a
+date label.
+
+**Three views.** A switch on the chart selects the view, remembered per viewer
+in the browser:
+
+- **Condensed** (default): the active-time axis above.
+- **Ruler**: Condensed, plus a thin strip below the chart in true calendar time
+  showing where each active stretch falls, with faint connectors from each
+  stretch on the chart to its place on the strip.
+- **Calendar**: the x-axis is true calendar time. Idle periods between active
+  stretches are shaded, and the line breaks across them rather than drawing a
+  slope through time nobody was working. Axis ticks step by hours, days or
+  weeks to fit the span.
 
 **Chart.** On session detail, below the Context Window card and spanning the
 page width: a line of context tokens over the active-time axis. The limit is
