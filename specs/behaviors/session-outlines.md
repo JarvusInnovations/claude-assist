@@ -167,6 +167,14 @@ anything changed."
   grown — there is no separate byte ceiling past which windowing is skipped
   in favor of the single-pass path.
 
+- **Reads are bounded by the sweep's budget.** A windowed pass reads at most
+  `sweep budget × max messages per window` messages, starting from the earliest
+  seq still needed. A session with a large backlog, such as a long-running
+  session seen for the first time, catches up over successive sweeps rather
+  than reading its whole transcript each sweep. When a read is cut short, only
+  closed windows are recorded, and a window the read did not fully cover is
+  never summarized in that sweep.
+
 ## Composition: summary of summaries
 
 The session outline (`sessions.sessions.outline`/`title`) for a windowed
