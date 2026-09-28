@@ -17,6 +17,18 @@ import {
   type OutlineWindowConfig,
   type SummarizedWindowForCompose,
 } from './outline-windows.js';
+import {
+  OutlineRollupStore,
+  planRollupGroups,
+  buildRollupPrompt,
+  buildComposeInputs,
+  capComposeInputs,
+  rollupContentHash,
+  type RollupChild,
+  type RollupChildSummary,
+  type RollupForCompose,
+  type OutlineRollupRow,
+} from './outline-rollups.js';
 
 export interface OutlineServiceConfig {
   /** The single metered-model choke point (specs/modules/invoker.md). */
@@ -115,6 +127,17 @@ export class OutlineService {
   private static readonly RAW_TRANSCRIPT_FETCH_BUDGET = 2_000_000;
 
   /**
+   * Backstop cap on the compose call's total input size (specs/behaviors/
+   * session-outlines.md's "Rollups" section) — independent of the per-level
+   * fan-in bound rollups already provide, which bounds item *count*, not the
+   * length of each item's summary text. Same budget as
+   * TRANSCRIPT_PROMPT_CHAR_BUDGET: comfortably inside the extract-tier
+   * context window even in the pathological case where fan-in alone isn't
+   * enough (e.g. unusually long individual chapter summaries).
+   */
+  private static readonly COMPOSE_PROMPT_CHAR_BUDGET = 300_000;
+
+  /**
    * Sessions that fail outline generation this many times stop being
    * picked up by the automatic sweeps (hourly cron + the post-sync/push
    * triggers) - a session that's still too large after capping, or fails
@@ -148,6 +171,7 @@ export class OutlineService {
 
   // ── Windowed outlines (specs/behaviors/session-outlines.md) ──────────────
   private windowStore: OutlineWindowStore;
+  private rollupStore: OutlineRollupStore;
   private windowConfig: OutlineWindowConfig;
   /** This process's lease-owner id, so a reclaim can tell a live lease from a crashed one. */
   private ownerId: string;
@@ -178,6 +202,7 @@ export class OutlineService {
     this.disableGenerateOutlines = config.disableGenerateOutlines ?? false;
 
     this.windowStore = new OutlineWindowStore(sql);
+    this.rollupStore = new OutlineRollupStore(sql);
     this.windowConfig = { ...DEFAULT_OUTLINE_WINDOW_CONFIG, ...config.windowConfig };
     this.ownerId = `${process.env.HOSTNAME ?? 'host'}-${process.pid}`;
 
@@ -579,12 +604,138 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
         summary: w.summary as string,
       }));
 
+    // ── Rollups (specs/behaviors/session-outlines.md's "Rollups" section) ──
+    // Climb levels while a full group can be formed from the level below:
+    // plan (cheap — no model call, so this runs regardless of budget, like
+    // window boundary planning) any newly-ready groups into rollup rows, then
+    // summarize pending rollups at this level up to the same shared
+    // per-sweep budget windows already spend from. Stops the first level
+    // that can't yet feed the next one (not enough resolved children), so a
+    // small session never grows a level-2+ tree it doesn't need.
+    const fanin = this.windowConfig.rollupFanin;
+    const rollupsByLevel = new Map<number, OutlineRollupRow[]>();
+    const refreshRollups = async () => {
+      rollupsByLevel.clear();
+      for (const r of await this.rollupStore.listRollups(session.id)) {
+        const list = rollupsByLevel.get(r.level) ?? [];
+        list.push(r);
+        rollupsByLevel.set(r.level, list);
+      }
+    };
+    await refreshRollups();
+
+    for (let level = 1; ; level++) {
+      const children: RollupChild[] =
+        level === 1
+          ? windows.map((w) => ({
+              index: w.window_index,
+              resolved: w.closed_at !== null && (w.status === 'summarized' || w.status === 'failed'),
+              fromSeq: w.from_seq,
+              toSeq: w.to_seq,
+              fromTs: w.from_ts,
+              toTs: w.to_ts,
+            }))
+          : (rollupsByLevel.get(level - 1) ?? []).map((r) => ({
+              index: r.rollup_index,
+              resolved: r.status === 'summarized' || r.status === 'failed',
+              fromSeq: r.from_seq,
+              toSeq: r.to_seq,
+              fromTs: r.from_ts,
+              toTs: r.to_ts,
+            }));
+
+      if (children.length < fanin) break; // can never form a full group at this level yet
+
+      const existingIndexes = new Set((rollupsByLevel.get(level) ?? []).map((r) => r.rollup_index));
+      const newGroups = planRollupGroups(children, fanin, existingIndexes);
+      if (newGroups.length > 0) {
+        for (const g of newGroups) {
+          await this.rollupStore.insertRollup(session.id, level, g);
+        }
+        await refreshRollups();
+      }
+
+      for (const r of rollupsByLevel.get(level) ?? []) {
+        if (r.status === 'summarized' || r.status === 'failed') continue; // resolved, terminal
+        if (r.status === 'summarizing') {
+          caughtUp = false; // another process (or a stuck lease) currently owns it
+          continue;
+        }
+        // status === 'pending'
+        if (this.windowBudget <= 0) {
+          caughtUp = false; // budget exhausted this sweep; carries to the next one
+          continue;
+        }
+        this.windowBudget--;
+
+        const claimed = await this.rollupStore.claimOne(r.id, this.ownerId, OutlineService.WINDOW_LEASE_MS);
+        if (!claimed) {
+          caughtUp = false; // lost a claim race to a concurrent sweep
+          continue;
+        }
+
+        try {
+          const childSummaries: RollupChildSummary[] =
+            level === 1
+              ? windows
+                  .filter((w) => w.window_index >= r.rollup_index * fanin && w.window_index < (r.rollup_index + 1) * fanin)
+                  .sort((a, b) => a.window_index - b.window_index)
+                  .map((w) => ({ index: w.window_index, fromTs: w.from_ts, toTs: w.to_ts, summary: w.summary }))
+              : (rollupsByLevel.get(level - 1) ?? [])
+                  .filter(
+                    (c) => c.rollup_index >= r.rollup_index * fanin && c.rollup_index < (r.rollup_index + 1) * fanin
+                  )
+                  .sort((a, b) => a.rollup_index - b.rollup_index)
+                  .map((c) => ({ index: c.rollup_index, fromTs: c.from_ts, toTs: c.to_ts, summary: c.summary }));
+
+          const prompt = buildRollupPrompt(session.project_path, session.git_branch, level, r.rollup_index, childSummaries);
+          const result = await this.invoker.invoke({
+            task: 'sessions.outline.rollup',
+            tier: 'extract',
+            maxTokens: this.maxTokens,
+            ...(this.model ? { model: this.model } : {}),
+            messages: [{ role: 'user', content: prompt }],
+          });
+          const summary = result.text.trim();
+          const contentHash = rollupContentHash(childSummaries);
+          await this.rollupStore.completeSummary(r.id, { summary, model: this.invoker.modelFor('extract'), contentHash });
+          r.status = 'summarized';
+          r.summary = summary;
+        } catch (error) {
+          caughtUp = false;
+          await this.rollupStore.failSummary(r.id, String(error), this.windowConfig.maxAttempts);
+          this.log.error({ error, sessionId: session.id, level, rollupIndex: r.rollup_index }, 'Failed to summarize outline rollup');
+        }
+      }
+
+      const resolvedAtLevel = (rollupsByLevel.get(level) ?? []).filter(
+        (r) => r.status === 'summarized' || r.status === 'failed'
+      ).length;
+      if (resolvedAtLevel < fanin) break; // not enough resolved rollups here yet to feed the next level
+    }
+
+    const rollupsForCompose = new Map<number, RollupForCompose[]>();
+    for (const [lvl, rows] of rollupsByLevel) {
+      rollupsForCompose.set(
+        lvl,
+        rows.map((r) => ({ level: r.level, index: r.rollup_index, fromTs: r.from_ts, toTs: r.to_ts, summary: r.summary }))
+      );
+    }
+    const composeInputs = buildComposeInputs(summarized, rollupsForCompose, fanin);
+
     let generated: { title: string | null; outline: string } | null = null;
     let newWindowsHash: string | null = null;
-    if (summarized.length > 0) {
-      const sig = windowsSignature(summarized);
+    if (composeInputs.length > 0) {
+      const sig = windowsSignature(composeInputs);
       if (sig !== session.outline_windows_hash) {
-        const prompt = buildComposePrompt(session.project_path, session.git_branch, summarized);
+        const { inputs: cappedInputs, trimmed } = capComposeInputs(composeInputs, OutlineService.COMPOSE_PROMPT_CHAR_BUDGET);
+        if (trimmed) {
+          this.log.warn(
+            { sessionId: session.id, totalInputs: composeInputs.length, keptInputs: cappedInputs.length },
+            'Compose input exceeded char budget — trimmed oldest inputs'
+          );
+        }
+        const prompt = buildComposePrompt(session.project_path, session.git_branch, cappedInputs);
         const result = await this.invoker.invoke({
           task: 'sessions.outline.compose',
           tier: 'extract',
@@ -723,6 +874,9 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
     await this.windowStore.reclaimExpired().catch((error) => {
       this.log.warn({ error }, 'Failed to reclaim expired outline-window leases');
     });
+    await this.rollupStore.reclaimExpired().catch((error) => {
+      this.log.warn({ error }, 'Failed to reclaim expired outline-rollup leases');
+    });
     this.windowBudget = this.windowConfig.sweepCap;
 
     this.log.info({ count: sessions.length }, 'Queuing outline generation');
@@ -820,6 +974,9 @@ Outcome: [1-2 sentence summary of what was accomplished or the result]
     // Per-sweep windowing bookkeeping — see queueOutlineGeneration.
     await this.windowStore.reclaimExpired().catch((error) => {
       this.log.warn({ error }, 'Failed to reclaim expired outline-window leases');
+    });
+    await this.rollupStore.reclaimExpired().catch((error) => {
+      this.log.warn({ error }, 'Failed to reclaim expired outline-rollup leases');
     });
     this.windowBudget = this.windowConfig.sweepCap;
 

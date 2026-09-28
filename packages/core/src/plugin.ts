@@ -649,6 +649,8 @@ export interface SessionsPluginConfig {
   outlineWindowSweepCap?: number;
   /** A window's summarization stops being retried automatically past this many failures (default 5). */
   outlineWindowMaxAttempts?: number;
+  /** Rollup fan-in — each run of this many consecutive closed, resolved windows (or level-(n-1) rollups) becomes one rollup (default 40). */
+  outlineRollupFanin?: number;
 
   // ── Context timeline backfill (specs/behaviors/session-context-window.md's
   // "Timeline" section — existing sessions ingested before this feature). ──

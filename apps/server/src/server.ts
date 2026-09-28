@@ -444,6 +444,7 @@ await fastify.register(
           outlineWindowMaxSpanMs: fastify.config.SESSIONS_OUTLINE_WINDOW_MAX_SPAN_MS,
           outlineWindowSweepCap: fastify.config.SESSIONS_OUTLINE_WINDOW_SWEEP_CAP,
           outlineWindowMaxAttempts: fastify.config.SESSIONS_OUTLINE_WINDOW_MAX_ATTEMPTS,
+          outlineRollupFanin: fastify.config.SESSIONS_OUTLINE_ROLLUP_FANIN,
           ignoreContentMarkers: [
             ...DEFAULT_SESSION_IGNORE_MARKERS,
             ...(fastify.config.SESSIONS_IGNORE_MARKERS
