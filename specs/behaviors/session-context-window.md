@@ -53,13 +53,16 @@ last main-chain call, matching on the id with any date suffix stripped:
 
 | Model | Window |
 | --- | --- |
-| `claude-fable-5`, `claude-mythos-5` | 1,000,000 |
-| `claude-opus-5`, `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6` | 1,000,000 |
+| `claude-fable-5-1`, `claude-fable-5`, `claude-mythos-5` | 1,000,000 |
+| `claude-opus-5-5`, `claude-opus-5`, `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6` | 1,000,000 |
 | `claude-sonnet-5`, `claude-sonnet-4-6` | 1,000,000 |
 | `claude-haiku-4-5`, `claude-opus-4-5`, `claude-sonnet-4-5` | 200,000 |
 | anything else (incl. `<synthetic>`) | null |
 
 The 1M window arrived with the 4.6 generation; the 4.5 generation is 200K.
+Source of truth for new models: the *Context window* row of Anthropic's
+[models overview](https://platform.claude.com/docs/en/models/overview). Add a
+model only once it is listed there.
 An unrecognised model yields a null limit, never a guessed one — the UI then
 shows token counts with no percentage.
 
