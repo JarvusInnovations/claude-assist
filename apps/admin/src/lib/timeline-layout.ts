@@ -42,15 +42,55 @@ export function isSegmentBlock(b: LayoutBlock): b is SegmentBlock {
  * still visible rather than collapsing to zero width. */
 const MIN_SEGMENT_WEIGHT_MS = 5 * 60 * 1000;
 
-/** Every collapsed gap gets this much virtual width, regardless of how long
- * it actually was — "fixed-width break" per spec, whether the gap is 9 hours
- * or 2 weeks. Real duration is still shown via its label. */
-const GAP_WEIGHT_MS = 20 * 60 * 1000;
+const HOUR_MS = 3_600_000;
+const DAY_MS = 24 * HOUR_MS;
+
+/** Virtual width of the shortest collapsed gap (30 min, the collapse threshold). */
+const GAP_BASE_WEIGHT_MS = 20 * 60 * 1000;
+
+/**
+ * Virtual width of a collapsed gap: grows with log2 of its length relative to
+ * the 30-minute collapse threshold, so a three-week idle is visibly wider than
+ * an hour's pause without dominating the chart (specs/behaviors/
+ * session-context-window.md, axis).
+ */
+export function gapWeightMs(durationMs: number): number {
+  const ratio = Math.max(durationMs, 30 * 60 * 1000) / (30 * 60 * 1000);
+  return GAP_BASE_WEIGHT_MS * (1 + Math.log2(ratio));
+}
+
+/** Shading step for a collapsed gap: 0 under 3h, 1 for 3h–1d, 2 for 1d–1w, 3 over a week. */
+export function gapShade(durationMs: number): 0 | 1 | 2 | 3 {
+  if (durationMs >= 7 * DAY_MS) return 3;
+  if (durationMs >= DAY_MS) return 2;
+  if (durationMs >= 3 * HOUR_MS) return 1;
+  return 0;
+}
+
+/** Map epoch ms onto `[0, width]` in true calendar time across `[t0, t1]`. */
+export function calendarX(t0: number, t1: number, width: number, tsMs: number): number {
+  if (t1 <= t0) return 0;
+  return ((tsMs - t0) / (t1 - t0)) * width;
+}
+
+/**
+ * Calendar-view tick times within `[t0, t1]`, stepping by 6 hours, a day or a
+ * week to fit the span, aligned to local midnight.
+ */
+export function calendarTicks(t0: number, t1: number): { times: number[]; stepMs: number } {
+  const span = t1 - t0;
+  const stepMs = span > 14 * DAY_MS ? 7 * DAY_MS : span > 3 * DAY_MS ? DAY_MS : 6 * HOUR_MS;
+  const start = new Date(t0);
+  start.setHours(0, 0, 0, 0);
+  const times: number[] = [];
+  for (let t = start.getTime(); t <= t1; t += stepMs) if (t >= t0) times.push(t);
+  return { times, stepMs };
+}
 
 /**
  * Lay out segments left to right across `plotWidth` pixels, each segment
- * sized proportionally to its (floored) real duration, with a fixed-width
- * gap block inserted between consecutive segments.
+ * sized proportionally to its (floored) real duration, with a gap block
+ * (width from `gapWeightMs`) inserted between consecutive segments.
  */
 export function buildTimelineLayout(
   segments: readonly LayoutSegment[],
@@ -59,15 +99,15 @@ export function buildTimelineLayout(
   if (segments.length === 0 || plotWidth <= 0) return [];
 
   const weights = segments.map((s) => Math.max(s.end - s.start, MIN_SEGMENT_WEIGHT_MS));
-  const gapCount = segments.length - 1;
-  const totalWeight = weights.reduce((a, b) => a + b, 0) + gapCount * GAP_WEIGHT_MS;
+  const gapWeights = segments.map((s, i) => (i === 0 ? 0 : gapWeightMs(s.gapBeforeMs ?? 0)));
+  const totalWeight = weights.reduce((a, b) => a + b, 0) + gapWeights.reduce((a, b) => a + b, 0);
   if (totalWeight <= 0) return [];
 
   const blocks: LayoutBlock[] = [];
   let x = 0;
   segments.forEach((seg, i) => {
     if (i > 0) {
-      const gapWidth = (GAP_WEIGHT_MS / totalWeight) * plotWidth;
+      const gapWidth = (gapWeights[i]! / totalWeight) * plotWidth;
       blocks.push({ kind: 'gap', durationMs: seg.gapBeforeMs ?? 0, x0: x, x1: x + gapWidth });
       x += gapWidth;
     }
