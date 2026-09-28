@@ -13,6 +13,9 @@ import {
   type MessageWindow,
   type SerializedDelta,
   type MessageRangeResult,
+  serializeTranscriptUntruncated,
+  truncateTranscriptTail,
+  MAX_TRANSCRIPT_CHARS,
 } from './transcript.js';
 import type { TranscriptMessage } from './types.js';
 
@@ -52,6 +55,9 @@ import type { TranscriptMessage } from './types.js';
  * "no upper bound" sentinel used in a comparison against them has to fit
  * int4 — `Number.MAX_SAFE_INTEGER` overflows it. */
 const INT4_MAX = 2147483647;
+
+/** Chunks fetched per step when reading a transcript backwards (up to ~32 MB). */
+const RECENT_CHUNK_BATCH = 4;
 
 export class TranscriptReader {
   constructor(private sql: postgres.Sql) {}
@@ -129,8 +135,49 @@ export class TranscriptReader {
    * not found" from "empty transcript" should use `readFull` directly.
    */
   async serialize(sessionId: string, opts?: SerializeTranscriptOptions): Promise<string> {
-    const raw = await this.readFull(sessionId);
-    return raw ? serializeTranscript(raw, opts) : '';
+    // A time-windowed request can select messages anywhere in the session, so
+    // it needs the whole transcript. An unwindowed one only ever shows the
+    // most recent MAX_TRANSCRIPT_CHARS, so read chunks backwards from the end
+    // until that much has been serialized.
+    if (opts?.after || opts?.before) {
+      const raw = await this.readFull(sessionId);
+      return raw ? serializeTranscript(raw, opts) : '';
+    }
+    return this.serializeRecent(sessionId, opts);
+  }
+
+  /** Whether a session with this id exists. */
+  async exists(sessionId: string): Promise<boolean> {
+    return this.sessionExists(sessionId);
+  }
+
+  private async serializeRecent(sessionId: string, opts?: SerializeTranscriptOptions): Promise<string> {
+    const [top] = await this.sql<{ max_seq: number | null }[]>`
+      SELECT max(seq) AS max_seq FROM sessions.transcript_chunks WHERE session_id = ${sessionId}::uuid
+    `;
+    if (top?.max_seq === null || top?.max_seq === undefined) return '';
+    // Chunks are cut at line boundaries, so any suffix of the chunk series is
+    // a well-formed JSONL tail. Walk backwards measuring each batch's
+    // serialized size once (linear, not re-serializing the growing suffix),
+    // then serialize the chosen suffix once, in order, so cross-line state
+    // (a question and its later answer) renders exactly as a full read would.
+    const parts: string[] = [];
+    let nextSeq = top.max_seq;
+    let measured = 0;
+    while (nextSeq >= 0 && measured < MAX_TRANSCRIPT_CHARS) {
+      const lowSeq = Math.max(0, nextSeq - RECENT_CHUNK_BATCH + 1);
+      const rows = await this.sql<{ content: string }[]>`
+        SELECT content FROM sessions.transcript_chunks
+        WHERE session_id = ${sessionId}::uuid AND seq BETWEEN ${lowSeq} AND ${nextSeq}
+        ORDER BY seq ASC
+      `;
+      const batch = rows.map((r) => r.content).join('');
+      measured += serializeTranscriptUntruncated(batch, opts).length;
+      parts.unshift(batch);
+      nextSeq = lowSeq - 1;
+    }
+    const serialized = serializeTranscriptUntruncated(parts.join(''), opts);
+    return truncateTranscriptTail(serialized, nextSeq >= 0);
   }
 
   /**

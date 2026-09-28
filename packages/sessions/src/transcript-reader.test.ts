@@ -101,6 +101,15 @@ function fakeSql(
       const filtered = chunks.filter((c) => c.msgSeqEnd >= afterSeqPlus1);
       return Promise.resolve(filtered.map((c) => ({ msg_seq_start: c.msgSeqStart, content: c.content })));
     }
+    if (text.includes('max(seq) AS max_seq')) {
+      // serializeRecent: the last chunk's seq (the fake's array index is its seq).
+      return Promise.resolve([{ max_seq: chunks.length > 0 ? chunks.length - 1 : null }]);
+    }
+    if (text.includes('seq BETWEEN')) {
+      // serializeRecent: one backwards batch, returned in ascending seq order.
+      const [, low, high] = values as [string, number, number];
+      return Promise.resolve(chunks.slice(low, high + 1).map((c) => ({ content: c.content })));
+    }
     if (text.includes('SELECT content FROM sessions.transcript_chunks')) {
       // readFullChunked, or find()'s unbounded fallback
       return Promise.resolve(chunks.map((c) => ({ content: c.content })));

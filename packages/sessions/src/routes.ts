@@ -625,13 +625,12 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       return reply.status(400).send({ error: 'Invalid after date format' });
     }
 
-    const raw = await reader.readFull(id);
-    if (raw === null) {
+    if (!(await reader.exists(id))) {
       reply.status(404);
       return { error: 'Session not found' };
     }
 
-    const transcript = serializeTranscript(raw, {
+    const transcript = await reader.serialize(id, {
       before: beforeDate,
       after: afterDate,
       includeTools,

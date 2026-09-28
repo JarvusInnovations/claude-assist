@@ -238,7 +238,34 @@ export interface SerializeTranscriptOptions {
  *
  * This is the same format used for AI outline generation.
  */
+// Keep serialized transcripts within Haiku's 200K token context: reserve ~2K
+// tokens for response + prompt overhead, leaving ~198K for the transcript. At
+// ~3.5 chars/token (conservative for code): 198K x 3.5 ~= 693K chars.
+export const MAX_TRANSCRIPT_CHARS = 680000;
+
+/**
+ * Cap a serialized transcript at MAX_TRANSCRIPT_CHARS, keeping the most
+ * recent content: for a session that is still growing, the end is what a
+ * reader wants. Cuts at a line boundary and marks the omission at the top.
+ */
+export function truncateTranscriptTail(serialized: string, earlierOmitted = false): string {
+  if (serialized.length <= MAX_TRANSCRIPT_CHARS) {
+    return earlierOmitted ? `[...earlier transcript truncated...]\n${serialized}` : serialized;
+  }
+  const tail = serialized.slice(serialized.length - MAX_TRANSCRIPT_CHARS);
+  const firstBreak = tail.indexOf('\n');
+  return `[...earlier transcript truncated...]\n${firstBreak >= 0 ? tail.slice(firstBreak + 1) : tail}`;
+}
+
 export function serializeTranscript(
+  rawTranscript: string,
+  options?: SerializeTranscriptOptions
+): string {
+  return truncateTranscriptTail(serializeTranscriptUntruncated(rawTranscript, options));
+}
+
+/** `serializeTranscript` without the size cap. */
+export function serializeTranscriptUntruncated(
   rawTranscript: string,
   options?: SerializeTranscriptOptions
 ): string {
@@ -333,19 +360,7 @@ export function serializeTranscript(
     }
   }
 
-  const result = output.join('\n');
-
-  // Truncate to stay within Haiku's 200K token context
-  // Reserve ~2K tokens for response + prompt overhead, leaving ~198K for transcript
-  // At ~3.5 chars/token (conservative for code): 198K × 3.5 ≈ 693K chars
-  const MAX_TRANSCRIPT_CHARS = 680000;
-  if (result.length > MAX_TRANSCRIPT_CHARS) {
-    return (
-      result.slice(0, MAX_TRANSCRIPT_CHARS) + '\n[...transcript truncated]'
-    );
-  }
-
-  return result;
+  return output.join('\n');
 }
 
 // ───────────────────────────────────────────────────────────────────────────
