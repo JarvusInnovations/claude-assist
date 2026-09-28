@@ -8,7 +8,8 @@
     "css:build": "bunx tailwindcss -i ./src/styles.css -o ./dist/styles.css",
     "css:watch": "bunx tailwindcss -i ./src/styles.css -o ./dist/styles.css --watch",
     "build": "bun run css:build && bun build ./public/index.html --minify --outdir=dist --public-path=/",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "test": "bun test src"
   },
   "devDependencies": {
     "@tailwindcss/cli": "^4.1.18",

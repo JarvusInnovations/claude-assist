@@ -16,6 +16,7 @@ import { sessionsApi } from "@/api/sessions";
 
 import { TranscriptViewer } from "@/components/TranscriptViewer";
 import { JumpToLatest } from "@/components/JumpToLatest";
+import { ContextTimeline } from "@/components/ContextTimeline";
 
 // Tabs live in the URL hash so a reload stays put (specs/behaviors/session-detail-page.md).
 const TABS = ["outline", "transcript", "tools", "files"] as const;
@@ -274,6 +275,7 @@ export function SessionDetailPage() {
           </CardContent>
         </Card>
       )}
+      <ContextTimeline sessionId={sessionId} />
 
       {/* Token Usage */}
       <Card>

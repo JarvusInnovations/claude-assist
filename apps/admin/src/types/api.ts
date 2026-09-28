@@ -175,6 +175,35 @@ export interface ActivityRange {
   duration_minutes: number;
 }
 
+// ── Context timeline (specs/behaviors/session-context-window.md's "Timeline") ──
+
+export interface ContextTimelineSegment {
+  start: string;
+  end: string;
+  /** Duration (ms) of the collapsed gap immediately before this segment —
+   * null for the first segment. */
+  gap_before_ms: number | null;
+}
+
+export interface ContextTimelineReading {
+  ts: string;
+  tokens: number;
+}
+
+export interface ContextTimelineCompaction {
+  ts: string | null;
+  trigger: string | null;
+  pre_tokens: number | null;
+  post_tokens: number | null;
+}
+
+export interface ContextTimeline {
+  limit: number | null;
+  segments: ContextTimelineSegment[];
+  readings: ContextTimelineReading[];
+  compactions: ContextTimelineCompaction[];
+}
+
 export interface ActivitySession {
   id: string;
   title: string | null;
