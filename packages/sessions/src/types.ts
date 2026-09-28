@@ -43,10 +43,26 @@ export interface TokenUsage {
 }
 
 /**
+ * `compactMetadata` on a `system` / `compact_boundary` transcript line —
+ * Claude Code's own compaction-event record. See
+ * specs/behaviors/session-context-window.md's "Timeline" section.
+ */
+export interface CompactMetadata {
+  trigger: 'auto' | 'manual' | string;
+  preTokens: number;
+  postTokens: number;
+  [key: string]: unknown;
+}
+
+/**
  * Transcript message format (JSONL line)
  */
 export interface TranscriptMessage {
-  type: 'user' | 'assistant' | 'queue-operation' | 'attachment';
+  type: 'user' | 'assistant' | 'queue-operation' | 'attachment' | 'system';
+  /** Only present on `type: 'system'` lines — `'compact_boundary'` is the one
+   * this codebase acts on; other system subtypes are ignored. */
+  subtype?: string;
+  compactMetadata?: CompactMetadata;
   sessionId: string;
   uuid: string;
   parentUuid: string | null;
@@ -117,6 +133,29 @@ export interface ToolCall {
   toolName: string;
   target: string | null;
   isSidechain: boolean;
+}
+
+/**
+ * One main-chain context reading — specs/behaviors/session-context-window.md's
+ * "Timeline": one per main-chain API call, same `isFirstInChain` rule and
+ * definition as `context_final_tokens`/`context_peak_tokens`. `seq` is the
+ * message's ordinal position (matches `transcript_messages.seq`), which is
+ * what lets a resumable backfill and live ingest agree on what has and has
+ * not been recorded yet without re-deriving from scratch.
+ */
+export interface ContextReading {
+  seq: number;
+  ts: Date | null;
+  tokens: number;
+}
+
+/** One `system` / `compact_boundary` event — a compaction. */
+export interface ContextCompaction {
+  seq: number;
+  ts: Date | null;
+  trigger: string;
+  preTokens: number;
+  postTokens: number;
 }
 
 /** One row of `sessions.transcript_chunks` — an immutable slice of the archive. */

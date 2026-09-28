@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { feed, finalize, EMPTY_CHECKPOINT, MAX_OPEN_CHAINS } from './incremental-parser.js';
 import { mergeParseDelta, EMPTY_AGGREGATE, type SessionAggregate } from './aggregate-merge.js';
-import type { ToolCall } from './types.js';
+import type { ToolCall, ContextReading, ContextCompaction } from './types.js';
 
 // ── Synthetic transcript builders ───────────────────────────────────────────
 
@@ -59,6 +59,23 @@ function assistantLine(opts: AssistantOpts): { line: string; uuid: string } {
 
 function customTitleLine(title: string): string {
   return j({ type: 'custom-title', customTitle: title });
+}
+
+function compactBoundaryLine(
+  ts: string,
+  opts: { trigger?: string; preTokens?: number; postTokens?: number } = {}
+): string {
+  return j({
+    type: 'system',
+    subtype: 'compact_boundary',
+    timestamp: ts,
+    isSidechain: false,
+    compactMetadata: {
+      trigger: opts.trigger ?? 'auto',
+      preTokens: opts.preTokens ?? 500_000,
+      postTokens: opts.postTokens ?? 15_000,
+    },
+  });
 }
 
 /**
@@ -122,6 +139,18 @@ function buildTranscript(turns: number, baseMs = Date.parse('2026-01-01T00:00:00
       t += 200;
     }
 
+    // Every 11th turn (past the first), a real compact_boundary event.
+    if (i % 11 === 0 && i > 0) {
+      lines.push(
+        compactBoundaryLine(tsAt(baseMs, t), {
+          trigger: i % 22 === 0 ? 'manual' : 'auto',
+          preTokens: 500_000 + i,
+          postTokens: 10_000 + i,
+        })
+      );
+      t += 50;
+    }
+
     // Every 7th turn, a concurrent sidechain (subagent) with its own short
     // streaming chain, isSidechain: true throughout.
     if (i % 7 === 0) {
@@ -153,6 +182,8 @@ interface RunResult {
   aggregate: SessionAggregate;
   toolCalls: ToolCall[];
   messageIndexRows: Array<{ seq: number; uuid: string }>;
+  contextReadings: ContextReading[];
+  compactions: ContextCompaction[];
 }
 
 function runFull(lines: string[]): RunResult {
@@ -160,7 +191,13 @@ function runFull(lines: string[]): RunResult {
   let aggregate = mergeParseDelta(EMPTY_AGGREGATE, delta);
   const { delta: finalDelta } = finalize(checkpoint);
   aggregate = mergeParseDelta(aggregate, finalDelta);
-  return { aggregate, toolCalls: [...delta.toolCalls], messageIndexRows: [...delta.messageIndexRows] };
+  return {
+    aggregate,
+    toolCalls: [...delta.toolCalls],
+    messageIndexRows: [...delta.messageIndexRows],
+    contextReadings: [...delta.contextReadings],
+    compactions: [...delta.compactions],
+  };
 }
 
 function runSplit(lines: string[], splitPoints: number[]): RunResult {
@@ -168,6 +205,8 @@ function runSplit(lines: string[], splitPoints: number[]): RunResult {
   let aggregate = EMPTY_AGGREGATE;
   const toolCalls: ToolCall[] = [];
   const messageIndexRows: Array<{ seq: number; uuid: string }> = [];
+  const contextReadings: ContextReading[] = [];
+  const compactions: ContextCompaction[] = [];
 
   const boundaries = [...new Set(splitPoints)].filter((p) => p > 0 && p < lines.length).sort((a, b) => a - b);
   boundaries.push(lines.length);
@@ -181,12 +220,14 @@ function runSplit(lines: string[], splitPoints: number[]): RunResult {
     aggregate = mergeParseDelta(aggregate, delta);
     toolCalls.push(...delta.toolCalls);
     messageIndexRows.push(...delta.messageIndexRows);
+    contextReadings.push(...delta.contextReadings);
+    compactions.push(...delta.compactions);
     start = end;
   }
 
   const { delta: finalDelta } = finalize(checkpoint);
   aggregate = mergeParseDelta(aggregate, finalDelta);
-  return { aggregate, toolCalls, messageIndexRows };
+  return { aggregate, toolCalls, messageIndexRows, contextReadings, compactions };
 }
 
 /** Deterministic PRNG (mulberry32) so split points are reproducible. */
@@ -224,6 +265,29 @@ describe('incremental-parser: split parse equals full parse', () => {
     expect(result.aggregate.contextPeakTokens).toBeGreaterThanOrEqual(100_000);
   });
 
+  it('records one context reading per main-chain call and captures the global peak', () => {
+    const result = runFull(lines);
+    expect(result.contextReadings.length).toBeGreaterThan(0);
+    // Every reading is a real, positive, main-chain (non-sidechain) call —
+    // the sidechain readings (500 input tokens) must never appear here.
+    expect(result.contextReadings.every((r) => r.tokens > 0)).toBe(true);
+    const maxReading = Math.max(...result.contextReadings.map((r) => r.tokens));
+    expect(result.aggregate.contextPeakTokens).not.toBeNull();
+    expect(maxReading).toBe(result.aggregate.contextPeakTokens as number);
+    // seq is strictly non-decreasing (readings arrive in transcript order).
+    for (let i = 1; i < result.contextReadings.length; i++) {
+      expect(result.contextReadings[i]!.seq).toBeGreaterThan(result.contextReadings[i - 1]!.seq);
+    }
+  });
+
+  it('records every compact_boundary line as a compaction with its trigger and token counts', () => {
+    const result = runFull(lines);
+    expect(result.compactions.length).toBeGreaterThan(0);
+    expect(result.compactions.every((c) => c.preTokens > c.postTokens)).toBe(true);
+    expect(result.compactions.some((c) => c.trigger === 'manual')).toBe(true);
+    expect(result.compactions.some((c) => c.trigger === 'auto')).toBe(true);
+  });
+
   it('the mid-session rename wins (last custom-title line)', () => {
     const result = runFull(lines);
     expect(result.aggregate.sessionName).toContain('renamed at turn');
@@ -241,6 +305,8 @@ describe('incremental-parser: split parse equals full parse', () => {
       expect(split.aggregate).toEqual(full.aggregate);
       expect(split.toolCalls).toEqual(full.toolCalls);
       expect(split.messageIndexRows).toEqual(full.messageIndexRows);
+      expect(split.contextReadings).toEqual(full.contextReadings);
+      expect(split.compactions).toEqual(full.compactions);
     });
   }
 
@@ -251,6 +317,8 @@ describe('incremental-parser: split parse equals full parse', () => {
     expect(split.aggregate).toEqual(full.aggregate);
     expect(split.toolCalls).toEqual(full.toolCalls);
     expect(split.messageIndexRows).toEqual(full.messageIndexRows);
+    expect(split.contextReadings).toEqual(full.contextReadings);
+    expect(split.compactions).toEqual(full.compactions);
   });
 });
 
