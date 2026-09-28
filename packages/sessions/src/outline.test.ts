@@ -124,7 +124,27 @@ function bigTranscript(n: number): string {
   return lines.join('\n');
 }
 
+interface FakeRollup {
+  id: string;
+  session_id: string;
+  level: number;
+  rollup_index: number;
+  from_seq: number;
+  to_seq: number;
+  from_ts: string | null;
+  to_ts: string | null;
+  status: 'pending' | 'summarizing' | 'summarized' | 'failed';
+  summary: string | null;
+  content_hash: string | null;
+  model: string | null;
+  attempts: number;
+  lease_owner: string | null;
+  lease_expires_at: string | null;
+  summarized_at: string | null;
+}
+
 let nextWindowId = 1;
+let nextRollupId = 1;
 
 function makeLogger(): FastifyBaseLogger {
   return {
@@ -137,10 +157,94 @@ function makeLogger(): FastifyBaseLogger {
 function makeFakeDb(
   sessions: FakeSession[],
   windows: FakeWindow[],
-  seen?: { text: string; vals: unknown[] }[]
+  seen?: { text: string; vals: unknown[] }[],
+  rollups: FakeRollup[] = []
 ): postgres.Sql {
   return makeFakeSql(async (text, vals) => {
     seen?.push({ text, vals });
+
+    // ── OutlineRollupStore — checked ahead of the window-store branches
+    // below, since several of their UPDATE queries share matching substrings
+    // ("SET status = 'summarizing'", "summarized_at = NOW()", "attempts =
+    // attempts + 1", "lease_expires_at < NOW()") and only the table name in
+    // the query text tells them apart. ──
+    if (text.includes('SELECT id, session_id, level')) {
+      const [sessionId] = vals as [string];
+      return rollups
+        .filter((r) => r.session_id === sessionId)
+        .sort((a, b) => a.level - b.level || a.rollup_index - b.rollup_index)
+        .map((r) => ({ ...r }));
+    }
+    if (text.includes('INSERT INTO sessions.outline_rollups')) {
+      const [sessionId, level, rollupIndex, fromSeq, toSeq, fromTs, toTs] = vals as [
+        string, number, number, number, number, string | null, string | null,
+      ];
+      const existing = rollups.find((r) => r.session_id === sessionId && r.level === level && r.rollup_index === rollupIndex);
+      if (!existing) {
+        rollups.push({
+          id: String(nextRollupId++),
+          session_id: sessionId,
+          level,
+          rollup_index: rollupIndex,
+          from_seq: fromSeq,
+          to_seq: toSeq,
+          from_ts: fromTs,
+          to_ts: toTs,
+          status: 'pending',
+          summary: null,
+          content_hash: null,
+          model: null,
+          attempts: 0,
+          lease_owner: null,
+          lease_expires_at: null,
+          summarized_at: null,
+        });
+      }
+      return [];
+    }
+    if (text.includes('sessions.outline_rollups') && text.includes("SET status = 'summarizing'")) {
+      const [ownerId, , id] = vals as [string, number, string];
+      const r = rollups.find((x) => x.id === id);
+      if (!r || r.status !== 'pending') return [];
+      r.status = 'summarizing';
+      r.lease_owner = ownerId;
+      r.lease_expires_at = new Date(Date.now() + 3600_000).toISOString();
+      return [{ id: r.id }];
+    }
+    if (text.includes('sessions.outline_rollups') && text.includes('summarized_at = NOW()')) {
+      const [summary, model, contentHash, id] = vals as [string, string, string, string];
+      const r = rollups.find((x) => x.id === id);
+      if (r) {
+        r.status = 'summarized';
+        r.summary = summary;
+        r.model = model;
+        r.content_hash = contentHash;
+        r.lease_owner = null;
+        r.lease_expires_at = null;
+      }
+      return [];
+    }
+    if (text.includes('sessions.outline_rollups') && text.includes('attempts = attempts + 1')) {
+      const [, maxAttempts, id] = vals as [string, number, string];
+      const r = rollups.find((x) => x.id === id);
+      if (r) {
+        r.attempts += 1;
+        r.lease_owner = null;
+        r.lease_expires_at = null;
+        r.status = r.attempts >= maxAttempts ? 'failed' : 'pending';
+      }
+      return [];
+    }
+    if (text.includes('sessions.outline_rollups') && text.includes('lease_expires_at < NOW()')) {
+      const now = Date.now();
+      const reclaimed = rollups.filter((r) => r.status === 'summarizing' && r.lease_expires_at && Date.parse(r.lease_expires_at) < now);
+      for (const r of reclaimed) {
+        r.status = 'pending';
+        r.lease_owner = null;
+        r.lease_expires_at = null;
+      }
+      return reclaimed.map((r) => ({ id: r.id }));
+    }
     // ── sweep selection ──
     if (text.includes('WHERE outline_hash IS DISTINCT FROM transcript_hash') && text.includes('ORDER BY started_at DESC')) {
       const cap = vals[0] as number;
@@ -358,18 +462,26 @@ function makeFakeDb(
 }
 
 /** A fake invoker: `extract` calls echo a deterministic summary derived from the prompt, and count invocations by task. */
-function makeFakeInvoker(): { invoker: ModelInvoker; callsByTask: Record<string, number> } {
+function makeFakeInvoker(): {
+  invoker: ModelInvoker;
+  callsByTask: Record<string, number>;
+  lastPromptByTask: Record<string, string>;
+} {
   const callsByTask: Record<string, number> = {};
+  const lastPromptByTask: Record<string, string> = {};
   const invoker: ModelInvoker = {
     enabled: true,
     async invoke(req: InvokeRequest): Promise<InvokeResult> {
       callsByTask[req.task] = (callsByTask[req.task] ?? 0) + 1;
       const prompt = typeof req.messages[0]?.content === 'string' ? req.messages[0].content : '';
+      lastPromptByTask[req.task] = prompt;
       let text: string;
       if (req.task === 'sessions.outline.compose') {
         text = `<title>composed title</title>\n<summary>composed summary (${prompt.length} chars in)</summary>`;
       } else if (req.task === 'sessions.outline.window') {
         text = `window summary covering: ${prompt.slice(-40).replace(/\n/g, ' ')}`;
+      } else if (req.task === 'sessions.outline.rollup') {
+        text = `chapter summary covering: ${prompt.slice(-40).replace(/\n/g, ' ')}`;
       } else {
         text = `<title>short title</title>\n<summary>short summary</summary>`;
       }
@@ -391,7 +503,7 @@ function makeFakeInvoker(): { invoker: ModelInvoker; callsByTask: Record<string,
       throw new Error('not used in these tests');
     },
   };
-  return { invoker, callsByTask };
+  return { invoker, callsByTask, lastPromptByTask };
 }
 
 function baseSession(over: Partial<FakeSession> = {}): FakeSession {
@@ -602,5 +714,128 @@ describe('OutlineService — windowed generation', () => {
     expect(sessions[0]!.outline).toBeNull();
     expect(sessions[0]!.title).toBeNull();
     expect(sessions[0]!.outline_hash).toBe('hashA');
+  });
+});
+
+// ── Rollups: chapter hierarchy on top of windows ────────────────────────────
+
+describe('OutlineService — rollups', () => {
+  it('forms and summarizes chapters across sweeps, sharing the window budget, each summarized exactly once, and eventually catches up', async () => {
+    // 800 messages / maxMessages=100 -> 8 windows; rollupFanin=4 -> exactly
+    // 2 level-1 chapters (8/4), too few (2 < 4) to ever climb to level 2.
+    // sweepCap=3 forces this across several sweeps and makes windows and
+    // rollups compete for the same shared budget within a sweep.
+    const sessions = [baseSession({ message_count: 800, content: bigTranscript(800) })];
+    const windows: FakeWindow[] = [];
+    const rollups: FakeRollup[] = [];
+    const { invoker, callsByTask } = makeFakeInvoker();
+    const svc = new OutlineService(makeFakeDb(sessions, windows, undefined, rollups), makeLogger(), {
+      invoker,
+      windowConfig: { thresholdMessages: 400, maxMessages: 100, sweepCap: 3, rollupFanin: 4 },
+    });
+
+    for (let i = 0; i < 20 && sessions[0]!.outline_hash !== 'hashA'; i++) {
+      await svc.generateOutlinesSync();
+    }
+
+    expect(sessions[0]!.outline_hash).toBe('hashA'); // fully caught up
+    expect(windows).toHaveLength(8);
+    expect(windows.every((w) => w.status === 'summarized')).toBe(true);
+    expect(rollups).toHaveLength(2);
+    expect(rollups.every((r) => r.status === 'summarized')).toBe(true);
+    // Exactly once each — the model was never asked twice for the same window or rollup.
+    expect(callsByTask['sessions.outline.window']).toBe(8);
+    expect(callsByTask['sessions.outline.rollup']).toBe(2);
+    expect(sessions[0]!.outline).toContain('composed summary');
+
+    // Fully caught up: the unforced sweep query no longer selects this
+    // session, so a further sweep must not touch the model again at all.
+    const callsBefore = { ...callsByTask };
+    const next = await svc.generateOutlinesSync();
+    expect(next.sessionsProcessed).toBe(0);
+    expect(callsByTask).toEqual(callsBefore);
+  });
+
+  it('a level-1 chapter stands in for its windows in the compose call once summarized', async () => {
+    const sessions = [baseSession({ message_count: 800, content: bigTranscript(800) })];
+    const windows: FakeWindow[] = [];
+    const rollups: FakeRollup[] = [];
+    const { invoker, lastPromptByTask } = makeFakeInvoker();
+    const svc = new OutlineService(makeFakeDb(sessions, windows, undefined, rollups), makeLogger(), {
+      invoker,
+      windowConfig: { thresholdMessages: 400, maxMessages: 100, sweepCap: 1000, rollupFanin: 4 }, // one sweep is enough
+    });
+
+    await svc.generateOutlinesSync();
+
+    expect(sessions[0]!.outline_hash).toBe('hashA');
+    expect(rollups).toHaveLength(2);
+    const composePrompt = lastPromptByTask['sessions.outline.compose']!;
+    expect(composePrompt).toContain('<chapter level="1" index="0"');
+    expect(composePrompt).toContain('<chapter level="1" index="1"');
+    // The chapters cover every window, so no individual <window> tag should
+    // appear in the final compose call.
+    expect(composePrompt).not.toContain('<window ');
+  });
+
+  it('a session too small to fill one fan-in group never grows a rollup, windowed or not', async () => {
+    const sessions = [baseSession({ message_count: 500, content: bigTranscript(500) })];
+    const windows: FakeWindow[] = [];
+    const rollups: FakeRollup[] = [];
+    const { invoker, callsByTask } = makeFakeInvoker();
+    const svc = new OutlineService(makeFakeDb(sessions, windows, undefined, rollups), makeLogger(), {
+      invoker,
+      // maxMessages=200 -> 3 windows (200, 200, 100); rollupFanin defaults to 40, far above 3.
+      windowConfig: { thresholdMessages: 400, maxMessages: 200, sweepCap: 1000 },
+    });
+
+    await svc.generateOutlinesSync();
+
+    expect(rollups).toHaveLength(0);
+    expect(callsByTask['sessions.outline.rollup']).toBeUndefined();
+    expect(sessions[0]!.outline_hash).toBe('hashA');
+  });
+
+  it('a rollup that fails is retried up to the attempt cap, then goes terminal and is dropped from compose', async () => {
+    const sessions = [baseSession({ message_count: 800, content: bigTranscript(800) })];
+    const windows: FakeWindow[] = [];
+    const rollups: FakeRollup[] = [];
+    const { invoker } = makeFakeInvoker();
+    let rollupCalls = 0;
+    const failingInvoker: ModelInvoker = {
+      ...invoker,
+      async invoke(req) {
+        if (req.task === 'sessions.outline.rollup') {
+          rollupCalls++;
+          throw new Error('model unavailable');
+        }
+        return invoker.invoke(req);
+      },
+    };
+    const svc = new OutlineService(makeFakeDb(sessions, windows, undefined, rollups), makeLogger(), {
+      invoker: failingInvoker,
+      windowConfig: { thresholdMessages: 400, maxMessages: 100, sweepCap: 1000, rollupFanin: 4, maxAttempts: 3 },
+    });
+
+    for (let i = 0; i < 6; i++) {
+      await svc.generateOutlinesSync();
+    }
+
+    expect(rollups).toHaveLength(2);
+    expect(rollups.every((r) => r.status === 'failed')).toBe(true);
+    expect(rollups.every((r) => r.attempts === 3)).toBe(true);
+    // Exhausted the cap - no further attempts even after more sweeps, and the
+    // session still reaches "caught up" (a permanently failed unit doesn't
+    // block the sweep forever - same precedent as a permanently failed window).
+    const callsAtCap = rollupCalls;
+    await svc.generateOutlinesSync();
+    expect(rollupCalls).toBe(callsAtCap);
+    expect(sessions[0]!.outline_hash).toBe('hashA');
+    // Both chapters failed with no summary, and every window is covered by
+    // one of them - so, same as a session where every window fails, there is
+    // no content left to compose and the outline stays unset. This matches
+    // existing pre-rollup behavior (an all-failed windows-only session also
+    // never gets composed) rather than being new rollup-specific fallout.
+    expect(sessions[0]!.outline).toBeNull();
   });
 });

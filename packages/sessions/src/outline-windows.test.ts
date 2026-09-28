@@ -137,45 +137,62 @@ describe('isWindowedSession', () => {
 describe('windowsSignature', () => {
   it('is stable for the same summaries and changes when a summary changes', () => {
     const a = windowsSignature([
-      { windowIndex: 0, fromTs: null, toTs: null, closed: true, summary: 'did X' },
-      { windowIndex: 1, fromTs: null, toTs: null, closed: false, summary: 'doing Y' },
+      { kind: 'window', index: 0, fromTs: null, toTs: null, closed: true, summary: 'did X' },
+      { kind: 'window', index: 1, fromTs: null, toTs: null, closed: false, summary: 'doing Y' },
     ]);
     const same = windowsSignature([
-      { windowIndex: 0, fromTs: null, toTs: null, closed: true, summary: 'did X' },
-      { windowIndex: 1, fromTs: null, toTs: null, closed: false, summary: 'doing Y' },
+      { kind: 'window', index: 0, fromTs: null, toTs: null, closed: true, summary: 'did X' },
+      { kind: 'window', index: 1, fromTs: null, toTs: null, closed: false, summary: 'doing Y' },
     ]);
     const changed = windowsSignature([
-      { windowIndex: 0, fromTs: null, toTs: null, closed: true, summary: 'did X' },
-      { windowIndex: 1, fromTs: null, toTs: null, closed: false, summary: 'doing Y, now more' },
+      { kind: 'window', index: 0, fromTs: null, toTs: null, closed: true, summary: 'did X' },
+      { kind: 'window', index: 1, fromTs: null, toTs: null, closed: false, summary: 'doing Y, now more' },
     ]);
     expect(same).toBe(a);
     expect(changed).not.toBe(a);
   });
 
   it('changes when a window closes (open -> closed) even with the same text', () => {
-    const open = windowsSignature([{ windowIndex: 0, fromTs: null, toTs: null, closed: false, summary: 'did X' }]);
-    const closed = windowsSignature([{ windowIndex: 0, fromTs: null, toTs: null, closed: true, summary: 'did X' }]);
+    const open = windowsSignature([{ kind: 'window', index: 0, fromTs: null, toTs: null, closed: false, summary: 'did X' }]);
+    const closed = windowsSignature([{ kind: 'window', index: 0, fromTs: null, toTs: null, closed: true, summary: 'did X' }]);
     expect(open).not.toBe(closed);
   });
 
   it('is order-sensitive (chronological composition matters)', () => {
-    const w0 = { windowIndex: 0, fromTs: null, toTs: null, closed: true, summary: 'a' };
-    const w1 = { windowIndex: 1, fromTs: null, toTs: null, closed: true, summary: 'b' };
+    const w0 = { kind: 'window' as const, index: 0, fromTs: null, toTs: null, closed: true, summary: 'a' };
+    const w1 = { kind: 'window' as const, index: 1, fromTs: null, toTs: null, closed: true, summary: 'b' };
     expect(windowsSignature([w0, w1])).not.toBe(windowsSignature([w1, w0]));
+  });
+
+  it('distinguishes a rollup from a window at the same index (different kind/level)', () => {
+    const asWindow = windowsSignature([{ kind: 'window', index: 0, fromTs: null, toTs: null, closed: true, summary: 'x' }]);
+    const asRollup = windowsSignature([{ kind: 'rollup', level: 1, index: 0, fromTs: null, toTs: null, summary: 'x' }]);
+    expect(asWindow).not.toBe(asRollup);
   });
 });
 
 describe('buildComposePrompt / buildWindowPrompt', () => {
   it('compose prompt includes project, branch, and every window summary in order', () => {
     const prompt = buildComposePrompt('/repo/thing', 'main', [
-      { windowIndex: 0, fromTs: '2026-01-01T00:00:00Z', toTs: '2026-01-01T01:00:00Z', closed: true, summary: 'first slice' },
-      { windowIndex: 1, fromTs: '2026-01-01T01:00:00Z', toTs: null, closed: false, summary: 'still going' },
+      { kind: 'window', index: 0, fromTs: '2026-01-01T00:00:00Z', toTs: '2026-01-01T01:00:00Z', closed: true, summary: 'first slice' },
+      { kind: 'window', index: 1, fromTs: '2026-01-01T01:00:00Z', toTs: null, closed: false, summary: 'still going' },
     ]);
     expect(prompt).toContain('/repo/thing');
     expect(prompt).toContain('main');
     expect(prompt.indexOf('first slice')).toBeLessThan(prompt.indexOf('still going'));
     expect(prompt).toContain('(in progress)');
     expect(prompt).toContain('<title>');
+  });
+
+  it('compose prompt renders a rollup as a <chapter> tag, distinct from a <window> tag', () => {
+    const prompt = buildComposePrompt('/repo/thing', 'main', [
+      { kind: 'rollup', level: 1, index: 0, fromTs: '2026-01-01T00:00:00Z', toTs: '2026-01-01T01:00:00Z', summary: 'chapter one' },
+      { kind: 'window', index: 40, fromTs: '2026-01-01T01:00:00Z', toTs: null, closed: false, summary: 'loose tail' },
+    ]);
+    expect(prompt).toContain('<chapter level="1" index="0"');
+    expect(prompt).toContain('chapter one');
+    expect(prompt).toContain('<window index="40"');
+    expect(prompt).toContain('loose tail');
   });
 
   it('window prompt marks an in-progress (tail) window distinctly from a closed one', () => {
@@ -502,6 +519,7 @@ describe('DEFAULT_OUTLINE_WINDOW_CONFIG', () => {
       maxSpanMs: 6 * 60 * 60 * 1000,
       sweepCap: 20,
       maxAttempts: 5,
+      rollupFanin: 40,
     });
   });
 });
