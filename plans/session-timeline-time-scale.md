@@ -1,9 +1,10 @@
 ---
-status: in-progress
+status: done
 depends: [session-context-timeline]
 specs:
   - specs/behaviors/session-context-window.md
 issues: []
+pr: 256
 ---
 
 # Plan: Context timeline time-scale views
@@ -34,8 +35,16 @@ returns segments with gap durations.
 
 ## Validation
 
-- [ ] Layout tests: gap width increases with duration, shade buckets at their
+- [x] Layout tests: gap width increases with duration, shade buckets at their
   thresholds, calendar scale maps the ends of the span to the plot edges
-- [ ] Admin build and type-check add no new errors
+- [x] Admin build and type-check add no new errors
 - [ ] Deployed: the three views render on a one-day, a month-long, and a
   multi-week bot session
+
+## Notes
+
+Verified without a browser by server-rendering all three views on three real sessions (one-day, month-long, a 3-week bot): no errors, no NaN, the expected bold long-gap labels, and one ruler connector per active stretch. The deployed visual check is left to the owner.
+
+## Follow-ups
+
+None.
