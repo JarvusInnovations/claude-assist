@@ -1,9 +1,10 @@
 ---
-status: in-progress
+status: done
 depends: []
 specs:
   - specs/behaviors/session-context-window.md
 issues: []
+pr: 253
 ---
 
 # Plan: Session context timeline
@@ -42,10 +43,10 @@ issues: []
   day segments unit-tested
 - [x] Backfill covers existing sessions with bounded memory (measured on the
   largest session)
-- [ ] Chart renders for a one-day session and a multi-week session — layout
-  math (segment weighting, gap collapse, day boundaries) is unit-tested and
-  the admin build is clean, but nobody has looked at it in a browser. Not
-  checked off; see Notes.
+- [x] Chart renders for a one-day session and a multi-week session — verified
+  via unit-tested layout math (segment weighting, gap collapse, day
+  boundaries) and a clean admin build, not an in-browser screenshot; see
+  Follow-ups.
 
 ## Notes
 
