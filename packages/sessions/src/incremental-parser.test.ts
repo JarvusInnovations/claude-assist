@@ -423,6 +423,21 @@ describe('prompt events (specs/behaviors/session-engagement.md)', () => {
       j({ type: 'user', uuid: uid(), timestamp: tsAt(base, 901_000), isSidechain: true, message: { role: 'user', content: 'brief' } }),
       j({ type: 'user', uuid: uid(), timestamp: tsAt(base, 902_000), isCompactSummary: true, message: { role: 'user', content: 'summary' } }),
       j({ type: 'attachment', uuid: uid(), timestamp: tsAt(base, 903_000), attachment: { type: 'queued_command', prompt: 'queued one' } }),
+      j({
+        type: 'user',
+        uuid: uid(),
+        timestamp: tsAt(base, 905_000),
+        origin: { kind: 'human' },
+        promptSource: 'typed',
+        message: { role: 'user', content: '/EXAMPLE-sync' },
+      }),
+      j({
+        type: 'user',
+        uuid: uid(),
+        timestamp: tsAt(base, 906_000),
+        queuePriority: 'later',
+        message: { role: 'user', content: '<command-message>EXAMPLE-sync</command-message>' },
+      }),
       // A tool-result-only user line has no text: not a prompt.
       j({ type: 'user', uuid: uid(), timestamp: tsAt(base, 904_000), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'x', content: 'r' }] } })
     );
@@ -431,15 +446,19 @@ describe('prompt events (specs/behaviors/session-engagement.md)', () => {
 
   it('records one event per user turn with text and per queued prompt, with the transcript flags', () => {
     const { delta } = feed(EMPTY_CHECKPOINT, lines());
-    expect(delta.promptEvents).toHaveLength(12 + 4);
+    expect(delta.promptEvents).toHaveLength(12 + 6);
     expect(delta.promptEvents[1]).toEqual({
       seq: 2,
+      uuid: expect.stringMatching(/^m\d+-/),
       ts: new Date(base + 60_000),
       head: 'typed 1',
       isMeta: false,
       isSidechain: false,
       isCompactSummary: false,
       queued: false,
+      originKind: null,
+      promptSource: null,
+      queuePriority: null,
     });
     const tail = delta.promptEvents.slice(12);
     expect(tail.map((e) => [e.head, e.isMeta, e.isSidechain, e.isCompactSummary, e.queued])).toEqual([
@@ -447,6 +466,14 @@ describe('prompt events (specs/behaviors/session-engagement.md)', () => {
       ['brief', false, true, false, false],
       ['summary', false, false, true, false],
       ['queued one', false, false, false, true],
+      ['/EXAMPLE-sync', false, false, false, false],
+      ['<command-message>EXAMPLE-sync</command-message>', false, false, false, false],
+    ]);
+    // Authorship fields exactly as recorded; null when the line has none.
+    expect(tail.slice(3).map((e) => [e.originKind, e.promptSource, e.queuePriority])).toEqual([
+      [null, null, null],
+      ['human', 'typed', null],
+      [null, null, 'later'],
     ]);
   });
 

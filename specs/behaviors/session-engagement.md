@@ -8,10 +8,16 @@ the transcripts, and never reimplements turn classification, day bucketing or
 cross-session dedupe.
 
 - **Every user turn is recorded as a prompt event.** One row per user-role
-  message with text and per queued prompt: its message ordinal, timestamp,
-  leading text, and the transcript's own flags (meta, sidechain, compaction
-  summary, queued). Recorded at ingest, append-only, in the same transaction
-  as the chunks; a continuity re-ingest replaces them with the chunks.
+  message with text and per queued prompt: its message ordinal, message id
+  (uuid), timestamp, leading text, the transcript's own flags (meta,
+  sidechain, compaction summary, queued) and its authorship fields (origin
+  kind, prompt source, queue priority). Recorded at ingest, append-only, in
+  the same transaction as the chunks; a continuity re-ingest replaces them
+  with the chunks.
+- **A prompt is counted once, however many transcripts carry it.** Resuming
+  or forking a session copies earlier turns into the new transcript with
+  their original message ids and timestamps. Engagement identifies a prompt
+  by its message id.
 - **A prompt is human unless something marks it automated.** Classification is
   a pure function of the recorded facts and the pattern lists, applied when
   engagement is read.
@@ -34,31 +40,60 @@ cross-session dedupe.
 
 ### Human or automated
 
-A prompt event is **automated** when any of these holds; otherwise it is
-**human**:
+A prompt event is classified in this order; the first rule that applies
+decides:
 
-- the transcript flags the turn as meta, as a sidechain turn (a prompt an
-  agent wrote for a subagent), or as a compaction summary
-- its text, after leading whitespace, starts with a built-in marker:
-  `<command-message>loop`, `<command-name>/loop`, an autonomous-loop sentinel
-  (`<<autonomous-loop`), `<task-notification`,
-  `This session is being continued`, `<local-command`, `Caveat:`,
-  `<system-reminder`, `[Request interrupted`, `<cross-session-message` (a
-  message another agent session sent into this one)
-- its leading text matches an instance-configured pattern
-  (`SESSIONS_AUTOMATED_PROMPT_PATTERNS`: newline-separated regular
-  expressions). The toolkit ships none: which scheduled slash commands and
-  bridged-message wrappers are automation is instance data.
+1. The transcript flags the turn as meta, as a sidechain turn (a prompt an
+   agent wrote for a subagent), or as a compaction summary → **automated**.
+2. The turn carries an origin kind. `human` → **human** — this includes a
+   typed slash command and a person typing `/loop` to start one. Any other
+   kind (`task-notification`, `peer`, `coordinator`, …) → **automated**.
+3. No origin kind, and the turn's queue priority is `later` → **automated**:
+   a scheduled wakeup, whether from `/loop` or from a self-paced loop
+   re-firing its own skill command.
+4. Its text, after leading whitespace, starts with a built-in marker →
+   **automated**: `<command-message>loop`, `<command-name>/loop`, an
+   autonomous-loop sentinel (`<<autonomous-loop`), `<task-notification`,
+   `This session is being continued`, `<local-command`, `Caveat:`,
+   `<bash-stdout`, `<bash-stderr` (the output of a `!` shell command; the
+   `<bash-input` turn is the person typing), `<system-reminder`,
+   `[Request interrupted`, `<cross-session-message` (a message another agent
+   session sent into this one). These carry transcripts from client versions
+   that recorded no authorship fields.
+5. Its leading text matches an instance-configured pattern
+   (`SESSIONS_AUTOMATED_PROMPT_PATTERNS`: newline-separated regular
+   expressions) → **automated**. The toolkit ships none: which bridged-message
+   wrappers are automation is instance data.
+6. Otherwise → **human**.
+
+The prompt source (`typed`, `queued`, `sdk`, `system`, …) is recorded but
+never decides on its own: `sdk` covers both people on remote clients and task
+notifications. The origin kind is the authorship fact.
 
 Each automated event reports which rule decided it (`meta`, `sidechain`,
-`compaction`, `loop`, `task-notification`, `local-command`, `system`,
-`interrupt`, `peer`, `instance`), so a consumer can see why a session reads as zero.
+`compaction`, `origin`, `task-notification`, `peer`, `scheduled`, `loop`,
+`local-command`, `system`, `interrupt`, `instance`), so a consumer can see why a session reads as zero.
 
 A queued prompt is classified by the same rules as a typed one: queueing says
 when it arrived, not who wrote it.
 
 The leading text kept per event is long enough to decide every rule above
 (256 characters) and no longer. Patterns only ever see that prefix.
+
+### One prompt, one owner
+
+Prompt events sharing a message id are one prompt. Copies within one
+transcript (a resumed session replaying its own history) and across
+transcripts (a fork, or a resume that opened a new session) collapse to one
+event before anything is counted.
+
+The prompt **belongs to one session**: of the sessions carrying it, the one
+that started first, then the one that ended first, then the lowest session
+id. The original stops where its continuation starts, so this picks the
+transcript the person was actually typing into. Every figure attributes the
+prompt to its owner only: a continuation's prompt counts and minutes cover
+the turns it originated, never its parent's past, and it is not listed under
+days before it existed. An event without a message id is its own prompt.
 
 ### Blocks
 
@@ -154,9 +189,16 @@ per-run byte budget, resumable, and a row-locked handoff to live ingest so no
 event is derived twice or dropped.
 
 When the task finishes a session it also **rebuilds that session's activity
-ranges** from the complete set of prompt-event timestamps and resets the
-parser's remembered range end to match. This repairs ranges already stored
-inverted, and any range that stopped short of the transcript's last turn.
+ranges** from the timestamps of the prompt events it owns (replayed copies
+of another session's turns excluded) and resets the parser's remembered
+range end to match. This repairs ranges already stored inverted, and any
+range that stopped short of the transcript's last turn. Sessions are
+backfilled in ownership order (started first, ended first, lowest id), so a
+prompt's owner is always settled before any continuation is rebuilt.
+
+Live ingest of a continuation still derives its ranges from every turn in
+its transcript, replayed ones included: `GET /sessions/activity` is a feed of
+when a transcript had turns, not an engagement measure.
 
 ### Activity ranges are monotone
 

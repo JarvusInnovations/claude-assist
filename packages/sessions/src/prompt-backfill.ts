@@ -24,13 +24,31 @@ export const DEFAULT_PROMPT_BACKFILL_BUDGET_BYTES = 16 * 1024 * 1024;
 
 export type PromptBackfillResult = ChunkBackfillResult;
 
-/** Rebuild one session's activity ranges from its prompt events. Must run
- * under the session's row lock. */
+/** Rebuild one session's activity ranges from the prompt events it owns —
+ * a turn replayed from an earlier-owned session (same uuid; that session
+ * started first, then ended first, then has the lower id) is excluded, and a
+ * uuid repeated within the transcript counts once. Must run under the
+ * session's row lock. */
 export async function rebuildActivityRanges(tx: postgres.Sql, sessionId: string): Promise<void> {
   const rows = await tx<{ ts: Date }[]>`
-    SELECT ts FROM sessions.prompt_events
-    WHERE session_id = ${sessionId}::uuid AND ts IS NOT NULL
-    ORDER BY ts
+    SELECT DISTINCT e.ts
+    FROM sessions.prompt_events e
+    JOIN sessions.sessions s ON s.id = e.session_id
+    WHERE e.session_id = ${sessionId}::uuid
+      AND e.ts IS NOT NULL
+      AND (
+        e.uuid IS NULL
+        OR NOT EXISTS (
+          SELECT 1
+          FROM sessions.prompt_events o
+          JOIN sessions.sessions os ON os.id = o.session_id
+          WHERE o.uuid = e.uuid
+            AND o.session_id <> e.session_id
+            AND (os.started_at, COALESCE(os.ended_at, 'infinity'::timestamptz), os.id)
+              < (s.started_at, COALESCE(s.ended_at, 'infinity'::timestamptz), s.id)
+        )
+      )
+    ORDER BY e.ts
   `;
   const { ranges, lastActivityEnd } = applyActivityTimestamps(
     [],

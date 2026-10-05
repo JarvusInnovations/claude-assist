@@ -385,14 +385,17 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
     const rows = await fastify.sql<
       {
         session_id: string;
+        uuid: string | null;
         ts: Date;
         head: string;
         is_meta: boolean;
         is_sidechain: boolean;
         is_compact_summary: boolean;
+        origin_kind: string | null;
+        queue_priority: string | null;
       }[]
     >`
-      SELECT session_id, ts, head, is_meta, is_sidechain, is_compact_summary
+      SELECT session_id, uuid, ts, head, is_meta, is_sidechain, is_compact_summary, origin_kind, queue_priority
       FROM sessions.prompt_events
       WHERE ts >= ${new Date(windowStart - margins.beforeMs)}
         AND ts < ${new Date(windowEnd + margins.afterMs)}
@@ -401,9 +404,17 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
 
     const events: EngagementEvent[] = rows.map((r) => ({
       sessionId: r.session_id,
+      uuid: r.uuid,
       tsMs: r.ts.getTime(),
       automatedBy: classifyPrompt(
-        { head: r.head, isMeta: r.is_meta, isSidechain: r.is_sidechain, isCompactSummary: r.is_compact_summary },
+        {
+          head: r.head,
+          isMeta: r.is_meta,
+          isSidechain: r.is_sidechain,
+          isCompactSummary: r.is_compact_summary,
+          originKind: r.origin_kind,
+          queuePriority: r.queue_priority,
+        },
         automatedPromptPatterns
       ),
     }));
@@ -412,9 +423,16 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
     const sessionRows =
       sessionIds.length > 0
         ? await fastify.sql<
-            { id: string; title: string | null; session_name: string | null; project_path: string | null }[]
+            {
+              id: string;
+              title: string | null;
+              session_name: string | null;
+              project_path: string | null;
+              started_at: Date;
+              ended_at: Date | null;
+            }[]
           >`
-            SELECT id, title, session_name, project_path
+            SELECT id, title, session_name, project_path, started_at, ended_at
             FROM sessions.sessions
             WHERE id = ANY(${sessionIds}::uuid[])
           `
@@ -430,6 +448,8 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
           sessionName: s.session_name ?? null,
           projectPath: s.project_path,
           projectName: s.project_path ? (projectNames.get(s.project_path) ?? null) : null,
+          startedMs: new Date(s.started_at).getTime(),
+          endedMs: s.ended_at ? new Date(s.ended_at).getTime() : null,
         },
       ])
     );

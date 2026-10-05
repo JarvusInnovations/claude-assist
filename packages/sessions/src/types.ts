@@ -79,6 +79,13 @@ export interface TranscriptMessage {
   isMeta?: boolean;
   /** The continuation summary a compaction writes as a user turn. */
   isCompactSummary?: boolean;
+  /** Authorship, on newer client versions: `human`, `task-notification`,
+   * `peer`, `coordinator`, … */
+  origin?: { kind?: string; [key: string]: unknown };
+  /** `typed`, `queued`, `suggestion_accepted`, `sdk`, `system`, … */
+  promptSource?: string;
+  /** `later` marks a scheduled wakeup (a `/loop` or self-paced loop firing). */
+  queuePriority?: string;
   userType?: string;
   message?: {
     role: 'user' | 'assistant';
@@ -175,6 +182,8 @@ export const PROMPT_HEAD_CHARS = 256;
  * (prompt-classifier.ts), never stored. */
 export interface PromptEvent {
   seq: number;
+  /** Message uuid — the prompt's identity across resumed/forked transcripts. */
+  uuid: string | null;
   ts: Date | null;
   /** Leading text, front-trimmed, at most PROMPT_HEAD_CHARS characters. */
   head: string;
@@ -182,6 +191,9 @@ export interface PromptEvent {
   isSidechain: boolean;
   isCompactSummary: boolean;
   queued: boolean;
+  originKind: string | null;
+  promptSource: string | null;
+  queuePriority: string | null;
 }
 
 /** One row of `sessions.transcript_chunks` — an immutable slice of the archive. */

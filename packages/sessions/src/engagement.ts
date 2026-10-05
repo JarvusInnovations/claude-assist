@@ -161,6 +161,8 @@ function toMinutes(ms: number): number {
 
 export interface EngagementEvent {
   sessionId: string;
+  /** Message uuid — the prompt's identity across transcripts; null = unique. */
+  uuid: string | null;
   tsMs: number;
   /** `null` = human; otherwise the rule that marked it automated. */
   automatedBy: AutomatedRule | null;
@@ -171,6 +173,45 @@ export interface EngagementSessionMeta {
   sessionName: string | null;
   projectPath: string | null;
   projectName: string | null;
+  /** Ownership order (spec: "One prompt, one owner"). */
+  startedMs: number;
+  /** Null while the session has no recorded end — sorts last. */
+  endedMs: number | null;
+}
+
+/** Ownership order: started first, then ended first, then lowest id. Negative
+ * when `a` owns before `b`. */
+export function compareOwnership(
+  a: { id: string; startedMs: number; endedMs: number | null },
+  b: { id: string; startedMs: number; endedMs: number | null }
+): number {
+  if (a.startedMs !== b.startedMs) return a.startedMs - b.startedMs;
+  const ae = a.endedMs ?? Infinity;
+  const be = b.endedMs ?? Infinity;
+  if (ae !== be) return ae - be;
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
+/**
+ * Collapse copies of one prompt (same uuid, within or across transcripts) to
+ * the single event owned by the earliest session in ownership order. Events
+ * without a uuid pass through. Output keeps the input's order.
+ */
+export function dedupePrompts(
+  events: readonly EngagementEvent[],
+  sessions: ReadonlyMap<string, EngagementSessionMeta>
+): EngagementEvent[] {
+  const owner = new Map<string, EngagementEvent>();
+  const rank = (e: EngagementEvent) => {
+    const m = sessions.get(e.sessionId);
+    return { id: e.sessionId, startedMs: m?.startedMs ?? Infinity, endedMs: m?.endedMs ?? null };
+  };
+  for (const e of events) {
+    if (e.uuid === null) continue;
+    const cur = owner.get(e.uuid);
+    if (!cur || compareOwnership(rank(e), rank(cur)) < 0) owner.set(e.uuid, e);
+  }
+  return events.filter((e) => e.uuid === null || owner.get(e.uuid) === e);
 }
 
 interface HumanStats {
@@ -257,20 +298,22 @@ function humanStats(blocks: readonly Block[], day: LocalDay, t: Tally | undefine
 }
 
 /**
- * Roll classified prompt events up into per-day figures. `events` must cover
- * the window widened by `engagementMargins`; events outside the days
+ * Roll classified prompt events up into per-day figures. `rawEvents` must
+ * cover the window widened by `engagementMargins`; events outside the days
  * themselves shape blocks but are never counted as that window's prompts.
+ * Copies of one prompt collapse to its owner first (`dedupePrompts`).
  *
  * The three minute figures pool prompts at different scopes *before* merging
  * (day: all sessions; project: its sessions; session: itself), so they are
  * deliberately not additive — see the spec's table.
  */
 export function computeEngagement(
-  events: readonly EngagementEvent[],
+  rawEvents: readonly EngagementEvent[],
   sessions: ReadonlyMap<string, EngagementSessionMeta>,
   params: EngagementParams
 ): EngagementDay[] {
   const { days, blockMs, gapMs, nowMs } = params;
+  const events = dedupePrompts(rawEvents, sessions);
   const projectKey = (sessionId: string): string => sessions.get(sessionId)?.projectPath ?? '';
 
   const allHuman: number[] = [];

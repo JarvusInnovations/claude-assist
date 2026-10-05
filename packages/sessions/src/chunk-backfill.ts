@@ -111,7 +111,12 @@ export async function runChunkBackfillCycle(
   let chunksProcessed = 0;
   let sessionsCompleted = 0;
 
-  // Guards against spinning forever within one cycle: `ORDER BY id LIMIT 1`
+  // Sessions are taken in prompt-ownership order (specs/behaviors/
+  // session-engagement.md: started first, ended first, lowest id), so a
+  // derivation that compares a session against the ones that own its
+  // replayed turns always finds those already complete.
+  //
+  // Guards against spinning forever within one cycle: the ORDER BY ... LIMIT 1
   // deterministically returns the same session first every time, so if a
   // step neither consumes budget nor completes the session (only possible if
   // it has zero chunks currently stored — e.g. mid-first-ingest), retrying
@@ -122,7 +127,7 @@ export async function runChunkBackfillCycle(
     const [session] = await sql<{ id: string }[]>`
       SELECT id FROM sessions.sessions
       WHERE ${sql(spec.columns.done)} = false
-      ORDER BY id
+      ORDER BY started_at, ended_at NULLS LAST, id
       LIMIT 1
     `;
     if (!session) break; // every session is caught up

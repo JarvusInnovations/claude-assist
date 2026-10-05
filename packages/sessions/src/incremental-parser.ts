@@ -193,6 +193,20 @@ function extractTextContent(content: string | ContentBlock[]): string {
     .join('\n');
 }
 
+function optionalString(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? sanitizeText(value) : null;
+}
+
+/** The authorship fields exactly as the transcript states them — null when
+ * absent (older client versions), never defaulted. */
+function authorship(msg: TranscriptMessage): Pick<PromptEvent, 'originKind' | 'promptSource' | 'queuePriority'> {
+  return {
+    originKind: optionalString(msg.origin?.kind),
+    promptSource: optionalString(msg.promptSource),
+    queuePriority: optionalString(msg.queuePriority),
+  };
+}
+
 function parseTimestamp(value: string | undefined): Date | null {
   if (!value) return null;
   const d = new Date(value);
@@ -430,12 +444,14 @@ export function feed(checkpoint: ParseCheckpoint, lines: readonly string[]): Fee
         if (msg.timestamp) newActivityTimestamps.push(new Date(msg.timestamp));
         delta.promptEvents.push({
           seq,
+          uuid: optionalString(msg.uuid),
           ts: parseTimestamp(msg.timestamp),
           head: promptHead(text),
           isMeta: msg.isMeta === true,
           isSidechain: msg.isSidechain === true,
           isCompactSummary: msg.isCompactSummary === true,
           queued: false,
+          ...authorship(msg),
         });
       }
     }
@@ -450,12 +466,14 @@ export function feed(checkpoint: ParseCheckpoint, lines: readonly string[]): Fee
       if (msg.timestamp) newActivityTimestamps.push(new Date(msg.timestamp));
       delta.promptEvents.push({
         seq,
+        uuid: optionalString(msg.uuid),
         ts: parseTimestamp(msg.timestamp),
         head: promptHead(msg.attachment.prompt),
         isMeta: msg.isMeta === true,
         isSidechain: msg.isSidechain === true,
         isCompactSummary: false,
         queued: true,
+        ...authorship(msg),
       });
     }
 

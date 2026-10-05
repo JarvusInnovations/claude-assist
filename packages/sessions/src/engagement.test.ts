@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'bun:test';
 import {
   buildBlocks,
+  compareOwnership,
   computeEngagement,
+  dedupePrompts,
   engagementMargins,
   isValidTimeZone,
   localDays,
@@ -20,12 +22,26 @@ const NY = 'America/New_York';
 const at = (isoLocalAsUtc: string): number => new Date(isoLocalAsUtc).getTime();
 const day = (date: string): number => parseLocalDate(date)!;
 
-function meta(projectPath: string | null): EngagementSessionMeta {
-  return { title: null, sessionName: null, projectPath, projectName: projectPath?.split('/').pop() ?? null };
+function meta(projectPath: string | null, started = '2026-01-01T00:00:00Z', ended: string | null = null): EngagementSessionMeta {
+  return {
+    title: null,
+    sessionName: null,
+    projectPath,
+    projectName: projectPath?.split('/').pop() ?? null,
+    startedMs: at(started),
+    endedMs: ended ? at(ended) : null,
+  };
 }
-const human = (sessionId: string, ts: string): EngagementEvent => ({ sessionId, tsMs: at(ts), automatedBy: null });
+let uuidCounter = 0;
+const human = (sessionId: string, ts: string, uuid?: string): EngagementEvent => ({
+  sessionId,
+  uuid: uuid ?? `u${++uuidCounter}`,
+  tsMs: at(ts),
+  automatedBy: null,
+});
 const auto = (sessionId: string, ts: string, rule: EngagementEvent['automatedBy'] = 'loop'): EngagementEvent => ({
   sessionId,
+  uuid: `u${++uuidCounter}`,
   tsMs: at(ts),
   automatedBy: rule,
 });
@@ -189,7 +205,7 @@ describe('computeEngagement', () => {
   it('lists every day in the window, zeroed when empty, and rounds each figure once', () => {
     // Three isolated 20-second blocks (clamped by now): 60s total → 1 minute, not 0+0+0.
     const base = at('2026-09-17T14:00:00Z');
-    const events = [0, 60, 120].map((m) => ({ sessionId: 'a', tsMs: base + m * MIN, automatedBy: null }) as EngagementEvent);
+    const events = [0, 60, 120].map((m) => ({ sessionId: 'a', uuid: null, tsMs: base + m * MIN, automatedBy: null }) as EngagementEvent);
     const days = computeEngagement(events, new Map([['a', meta(null)]]), {
       days: localDays(day('2026-09-16'), day('2026-09-18'), NY),
       blockMs: 20_000,
@@ -199,5 +215,69 @@ describe('computeEngagement', () => {
     expect(days.map((d) => d.date)).toEqual(['2026-09-16', '2026-09-17', '2026-09-18']);
     expect(days[1]!.envelope_minutes).toBe(1);
     expect(days[0]).toMatchObject({ envelope_minutes: 0, human_prompt_count: 0, projects: [], sessions: [] });
+  });
+});
+
+describe('one prompt, one owner', () => {
+  it('a resumed session replaying its own history counts each uuid once', () => {
+    const events = [human('a', '2026-09-17T14:00:00Z', 'p1'), human('a', '2026-09-17T14:00:00Z', 'p1'), human('a', '2026-09-17T14:20:00Z', 'p2')];
+    const [d] = run(events, { a: '/repos/x' }, '2026-09-17', '2026-09-17');
+    expect(d!.human_prompt_count).toBe(2);
+    expect(d!.sessions[0]!.human_prompt_count).toBe(2);
+  });
+
+  it('a fork carries its parent\'s turns: they count once, for the parent, and the fork covers only what it originated', () => {
+    // Parent `p` ran 10:00–10:20 local and stopped when the fork `f` opened;
+    // `f` copies those three turns (same uuids, same timestamps) and adds its
+    // own the next day.
+    const shared = [
+      ['2026-09-17T14:00:00Z', 's1'],
+      ['2026-09-17T14:10:00Z', 's2'],
+      ['2026-09-17T14:20:00Z', 's3'],
+    ] as const;
+    const events = [
+      ...shared.map(([ts, id]) => human('p', ts, id)),
+      ...shared.map(([ts, id]) => human('f', ts, id)),
+      human('f', '2026-09-18T15:00:00Z', 'f1'),
+      human('f', '2026-09-18T15:10:00Z', 'f2'),
+    ];
+    const sessions = new Map<string, EngagementSessionMeta>([
+      ['p', meta('/repos/x', '2026-09-17T14:00:00Z', '2026-09-17T14:21:00Z')],
+      ['f', meta('/repos/x', '2026-09-17T14:00:00Z', '2026-09-18T15:11:00Z')], // same start: the copies
+    ]);
+    const days = computeEngagement(events, sessions, {
+      days: localDays(day('2026-09-17'), day('2026-09-18'), NY),
+      blockMs: BLOCK,
+      gapMs: GAP,
+      nowMs: FAR_FUTURE,
+    });
+    const [d17, d18] = days;
+    expect(d17!.human_prompt_count).toBe(3); // not 6
+    expect(d17!.envelope_minutes).toBe(35);
+    expect(d17!.projects[0]).toMatchObject({ human_prompt_count: 3, human_minutes: 35 });
+    expect(d17!.sessions.map((s) => s.id)).toEqual(['p']); // the fork did not exist yet
+    expect(d17!.sessions[0]).toMatchObject({ human_prompt_count: 3, human_minutes: 35 });
+    expect(d18!.sessions.map((s) => [s.id, s.human_prompt_count, s.human_minutes])).toEqual([['f', 2, 25]]);
+  });
+
+  it('ownership falls back to end time, then id; events without a uuid are their own prompt', () => {
+    const a = { id: 'a', startedMs: 0, endedMs: 50 };
+    const b = { id: 'b', startedMs: 0, endedMs: null };
+    const c = { id: 'c', startedMs: 0, endedMs: 50 };
+    expect(compareOwnership(a, b)).toBeLessThan(0); // ended first wins over still open
+    expect(compareOwnership(a, c)).toBeLessThan(0); // then lowest id
+    expect(compareOwnership({ id: 'z', startedMs: -1, endedMs: null }, a)).toBeLessThan(0); // started first wins
+
+    const sessions = new Map([['a', meta(null, '2026-01-01T00:00:00Z', '2026-01-01T01:00:00Z')], ['b', meta(null)]]);
+    const kept = dedupePrompts(
+      [
+        { sessionId: 'b', uuid: 'x', tsMs: 1, automatedBy: null },
+        { sessionId: 'a', uuid: 'x', tsMs: 1, automatedBy: null },
+        { sessionId: 'b', uuid: null, tsMs: 2, automatedBy: null },
+        { sessionId: 'a', uuid: null, tsMs: 2, automatedBy: null },
+      ],
+      sessions
+    );
+    expect(kept.map((e) => [e.sessionId, e.uuid])).toEqual([['a', 'x'], ['b', null], ['a', null]]);
   });
 });

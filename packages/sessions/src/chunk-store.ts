@@ -495,19 +495,26 @@ export async function insertPromptEvents(
   await forEachBatch(events, CONTEXT_EVENT_INSERT_BATCH, (batch) => {
     return tx`
       INSERT INTO sessions.prompt_events
-        (session_id, seq, ts, head, is_meta, is_sidechain, is_compact_summary, queued)
-      SELECT ${sessionId}::uuid, seq, ts, head,
-        is_meta = 1, is_sidechain = 1, is_compact_summary = 1, queued = 1
+        (session_id, seq, uuid, ts, head, is_meta, is_sidechain, is_compact_summary, queued,
+         origin_kind, prompt_source, queue_priority)
+      SELECT ${sessionId}::uuid, seq, uuid, ts, head,
+        is_meta = 1, is_sidechain = 1, is_compact_summary = 1, queued = 1,
+        origin_kind, prompt_source, queue_priority
       FROM unnest(
         ${batch.map((e) => e.seq)}::int[],
+        ${batch.map((e) => e.uuid)}::text[],
         ${batch.map((e) => e.ts?.toISOString() ?? null)}::timestamptz[],
         ${batch.map((e) => e.head)}::text[],
         -- Flags travel as ints: postgres.js can't infer a boolean[] parameter.
         ${batch.map((e) => (e.isMeta ? 1 : 0))}::int[],
         ${batch.map((e) => (e.isSidechain ? 1 : 0))}::int[],
         ${batch.map((e) => (e.isCompactSummary ? 1 : 0))}::int[],
-        ${batch.map((e) => (e.queued ? 1 : 0))}::int[]
-      ) AS u(seq, ts, head, is_meta, is_sidechain, is_compact_summary, queued)
+        ${batch.map((e) => (e.queued ? 1 : 0))}::int[],
+        ${batch.map((e) => e.originKind)}::text[],
+        ${batch.map((e) => e.promptSource)}::text[],
+        ${batch.map((e) => e.queuePriority)}::text[]
+      ) AS u(seq, uuid, ts, head, is_meta, is_sidechain, is_compact_summary, queued,
+             origin_kind, prompt_source, queue_priority)
       ON CONFLICT (session_id, seq) DO NOTHING
     `;
   });
