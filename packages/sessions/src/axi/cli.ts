@@ -7,6 +7,7 @@ import { transcriptCommand, TRANSCRIPT_HELP } from "./commands/transcript.js";
 import { grepCommand, GREP_HELP } from "./commands/grep.js";
 import { detailsCommand, DETAILS_HELP } from "./commands/detail.js";
 import { activityCommand, ACTIVITY_HELP } from "./commands/activity.js";
+import { engagementCommand, ENGAGEMENT_HELP } from "./commands/engagement.js";
 import { statsCommand, STATS_HELP } from "./commands/stats.js";
 import { machinesCommand, MACHINES_HELP } from "./commands/machines.js";
 import { outlinesCommand, OUTLINES_HELP, syncCommand, SYNC_HELP, shareCommand, SHARE_HELP } from "./commands/manage.js";
@@ -52,6 +53,7 @@ const COMMAND_HELP: Record<string, string> = {
   transcript: TRANSCRIPT_HELP,
   details: DETAILS_HELP,
   activity: ACTIVITY_HELP,
+  engagement: ENGAGEMENT_HELP,
   stats: STATS_HELP,
   machines: MACHINES_HELP,
   outlines: OUTLINES_HELP,
@@ -69,6 +71,7 @@ const COMMANDS: Record<string, AxiCliCommand<undefined>> = {
   transcript: transcriptCommand,
   details: detailsCommand,
   activity: activityCommand,
+  engagement: engagementCommand,
   stats: statsCommand,
   machines: machinesCommand,
   outlines: outlinesCommand,
