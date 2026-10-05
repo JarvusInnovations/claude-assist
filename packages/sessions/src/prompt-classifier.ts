@@ -10,6 +10,10 @@ export type AutomatedRule =
   | 'meta'
   | 'sidechain'
   | 'compaction'
+  /** An origin kind other than `human` that has no rule of its own. */
+  | 'origin'
+  /** A scheduled wakeup: no origin, queue priority `later`. */
+  | 'scheduled'
   | 'loop'
   | 'task-notification'
   | 'local-command'
@@ -24,10 +28,21 @@ export interface PromptFacts {
   isMeta: boolean;
   isSidechain: boolean;
   isCompactSummary: boolean;
+  /** `origin.kind` as the transcript recorded it; null on older clients. */
+  originKind?: string | null;
+  /** `queuePriority`; `later` marks a scheduled wakeup. */
+  queuePriority?: string | null;
 }
 
+/** Origin kinds with a rule of their own; any other non-human kind is `origin`. */
+const ORIGIN_RULES: Readonly<Record<string, AutomatedRule>> = {
+  'task-notification': 'task-notification',
+  peer: 'peer',
+};
+
 /**
- * Prefixes the client itself writes into user turns nobody typed. Only
+ * Prefixes the client itself writes into user turns nobody typed — the
+ * fallback for transcripts that carry no authorship fields. Only
  * client-emitted wrappers belong here; anything naming a particular bot,
  * bridge or scheduled command is instance data and arrives through
  * `SESSIONS_AUTOMATED_PROMPT_PATTERNS`.
@@ -40,6 +55,9 @@ const BUILT_IN_MARKERS: ReadonlyArray<readonly [prefix: string, rule: AutomatedR
   ['This session is being continued', 'compaction'],
   ['<local-command', 'local-command'],
   ['Caveat:', 'local-command'],
+  // Output of a `!` shell command; the `<bash-input>` turn is the person.
+  ['<bash-stdout', 'local-command'],
+  ['<bash-stderr', 'local-command'],
   ['<system-reminder', 'system'],
   ['[Request interrupted', 'interrupt'],
   // A message another agent session sent into this one.
@@ -51,6 +69,15 @@ export function classifyPrompt(facts: PromptFacts, instancePatterns: readonly Re
   if (facts.isMeta) return 'meta';
   if (facts.isSidechain) return 'sidechain';
   if (facts.isCompactSummary) return 'compaction';
+
+  // The transcript's own authorship claim decides before any text does: a
+  // typed slash command (even `/loop`) is human; anything else with an
+  // origin is not. Absent on older client versions.
+  if (facts.originKind) {
+    if (facts.originKind === 'human') return null;
+    return ORIGIN_RULES[facts.originKind] ?? 'origin';
+  }
+  if (facts.queuePriority === 'later') return 'scheduled';
 
   const head = facts.head.trimStart();
   for (const [prefix, rule] of BUILT_IN_MARKERS) {

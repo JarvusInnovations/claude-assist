@@ -381,6 +381,97 @@ maybeDescribe('session engagement — integration (real Postgres)', () => {
     expect(utc.days.map((d: any) => d.envelope_minutes)).toEqual([65, 15]);
   });
 
+  it('a fork carrying its parent\'s turns counts them once, and its rebuilt ranges cover only its own', async () => {
+    const sync = newSync('it-eng-fork', { chunkMaxBytes: 300 });
+    // Parent: 12:00–12:19 on the 1st, then stopped. Fork: the same twelve
+    // lines verbatim (same uuid, same timestamp), then its own turns a day
+    // later. Both files therefore have the same started_at.
+    const sharedLines: string[] = [];
+    for (let i = 0; i < 20; i++) sharedLines.push(userLine(`turn ${i}`, `2025-08-01T12:${String(i).padStart(2, '0')}:00Z`));
+    const parent = await newSession('-fork', sharedLines.join(''));
+    let forkContent = sharedLines.join('');
+    // The parent's own history replayed once more within the fork, as a
+    // resume does, then the fork's new turns.
+    forkContent += sharedLines[5]!;
+    for (let i = 0; i < 10; i++) forkContent += userLine(`fork ${i}`, `2025-08-02T15:${String(i).padStart(2, '0')}:00Z`);
+    const fork = await newSession('-fork', forkContent);
+    await sync.syncLocal();
+
+    const a = await buildApp({ ownerTz: 'UTC' });
+    const body = (await get(a, { from: '2025-08-01', to: '2025-08-02' })).json() as any;
+    const [d1, d2] = body.days;
+    expect(d1.human_prompt_count).toBe(20); // not 41
+    expect(d1.envelope_minutes).toBe(34);
+    expect(d1.sessions.map((s: any) => s.id)).toEqual([parent.id]); // the fork did not exist yet
+    expect(d1.sessions[0]).toMatchObject({ human_prompt_count: 20, human_minutes: 34 });
+    expect(d2.sessions.map((s: any) => [s.id, s.human_prompt_count, s.human_minutes])).toEqual([[fork.id, 10, 24]]);
+
+    // Backfill both as pre-existing. Ownership order processes the parent
+    // first; the fork's rebuilt ranges then exclude the replayed turns.
+    await markPreExisting(parent.id);
+    await markPreExisting(fork.id);
+    const order: string[] = [];
+    for (let i = 0; i < 400; i++) {
+      await runPromptBackfillCycle(sql, 350);
+      for (const id of [parent.id, fork.id]) {
+        if (!order.includes(id) && (await sessionRow(id)).prompt_backfill_done) order.push(id);
+      }
+      if (order.length === 2) break;
+    }
+    expect(order).toEqual([parent.id, fork.id]);
+    expect((await sessionRow(parent.id)).activity_ranges).toEqual([
+      { start: '2025-08-01T12:00:00.000Z', end: '2025-08-01T12:19:00.000Z' },
+    ]);
+    expect((await sessionRow(fork.id)).activity_ranges).toEqual([
+      { start: '2025-08-02T15:00:00.000Z', end: '2025-08-02T15:09:00.000Z' },
+    ]);
+  });
+
+  it('a session of self-paced loop wakeups reports 0 human minutes; the same command typed is human', async () => {
+    const sync = newSync('it-eng-wakeups');
+    let content = '';
+    for (let m = 0; m < 180; m += 20) {
+      content += userLine(
+        '<command-message>EXAMPLE-sync</command-message>\n<command-name>/EXAMPLE-sync</command-name>',
+        new Date(Date.parse('2025-09-01T12:00:00Z') + m * 60_000).toISOString(),
+        { queuePriority: 'later' }
+      );
+    }
+    const bot = await newSession('-wakeups', content);
+    // A person typing the same command, on a client that records authorship,
+    // plus a `!` shell command: the input is the person, the output is not.
+    const person = await newSession(
+      '-typed',
+      userLine('<command-message>EXAMPLE-sync</command-message>', '2025-09-01T18:00:00Z', {
+        origin: { kind: 'human' },
+        promptSource: 'typed',
+      }) +
+        userLine('<bash-input>git status</bash-input>', '2025-09-01T18:20:00Z') +
+        userLine('<bash-stdout>On branch main</bash-stdout><bash-stderr></bash-stderr>', '2025-09-01T18:20:01Z') +
+        userLine('a task notification carrying a human source', '2025-09-01T18:40:00Z', {
+          origin: { kind: 'task-notification' },
+          promptSource: 'sdk',
+        })
+    );
+    await sync.syncLocal();
+
+    const a = await buildApp({ ownerTz: 'UTC' });
+    const [d] = ((await get(a, { from: '2025-09-01', to: '2025-09-01' })).json() as any).days;
+    const byId = new Map<string, any>(d.sessions.map((s: any) => [s.id, s]));
+    expect(byId.get(bot.id)).toMatchObject({
+      human_minutes: 0,
+      human_prompt_count: 0,
+      automated_prompt_count: 9,
+      automated_by: { scheduled: 9 },
+    });
+    expect(byId.get(person.id)).toMatchObject({
+      human_prompt_count: 2,
+      human_minutes: 35,
+      automated_by: { 'local-command': 1, 'task-notification': 1 },
+    });
+    expect(d.envelope_minutes).toBe(35);
+  });
+
   it('an instance pattern reclassifies past days with no re-ingest', async () => {
     const sync = newSync('it-eng-pattern');
     await newSession(

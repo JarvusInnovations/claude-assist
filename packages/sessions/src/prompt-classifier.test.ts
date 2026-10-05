@@ -27,9 +27,31 @@ describe('classifyPrompt', () => {
     ['<system-reminder>\nnote', 'system'],
     ['[Request interrupted by user]', 'interrupt'],
     ['<cross-session-message from="x">', 'peer'],
+    ['<bash-stdout>total 12\ndrwxr-xr-x</bash-stdout>', 'local-command'],
+    ['<bash-stderr>ls: no such file</bash-stderr>', 'local-command'],
   ] as const)('marks %p as %s', (head, rule) => {
     expect(classifyPrompt(facts(head))).toBe(rule);
     expect(classifyPrompt(facts(`\n  ${head}`))).toBe(rule);
+  });
+
+  it('the origin kind decides before text: human is human, anything else is not', () => {
+    // A self-paced loop re-firing its own skill command, with no origin.
+    const wakeup = facts('<command-message>EXAMPLE-sync</command-message>\n<command-name>/EXAMPLE-sync</command-name>', {
+      queuePriority: 'later',
+    });
+    expect(classifyPrompt(wakeup)).toBe('scheduled');
+    // The same text typed by a person, on a client that records authorship.
+    expect(classifyPrompt(facts(wakeup.head, { originKind: 'human' }))).toBeNull();
+    // A person typing /loop to start one is human; the loop's firings are not.
+    expect(classifyPrompt(facts('<command-message>loop</command-message>', { originKind: 'human' }))).toBeNull();
+    expect(classifyPrompt(facts('<command-message>loop</command-message>', { queuePriority: 'later' }))).toBe('scheduled');
+    expect(classifyPrompt(facts('<command-message>loop</command-message>'))).toBe('loop');
+
+    expect(classifyPrompt(facts('anything', { originKind: 'task-notification' }))).toBe('task-notification');
+    expect(classifyPrompt(facts('anything', { originKind: 'peer' }))).toBe('peer');
+    expect(classifyPrompt(facts('anything', { originKind: 'coordinator' }))).toBe('origin');
+    // `<bash-input>` is the person typing; its output is not.
+    expect(classifyPrompt(facts('<bash-input>ls -la</bash-input>'))).toBeNull();
   });
 
   it('transcript flags decide before text', () => {
