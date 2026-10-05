@@ -43,7 +43,8 @@ A prompt event is **automated** when any of these holds; otherwise it is
   `<command-message>loop`, `<command-name>/loop`, an autonomous-loop sentinel
   (`<<autonomous-loop`), `<task-notification`,
   `This session is being continued`, `<local-command`, `Caveat:`,
-  `<system-reminder`, `[Request interrupted`
+  `<system-reminder`, `[Request interrupted`, `<cross-session-message` (a
+  message another agent session sent into this one)
 - its leading text matches an instance-configured pattern
   (`SESSIONS_AUTOMATED_PROMPT_PATTERNS`: newline-separated regular
   expressions). The toolkit ships none: which scheduled slash commands and
@@ -51,7 +52,7 @@ A prompt event is **automated** when any of these holds; otherwise it is
 
 Each automated event reports which rule decided it (`meta`, `sidechain`,
 `compaction`, `loop`, `task-notification`, `local-command`, `system`,
-`interrupt`, `instance`), so a consumer can see why a session reads as zero.
+`interrupt`, `peer`, `instance`), so a consumer can see why a session reads as zero.
 
 A queued prompt is classified by the same rules as a typed one: queueing says
 when it arrived, not who wrote it.

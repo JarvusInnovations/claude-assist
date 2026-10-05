@@ -15,6 +15,7 @@ export type AutomatedRule =
   | 'local-command'
   | 'system'
   | 'interrupt'
+  | 'peer'
   | 'instance';
 
 export interface PromptFacts {
@@ -41,6 +42,8 @@ const BUILT_IN_MARKERS: ReadonlyArray<readonly [prefix: string, rule: AutomatedR
   ['Caveat:', 'local-command'],
   ['<system-reminder', 'system'],
   ['[Request interrupted', 'interrupt'],
+  // A message another agent session sent into this one.
+  ['<cross-session-message', 'peer'],
 ];
 
 /** `null` means human; otherwise the rule that marked the prompt automated. */
