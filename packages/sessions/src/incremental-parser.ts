@@ -218,14 +218,22 @@ function extractFileTouch(tool: ToolUseBlock): { path: string; operation: FileOp
   return null;
 }
 
-/** Merge new user-activity timestamps (already chronological) against a
- * checkpoint's `lastActivityEnd`, producing an extend-signal plus any new
- * ranges — equivalent to recomputing `computeActivityRanges` over the whole
- * session's timestamps, without re-scanning history. */
+/** Merge new user-activity timestamps against a checkpoint's
+ * `lastActivityEnd`, producing an extend-signal plus any new ranges —
+ * equivalent to recomputing `computeActivityRanges` over the whole session's
+ * timestamps, without re-scanning history.
+ *
+ * Ranges are monotone (specs/behaviors/session-engagement.md): the delta is
+ * ordered first, and a timestamp at or before `lastEnd` — a replayed line in
+ * a resumed or forked session — is dropped, so the last range's end only
+ * ever moves forward. */
 function mergeActivityRanges(
   lastEnd: Date | null,
-  timestamps: Date[]
+  rawTimestamps: Date[]
 ): { extendLastRangeEnd: string | null; newActivityRanges: ActivityRange[] } {
+  const timestamps = rawTimestamps
+    .filter((ts) => !Number.isNaN(ts.getTime()) && (!lastEnd || ts.getTime() > lastEnd.getTime()))
+    .sort((x, y) => x.getTime() - y.getTime());
   if (timestamps.length === 0) return { extendLastRangeEnd: null, newActivityRanges: [] };
 
   let idx = 0;

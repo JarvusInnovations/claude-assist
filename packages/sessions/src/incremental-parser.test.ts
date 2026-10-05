@@ -365,3 +365,46 @@ describe('incremental-parser: checkpoint size stays bounded', () => {
     expect(checkpointBytes).toBeLessThan(50_000);
   });
 });
+
+describe('activity ranges are monotone (specs/behaviors/session-engagement.md)', () => {
+  const base = Date.UTC(2026, 8, 17, 12, 0, 0);
+  const MIN = 60_000;
+  const DAY = 86_400_000;
+
+  function rangesAfter(feeds: string[][]): SessionAggregate['activityRanges'] {
+    let cp = EMPTY_CHECKPOINT;
+    let agg: SessionAggregate = EMPTY_AGGREGATE;
+    for (const lines of feeds) {
+      const r = feed(cp, lines);
+      cp = r.checkpoint;
+      agg = mergeParseDelta(agg, r.delta);
+    }
+    return agg.activityRanges;
+  }
+
+  it('a replayed older turn in a later delta never moves the last range end backward', () => {
+    const ranges = rangesAfter([
+      [userLine('a', tsAt(base, 0)).line, userLine('b', tsAt(base, 10 * MIN)).line],
+      // Resumed session: the delta leads with a line replayed from weeks ago.
+      [userLine('old', tsAt(base, -22 * DAY)).line],
+      [userLine('c', tsAt(base, 20 * MIN)).line],
+    ]);
+    expect(ranges).toEqual([{ start: tsAt(base, 0), end: tsAt(base, 20 * MIN) }]);
+    for (const r of ranges) expect(new Date(r.end).getTime()).toBeGreaterThanOrEqual(new Date(r.start).getTime());
+  });
+
+  it('orders an unsorted delta before merging', () => {
+    const ranges = rangesAfter([
+      [userLine('a', tsAt(base, 0)).line],
+      [
+        userLine('late', tsAt(base, 3 * 60 * MIN)).line,
+        userLine('old', tsAt(base, -5 * DAY)).line,
+        userLine('near', tsAt(base, 5 * MIN)).line,
+      ],
+    ]);
+    expect(ranges).toEqual([
+      { start: tsAt(base, 0), end: tsAt(base, 5 * MIN) },
+      { start: tsAt(base, 3 * 60 * MIN), end: tsAt(base, 3 * 60 * MIN) },
+    ]);
+  });
+});
