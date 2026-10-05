@@ -125,8 +125,21 @@ zone; no date library is added.
 - Running `build:skills` restamps the version constant in every skill bundle;
   only the sessions bundle is committed here and `check:skills` passes.
 
+- **Review on PR #260 changed the shape before merge.** Prompt events gained
+  the message uuid and the transcript's authorship fields (`origin.kind`,
+  `promptSource`, `queuePriority`), checked against local transcripts first:
+  forks and resumes copy earlier turns verbatim (same uuid, same timestamp,
+  `sessionId` rewritten, so `sessionId` is no fork signal), and self-paced
+  loop wakeups carry `queuePriority: "later"` with no origin. Migration 021
+  was edited in place since it had not shipped. The backfill now walks
+  sessions in ownership order so a fork's rebuild can exclude its parent's
+  turns.
+
 ## Follow-ups
 
+- Issue [#261](https://github.com/JarvusInnovations/claude-assist/issues/261)
+  — per-machine `last_seen_at` / `last_ingested_at`, and beat the ingest
+  heartbeat on an inventory-only cycle so idle satellites don't page.
 - Tracked as: after deploy, once `SELECT count(*) FROM sessions.sessions WHERE
   NOT prompt_backfill_done` reaches 0, run the two open validation queries
   (any `activity_ranges` element with `end < start`; any session whose latest
