@@ -12,6 +12,7 @@ function emptyDelta(overrides: Partial<ParseDelta> = {}): ParseDelta {
     messageIndexRows: [],
     contextReadings: [],
     compactions: [],
+    promptEvents: [],
     inputTokens: 0,
     outputTokens: 0,
     cacheReadTokens: 0,

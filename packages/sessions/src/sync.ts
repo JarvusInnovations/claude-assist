@@ -411,6 +411,7 @@ export class SyncService {
       messageIndexRows: feedDelta.messageIndexRows,
       contextReadings: feedDelta.contextReadings,
       compactions: feedDelta.compactions,
+      promptEvents: feedDelta.promptEvents,
       checkpoint: finalCheckpoint,
       ingestedBytes,
       isNew: params.isNewSession,

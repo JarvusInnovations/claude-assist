@@ -75,6 +75,10 @@ export interface TranscriptMessage {
   slug?: string;
   agentId?: string;
   isSidechain?: boolean;
+  /** Client-injected turn (skill bodies, caveats) — not something a person typed. */
+  isMeta?: boolean;
+  /** The continuation summary a compaction writes as a user turn. */
+  isCompactSummary?: boolean;
   userType?: string;
   message?: {
     role: 'user' | 'assistant';
@@ -159,6 +163,25 @@ export interface ContextCompaction {
   trigger: string | null;
   preTokens: number | null;
   postTokens: number | null;
+}
+
+/** How much of a prompt's leading text a prompt event keeps — enough to
+ * decide every classification rule, no more
+ * (specs/behaviors/session-engagement.md). */
+export const PROMPT_HEAD_CHARS = 256;
+
+/** One user turn with text, or one queued prompt — the facts the transcript
+ * states about it. Whether it is human or automated is decided at read time
+ * (prompt-classifier.ts), never stored. */
+export interface PromptEvent {
+  seq: number;
+  ts: Date | null;
+  /** Leading text, front-trimmed, at most PROMPT_HEAD_CHARS characters. */
+  head: string;
+  isMeta: boolean;
+  isSidechain: boolean;
+  isCompactSummary: boolean;
+  queued: boolean;
 }
 
 /** One row of `sessions.transcript_chunks` — an immutable slice of the archive. */

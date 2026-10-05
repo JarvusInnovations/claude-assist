@@ -38,6 +38,7 @@ function baseParams(overrides: Partial<WriteCycleParams> = {}): WriteCycleParams
     messageIndexRows: [],
     contextReadings: [],
     compactions: [],
+    promptEvents: [],
     checkpoint: EMPTY_CHECKPOINT,
     ingestedBytes: 0,
     isNew: true,
@@ -52,11 +53,12 @@ describe('writeIngestCycle', () => {
     const { sql, calls } = recordingSql();
     await writeIngestCycle(sql, baseParams({ fresh: true, isNew: false }));
     const deletes = calls.filter((c) => c.text.startsWith('DELETE FROM'));
-    expect(deletes).toHaveLength(4);
+    expect(deletes).toHaveLength(5);
     expect(deletes.some((c) => c.text.includes('transcript_chunks'))).toBe(true);
     expect(deletes.some((c) => c.text.includes('transcript_messages'))).toBe(true);
     expect(deletes.some((c) => c.text.includes('tool_calls'))).toBe(true);
     expect(deletes.some((c) => c.text.includes('context_events'))).toBe(true);
+    expect(deletes.some((c) => c.text.includes('prompt_events'))).toBe(true);
   });
 
   it('an ordinary append (fresh: false) never deletes — tool_calls stays append-only', async () => {

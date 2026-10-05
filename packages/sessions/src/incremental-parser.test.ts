@@ -408,3 +408,60 @@ describe('activity ranges are monotone (specs/behaviors/session-engagement.md)',
     ]);
   });
 });
+
+describe('prompt events (specs/behaviors/session-engagement.md)', () => {
+  const base = Date.UTC(2026, 8, 17, 12, 0, 0);
+
+  function lines(): string[] {
+    const out: string[] = [];
+    for (let i = 0; i < 12; i++) {
+      out.push(userLine(i % 3 === 0 ? `<task-notification>${i}` : `  typed ${i}`, tsAt(base, i * 60_000)).line);
+      out.push(assistantLine({ parentUuid: null, ts: tsAt(base, i * 60_000 + 1), text: 'ok' }).line);
+    }
+    out.push(
+      j({ type: 'user', uuid: uid(), timestamp: tsAt(base, 900_000), isMeta: true, message: { role: 'user', content: 'skill body' } }),
+      j({ type: 'user', uuid: uid(), timestamp: tsAt(base, 901_000), isSidechain: true, message: { role: 'user', content: 'brief' } }),
+      j({ type: 'user', uuid: uid(), timestamp: tsAt(base, 902_000), isCompactSummary: true, message: { role: 'user', content: 'summary' } }),
+      j({ type: 'attachment', uuid: uid(), timestamp: tsAt(base, 903_000), attachment: { type: 'queued_command', prompt: 'queued one' } }),
+      // A tool-result-only user line has no text: not a prompt.
+      j({ type: 'user', uuid: uid(), timestamp: tsAt(base, 904_000), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'x', content: 'r' }] } })
+    );
+    return out;
+  }
+
+  it('records one event per user turn with text and per queued prompt, with the transcript flags', () => {
+    const { delta } = feed(EMPTY_CHECKPOINT, lines());
+    expect(delta.promptEvents).toHaveLength(12 + 4);
+    expect(delta.promptEvents[1]).toEqual({
+      seq: 2,
+      ts: new Date(base + 60_000),
+      head: 'typed 1',
+      isMeta: false,
+      isSidechain: false,
+      isCompactSummary: false,
+      queued: false,
+    });
+    const tail = delta.promptEvents.slice(12);
+    expect(tail.map((e) => [e.head, e.isMeta, e.isSidechain, e.isCompactSummary, e.queued])).toEqual([
+      ['skill body', true, false, false, false],
+      ['brief', false, true, false, false],
+      ['summary', false, false, true, false],
+      ['queued one', false, false, false, true],
+    ]);
+  });
+
+  it('split feeds produce the same events as one full feed', () => {
+    const all = lines();
+    const full = feed(EMPTY_CHECKPOINT, all).delta.promptEvents;
+    for (const size of [1, 4, 7]) {
+      let cp = EMPTY_CHECKPOINT;
+      const split = [];
+      for (let i = 0; i < all.length; i += size) {
+        const r = feed(cp, all.slice(i, i + size));
+        cp = r.checkpoint;
+        split.push(...r.delta.promptEvents);
+      }
+      expect(split).toEqual(full);
+    }
+  });
+});
