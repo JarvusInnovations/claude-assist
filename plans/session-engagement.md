@@ -1,10 +1,11 @@
 ---
-status: in-progress
+status: done
 depends: []
 specs:
   - specs/behaviors/session-engagement.md
   - specs/behaviors/session-transcript-storage.md
 issues: [259]
+pr: 260
 ---
 
 # Plan: Session engagement
@@ -61,27 +62,27 @@ zone; no date library is added.
 
 ## Validation
 
-- [ ] A session whose only user turns are loop firings or task notifications
+- [x] A session whose only user turns are loop firings or task notifications
   reports 0 human minutes and is still listed, with `automated_by` counts
 - [ ] No range has `end < start` after a delta containing timestamps older
   than the last range end (unit), and after backfill on a real database no
   stored range does (query)
-- [ ] Two parallel sessions with interleaved human prompts in one hour count
+- [x] Two parallel sessions with interleaved human prompts in one hour count
   that hour once in `envelope_minutes`
-- [ ] Day bucketing honors `tz`: a block crossing local midnight splits
+- [x] Day bucketing honors `tz`: a block crossing local midnight splits
   between the two days, including across a DST transition; the same day
   returns the same figures from two different windows
-- [ ] Prompt events from split feeds equal those from one full feed; ingest
+- [x] Prompt events from split feeds equal those from one full feed; ingest
   appends without rewriting; continuity re-ingest replaces
-- [ ] Backfill/live-ingest handoff race covered by an integration test, as
+- [x] Backfill/live-ingest handoff race covered by an integration test, as
   for the context timeline
-- [ ] Adding an instance pattern changes past days' figures with no re-ingest
-- [ ] Bad `from` / `to` / `tz` / window / minutes each return 400 naming the
+- [x] Adding an instance pattern changes past days' figures with no re-ingest
+- [x] Bad `from` / `to` / `tz` / window / minutes each return 400 naming the
   parameter; the window 400 states the cap and requested span; no `tz` and no
   `SESSIONS_OWNER_TZ` is a 400, and `tz` overrides the env value
 - [ ] After backfill, every session's last prompt event is within its
   `ended_at` (issue #259 item 4: no trailing turns skipped)
-- [ ] `bun test`, `bun run check:skills`, `bun run type-check:axi` pass
+- [x] `bun test`, `bun run check:skills`, `bun run type-check:axi` pass
 
 ## Risks / unknowns
 
@@ -96,3 +97,38 @@ zone; no date library is added.
   time, adding one is a code change with no data migration.
 - **A second set of backfill columns** on `sessions.sessions`. Acceptable for
   two derivations; a third should move the bookkeeping to its own table.
+
+## Notes
+
+- **Two criteria stay open until the backfill has run on a real instance.**
+  The unit half of the inverted-range criterion is verified, and the
+  integration test repairs a seeded inverted range, but "no stored range is
+  inverted" and "every session's last prompt event reaches `ended_at`" are
+  claims about a real archive. They close with the query in Follow-ups.
+- **The backfill's range rebuild needed a change on the live-ingest side.**
+  An ingest cycle reads its prior aggregate before its write transaction, so
+  an append that began before a rebuild would have written the old ranges
+  back. `writeIngestCycle` now folds the cycle's turns onto the ranges stored
+  at write time, under the row lock. Prompt-event timestamps and activity
+  timestamps are the same set, which is what makes that fold possible.
+- **Flags are inserted as ints.** postgres.js cannot infer a `boolean[]`
+  parameter; the insert sends `int[]` and compares to 1, as `tool_calls`
+  already does for `is_sidechain`.
+- **One marker was added after reading real transcripts:** a message sent
+  into a session by another agent session arrives as a user turn. It is
+  client-emitted, so it is built in (`peer`), and the spec lists it.
+- **`/sessions/activity` withholds a still-inverted range** until the backfill
+  reaches its session, rather than returning it.
+- **Only a disable switch was added for the backfill**
+  (`SESSIONS_DISABLE_PROMPT_BACKFILL`); budget and cadence use the timeline
+  backfill's defaults in code.
+- Running `build:skills` restamps the version constant in every skill bundle;
+  only the sessions bundle is committed here and `check:skills` passes.
+
+## Follow-ups
+
+- Tracked as: after deploy, once `SELECT count(*) FROM sessions.sessions WHERE
+  NOT prompt_backfill_done` reaches 0, run the two open validation queries
+  (any `activity_ranges` element with `end < start`; any session whose latest
+  `prompt_events.ts` is later than `ended_at` or whose last range ends before
+  its last prompt event) and record the result on issue #259.
