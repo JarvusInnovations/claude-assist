@@ -27,7 +27,8 @@ cross-session dedupe.
 - The incremental parser, chunked ingest and its write transaction.
 - A background backfill for sessions ingested before prompt events existed.
 - `GET /sessions/engagement`, `GET /sessions/activity`.
-- The `sessions-axi` CLI (`engagement` command; `activity` help text).
+- The `sessions-axi` CLI (`engagement` command; `activity` help text). The
+  CLI sends `tz` only when the caller passes one.
 
 ## Details
 
@@ -82,8 +83,9 @@ additive:
 
 Pooling happens before merging, so two sessions prompted alternately inside
 the gap form one block rather than several short ones. Project minutes can sum
-to more than the envelope (parallel work) and session minutes to more than
-their project's.
+to more than the envelope (interleaved or parallel work) and session minutes
+to more than their project's. That is expected: the parts are never scaled
+down to fit the whole.
 
 A session's `automated_minutes` is the same block computation over its
 automated prompts. It is reported for visibility and enters no other figure.
@@ -93,11 +95,16 @@ automated prompts. It is reported for visibility and enters no other figure.
 Query: `from` and `to` (local dates, `YYYY-MM-DD`, inclusive), `tz` (IANA
 zone), `block_minutes` (default 15), `gap_minutes` (default 15).
 
-- `from`, `to` and `tz` are required. A missing or malformed value, an unknown
-  zone, `to` before `from`, a window over 92 days, or a non-positive
-  `block_minutes` / negative `gap_minutes` is a `400` naming the parameter.
-  There is no server-side default zone: a guessed zone produces plausible,
-  wrong day totals.
+- **The zone is the request's `tz`, else the instance's `SESSIONS_OWNER_TZ`.**
+  With neither, the request is a `400`. The server never falls back to its own
+  host zone, and a client never substitutes its machine's zone: machines
+  travel, and a drifted zone moves late-evening work to the wrong day without
+  any visible error. The response echoes the zone it used.
+- `from` and `to` are required. A missing or malformed value, an unknown zone,
+  `to` before `from`, or a non-positive `block_minutes` / negative
+  `gap_minutes` is a `400` naming the parameter.
+- A window over 92 days is a `400` whose body states the cap and the span
+  requested, so a script can split the request.
 
 Response:
 
@@ -162,7 +169,7 @@ only ever moves forward.
   — built-in markers are the ones the client itself emits; anything naming a
   particular bot, bridge or command arrives through configuration.
 - [A response code is a claim](../principles.md#a-response-code-is-a-claim) —
-  no default timezone, and `pending_sessions` rather than silently low totals:
+  no guessed timezone, and `pending_sessions` rather than silently low totals:
   these numbers feed a ledger.
 
 **Local**

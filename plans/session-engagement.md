@@ -1,5 +1,5 @@
 ---
-status: planned
+status: in-progress
 depends: []
 specs:
   - specs/behaviors/session-engagement.md
@@ -34,10 +34,10 @@ issues: [259]
 5. **Engagement computation.** Pure functions: blocks from timestamps, gap
    merge, clamp to now, split at local midnight in an IANA zone, minutes per
    day. No database access; the route owns the query.
-6. **`GET /sessions/engagement`** per the spec, including parameter validation
-   and `pending_sessions`.
-7. **CLI.** `sessions-axi engagement --from --to [--tz]` (zone defaults to the
-   machine's local zone, sent explicitly); `activity` help text stops
+6. **`GET /sessions/engagement`** per the spec, including parameter
+   validation, the `SESSIONS_OWNER_TZ` fallback and `pending_sessions`.
+7. **CLI.** `sessions-axi engagement --from --to [--tz]` (`tz` sent only when
+   passed; the server resolves `SESSIONS_OWNER_TZ` otherwise); `activity` help text stops
    suggesting it answers "how much time on X?". Rebuild bundles and SKILL.md.
 
 ## Implements
@@ -77,7 +77,8 @@ zone; no date library is added.
   for the context timeline
 - [ ] Adding an instance pattern changes past days' figures with no re-ingest
 - [ ] Bad `from` / `to` / `tz` / window / minutes each return 400 naming the
-  parameter
+  parameter; the window 400 states the cap and requested span; no `tz` and no
+  `SESSIONS_OWNER_TZ` is a 400, and `tz` overrides the env value
 - [ ] After backfill, every session's last prompt event is within its
   `ended_at` (issue #259 item 4: no trailing turns skipped)
 - [ ] `bun test`, `bun run check:skills`, `bun run type-check:axi` pass
