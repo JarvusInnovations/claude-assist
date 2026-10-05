@@ -66,7 +66,7 @@ its uuid and the chunk that holds it, so anchor lookups (around-a-message) and
 message-range reads resolve to exactly the chunks they need.
 
 **Incremental derivation.** Session aggregates (tokens, message counts, models,
-activity ranges, context readings, user messages, files touched) are derived by
+activity ranges, context readings, prompt events, user messages, files touched) are derived by
 parsing only the new chunk against a persisted **parse checkpoint**: the state
 the parser needs to continue, such as open chain roots and running totals. The
 result must equal a full parse of the whole transcript. New tool calls are

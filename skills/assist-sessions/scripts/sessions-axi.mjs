@@ -597,7 +597,14 @@ var COMMAND_GROUPS = [
         summary: "explore a variable range of messages around an anchor (the grep follow-up)"
       },
       { usage: "details <session-id> [--raw]", summary: "session metadata; --raw adds the parsed raw messages" },
-      { usage: "activity [--days N]", summary: "when work happened \u2014 active time blocks per session (default 7 days)" }
+      {
+        usage: "activity [--days N]",
+        summary: "when sessions had turns of any kind, human or automated \u2014 a timeline feed, not a time measure (default 7 days)"
+      },
+      {
+        usage: "engagement --from DATE --to DATE [--tz IANA] [--sessions]",
+        summary: 'human hands-on time per local day and project \u2014 automated turns excluded, parallel sessions counted once; the tool for "how much time on X?"'
+      }
     ]
   },
   {
@@ -781,6 +788,13 @@ function parseArgs(args, booleanFlags = []) {
     }
   }
   return { positionals, flags };
+}
+function requireFlag(flags, name, usage) {
+  const v = flags[name];
+  if (typeof v !== "string" || v === "") {
+    throw new AxiError(`--${name} is required`, "VALIDATION_ERROR", [usage]);
+  }
+  return v;
 }
 function requirePositional(positionals, index, label, usage) {
   const v = positionals[index];
@@ -1337,9 +1351,10 @@ async function detailsCommand(args) {
 // packages/sessions/src/axi/commands/activity.ts
 var ACTIVITY_HELP = `sessions-axi activity [--days N] [--json]
 
-  When work happened \u2014 contiguous active time blocks per session (segmented by a
-  30-minute gap). Use for "when was I working?" / "how much time on X?". Default
-  look-back is 7 days.`;
+  When sessions had turns \u2014 contiguous time blocks per session (segmented by a
+  30-minute gap). Turns of any kind count, including loop firings and task
+  notifications, so this is a timeline feed and not a measure of time worked:
+  for "how much time on X?" use \`engagement\`. Default look-back is 7 days.`;
 var SCHEMA3 = [
   field("id"),
   custom("project", (s) => s.project_name ?? s.project_path ?? "\u2014"),
@@ -1358,6 +1373,76 @@ async function activityCommand(args) {
   return renderOutput2([
     `count: ${rows.length} sessions, ${Math.round(totalMin / 60 * 10) / 10}h total active`,
     renderList("activity", rows, SCHEMA3)
+  ]);
+}
+
+// packages/sessions/src/axi/commands/engagement.ts
+var USAGE = "sessions-axi engagement --from YYYY-MM-DD --to YYYY-MM-DD [--tz IANA] [--block-minutes N] [--gap-minutes N] [--sessions] [--json]";
+var ENGAGEMENT_HELP = `${USAGE}
+
+  Human hands-on time per local day and per project \u2014 the figure for "how much
+  time did I spend on X?". Loop firings, task notifications and other automated
+  turns are excluded, and parallel sessions never double-count.
+
+  --from/--to are local dates, inclusive (at most 92 days). Days are bucketed in
+  --tz when given, otherwise in the server's SESSIONS_OWNER_TZ; the zone used is
+  echoed. Minutes are not additive: project and session minutes can exceed the
+  day's envelope when work interleaves. --sessions adds a per-session breakdown,
+  including automated minutes.`;
+var DAY_SCHEMA = [
+  field("date"),
+  field("envelope_minutes", "envelope_min"),
+  field("human_prompt_count", "prompts"),
+  field("first_human_prompt", "first"),
+  field("last_human_prompt", "last")
+];
+var PROJECT_SCHEMA = [
+  field("date"),
+  custom("project", (p) => p.project_name ?? p.project_path ?? "\u2014"),
+  field("human_minutes", "human_min"),
+  field("human_prompt_count", "prompts")
+];
+var SESSION_SCHEMA = [
+  field("date"),
+  field("id"),
+  custom("project", (s) => s.project_name ?? s.project_path ?? "\u2014"),
+  custom("title", (s) => s.title ?? s.session_name ?? null),
+  field("human_minutes", "human_min"),
+  field("human_prompt_count", "prompts"),
+  field("automated_minutes", "auto_min"),
+  field("automated_prompt_count", "auto_prompts")
+];
+async function engagementCommand(args) {
+  const { flags } = parseArgs(args, ["json", "sessions"]);
+  const str = (name) => typeof flags[name] === "string" ? flags[name] : void 0;
+  const result = await api.get("/api/sessions/engagement", {
+    from: requireFlag(flags, "from", USAGE),
+    to: requireFlag(flags, "to", USAGE),
+    // Sent only when asked for: the server's owner zone is the default, never
+    // this machine's zone (specs/behaviors/session-engagement.md).
+    tz: str("tz"),
+    block_minutes: str("block-minutes"),
+    gap_minutes: str("gap-minutes")
+  });
+  if (flags.json) return rawJson(result);
+  const days = Array.isArray(result.days) ? result.days : [];
+  const totalMin = days.reduce((sum, d) => sum + (d.envelope_minutes ?? 0), 0);
+  const flatten = (key) => days.flatMap((d) => (d[key] ?? []).map((row) => ({ date: d.date, ...row })));
+  const projects = flatten("projects");
+  const sessions = flags.sessions ? flatten("sessions") : [];
+  return renderOutput2([
+    renderObject({
+      from: result.from,
+      to: result.to,
+      tz: result.tz,
+      block_minutes: result.block_minutes,
+      gap_minutes: result.gap_minutes,
+      envelope_hours: Math.round(totalMin / 60 * 10) / 10,
+      ...result.pending_sessions > 0 ? { pending_sessions: `${result.pending_sessions} (backfill incomplete \u2014 figures are a lower bound)` } : {}
+    }),
+    renderList("days", days, DAY_SCHEMA),
+    projects.length ? renderList("projects", projects, PROJECT_SCHEMA) : "",
+    sessions.length ? renderList("sessions", sessions, SESSION_SCHEMA) : ""
   ]);
 }
 
@@ -1463,7 +1548,7 @@ async function shareCommand(args) {
 }
 
 // packages/sessions/src/axi/cli.ts
-var VERSION = true ? "1e02946" : "dev";
+var VERSION = true ? "88f4607" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [command] [args] [flags]
        ${CLI}                 # no args \u2192 home (recent activity + next steps)
@@ -1499,6 +1584,7 @@ var COMMAND_HELP = {
   transcript: TRANSCRIPT_HELP,
   details: DETAILS_HELP,
   activity: ACTIVITY_HELP,
+  engagement: ENGAGEMENT_HELP,
   stats: STATS_HELP,
   machines: MACHINES_HELP,
   outlines: OUTLINES_HELP,
@@ -1515,6 +1601,7 @@ var COMMANDS = {
   transcript: transcriptCommand,
   details: detailsCommand,
   activity: activityCommand,
+  engagement: engagementCommand,
   stats: statsCommand,
   machines: machinesCommand,
   outlines: outlinesCommand,

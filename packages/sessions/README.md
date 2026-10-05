@@ -157,6 +157,7 @@ curl http://localhost:2529/machines
 | `GET /sessions/:id` | Session details (`?with_raw_messages=true`) |
 | `GET /sessions/:id/transcript` | Compact transcript (text/plain) |
 | `GET /sessions/stats` | Usage statistics |
+| `GET /sessions/engagement` | Human hands-on time per local day and project (`from`, `to`, `tz`) |
 | `GET /machines` | List registered machines |
 | `POST /sessions/sync` | Trigger manual localhost sync |
 | `POST /sessions/push` | Receive sessions from satellites |

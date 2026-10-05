@@ -664,6 +664,14 @@ export interface SessionsPluginConfig {
   timelineBackfillBudgetBytes?: number;
   /** Cron for the timeline backfill sweep (default every 2 minutes). */
   timelineBackfillCron?: string;
+  /** Skip the prompt-events backfill (specs/behaviors/session-engagement.md). */
+  disablePromptBackfill?: boolean;
+  /** Owner's IANA timezone — the day-bucketing fallback for
+   * `GET /sessions/engagement` when a request names none. */
+  ownerTz?: string;
+  /** Newline-separated regular expressions marking a prompt as automated, in
+   * addition to the built-in client markers. Instance data; no defaults. */
+  automatedPromptPatterns?: string;
 }
 
 /**

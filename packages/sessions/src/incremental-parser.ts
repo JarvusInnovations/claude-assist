@@ -58,7 +58,9 @@ import type {
   ToolCall,
   ContextReading,
   ContextCompaction,
+  PromptEvent,
 } from './types.js';
+import { PROMPT_HEAD_CHARS } from './types.js';
 import { extractToolTarget } from './transcript.js';
 import { sanitizeText, sanitizeStringArray } from './sanitize.js';
 
@@ -112,6 +114,9 @@ export interface ParseDelta {
   contextReadings: ContextReading[];
   /** One entry per `system`/`compact_boundary` line in this feed. */
   compactions: ContextCompaction[];
+  /** specs/behaviors/session-engagement.md: one entry per user turn with
+   * text and per queued prompt in this feed. */
+  promptEvents: PromptEvent[];
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
@@ -153,6 +158,7 @@ function emptyDelta(): ParseDelta {
     messageIndexRows: [],
     contextReadings: [],
     compactions: [],
+    promptEvents: [],
     inputTokens: 0,
     outputTokens: 0,
     cacheReadTokens: 0,
@@ -187,6 +193,33 @@ function extractTextContent(content: string | ContentBlock[]): string {
     .join('\n');
 }
 
+function optionalString(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? sanitizeText(value) : null;
+}
+
+/** The authorship fields exactly as the transcript states them — null when
+ * absent (older client versions), never defaulted. */
+function authorship(msg: TranscriptMessage): Pick<PromptEvent, 'originKind' | 'promptSource' | 'queuePriority'> {
+  return {
+    originKind: optionalString(msg.origin?.kind),
+    promptSource: optionalString(msg.promptSource),
+    queuePriority: optionalString(msg.queuePriority),
+  };
+}
+
+function parseTimestamp(value: string | undefined): Date | null {
+  if (!value) return null;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/** A prompt's leading text as a prompt event keeps it: front-trimmed, bounded,
+ * and safe to insert (no NUL bytes or lone surrogates — a slice can split a
+ * surrogate pair). */
+function promptHead(text: string): string {
+  return sanitizeText(text.trimStart().slice(0, PROMPT_HEAD_CHARS));
+}
+
 function extractToolUses(content: string | ContentBlock[]): ToolUseBlock[] {
   if (typeof content === 'string') return [];
   return content.filter((block): block is ToolUseBlock => block.type === 'tool_use');
@@ -218,14 +251,22 @@ function extractFileTouch(tool: ToolUseBlock): { path: string; operation: FileOp
   return null;
 }
 
-/** Merge new user-activity timestamps (already chronological) against a
- * checkpoint's `lastActivityEnd`, producing an extend-signal plus any new
- * ranges — equivalent to recomputing `computeActivityRanges` over the whole
- * session's timestamps, without re-scanning history. */
-function mergeActivityRanges(
+/** Merge new user-activity timestamps against a checkpoint's
+ * `lastActivityEnd`, producing an extend-signal plus any new ranges —
+ * equivalent to recomputing `computeActivityRanges` over the whole session's
+ * timestamps, without re-scanning history.
+ *
+ * Ranges are monotone (specs/behaviors/session-engagement.md): the delta is
+ * ordered first, and a timestamp at or before `lastEnd` — a replayed line in
+ * a resumed or forked session — is dropped, so the last range's end only
+ * ever moves forward. */
+export function mergeActivityRanges(
   lastEnd: Date | null,
-  timestamps: Date[]
+  rawTimestamps: Date[]
 ): { extendLastRangeEnd: string | null; newActivityRanges: ActivityRange[] } {
+  const timestamps = rawTimestamps
+    .filter((ts) => !Number.isNaN(ts.getTime()) && (!lastEnd || ts.getTime() > lastEnd.getTime()))
+    .sort((x, y) => x.getTime() - y.getTime());
   if (timestamps.length === 0) return { extendLastRangeEnd: null, newActivityRanges: [] };
 
   let idx = 0;
@@ -258,6 +299,25 @@ function mergeActivityRanges(
   }
 
   return { extendLastRangeEnd, newActivityRanges };
+}
+
+/**
+ * Fold a batch of user-turn timestamps onto a session's stored activity
+ * ranges — the range half of `mergeParseDelta`, usable against whatever
+ * ranges are stored *now* rather than the ones a cycle started from. `[]`
+ * rebuilds from scratch. The remembered range end is derived from the ranges
+ * themselves, so a stale checkpoint value can't leak in.
+ */
+export function applyActivityTimestamps(
+  ranges: readonly ActivityRange[],
+  timestamps: Date[]
+): { ranges: ActivityRange[]; lastActivityEnd: string | null } {
+  const last = ranges[ranges.length - 1];
+  const { extendLastRangeEnd, newActivityRanges } = mergeActivityRanges(last ? new Date(last.end) : null, timestamps);
+  const out = [...ranges];
+  if (extendLastRangeEnd !== null && last) out[out.length - 1] = { ...last, end: extendLastRangeEnd };
+  out.push(...newActivityRanges);
+  return { ranges: out, lastActivityEnd: out.length > 0 ? out[out.length - 1]!.end : null };
 }
 
 /**
@@ -382,6 +442,17 @@ export function feed(checkpoint: ParseCheckpoint, lines: readonly string[]): Fee
       if (text) {
         delta.userMessages.push(text);
         if (msg.timestamp) newActivityTimestamps.push(new Date(msg.timestamp));
+        delta.promptEvents.push({
+          seq,
+          uuid: optionalString(msg.uuid),
+          ts: parseTimestamp(msg.timestamp),
+          head: promptHead(text),
+          isMeta: msg.isMeta === true,
+          isSidechain: msg.isSidechain === true,
+          isCompactSummary: msg.isCompactSummary === true,
+          queued: false,
+          ...authorship(msg),
+        });
       }
     }
 
@@ -393,6 +464,17 @@ export function feed(checkpoint: ParseCheckpoint, lines: readonly string[]): Fee
     ) {
       delta.userMessages.push(msg.attachment.prompt);
       if (msg.timestamp) newActivityTimestamps.push(new Date(msg.timestamp));
+      delta.promptEvents.push({
+        seq,
+        uuid: optionalString(msg.uuid),
+        ts: parseTimestamp(msg.timestamp),
+        head: promptHead(msg.attachment.prompt),
+        isMeta: msg.isMeta === true,
+        isSidechain: msg.isSidechain === true,
+        isCompactSummary: false,
+        queued: true,
+        ...authorship(msg),
+      });
     }
 
     if (msg.type === 'assistant' && msg.message) {

@@ -106,7 +106,8 @@ and return a continuation anchor rather than dumping the whole session.
 - `scripts/sessions-axi grep --tool Edit --match routes.ts [--project P] [--days N]` — no id → cross-session tool-call discovery over the index
 - `scripts/sessions-axi transcript <session-id> --around <uuid> [--before N] [--after M]` — explore a variable range of messages around an anchor (the grep follow-up)
 - `scripts/sessions-axi details <session-id> [--raw]` — session metadata; --raw adds the parsed raw messages
-- `scripts/sessions-axi activity [--days N]` — when work happened — active time blocks per session (default 7 days)
+- `scripts/sessions-axi activity [--days N]` — when sessions had turns of any kind, human or automated — a timeline feed, not a time measure (default 7 days)
+- `scripts/sessions-axi engagement --from DATE --to DATE [--tz IANA] [--sessions]` — human hands-on time per local day and project — automated turns excluded, parallel sessions counted once; the tool for "how much time on X?"
 
 ### Overview
 

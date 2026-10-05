@@ -4,9 +4,10 @@ import { renderList, renderOutput, field, custom, type FieldDef } from "../toon.
 
 export const ACTIVITY_HELP = `sessions-axi activity [--days N] [--json]
 
-  When work happened — contiguous active time blocks per session (segmented by a
-  30-minute gap). Use for "when was I working?" / "how much time on X?". Default
-  look-back is 7 days.`;
+  When sessions had turns — contiguous time blocks per session (segmented by a
+  30-minute gap). Turns of any kind count, including loop firings and task
+  notifications, so this is a timeline feed and not a measure of time worked:
+  for "how much time on X?" use \`engagement\`. Default look-back is 7 days.`;
 
 const SCHEMA: FieldDef[] = [
   field("id"),

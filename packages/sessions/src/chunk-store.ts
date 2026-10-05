@@ -8,10 +8,10 @@
  */
 
 import type postgres from 'postgres';
-import type { ToolCall, ContextReading, ContextCompaction } from './types.js';
+import type { ToolCall, ContextReading, ContextCompaction, PromptEvent, ActivityRange } from './types.js';
 import { transcriptVersionToken, type ChunkPiece } from './chunked-ingest.js';
 import type { ParseCheckpoint } from './incremental-parser.js';
-import { EMPTY_CHECKPOINT } from './incremental-parser.js';
+import { EMPTY_CHECKPOINT, applyActivityTimestamps } from './incremental-parser.js';
 import type { SessionAggregate } from './aggregate-merge.js';
 import { EMPTY_AGGREGATE, boundedSearchText } from './aggregate-merge.js';
 
@@ -195,6 +195,10 @@ export interface WriteCycleParams {
    * (see `writeIngestCycle`) says this session's timeline is caught up. */
   contextReadings: ContextReading[];
   compactions: ContextCompaction[];
+  /** specs/behaviors/session-engagement.md — this cycle's user turns. Written
+   * under the same handoff rule as the timeline events, against
+   * `prompt_backfill_done`. */
+  promptEvents: PromptEvent[];
   checkpoint: ParseCheckpoint;
   ingestedBytes: number;
   /** `true` for a brand-new session (INSERT); `false` to UPDATE an existing row. */
@@ -241,15 +245,41 @@ export async function writeIngestCycle(sql: postgres.Sql, p: WriteCycleParams): 
     const tx = rawTx as unknown as Tx;
 
     let writeTimelineEvents = p.isNew || p.fresh;
+    let writePromptEvents = p.isNew || p.fresh;
+    let aggregate = p.aggregate;
+    let checkpoint = p.checkpoint;
     if (!writeTimelineEvents) {
       // First touch of this session's row in this transaction — see the
       // handoff note above for why ordering matters here.
-      const [row] = await tx<{ timeline_backfill_done: boolean }[]>`
-        SELECT timeline_backfill_done FROM sessions.sessions
+      const [row] = await tx<
+        { timeline_backfill_done: boolean; prompt_backfill_done: boolean; activity_ranges: unknown }[]
+      >`
+        SELECT timeline_backfill_done, prompt_backfill_done, activity_ranges
+        FROM sessions.sessions
         WHERE id = ${p.sessionId}::uuid
         FOR UPDATE
       `;
       writeTimelineEvents = row?.timeline_backfill_done === true;
+      writePromptEvents = row?.prompt_backfill_done === true;
+
+      // The prompt backfill rebuilds a session's activity ranges when it
+      // finishes (prompt-backfill.ts), and may have done so after this cycle
+      // read its prior state. Fold this cycle's turns onto the ranges stored
+      // *now*, under the lock, so an append never writes back ranges derived
+      // from a pre-rebuild copy. With no rebuild in between this yields
+      // exactly `p.aggregate.activityRanges`.
+      if (row) {
+        const stored =
+          typeof row.activity_ranges === 'string'
+            ? (JSON.parse(row.activity_ranges) as ActivityRange[])
+            : ((row.activity_ranges as ActivityRange[] | null) ?? []);
+        const merged = applyActivityTimestamps(
+          stored,
+          p.promptEvents.flatMap((e) => (e.ts ? [e.ts] : []))
+        );
+        aggregate = { ...aggregate, activityRanges: merged.ranges };
+        checkpoint = { ...checkpoint, lastActivityEnd: merged.lastActivityEnd };
+      }
     }
 
     if (p.fresh) {
@@ -257,9 +287,10 @@ export async function writeIngestCycle(sql: postgres.Sql, p: WriteCycleParams): 
       await tx`DELETE FROM sessions.transcript_messages WHERE session_id = ${p.sessionId}::uuid`;
       await tx`DELETE FROM sessions.tool_calls WHERE session_id = ${p.sessionId}::uuid`;
       await tx`DELETE FROM sessions.context_events WHERE session_id = ${p.sessionId}::uuid`;
+      await tx`DELETE FROM sessions.prompt_events WHERE session_id = ${p.sessionId}::uuid`;
     }
 
-    const a = p.aggregate;
+    const a = aggregate;
     const searchText = boundedSearchText(a.userMessages);
     const startedAt = a.startedAt ?? p.startedAtFallback;
 
@@ -276,7 +307,7 @@ export async function writeIngestCycle(sql: postgres.Sql, p: WriteCycleParams): 
           search_text, message_count, user_message_count, claude_version,
           models_used, model_tokens, activity_ranges, session_name,
           context_final_tokens, context_peak_tokens, context_model,
-          ingested_bytes, parse_checkpoint, timeline_backfill_done
+          ingested_bytes, parse_checkpoint, timeline_backfill_done, prompt_backfill_done
         ) VALUES (
           ${p.sessionId}::uuid, ${p.machineId}, ${p.projectPath}, ${a.gitBranch},
           ${startedAt}, ${a.endedAt},
@@ -289,9 +320,9 @@ export async function writeIngestCycle(sql: postgres.Sql, p: WriteCycleParams): 
           ${searchText}, ${a.messageCount}, ${a.userMessages.length}, ${a.claudeVersion},
           ${tx.json(a.modelsUsed)}, ${tx.json(a.modelTokens as any)}, ${tx.json(a.activityRanges as any)}, ${a.sessionName},
           ${a.contextFinalTokens}, ${a.contextPeakTokens}, ${a.contextModel},
-          ${p.ingestedBytes}, ${tx.json(p.checkpoint as any)},
-          -- A brand-new session has no pre-timeline backlog to backfill.
-          ${true}
+          ${p.ingestedBytes}, ${tx.json(checkpoint as any)},
+          -- A brand-new session has no backlog for either backfill.
+          ${true}, ${true}
         )
       `;
     } else {
@@ -323,7 +354,7 @@ export async function writeIngestCycle(sql: postgres.Sql, p: WriteCycleParams): 
           context_peak_tokens = ${a.contextPeakTokens},
           context_model = ${a.contextModel},
           ingested_bytes = ${p.ingestedBytes},
-          parse_checkpoint = ${tx.json(p.checkpoint as any)},
+          parse_checkpoint = ${tx.json(checkpoint as any)},
           transcript_hash = COALESCE(${versionToken}, transcript_hash),
           synced_at = NOW()
         WHERE id = ${p.sessionId}::uuid
@@ -338,7 +369,10 @@ export async function writeIngestCycle(sql: postgres.Sql, p: WriteCycleParams): 
           UPDATE sessions.sessions SET
             timeline_backfill_done = true,
             timeline_backfill_next_chunk_seq = 0,
-            timeline_backfill_checkpoint = NULL
+            timeline_backfill_checkpoint = NULL,
+            prompt_backfill_done = true,
+            prompt_backfill_next_chunk_seq = 0,
+            prompt_backfill_checkpoint = NULL
           WHERE id = ${p.sessionId}::uuid
         `;
       }
@@ -442,6 +476,47 @@ export async function writeIngestCycle(sql: postgres.Sql, p: WriteCycleParams): 
     if (writeTimelineEvents) {
       await insertContextEvents(tx, p.sessionId, p.contextReadings, p.compactions);
     }
+    if (writePromptEvents) {
+      await insertPromptEvents(tx, p.sessionId, p.promptEvents);
+    }
+  });
+}
+
+/**
+ * Append-only, idempotent insert of prompt_events rows
+ * (specs/behaviors/session-engagement.md). Shared by `writeIngestCycle` and
+ * `prompt-backfill.ts` so both paths write identically-shaped rows.
+ */
+export async function insertPromptEvents(
+  tx: postgres.Sql,
+  sessionId: string,
+  events: readonly PromptEvent[]
+): Promise<void> {
+  await forEachBatch(events, CONTEXT_EVENT_INSERT_BATCH, (batch) => {
+    return tx`
+      INSERT INTO sessions.prompt_events
+        (session_id, seq, uuid, ts, head, is_meta, is_sidechain, is_compact_summary, queued,
+         origin_kind, prompt_source, queue_priority)
+      SELECT ${sessionId}::uuid, seq, uuid, ts, head,
+        is_meta = 1, is_sidechain = 1, is_compact_summary = 1, queued = 1,
+        origin_kind, prompt_source, queue_priority
+      FROM unnest(
+        ${batch.map((e) => e.seq)}::int[],
+        ${batch.map((e) => e.uuid)}::text[],
+        ${batch.map((e) => e.ts?.toISOString() ?? null)}::timestamptz[],
+        ${batch.map((e) => e.head)}::text[],
+        -- Flags travel as ints: postgres.js can't infer a boolean[] parameter.
+        ${batch.map((e) => (e.isMeta ? 1 : 0))}::int[],
+        ${batch.map((e) => (e.isSidechain ? 1 : 0))}::int[],
+        ${batch.map((e) => (e.isCompactSummary ? 1 : 0))}::int[],
+        ${batch.map((e) => (e.queued ? 1 : 0))}::int[],
+        ${batch.map((e) => e.originKind)}::text[],
+        ${batch.map((e) => e.promptSource)}::text[],
+        ${batch.map((e) => e.queuePriority)}::text[]
+      ) AS u(seq, uuid, ts, head, is_meta, is_sidechain, is_compact_summary, queued,
+             origin_kind, prompt_source, queue_priority)
+      ON CONFLICT (session_id, seq) DO NOTHING
+    `;
   });
 }
 

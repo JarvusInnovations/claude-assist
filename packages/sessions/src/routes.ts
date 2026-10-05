@@ -18,6 +18,19 @@ import type { SynthesisService } from './classification/synthesis.js';
 import { lastWeekPeriod, type Period } from './classification/synthesis.js';
 import type { ClassificationStore } from './classification/store.js';
 import { computeTimelineSegments, downsampleReadings } from './timeline.js';
+import { classifyPrompt } from './prompt-classifier.js';
+import {
+  DEFAULT_BLOCK_MINUTES,
+  DEFAULT_GAP_MINUTES,
+  MAX_ENGAGEMENT_DAYS,
+  computeEngagement,
+  engagementMargins,
+  isValidTimeZone,
+  localDays,
+  parseLocalDate,
+  type EngagementEvent,
+  type EngagementSessionMeta,
+} from './engagement.js';
 
 /**
  * Parse model_tokens JSONB field, ensuring all nested values are integers.
@@ -64,6 +77,10 @@ export interface RoutesConfig {
   classificationService?: ClassificationService | null;
   synthesisService?: SynthesisService | null;
   classificationStore?: ClassificationStore | null;
+  /** Owner's IANA zone — the fallback when an engagement request names none. */
+  ownerTz?: string;
+  /** Compiled `SESSIONS_AUTOMATED_PROMPT_PATTERNS`. */
+  automatedPromptPatterns?: readonly RegExp[];
 }
 
 /**
@@ -71,7 +88,16 @@ export interface RoutesConfig {
  */
 export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
   fastify,
-  { syncService, outlineService, reader, classificationService, synthesisService, classificationStore }
+  {
+    syncService,
+    outlineService,
+    reader,
+    classificationService,
+    synthesisService,
+    classificationStore,
+    ownerTz,
+    automatedPromptPatterns = [],
+  }
 ) => {
   // GET /sessions - Search sessions with full-text search and filters
   fastify.get<{
@@ -287,7 +313,10 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
           ? JSON.parse(s.activity_ranges)
           : s.activity_ranges ?? [];
 
-      const enrichedRanges = ranges.map((r) => {
+      // Ranges are monotone as written (specs/behaviors/session-engagement.md);
+      // a range stored inverted before that rule, and not yet rebuilt by the
+      // prompt backfill, is withheld rather than returned with end < start.
+      const enrichedRanges = ranges.filter((r) => r.end >= r.start).map((r) => {
         const ms = new Date(r.end).getTime() - new Date(r.start).getTime();
         return { ...r, duration_minutes: Math.round(ms / 60_000) };
       });
@@ -305,6 +334,145 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
         outline: s.outline ?? null,
       };
     });
+  });
+
+  // GET /sessions/engagement - Human hands-on time per local day
+  // (specs/behaviors/session-engagement.md)
+  fastify.get<{
+    Querystring: { from?: string; to?: string; tz?: string; block_minutes?: string; gap_minutes?: string };
+  }>('/sessions/engagement', async (request, reply) => {
+    const q = request.query;
+    const bad = (param: string, error: string, extra: Record<string, unknown> = {}) =>
+      reply.status(400).send({ error, param, ...extra });
+
+    const fromMs = q.from ? parseLocalDate(q.from) : null;
+    if (fromMs === null) return bad('from', 'from is required as a YYYY-MM-DD date');
+    const toMs = q.to ? parseLocalDate(q.to) : null;
+    if (toMs === null) return bad('to', 'to is required as a YYYY-MM-DD date');
+    if (toMs < fromMs) return bad('to', 'to must not be before from');
+
+    const spanDays = Math.round((toMs - fromMs) / 86_400_000) + 1;
+    if (spanDays > MAX_ENGAGEMENT_DAYS) {
+      return bad('to', `window of ${spanDays} days exceeds the ${MAX_ENGAGEMENT_DAYS}-day maximum; split the request`, {
+        max_days: MAX_ENGAGEMENT_DAYS,
+        requested_days: spanDays,
+      });
+    }
+
+    // An explicit tz wins, then the instance's owner zone. Never the host's.
+    const tz = q.tz || ownerTz;
+    if (!tz) return bad('tz', 'tz is required: pass an IANA zone or set SESSIONS_OWNER_TZ');
+    if (!isValidTimeZone(tz)) return bad('tz', `unknown time zone: ${tz}`);
+
+    const minutes = (raw: string | undefined, fallback: number): number =>
+      raw === undefined || raw === '' ? fallback : /^\d+(\.\d+)?$/.test(raw) ? parseFloat(raw) : NaN;
+    const blockMinutes = minutes(q.block_minutes, DEFAULT_BLOCK_MINUTES);
+    if (!(blockMinutes > 0) || blockMinutes > 1440) {
+      return bad('block_minutes', 'block_minutes must be a positive number of minutes, at most 1440');
+    }
+    const gapMinutes = minutes(q.gap_minutes, DEFAULT_GAP_MINUTES);
+    if (!(gapMinutes >= 0) || gapMinutes > 1440) {
+      return bad('gap_minutes', 'gap_minutes must be a non-negative number of minutes, at most 1440');
+    }
+
+    const blockMs = blockMinutes * 60_000;
+    const gapMs = gapMinutes * 60_000;
+    const days = localDays(fromMs, toMs, tz);
+    const windowStart = days[0]!.startMs;
+    const windowEnd = days[days.length - 1]!.endMs;
+    const margins = engagementMargins(blockMs, gapMs);
+
+    const rows = await fastify.sql<
+      {
+        session_id: string;
+        uuid: string | null;
+        ts: Date;
+        head: string;
+        is_meta: boolean;
+        is_sidechain: boolean;
+        is_compact_summary: boolean;
+        origin_kind: string | null;
+        queue_priority: string | null;
+      }[]
+    >`
+      SELECT session_id, uuid, ts, head, is_meta, is_sidechain, is_compact_summary, origin_kind, queue_priority
+      FROM sessions.prompt_events
+      WHERE ts >= ${new Date(windowStart - margins.beforeMs)}
+        AND ts < ${new Date(windowEnd + margins.afterMs)}
+      ORDER BY ts
+    `;
+
+    const events: EngagementEvent[] = rows.map((r) => ({
+      sessionId: r.session_id,
+      uuid: r.uuid,
+      tsMs: r.ts.getTime(),
+      automatedBy: classifyPrompt(
+        {
+          head: r.head,
+          isMeta: r.is_meta,
+          isSidechain: r.is_sidechain,
+          isCompactSummary: r.is_compact_summary,
+          originKind: r.origin_kind,
+          queuePriority: r.queue_priority,
+        },
+        automatedPromptPatterns
+      ),
+    }));
+
+    const sessionIds = [...new Set(rows.map((r) => r.session_id))];
+    const sessionRows =
+      sessionIds.length > 0
+        ? await fastify.sql<
+            {
+              id: string;
+              title: string | null;
+              session_name: string | null;
+              project_path: string | null;
+              started_at: Date;
+              ended_at: Date | null;
+            }[]
+          >`
+            SELECT id, title, session_name, project_path, started_at, ended_at
+            FROM sessions.sessions
+            WHERE id = ANY(${sessionIds}::uuid[])
+          `
+        : [];
+    const projectNames = normalizeProjectPaths(
+      sessionRows.map((s) => s.project_path).filter((p): p is string => p != null)
+    );
+    const sessionMeta = new Map<string, EngagementSessionMeta>(
+      sessionRows.map((s) => [
+        s.id,
+        {
+          title: s.title ?? null,
+          sessionName: s.session_name ?? null,
+          projectPath: s.project_path,
+          projectName: s.project_path ? (projectNames.get(s.project_path) ?? null) : null,
+          startedMs: new Date(s.started_at).getTime(),
+          endedMs: s.ended_at ? new Date(s.ended_at).getTime() : null,
+        },
+      ])
+    );
+
+    // Sessions the prompt backfill hasn't finished and that overlap the
+    // window: while any remain, the figures are a lower bound.
+    const [pending] = await fastify.sql<{ n: number }[]>`
+      SELECT COUNT(*)::int AS n
+      FROM sessions.sessions
+      WHERE prompt_backfill_done = false
+        AND started_at < ${new Date(windowEnd)}
+        AND COALESCE(ended_at, started_at) >= ${new Date(windowStart)}
+    `;
+
+    return {
+      from: q.from,
+      to: q.to,
+      tz,
+      block_minutes: blockMinutes,
+      gap_minutes: gapMinutes,
+      pending_sessions: pending?.n ?? 0,
+      days: computeEngagement(events, sessionMeta, { days, blockMs, gapMs, nowMs: Date.now() }),
+    };
   });
 
   // GET /sessions/transcript - Cross-session transcript for a time range

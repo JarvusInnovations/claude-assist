@@ -365,3 +365,130 @@ describe('incremental-parser: checkpoint size stays bounded', () => {
     expect(checkpointBytes).toBeLessThan(50_000);
   });
 });
+
+describe('activity ranges are monotone (specs/behaviors/session-engagement.md)', () => {
+  const base = Date.UTC(2026, 8, 17, 12, 0, 0);
+  const MIN = 60_000;
+  const DAY = 86_400_000;
+
+  function rangesAfter(feeds: string[][]): SessionAggregate['activityRanges'] {
+    let cp = EMPTY_CHECKPOINT;
+    let agg: SessionAggregate = EMPTY_AGGREGATE;
+    for (const lines of feeds) {
+      const r = feed(cp, lines);
+      cp = r.checkpoint;
+      agg = mergeParseDelta(agg, r.delta);
+    }
+    return agg.activityRanges;
+  }
+
+  it('a replayed older turn in a later delta never moves the last range end backward', () => {
+    const ranges = rangesAfter([
+      [userLine('a', tsAt(base, 0)).line, userLine('b', tsAt(base, 10 * MIN)).line],
+      // Resumed session: the delta leads with a line replayed from weeks ago.
+      [userLine('old', tsAt(base, -22 * DAY)).line],
+      [userLine('c', tsAt(base, 20 * MIN)).line],
+    ]);
+    expect(ranges).toEqual([{ start: tsAt(base, 0), end: tsAt(base, 20 * MIN) }]);
+    for (const r of ranges) expect(new Date(r.end).getTime()).toBeGreaterThanOrEqual(new Date(r.start).getTime());
+  });
+
+  it('orders an unsorted delta before merging', () => {
+    const ranges = rangesAfter([
+      [userLine('a', tsAt(base, 0)).line],
+      [
+        userLine('late', tsAt(base, 3 * 60 * MIN)).line,
+        userLine('old', tsAt(base, -5 * DAY)).line,
+        userLine('near', tsAt(base, 5 * MIN)).line,
+      ],
+    ]);
+    expect(ranges).toEqual([
+      { start: tsAt(base, 0), end: tsAt(base, 5 * MIN) },
+      { start: tsAt(base, 3 * 60 * MIN), end: tsAt(base, 3 * 60 * MIN) },
+    ]);
+  });
+});
+
+describe('prompt events (specs/behaviors/session-engagement.md)', () => {
+  const base = Date.UTC(2026, 8, 17, 12, 0, 0);
+
+  function lines(): string[] {
+    const out: string[] = [];
+    for (let i = 0; i < 12; i++) {
+      out.push(userLine(i % 3 === 0 ? `<task-notification>${i}` : `  typed ${i}`, tsAt(base, i * 60_000)).line);
+      out.push(assistantLine({ parentUuid: null, ts: tsAt(base, i * 60_000 + 1), text: 'ok' }).line);
+    }
+    out.push(
+      j({ type: 'user', uuid: uid(), timestamp: tsAt(base, 900_000), isMeta: true, message: { role: 'user', content: 'skill body' } }),
+      j({ type: 'user', uuid: uid(), timestamp: tsAt(base, 901_000), isSidechain: true, message: { role: 'user', content: 'brief' } }),
+      j({ type: 'user', uuid: uid(), timestamp: tsAt(base, 902_000), isCompactSummary: true, message: { role: 'user', content: 'summary' } }),
+      j({ type: 'attachment', uuid: uid(), timestamp: tsAt(base, 903_000), attachment: { type: 'queued_command', prompt: 'queued one' } }),
+      j({
+        type: 'user',
+        uuid: uid(),
+        timestamp: tsAt(base, 905_000),
+        origin: { kind: 'human' },
+        promptSource: 'typed',
+        message: { role: 'user', content: '/EXAMPLE-sync' },
+      }),
+      j({
+        type: 'user',
+        uuid: uid(),
+        timestamp: tsAt(base, 906_000),
+        queuePriority: 'later',
+        message: { role: 'user', content: '<command-message>EXAMPLE-sync</command-message>' },
+      }),
+      // A tool-result-only user line has no text: not a prompt.
+      j({ type: 'user', uuid: uid(), timestamp: tsAt(base, 904_000), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'x', content: 'r' }] } })
+    );
+    return out;
+  }
+
+  it('records one event per user turn with text and per queued prompt, with the transcript flags', () => {
+    const { delta } = feed(EMPTY_CHECKPOINT, lines());
+    expect(delta.promptEvents).toHaveLength(12 + 6);
+    expect(delta.promptEvents[1]).toEqual({
+      seq: 2,
+      uuid: expect.stringMatching(/^m\d+-/),
+      ts: new Date(base + 60_000),
+      head: 'typed 1',
+      isMeta: false,
+      isSidechain: false,
+      isCompactSummary: false,
+      queued: false,
+      originKind: null,
+      promptSource: null,
+      queuePriority: null,
+    });
+    const tail = delta.promptEvents.slice(12);
+    expect(tail.map((e) => [e.head, e.isMeta, e.isSidechain, e.isCompactSummary, e.queued])).toEqual([
+      ['skill body', true, false, false, false],
+      ['brief', false, true, false, false],
+      ['summary', false, false, true, false],
+      ['queued one', false, false, false, true],
+      ['/EXAMPLE-sync', false, false, false, false],
+      ['<command-message>EXAMPLE-sync</command-message>', false, false, false, false],
+    ]);
+    // Authorship fields exactly as recorded; null when the line has none.
+    expect(tail.slice(3).map((e) => [e.originKind, e.promptSource, e.queuePriority])).toEqual([
+      [null, null, null],
+      ['human', 'typed', null],
+      [null, null, 'later'],
+    ]);
+  });
+
+  it('split feeds produce the same events as one full feed', () => {
+    const all = lines();
+    const full = feed(EMPTY_CHECKPOINT, all).delta.promptEvents;
+    for (const size of [1, 4, 7]) {
+      let cp = EMPTY_CHECKPOINT;
+      const split = [];
+      for (let i = 0; i < all.length; i += size) {
+        const r = feed(cp, all.slice(i, i + size));
+        cp = r.checkpoint;
+        split.push(...r.delta.promptEvents);
+      }
+      expect(split).toEqual(full);
+    }
+  });
+});

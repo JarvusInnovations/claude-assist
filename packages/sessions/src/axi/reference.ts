@@ -51,7 +51,15 @@ export const COMMAND_GROUPS: CommandGroup[] = [
         summary: "explore a variable range of messages around an anchor (the grep follow-up)",
       },
       { usage: "details <session-id> [--raw]", summary: "session metadata; --raw adds the parsed raw messages" },
-      { usage: "activity [--days N]", summary: "when work happened — active time blocks per session (default 7 days)" },
+      {
+        usage: "activity [--days N]",
+        summary: "when sessions had turns of any kind, human or automated — a timeline feed, not a time measure (default 7 days)",
+      },
+      {
+        usage: "engagement --from DATE --to DATE [--tz IANA] [--sessions]",
+        summary:
+          "human hands-on time per local day and project — automated turns excluded, parallel sessions counted once; the tool for \"how much time on X?\"",
+      },
     ],
   },
   {
