@@ -58,6 +58,16 @@ const schema = {
     SESSIONS_DISABLE_TIMELINE_BACKFILL: { type: 'boolean', default: false },
     SESSIONS_TIMELINE_BACKFILL_BUDGET_BYTES: { type: 'number', default: 16777216 }, // 16 MiB
     SESSIONS_TIMELINE_BACKFILL_CRON: { type: 'string' },
+    // Engagement (specs/behaviors/session-engagement.md). The prompt backfill
+    // derives prompt events for sessions ingested before they existed.
+    SESSIONS_DISABLE_PROMPT_BACKFILL: { type: 'boolean', default: false },
+    // Owner's IANA timezone: the local-day fallback for GET /sessions/engagement
+    // when a request passes no tz. No default — never the host's zone.
+    SESSIONS_OWNER_TZ: { type: 'string' },
+    // Newline-separated regular expressions; a prompt whose leading text
+    // matches one is automated, not human. No defaults — which scheduled
+    // commands and bridged-message wrappers are automation is instance data.
+    SESSIONS_AUTOMATED_PROMPT_PATTERNS: { type: 'string' },
     SESSIONS_DISABLE_LOCAL_INGEST: { type: 'boolean', default: false },
     SESSIONS_DISABLE_GENERATE_OUTLINES: { type: 'boolean', default: false },
     // Newline-separated prompt substrings; sessions containing any are
@@ -498,6 +508,9 @@ declare module 'fastify' {
       SESSIONS_DISABLE_TIMELINE_BACKFILL: boolean;
       SESSIONS_TIMELINE_BACKFILL_BUDGET_BYTES: number;
       SESSIONS_TIMELINE_BACKFILL_CRON?: string;
+      SESSIONS_DISABLE_PROMPT_BACKFILL: boolean;
+      SESSIONS_OWNER_TZ?: string;
+      SESSIONS_AUTOMATED_PROMPT_PATTERNS?: string;
       SESSIONS_DISABLE_LOCAL_INGEST: boolean;
       SESSIONS_DISABLE_GENERATE_OUTLINES: boolean;
       SESSIONS_IGNORE_MARKERS?: string;

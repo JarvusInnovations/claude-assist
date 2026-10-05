@@ -135,6 +135,9 @@ Response:
 - A session appears under a day when it has any prompt event on that day or a
   block piece falling in it, so an all-automated session is listed with
   `human_minutes: 0`.
+- A project appears under a day when it has a human prompt on that day or
+  human time falling in it. Automation alone does not list a project.
+- Projects and sessions are ordered by human minutes, most first.
 - Minutes are whole numbers, rounded once per figure from exact durations
   (never a sum of rounded pieces).
 - `pending_sessions` counts sessions the backfill has not finished and that

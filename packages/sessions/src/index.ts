@@ -11,6 +11,8 @@ import {
   lastWeekPeriod,
 } from './classification/index.js';
 import { runTimelineBackfillCycle, DEFAULT_TIMELINE_BACKFILL_BUDGET_BYTES } from './timeline-backfill.js';
+import { runPromptBackfillCycle } from './prompt-backfill.js';
+import { compileAutomatedPromptPatterns } from './prompt-classifier.js';
 
 /**
  * Sessions plugin for archiving Claude Code transcripts
@@ -113,6 +115,9 @@ export default createPlugin('sessions', async (fastify, options) => {
     classificationService,
     synthesisService,
     classificationStore,
+    ownerTz: config.ownerTz,
+    // Compiled here so an invalid pattern fails startup, naming itself.
+    automatedPromptPatterns: compileAutomatedPromptPatterns(config.automatedPromptPatterns),
   });
 
   // Nightly full verification (specs/behaviors/session-transcript-storage.md):
@@ -151,6 +156,23 @@ export default createPlugin('sessions', async (fastify, options) => {
         );
         if (result.chunksProcessed > 0 || result.sessionsCompleted > 0) {
           fastify.log.info({ result }, 'Timeline backfill cycle complete');
+        }
+      },
+    });
+  }
+
+  // Prompt-events backfill (specs/behaviors/session-engagement.md's "Existing
+  // sessions"): same resumable sweep, for the user turns engagement is
+  // computed from. Finishing a session also rebuilds its activity ranges.
+  if (!config.disablePromptBackfill) {
+    fastify.scheduler.register({
+      name: 'sessions:prompt-backfill',
+      schedule: '*/2 * * * *',
+      runOnStartup: true,
+      handler: async () => {
+        const result = await runPromptBackfillCycle(fastify.sql);
+        if (result.chunksProcessed > 0 || result.sessionsCompleted > 0) {
+          fastify.log.info({ result }, 'Prompt backfill cycle complete');
         }
       },
     });
@@ -288,4 +310,5 @@ export {
 } from './ignore.js';
 export * from './classification/index.js';
 export { runTimelineBackfillCycle, DEFAULT_TIMELINE_BACKFILL_BUDGET_BYTES } from './timeline-backfill.js';
+export { runPromptBackfillCycle, DEFAULT_PROMPT_BACKFILL_BUDGET_BYTES } from './prompt-backfill.js';
 export { computeTimelineSegments, downsampleReadings } from './timeline.js';

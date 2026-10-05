@@ -422,6 +422,11 @@ await fastify.register(
             fastify.config.SESSIONS_DISABLE_TIMELINE_BACKFILL,
           timelineBackfillBudgetBytes: fastify.config.SESSIONS_TIMELINE_BACKFILL_BUDGET_BYTES,
           timelineBackfillCron: fastify.config.SESSIONS_TIMELINE_BACKFILL_CRON,
+          disablePromptBackfill:
+            fastify.config.DISABLE_SYNCS ||
+            fastify.config.SESSIONS_DISABLE_PROMPT_BACKFILL,
+          ownerTz: fastify.config.SESSIONS_OWNER_TZ,
+          automatedPromptPatterns: fastify.config.SESSIONS_AUTOMATED_PROMPT_PATTERNS,
           disableLocalIngest:
             fastify.config.DISABLE_SYNCS ||
             fastify.config.SESSIONS_DISABLE_LOCAL_INGEST,
