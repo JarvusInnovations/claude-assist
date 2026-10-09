@@ -21,15 +21,20 @@
  * The single ULID a worksheet submission carries is the idempotency key for
  * whichever write it maps to — the entry's ULID when eaten, the derived item's
  * when packed — so a flaky-network resubmission can neither double-log nor
- * double-decrement.
+ * double-decrement. The key is minted PER SUBMISSION by the page runtime
+ * (specs/modules/pages.md § Idempotency); a reused key whose stated panel
+ * differs from what the key already wrote is a CONFLICT, not a replay — the
+ * sink refuses rather than report the old entry as "already recorded".
  */
 
-import type {
-  WorksheetCookOutcome,
-  WorksheetCookRequest,
-  WorksheetCookSink,
+import {
+  WorksheetCookConflictError,
+  type WorksheetCookDecrements,
+  type WorksheetCookOutcome,
+  type WorksheetCookRequest,
+  type WorksheetCookSink,
 } from '@jarvus/claude-assist-core';
-import { NUTRITION_FIELD_KEYS, type StatedMacros } from '../types.js';
+import { NUTRITION_FIELD_KEYS, type NutritionFields, type StatedMacros } from '../types.js';
 import { SHELF_LIFE_CLASSES, type ShelfLifeClass } from '../inventory-types.js';
 import { isValidUlid } from '../ulid.js';
 
@@ -54,7 +59,16 @@ export interface CookModeEntryIngest {
       macros?: StatedMacros;
     },
     photos: never[]
-  ): Promise<{ record: { ulid: string }; created: boolean }>;
+  ): Promise<{
+    /**
+     * The entry as stored. On a replay (`created: false`) the panel fields
+     * are what the key already wrote, and cook mode compares them against
+     * the panel it was asked to write (§ Cook mode — a replayed key with a
+     * different panel is a conflict). A stub may omit them.
+     */
+    record: { ulid: string } & Partial<NutritionFields>;
+    created: boolean;
+  }>;
   /**
    * Record decrements that could not be applied, so they surface in the
    * entries question queue rather than vanishing.
@@ -188,31 +202,44 @@ export class KitchenCookMode implements WorksheetCookSink {
       []
     );
 
+    if (!created) {
+      // A replayed key is a safe no-op ONLY when it is asking for the same
+      // write. The page runtime mints one key per submission, so a reused key
+      // with a different panel means the runtime (or a stale draft) has handed
+      // a second real meal the first meal's identity — and answering "already
+      // recorded" would put a checkmark over numbers the ledger does not hold.
+      assertSamePanel(record, macros, request.ulid);
+      return { kind: 'entry', ulid: record.ulid, created };
+    }
+
     // Decrements run AFTER the entry, and never roll it back
     // (§ The entry is authoritative). A meal that refused to record because a
     // bag lacked a net weight would be a strictly worse ledger than one that
     // records and flags the gap.
-    if (created && request.consumes?.length) {
-      const unapplied = await this.applyConsumes(request, record.ulid);
-      if (unapplied.length > 0) {
-        // Surfaced, never swallowed: an invisible skip would reproduce exactly
-        // the drift this feature removes while looking fixed.
-        await this.config.entries.flagUnappliedDecrements?.(record.ulid, unapplied);
-      }
+    const decrements = await this.applyConsumes(request, record.ulid);
+    if (decrements.unapplied.length > 0) {
+      // Surfaced, never swallowed: an invisible skip would reproduce exactly
+      // the drift this feature removes while looking fixed. The entry note
+      // and question queue get the text; the outcome carries the structure
+      // so the page can render it where the submitter is standing.
+      await this.config.entries.flagUnappliedDecrements?.(
+        record.ulid,
+        decrements.unapplied.map(describeUnapplied)
+      );
     }
 
-    return { kind: 'entry', ulid: record.ulid, created };
+    return { kind: 'entry', ulid: record.ulid, created, decrements };
   }
 
   /**
-   * Apply each binding at its SUBMITTED quantity. Returns human-readable
-   * descriptions of the ones that could not be applied.
+   * Apply each binding at its SUBMITTED quantity. Returns what moved and what
+   * did not, each refusal with the module's own reason.
    */
   private async applyConsumes(
     request: WorksheetCookRequest,
     entryUlid: string
-  ): Promise<string[]> {
-    const unapplied: string[] = [];
+  ): Promise<WorksheetCookDecrements> {
+    const decrements: WorksheetCookDecrements = { applied: [], unapplied: [] };
     const quantities = new Map<string, number>(
       request.components.map((c) => [c.label, c.quantity] as [string, number])
     );
@@ -220,12 +247,22 @@ export class KitchenCookMode implements WorksheetCookSink {
     for (const bind of request.consumes ?? []) {
       const quantity = quantities.get(bind.component);
       if (quantity === undefined) {
-        unapplied.push(`${bind.component}: no submitted quantity`);
+        decrements.unapplied.push({
+          component: bind.component,
+          item_ulid: bind.item_ulid,
+          quantity: null,
+          reason: 'no submitted quantity',
+        });
         continue;
       }
       if (quantity <= 0) continue; // Nothing eaten, nothing to take off.
       if (!this.config.depleter) {
-        unapplied.push(`${bind.component}: no depleter configured`);
+        decrements.unapplied.push({
+          component: bind.component,
+          item_ulid: bind.item_ulid,
+          quantity,
+          reason: 'no depleter configured',
+        });
         continue;
       }
 
@@ -239,22 +276,37 @@ export class KitchenCookMode implements WorksheetCookSink {
               ...(request.at ? { at: request.at } : {}),
             });
           }
+          decrements.applied.push({
+            component: bind.component,
+            item_ulid: bind.item_ulid,
+            quantity: units,
+            unit: 'unit',
+          });
         } else {
           await this.config.depleter.consumeStated(bind.item_ulid, {
             amount_g: quantity,
             entry_ulid: entryUlid,
             ...(request.at ? { at: request.at } : {}),
           });
+          decrements.applied.push({
+            component: bind.component,
+            item_ulid: bind.item_ulid,
+            quantity,
+            unit: request.unit,
+          });
         }
       } catch (err) {
         // The commonest cause is the module's own refusal to guess a mass
         // basis. That refusal is correct; reporting it is this code's job.
-        unapplied.push(
-          `${bind.component} (${bind.item_ulid}): ${err instanceof Error ? err.message : String(err)}`
-        );
+        decrements.unapplied.push({
+          component: bind.component,
+          item_ulid: bind.item_ulid,
+          quantity,
+          reason: err instanceof Error ? err.message : String(err),
+        });
       }
     }
-    return unapplied;
+    return decrements;
   }
 
   /**
@@ -272,9 +324,11 @@ export class KitchenCookMode implements WorksheetCookSink {
    * quantity — and applying both would decrement twice while looking correct,
    * which is the exact failure mode this change exists to remove.
    */
-  private resolvePackedSources(
-    request: WorksheetCookRequest
-  ): { item_ulid: string; amount?: number; amount_g?: number }[] {
+  private resolvePackedSources(request: WorksheetCookRequest): {
+    sources: { item_ulid: string; amount?: number; amount_g?: number }[];
+    /** The bound decrements, in the outcome's shape — what the conversion will move. */
+    applied: WorksheetCookDecrements['applied'];
+  } {
     const packed = request.packed ?? {};
     // A per-unit sheet states ONE unit's build and yields `units` of them, so
     // the batch consumes that much times over. `batch` (the default) already
@@ -287,6 +341,7 @@ export class KitchenCookMode implements WorksheetCookSink {
     );
 
     const bound = new Map<string, { item_ulid: string; amount?: number; amount_g?: number }>();
+    const applied: WorksheetCookDecrements['applied'] = [];
     for (const bind of request.consumes ?? []) {
       const quantity = quantities.get(bind.component);
       // A binding with no submitted quantity is silently skipped rather than
@@ -294,18 +349,20 @@ export class KitchenCookMode implements WorksheetCookSink {
       // resolution exists to stop trusting.
       if (quantity === undefined || quantity <= 0) continue;
       const total = quantity * multiplier;
-      bound.set(
-        bind.item_ulid,
-        bind.model === 'counted'
-          ? // Whole units only — a fractional unit is not a thing you can spend
-            // off a counted item, and rounding one would invent stock movement.
-            { item_ulid: bind.item_ulid, amount: Math.round(total) }
-          : { item_ulid: bind.item_ulid, amount_g: total }
-      );
+      if (bind.model === 'counted') {
+        // Whole units only — a fractional unit is not a thing you can spend
+        // off a counted item, and rounding one would invent stock movement.
+        const units = Math.round(total);
+        bound.set(bind.item_ulid, { item_ulid: bind.item_ulid, amount: units });
+        applied.push({ component: bind.component, item_ulid: bind.item_ulid, quantity: units, unit: 'unit' });
+      } else {
+        bound.set(bind.item_ulid, { item_ulid: bind.item_ulid, amount_g: total });
+        applied.push({ component: bind.component, item_ulid: bind.item_ulid, quantity: total, unit: request.unit });
+      }
     }
 
     const explicit = (packed.sources ?? []).filter((s) => !bound.has(s.item_ulid));
-    return [...bound.values(), ...explicit];
+    return { sources: [...bound.values(), ...explicit], applied };
   }
 
   /**
@@ -328,7 +385,7 @@ export class KitchenCookMode implements WorksheetCookSink {
     // eaten sheet, even though a conversion stores no macros itself.
     totalsToStatedMacros(request.totals);
 
-    const sources = this.resolvePackedSources(request);
+    const { sources, applied } = this.resolvePackedSources(request);
 
     const { derived, created } = await this.config.inventory.convert({
       ...(sources.length > 0 ? { sources } : {}),
@@ -345,8 +402,43 @@ export class KitchenCookMode implements WorksheetCookSink {
       },
       ...(request.at ? { at: request.at } : {}),
     });
-    return { kind: 'item', ulid: derived.ulid, created };
+    // The conversion is one transaction (§ Conversions § Atomicity): on a
+    // fresh write every bound source moved, so the applied list is exactly
+    // what was resolved. A replay moved nothing and reports nothing.
+    return created
+      ? { kind: 'item', ulid: derived.ulid, created, decrements: { applied, unapplied: [] } }
+      : { kind: 'item', ulid: derived.ulid, created };
   }
+}
+
+/** `yogurt (01J…): net_content_g is required` — the entry-note / queue text. */
+function describeUnapplied(d: WorksheetCookDecrements['unapplied'][number]): string {
+  return d.item_ulid ? `${d.component} (${d.item_ulid}): ${d.reason}` : `${d.component}: ${d.reason}`;
+}
+
+/**
+ * A replayed key must be asking for the write it already got. Compares the
+ * stored entry's panel with the stated one field by field; a stub record that
+ * carries no panel fields is not compared (nothing to compare against).
+ */
+function assertSamePanel(
+  record: { ulid: string } & Partial<NutritionFields>,
+  stated: StatedMacros,
+  key: string
+): void {
+  const differing: string[] = [];
+  for (const field of NUTRITION_FIELD_KEYS) {
+    const stored = record[field];
+    if (stored === undefined) continue;
+    const asked = stated[field] ?? null;
+    if (stored !== asked) differing.push(`${field}: recorded ${stored ?? 'unknown'}, submitted ${asked ?? 'unknown'}`);
+  }
+  if (differing.length === 0) return;
+  throw new WorksheetCookConflictError(
+    `submission key ${key} already recorded an entry with a different panel (${differing.join('; ')}). ` +
+      'Each submission needs its own key: submit again to record these numbers as a new entry, ' +
+      'or republish the sheet if this keeps happening.'
+  );
 }
 
 function isShelfLifeClass(value: string): value is ShelfLifeClass {
