@@ -49,15 +49,22 @@ export const HELPER_SCRIPT = `(function () {
             // Surface the server's own \`error\` line when there is one — a
             // failure panel showing raw JSON tells the reader nothing.
             var detail = text;
+            var parsed = null;
             try {
-              var parsed = JSON.parse(text);
+              parsed = JSON.parse(text);
               if (parsed && parsed.error) detail = parsed.error;
             } catch (e) {
               /* not JSON — use the body verbatim */
             }
-            throw new Error(
+            var error = new Error(
               'Request failed (HTTP ' + res.status + ')' + (detail ? ': ' + detail : '')
             );
+            // The worksheet runtime tells a 409 (the key already means
+            // something else — mint a fresh one) from a 502 (retry the same
+            // key) by status, so it rides on the error.
+            error.status = res.status;
+            error.body = parsed;
+            throw error;
           });
       }
       return res.json();
@@ -140,6 +147,14 @@ export const HELPER_SCRIPT = `(function () {
     }
   }
 
+  function removeDraft(slug, instance) {
+    try {
+      window.localStorage.removeItem(draftKey(slug, instance));
+    } catch (e) {
+      /* same — nothing to clear is the same as cleared */
+    }
+  }
+
   function pagesWorksheetInit() {
     var node = document.getElementById('pw-definition');
     if (!node) return;
@@ -157,12 +172,24 @@ export const HELPER_SCRIPT = `(function () {
     var noteEl = document.getElementById('pw-note');
     var restoreEl = document.getElementById('pw-restore');
 
-    // The submission key survives reloads OF THE SAME PUBLISHED INSTANCE: a
-    // page that comes back after the network dropped must retry the SAME
-    // submission, not open a second one. A republish renders a NEW instance,
-    // so it never sees this draft — it starts fresh (§ Idempotency).
+    // The submission key is minted PER SUBMISSION, at submit time, and lives
+    // in the draft only while that submission is PENDING — minted and not yet
+    // confirmed. A page that comes back after the network dropped must retry
+    // the SAME submission, not open a second one, so a pending key survives a
+    // reload of the same published instance. Once the server confirms the
+    // write the key is retired from the draft: the next submit, whether a tap
+    // of "Submit again" now or a reload tomorrow for tomorrow's weights, is a
+    // second real event and mints a fresh key. A key that outlived its
+    // submission made the second meal dedupe as a replay of the first — no
+    // entry, no decrement, a green check (§ Idempotency).
     var draft = readDraft(slug, instance) || {};
-    var key = draft.submission_key || ulid();
+    var pending = draft.submission_key || null;
+
+    function saveDraft() {
+      var next = { quantities: quantities() };
+      if (pending) next.submission_key = pending;
+      writeDraft(slug, instance, next);
+    }
 
     function quantities() {
       return inputs.map(function (input) {
@@ -197,7 +224,7 @@ export const HELPER_SCRIPT = `(function () {
       });
     }
 
-    function setStatus(state, headline, detail, retry) {
+    function setStatus(state, headline, detail, buttonLabel) {
       statusEl.setAttribute('data-state', state);
       statusEl.textContent = '';
       var h = document.createElement('h2');
@@ -208,38 +235,75 @@ export const HELPER_SCRIPT = `(function () {
         p.textContent = line;
         statusEl.appendChild(p);
       });
-      if (retry) {
+      if (buttonLabel) {
         var button = document.createElement('button');
         button.type = 'button';
-        button.textContent = 'Retry';
+        button.textContent = buttonLabel;
         button.addEventListener('click', submit);
         statusEl.appendChild(button);
       }
     }
 
-    function describe(cook) {
-      if (!cook) return 'Recorded in this page\\'s response queue.';
-      if (cook.status === 'logged') {
-        return cook.kind === 'entry'
-          ? 'Logged to the journal (entry ' + cook.ulid + ').'
-          : 'Recorded as prepped stock (item ' + cook.ulid + ').';
-      }
-      if (cook.status === 'already-logged') {
-        return 'Already recorded earlier — nothing was written twice (' + cook.ulid + ').';
-      }
-      return 'The journal write did NOT happen.';
+    // "Calories 363, Protein 8.4 g" — the totals the server actually stored,
+    // named by the sheet's own fields.
+    function describeTotals(totals) {
+      if (!totals) return '';
+      return def.fields
+        .map(function (field) {
+          var value = totals[field.key];
+          return field.label + ' ' + (value === null || value === undefined ? '—' : value) + (field.unit ? ' ' + field.unit : '');
+        })
+        .join(', ');
     }
 
-    // True once a submission has SUCCEEDED. A retry after a failure reuses the
-    // key (that is what makes retrying safe); a deliberate submission after a
-    // success mints a fresh one, because that is a second real event.
-    var settled = false;
+    // One line per decrement the write applied, and one per decrement it did
+    // NOT apply with the reason — on the page, where the person who can fix a
+    // missing net weight is standing. A refusal that lived only in the entry
+    // note was recorded honestly and seen by nobody.
+    function describeDecrements(decrements) {
+      if (!decrements) return [];
+      var lines = [];
+      (decrements.applied || []).forEach(function (d) {
+        lines.push('− ' + d.quantity + ' ' + d.unit + ' ' + d.component + ' (item ' + d.item_ulid + ')');
+      });
+      (decrements.unapplied || []).forEach(function (d) {
+        lines.push(
+          '⚠ ' + d.component + ' NOT decremented' +
+            (d.quantity !== null && d.quantity !== undefined ? ' (' + d.quantity + ')' : '') +
+            (d.item_ulid ? ' (item ' + d.item_ulid + ')' : '') +
+            ': ' + d.reason
+        );
+      });
+      if (lines.length === 0) {
+        lines.push('No stock was decremented — no component on this sheet is bound to an item.');
+      }
+      return lines;
+    }
+
+    function describe(cook, totals) {
+      if (!cook) return ['Recorded in this page\\'s response queue.'];
+      var name = cook.label ? '"' + cook.label + '"' : 'it';
+      var summary = describeTotals(totals);
+      if (cook.status === 'logged') {
+        var head =
+          cook.kind === 'entry'
+            ? 'Logged ' + name + ' to the journal' + (summary ? ' — ' + summary : '') + ' (entry ' + cook.ulid + ').'
+            : 'Recorded ' + name + ' as prepped stock' + (summary ? ' — ' + summary : '') + ' (item ' + cook.ulid + ').';
+        return [head].concat(describeDecrements(cook.decrements));
+      }
+      if (cook.status === 'already-logged') {
+        return [
+          'Already recorded earlier — nothing was written twice (' + cook.ulid + ').',
+        ].concat(cook.decrements ? describeDecrements(cook.decrements) : []);
+      }
+      return ['The journal write did NOT happen.'];
+    }
 
     function submit() {
-      if (settled) {
-        key = ulid();
-        settled = false;
-      }
+      // A pending key is a retry after a failure — one event, twice attempted.
+      // No pending key means this is a new submission, and it gets its own.
+      var key = pending || ulid();
+      pending = key;
       submitEl.disabled = true;
       setStatus('busy', 'Submitting…', ['Do not close this page yet.']);
       var payload = {
@@ -249,17 +313,42 @@ export const HELPER_SCRIPT = `(function () {
         quantities: quantities(),
         note: (noteEl && noteEl.value) || undefined,
       };
-      writeDraft(slug, instance, { submission_key: key, quantities: payload.quantities });
+      saveDraft();
 
       pagesRespond(payload)
         .then(function (result) {
           var cook = (result && result.worksheet && result.worksheet.cook_mode) || null;
-          settled = true;
-          setStatus('ok', '✓ Recorded', [describe(cook), 'Your submitted numbers are saved.']);
+          var totals = (result && result.worksheet && result.worksheet.totals) || null;
+          // Confirmed: the key has done its one job and is retired. The draft
+          // goes with it — the numbers are on the server now, and the restore
+          // affordance reads them back from there (§ Interaction with the
+          // restore affordance) rather than offering them as "unsent".
+          pending = null;
+          removeDraft(slug, instance);
+          setStatus('ok', '✓ Recorded', describe(cook, totals).concat(['Your submitted numbers are saved.']));
           submitEl.textContent = 'Submit again';
           submitEl.disabled = false;
         })
         .catch(function (error) {
+          if (error && error.status === 409) {
+            // The key already means something else (a stale draft, typically:
+            // yesterday's confirmed key on a page reloaded today). Nothing was
+            // written. Drop the key, keep the numbers, and make the next tap a
+            // NEW submission rather than a retry of this one.
+            pending = null;
+            saveDraft();
+            setStatus(
+              'error',
+              '✗ Not recorded',
+              [
+                String((error && error.message) || error),
+                'Nothing was written. Your numbers are still here — tap "Submit as new" to record them as a new entry.',
+              ],
+              'Submit as new'
+            );
+            submitEl.disabled = false;
+            return;
+          }
           setStatus(
             'error',
             '✗ Not recorded',
@@ -267,7 +356,7 @@ export const HELPER_SCRIPT = `(function () {
               String((error && error.message) || error),
               'Your numbers are still here. Retrying is safe — it cannot double-log.',
             ],
-            true
+            'Retry'
           );
           submitEl.disabled = false;
         });
@@ -276,7 +365,7 @@ export const HELPER_SCRIPT = `(function () {
     inputs.forEach(function (input) {
       input.addEventListener('input', function () {
         recompute();
-        writeDraft(slug, instance, { submission_key: key, quantities: quantities() });
+        saveDraft();
       });
     });
     if (submitEl) submitEl.addEventListener('click', submit);
