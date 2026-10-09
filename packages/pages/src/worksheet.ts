@@ -23,7 +23,7 @@
  * something else publishes its own HTML, as before.
  */
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 export const WORKSHEET_KIND = 'worksheet';
 export const WORKSHEET_VERSION = 1;
@@ -646,6 +646,26 @@ export function normalizeWorksheetResponse(
     };
   }
   return payload;
+}
+
+/**
+ * The identity of WHAT a submission asked to record: its stated quantities,
+ * the totals computed from them, and the submitter's remark — canonicalized
+ * (sorted keys, no whitespace) and hashed. Two submissions under one key with
+ * equal fingerprints are one event twice attempted; unequal fingerprints are
+ * two events wearing one key, which is the conflict § Idempotency refuses.
+ * The per-basis references and the cook directive are deliberately left out:
+ * they come from the published definition, not from the submitter.
+ */
+export function worksheetSubmissionFingerprint(payload: WorksheetResponsePayload): string {
+  const totals: Record<string, number | null> = {};
+  for (const key of Object.keys(payload.totals).sort()) totals[key] = payload.totals[key]!;
+  const canonical = JSON.stringify({
+    components: payload.components.map((c) => [c.label, c.quantity]),
+    totals,
+    note: payload.note,
+  });
+  return createHash('sha256').update(canonical).digest('hex');
 }
 
 /** One-line human summary of a worksheet submission, used as the notify body. */

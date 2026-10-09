@@ -65,12 +65,24 @@ export interface PagesStore {
    */
   listResponses(slug: string, filter: ListResponsesFilter): Promise<PageResponseRecord[] | null>;
 
-  /** Marks one response processed; returns it, or null if slug/id don't match. */
+  /**
+   * Marks one response processed, optionally storing what processing
+   * produced (see `PageResponseRecord.result`); returns it, or null if
+   * slug/id don't match.
+   */
   markProcessed(
     slug: string,
     responseId: number,
-    processedBy: string
+    processedBy: string,
+    result?: unknown
   ): Promise<PageResponseRecord | null>;
+
+  /**
+   * Every response on the slug whose payload carries this `submission_key`,
+   * newest first; null if the slug is unknown. Backs the same-key check a
+   * cook-mode submission performs before it appends (§ Idempotency).
+   */
+  findBySubmissionKey(slug: string, submissionKey: string): Promise<PageResponseRecord[] | null>;
 }
 
 /** Parse a JSONB field that may come back as a string from postgres.js */
@@ -114,6 +126,7 @@ interface ResponseRow {
   created_at: Date;
   processed_by: string | null;
   processed_at: Date | null;
+  result: unknown;
 }
 
 function rowToPage(row: PageRow): PageRecord {
@@ -165,6 +178,7 @@ function rowToResponse(row: ResponseRow): PageResponseRecord {
     createdAt: row.created_at,
     processedBy: row.processed_by,
     processedAt: row.processed_at,
+    result: parseJsonField(row.result as unknown as string | null),
   };
 }
 
@@ -335,17 +349,36 @@ export class PgPagesStore implements PagesStore {
   async markProcessed(
     slug: string,
     responseId: number,
-    processedBy: string
+    processedBy: string,
+    result?: unknown
   ): Promise<PageResponseRecord | null> {
     const page = await this.getPage(slug);
     if (!page) return null;
 
     const [row] = await this.sql<ResponseRow[]>`
       UPDATE pages.responses
-      SET processed_by = ${processedBy}, processed_at = NOW()
+      SET processed_by = ${processedBy},
+          processed_at = NOW(),
+          result = ${result === undefined ? null : JSON.stringify(result)}
       WHERE id = ${responseId} AND page_id = ${page.id}
       RETURNING *
     `;
     return row ? rowToResponse(row) : null;
+  }
+
+  async findBySubmissionKey(
+    slug: string,
+    submissionKey: string
+  ): Promise<PageResponseRecord[] | null> {
+    const page = await this.getPage(slug);
+    if (!page) return null;
+
+    const rows = await this.sql<ResponseRow[]>`
+      SELECT * FROM pages.responses
+      WHERE page_id = ${page.id}
+        AND payload->>'submission_key' = ${submissionKey}
+      ORDER BY created_at DESC, id DESC
+    `;
+    return rows.map(rowToResponse);
   }
 }

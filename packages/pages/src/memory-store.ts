@@ -139,6 +139,7 @@ export class MemoryPagesStore implements PagesStore {
       createdAt: new Date(),
       processedBy: null,
       processedAt: null,
+      result: null,
     };
     this.responses.push(response);
     return { page: { ...page }, response: { ...response } };
@@ -169,7 +170,8 @@ export class MemoryPagesStore implements PagesStore {
   async markProcessed(
     slug: string,
     responseId: number,
-    processedBy: string
+    processedBy: string,
+    result?: unknown
   ): Promise<PageResponseRecord | null> {
     const page = this.pages.get(slug);
     if (!page) return null;
@@ -179,6 +181,25 @@ export class MemoryPagesStore implements PagesStore {
 
     response.processedBy = processedBy;
     response.processedAt = new Date();
+    // Mirrors Pg: JSONB round-trip, and an omitted result stores null.
+    response.result = result === undefined ? null : structuredClone(result);
     return { ...response };
+  }
+
+  async findBySubmissionKey(
+    slug: string,
+    submissionKey: string
+  ): Promise<PageResponseRecord[] | null> {
+    const page = this.pages.get(slug);
+    if (!page) return null;
+
+    const keyOf = (payload: unknown): string | null =>
+      payload && typeof payload === 'object' && !Array.isArray(payload)
+        ? ((payload as { submission_key?: unknown }).submission_key as string | undefined) ?? null
+        : null;
+    return this.responses
+      .filter((r) => r.pageId === page.id && keyOf(r.payload) === submissionKey)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id - a.id)
+      .map((r) => ({ ...r }));
   }
 }

@@ -56,6 +56,14 @@ export interface PageResponseRecord {
   createdAt: Date;
   processedBy: string | null;
   processedAt: Date | null;
+  /**
+   * What processing this response produced — for a cook-mode submission, the
+   * sink's result (what was written, which decrements applied, which were
+   * refused). Stored at mark-processed time so a replay of the same key can
+   * answer with the original result (§ Idempotency). Null when the processor
+   * recorded none.
+   */
+  result: unknown;
 }
 
 /** Result of a publish call — distinguishes a brand-new slug from a republish. */

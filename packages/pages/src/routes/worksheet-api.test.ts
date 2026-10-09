@@ -39,7 +39,7 @@ function fakeNotify(): { dispatcher: NotifyDispatcher; sent: NotifyInput[] } {
  * A sink that behaves like the real one: keyed on the request's ULID, so a
  * replay reports `created: false` and writes nothing a second time.
  */
-function fakeSink(options: { fail?: Error } = {}): {
+function fakeSink(options: { fail?: Error; refuse?: Record<string, string> } = {}): {
   sink: WorksheetCookSink;
   calls: WorksheetCookRequest[];
   written: Map<string, WorksheetCookOutcome>;
@@ -51,17 +51,48 @@ function fakeSink(options: { fail?: Error } = {}): {
       calls.push(request);
       if (options.fail) throw options.fail;
       const existing = written.get(request.ulid);
-      if (existing) return { ...existing, created: false };
+      // A replay moves nothing and reports no decrements — the pages module
+      // answers with the ones it stored for the original write.
+      if (existing) return { kind: existing.kind, ulid: existing.ulid, created: false };
+      // Like the real sink: each binding decrements at its submitted quantity,
+      // and a refusal (e.g. no mass basis) is reported with its reason.
+      const quantities = new Map(request.components.map((c) => [c.label, c.quantity]));
+      const decrements: NonNullable<WorksheetCookOutcome['decrements']> = { applied: [], unapplied: [] };
+      for (const bind of request.consumes ?? []) {
+        const quantity = quantities.get(bind.component) ?? 0;
+        const reason = options.refuse?.[bind.item_ulid];
+        if (reason) {
+          decrements.unapplied.push({ component: bind.component, item_ulid: bind.item_ulid, quantity, reason });
+        } else {
+          decrements.applied.push({ component: bind.component, item_ulid: bind.item_ulid, quantity, unit: request.unit });
+        }
+      }
       const outcome: WorksheetCookOutcome = {
         kind: request.disposition === 'eaten' ? 'entry' : 'item',
         ulid: request.ulid,
         created: true,
+        decrements,
       };
       written.set(request.ulid, outcome);
       return outcome;
     },
   };
   return { sink, calls, written };
+}
+
+const GRAIN_ITEM = '01JGGGGGGGGGGGGGGGGGGGGGGG';
+const DRESSING_ITEM = '01JHHHHHHHHHHHHHHHHHHHHHHH';
+
+/** The usual eaten sheet, with both components bound to stock. */
+function boundEaten(): Record<string, unknown> {
+  return {
+    disposition: 'eaten',
+    label: 'grain bowl',
+    consumes: [
+      { component: 'cooked grain', item_ulid: GRAIN_ITEM, model: 'divisible' },
+      { component: 'dressing', item_ulid: DRESSING_ITEM, model: 'divisible' },
+    ],
+  };
 }
 
 const KEY = '01JAAAAAAAAAAAAAAAAAAAAAAA';
@@ -309,10 +340,12 @@ describe('worksheet publish + collect', () => {
       expect(response.statusCode).toBe(201);
       expect(response.json().worksheet.cook_mode).toEqual({
         disposition: 'eaten',
+        label: 'grain bowl',
         status: 'logged',
         kind: 'entry',
         ulid: KEY,
         created: true,
+        decrements: { applied: [], unapplied: [] },
         error: null,
       });
       expect(sink.calls).toHaveLength(1);
@@ -428,7 +461,7 @@ describe('worksheet publish + collect', () => {
       expect(sink.written.size).toBe(1);
     });
 
-    it('appends the resubmission to history rather than mutating the first', async () => {
+    it('appends an identical resubmission to history rather than mutating the first', async () => {
       await fastify.inject({
         method: 'POST',
         url: '/pages/grain-bowl-prep/responses',
@@ -437,14 +470,14 @@ describe('worksheet publish + collect', () => {
       await fastify.inject({
         method: 'POST',
         url: '/pages/grain-bowl-prep/responses',
-        payload: submission(KEY, [{ label: 'cooked grain', quantity: 180 }]),
+        payload: submission(KEY, [{ label: 'cooked grain', quantity: 200 }]),
       });
 
-      // Responses are append-only: two rows, the first untouched.
+      // Responses are append-only: two rows, the first untouched, both handled.
       expect(store.responses).toHaveLength(2);
-      expect((store.responses[0]!.payload as { components: { quantity: number }[] }).components[0]!.quantity).toBe(200);
-      expect((store.responses[1]!.payload as { components: { quantity: number }[] }).components[0]!.quantity).toBe(180);
       expect(store.responses.every((r) => r.processedAt !== null)).toBe(true);
+      // The result rides on the row that recorded the write.
+      expect(store.responses[0]!.result).toMatchObject({ status: 'logged', ulid: KEY });
     });
 
     it('a deliberate second submission under a NEW key is a second write', async () => {
@@ -460,6 +493,220 @@ describe('worksheet publish + collect', () => {
       });
       expect(second.json().worksheet.cook_mode.status).toBe('logged');
       expect(sink.written.size).toBe(2);
+    });
+  });
+
+  describe('a reused sheet is a first-class flow (claude-assist#263)', () => {
+    const publishBound = async () =>
+      fastify.inject({
+        method: 'POST',
+        url: '/pages',
+        payload: { slug: 'grain-bowl-prep', title: 'Prep', worksheet: worksheet(boundEaten()) },
+      });
+
+    beforeEach(async () => {
+      await publishBound();
+    });
+
+    it('two submissions with different weights under their own keys write two entries and two decrement sets', async () => {
+      // The same sheet, two mornings, two sets of weights.
+      const monday = await fastify.inject({
+        method: 'POST',
+        url: '/pages/grain-bowl-prep/responses',
+        payload: submission(KEY, [{ label: 'cooked grain', quantity: 185 }]),
+      });
+      const tuesday = await fastify.inject({
+        method: 'POST',
+        url: '/pages/grain-bowl-prep/responses',
+        payload: submission(OTHER_KEY, [{ label: 'cooked grain', quantity: 169 }]),
+      });
+
+      expect(monday.statusCode).toBe(201);
+      expect(tuesday.statusCode).toBe(201);
+      expect(monday.json().worksheet.cook_mode).toMatchObject({ status: 'logged', ulid: KEY });
+      expect(tuesday.json().worksheet.cook_mode).toMatchObject({ status: 'logged', ulid: OTHER_KEY });
+      expect(sink.written.size).toBe(2);
+
+      // Each entry carries its own day's decrements, at that day's weights.
+      expect(monday.json().worksheet.cook_mode.decrements.applied).toEqual([
+        { component: 'cooked grain', item_ulid: GRAIN_ITEM, quantity: 185, unit: 'g' },
+        { component: 'dressing', item_ulid: DRESSING_ITEM, quantity: 30, unit: 'g' },
+      ]);
+      expect(tuesday.json().worksheet.cook_mode.decrements.applied).toEqual([
+        { component: 'cooked grain', item_ulid: GRAIN_ITEM, quantity: 169, unit: 'g' },
+        { component: 'dressing', item_ulid: DRESSING_ITEM, quantity: 30, unit: 'g' },
+      ]);
+      expect(store.responses.map((r) => r.processedBy)).toEqual([
+        `cook-mode:entry:${KEY}`,
+        `cook-mode:entry:${OTHER_KEY}`,
+      ]);
+    });
+
+    it('a network-retry replay of an identical submission writes once and answers with the original result', async () => {
+      const first = await fastify.inject({
+        method: 'POST',
+        url: '/pages/grain-bowl-prep/responses',
+        payload: submission(KEY, [{ label: 'cooked grain', quantity: 185 }]),
+      });
+      const replay = await fastify.inject({
+        method: 'POST',
+        url: '/pages/grain-bowl-prep/responses',
+        payload: submission(KEY, [{ label: 'cooked grain', quantity: 185 }]),
+      });
+
+      expect(replay.statusCode).toBe(201);
+      expect(replay.json().worksheet.cook_mode).toMatchObject({
+        status: 'already-logged',
+        created: false,
+        ulid: KEY,
+      });
+      expect(sink.written.size).toBe(1);
+      // The sink moved nothing the second time; the page still learns what the
+      // ORIGINAL write moved, read back from the row that recorded it.
+      expect(replay.json().worksheet.cook_mode.decrements).toEqual(
+        first.json().worksheet.cook_mode.decrements
+      );
+      expect(replay.json().worksheet.cook_mode.decrements.applied).toHaveLength(2);
+    });
+
+    it('the same key with DIFFERENT weights is a 409 — nothing appended, nothing written, the sink not called', async () => {
+      await fastify.inject({
+        method: 'POST',
+        url: '/pages/grain-bowl-prep/responses',
+        payload: submission(KEY, [{ label: 'cooked grain', quantity: 185 }]),
+      });
+      const callsBefore = sink.calls.length;
+
+      // Day two, same page reloaded, a stale draft hands over day one's key.
+      const second = await fastify.inject({
+        method: 'POST',
+        url: '/pages/grain-bowl-prep/responses',
+        payload: submission(KEY, [{ label: 'cooked grain', quantity: 169 }]),
+      });
+
+      expect(second.statusCode).toBe(409);
+      expect(second.json().error).toMatch(new RegExp(`submission_key ${KEY} already recorded a different submission`));
+      expect(second.json().error).toMatch(/submit again/);
+      expect(second.json().conflict).toMatchObject({ submission_key: KEY, processed_by: `cook-mode:entry:${KEY}` });
+      // Loud and inert: no second row, no second write, no silent dedupe.
+      expect(store.responses).toHaveLength(1);
+      expect(sink.calls).toHaveLength(callsBefore);
+      expect(sink.written.size).toBe(1);
+    });
+
+    it('a changed note under the same key is also a different submission', async () => {
+      await fastify.inject({
+        method: 'POST',
+        url: '/pages/grain-bowl-prep/responses',
+        payload: { payload: { ...submission(KEY).payload, note: 'ran short' } },
+      });
+      const second = await fastify.inject({
+        method: 'POST',
+        url: '/pages/grain-bowl-prep/responses',
+        payload: { payload: { ...submission(KEY).payload, note: 'extra dressing' } },
+      });
+      expect(second.statusCode).toBe(409);
+      expect(store.responses).toHaveLength(1);
+    });
+
+    it('a retry after a FAILED attempt is not a conflict, even with corrected numbers', async () => {
+      await fastify.close();
+      let firstCall = true;
+      const flaky = fakeSink();
+      const wrapped: WorksheetCookSink = {
+        async cook(request) {
+          if (firstCall) {
+            firstCall = false;
+            throw new Error('network dropped');
+          }
+          return flaky.sink.cook(request);
+        },
+      };
+      await boot(wrapped);
+      await publishBound();
+
+      const failed = await fastify.inject({
+        method: 'POST',
+        url: '/pages/grain-bowl-prep/responses',
+        payload: submission(KEY, [{ label: 'cooked grain', quantity: 185 }]),
+      });
+      const retried = await fastify.inject({
+        method: 'POST',
+        url: '/pages/grain-bowl-prep/responses',
+        payload: submission(KEY, [{ label: 'cooked grain', quantity: 190 }]),
+      });
+
+      // The failed attempt never wrote, so its key has no meaning yet to conflict with.
+      expect(failed.statusCode).toBe(502);
+      expect(retried.statusCode).toBe(201);
+      expect(retried.json().worksheet.cook_mode).toMatchObject({ status: 'logged', created: true });
+    });
+
+    it("the sink's own conflict refusal surfaces as 409, with the row left unprocessed", async () => {
+      await fastify.close();
+      const conflicting: WorksheetCookSink = {
+        async cook() {
+          // The case the pages-side check cannot see: the key wrote, but the
+          // row that would have recorded it was never marked processed.
+          const error = new Error(`submission key ${KEY} already recorded an entry with a different panel`);
+          (error as Error & { code: string }).code = 'worksheet_cook_conflict';
+          throw error;
+        },
+      };
+      await boot(conflicting);
+      await publishBound();
+
+      const response = await fastify.inject({
+        method: 'POST',
+        url: '/pages/grain-bowl-prep/responses',
+        payload: submission(KEY, [{ label: 'cooked grain', quantity: 169 }]),
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json().worksheet.cook_mode).toMatchObject({ status: 'conflict', created: false });
+      expect(response.json().error).toMatch(/different panel/);
+      // The numbers are durable and the row is the backlog signal, as for any
+      // write that did not happen — but the status is not "write failed".
+      expect(store.responses).toHaveLength(1);
+      expect(store.responses[0]!.processedAt).toBeNull();
+      expect(notify.sent.at(-1)!.body).toMatch(/NOT recorded \(conflict\)/);
+    });
+  });
+
+  describe('the submit response says what did NOT move (claude-assist#228)', () => {
+    it('lists a refused decrement with its reason, next to the ones that applied', async () => {
+      await fastify.close();
+      // A component whose product carries no mass basis: the module refuses to
+      // guess, correctly — and the submitter must hear that on the page.
+      const refusing = fakeSink({ refuse: { [DRESSING_ITEM]: 'product has no net_content_g' } });
+      await boot(refusing.sink);
+      await fastify.inject({
+        method: 'POST',
+        url: '/pages',
+        payload: { slug: 'grain-bowl-prep', title: 'Prep', worksheet: worksheet(boundEaten()) },
+      });
+
+      const response = await fastify.inject({
+        method: 'POST',
+        url: '/pages/grain-bowl-prep/responses',
+        payload: submission(KEY, [{ label: 'cooked grain', quantity: 185 }]),
+      });
+
+      expect(response.statusCode).toBe(201);
+      expect(response.json().worksheet.cook_mode).toMatchObject({
+        status: 'logged',
+        label: 'grain bowl',
+        decrements: {
+          applied: [{ component: 'cooked grain', item_ulid: GRAIN_ITEM, quantity: 185, unit: 'g' }],
+          unapplied: [
+            { component: 'dressing', item_ulid: DRESSING_ITEM, quantity: 30, reason: 'product has no net_content_g' },
+          ],
+        },
+      });
+      // And the row remembers it, for a replay and for anyone reading the queue.
+      expect(store.responses[0]!.result).toMatchObject({
+        decrements: { unapplied: [{ component: 'dressing' }] },
+      });
     });
   });
 

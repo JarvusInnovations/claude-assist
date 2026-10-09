@@ -3353,13 +3353,32 @@ disagree with the displayed totals, which is precisely the defect being removed.
 A `null` total is **unknown** and is simply left unstated (never `0`); a stated
 `0` is a real zero and is stored.
 
-**Idempotency: one key, one meaning.** The submission's `submission_key` (a ULID)
-becomes the identity of whichever write the disposition maps to — the entry's
-ULID when eaten, the derived item's ULID when packed. Both writes are idempotent
-on it (`POST /entries` already was; `convert` gained the opt-in
-`derived.ulid` key for exactly this caller — § Conversions § Retries). A
-resubmission over a flaky mobile network therefore cannot double-log or
-double-decrement, and reports `created: false`.
+**Idempotency: one key, one meaning — and one key per submission.** The
+submission's `submission_key` (a ULID) becomes the identity of whichever write
+the disposition maps to — the entry's ULID when eaten, the derived item's ULID
+when packed. Both writes are idempotent on it (`POST /entries` already was;
+`convert` gained the opt-in `derived.ulid` key for exactly this caller —
+§ Conversions § Retries). A resubmission over a flaky mobile network therefore
+cannot double-log or double-decrement, and reports `created: false`.
+
+The key is minted by the page's runtime **per submission, at submit time**
+(`specs/modules/pages.md` § Idempotency) — never once per published page. A
+sheet is reused: the same breakfast sheet is submitted again the next morning
+with that morning's weights, and that is a second meal, not a retry. A key
+that outlived one submission made the second meal dedupe as a replay of the
+first — no entry, no decrement, a green check — which is the silent drop
+this module designs against everywhere else. **This module does not lock a
+sheet after one submit**; it logs each submission under its own key.
+
+**A replayed key with a different panel is a conflict, not a replay.** When
+`POST /entries` reports `created: false` for the key, cook mode compares the
+existing entry's stated panel with the one it was asked to write. Equal: a
+true replay, reported as such. Different: the sink refuses with a conflict
+(the pages module answers `409`), because returning the old entry as "already
+recorded" would put a checkmark over numbers the ledger does not hold. The
+pages module makes the same check earlier against its own stored payload;
+this one stands behind it for the case where the write landed but the page's
+record of it did not.
 
 **One authoritative write per submission; decrements never roll it back.** Cook
 mode does not compose two domain writes as equals, so there is no "entry landed,
@@ -3682,6 +3701,18 @@ bug, not of a simple meal.**
 When the basis is missing, the decrement does not happen and **the submission
 says so**. The intended decrement is recorded against the entry and surfaced
 through the same question queue as § Unreviewed entry notes.
+
+**"The submission says so" means the submit response, not only the entry
+note.** The cook-mode outcome carries every decrement that applied
+(component, quantity, item) and every one that did not, each with the
+module's own refusal text, and the page renders both lists in the
+confirmation (`specs/modules/pages.md` § What the submitter sees). A refusal
+written only into the entry's note and the question queue was recorded
+honestly and seen by nobody: in a production instance a meal logged with
+none of its components moved looked, on the page, exactly like one logged
+correctly, and the gap was found days later by counting items by hand. The
+person who can fix a missing net weight is the one holding the package, at
+the moment the sheet is submitted — so that is where the refusal is shown.
 
 This is the module's standing preference: a gap the owner can see beats a gap
 papered over. Silently skipping would reproduce exactly the drift this section

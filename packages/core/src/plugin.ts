@@ -950,6 +950,33 @@ export interface WorksheetCookRequest {
   };
 }
 
+/** One stock decrement the sink applied for a component binding. */
+export interface WorksheetCookDecrementApplied {
+  component: string;
+  item_ulid: string;
+  /** The submitted quantity, in the request's `unit` (or whole units when counted). */
+  quantity: number;
+  unit: string;
+}
+
+/**
+ * One stock decrement the sink did NOT apply, with its own reason — the
+ * module's refusal text (a missing mass basis, an item since closed, …).
+ * Reported, never swallowed: the page renders this list so the submitter
+ * learns at submit time that stock did not move.
+ */
+export interface WorksheetCookDecrementUnapplied {
+  component: string;
+  item_ulid: string | null;
+  quantity: number | null;
+  reason: string;
+}
+
+export interface WorksheetCookDecrements {
+  applied: WorksheetCookDecrementApplied[];
+  unapplied: WorksheetCookDecrementUnapplied[];
+}
+
 export interface WorksheetCookOutcome {
   /** `entry` = a journal entry (eaten); `item` = prepped stock (packed). */
   kind: 'entry' | 'item';
@@ -957,6 +984,39 @@ export interface WorksheetCookOutcome {
   ulid: string;
   /** False on an idempotent replay: nothing was written a second time. */
   created: boolean;
+  /**
+   * What the write moved and what it refused to move. Present on a fresh
+   * write; absent on a replay (the pages module answers a replay with the
+   * result it stored for the original).
+   */
+  decrements?: WorksheetCookDecrements;
+}
+
+/** Stable discriminator for `WorksheetCookConflictError`, checked by code, not class. */
+export const WORKSHEET_COOK_CONFLICT = 'worksheet_cook_conflict';
+
+/**
+ * Thrown by a sink that finds the request's key already written — to a
+ * DIFFERENT payload. Not a write failure: nothing is wrong downstream, the
+ * caller is reusing a key that has already meant something else. The pages
+ * module answers it with `409`, never `502`, and never reports the old write
+ * as "already recorded". Recognised by `code`, so a consumer need not share
+ * this class instance.
+ */
+export class WorksheetCookConflictError extends Error {
+  readonly code = WORKSHEET_COOK_CONFLICT;
+  constructor(message: string) {
+    super(message);
+    this.name = 'WorksheetCookConflictError';
+  }
+}
+
+export function isWorksheetCookConflict(error: unknown): error is WorksheetCookConflictError {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { code?: unknown }).code === WORKSHEET_COOK_CONFLICT
+  );
 }
 
 /**

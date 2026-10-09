@@ -255,16 +255,54 @@ A submission carries a client-generated **`submission_key`, a ULID**, stable
 across retries (the runtime persists it, so a page reloaded after the network
 dropped retries the *same* submission rather than opening a second one).
 
+**The key is minted per submission, at submit time — never at publish time,
+and never once per page.** A page is a reusable instrument: the same prep
+sheet is submitted again the next time that meal is made, with that day's
+weights, and each of those is a distinct event that must write. A key with
+any longer lifetime than one submission turns the second real meal into a
+"replay" of the first, and the write that should have happened silently does
+not. This was observed in a production instance: a sheet submitted on two
+consecutive days with different weights logged the first and dropped the
+second, with a green confirmation over the drop. **Reusing a sheet is a
+first-class flow, not an error** — the runtime must never lock a sheet after
+one submit as the answer to this.
+
 Responses are append-only, so the key cannot be enforced by refusing to insert —
 and it shouldn't be: a resubmission genuinely happened and belongs in history.
 Instead **the key is the identity of the write cook mode performs** (§ Cook
 mode), and every such write is idempotent on it. So a double-submit appends a
 second response row and writes **nothing** a second time.
 
-A *deliberate* second submission — the submitter tapping "Submit again" after a
-success — mints a **fresh** key, because that is a second real event. A retry
-after a **failure** reuses the key, because that is one event, twice attempted.
-The runtime distinguishes them; nothing else has to.
+**A key, once it has recorded, is retired by the runtime.** The persisted
+draft carries the key only while a submission is *pending* — minted and not
+yet confirmed. On a confirmed write the draft forgets it, so a reload of the
+same rendered page, an hour or a day later, starts the next submission with a
+fresh key exactly as a tap of "Submit again" does. A retry after a **failure**
+reuses the key, because that is one event, twice attempted; a deliberate
+second submission after a **success** mints a fresh one, because that is a
+second real event. The runtime distinguishes them; nothing else has to.
+
+**The server checks the key against the payload, not just against itself.**
+For a cook-mode sheet, a submission whose key has already recorded a write is
+compared with the stored payload of that write (the normalized quantities,
+totals, and note):
+
+| same key, and … | outcome |
+| --- | --- |
+| **identical payload** | a true replay: the row is appended, nothing is written a second time, and the response carries the **original** result (what was written, which decrements applied, which did not) |
+| **different payload** | **`409`**, nothing appended, nothing written — with a message that says which key collided and what to do: submit again (the runtime mints a fresh key), or republish the sheet if it keeps happening |
+| *(new key)* | a new write |
+
+A silent dedupe of a changed payload is the one outcome this table exists to
+rule out: the numbers in front of the submitter and the numbers in the ledger
+would disagree with a checkmark between them. A `409` is loud and recoverable
+— the submitter taps once more and the numbers land under a fresh key.
+
+A page published **before** per-submission keys carries nothing that needs a
+republish: the runtime is served live, so the retirement rule applies to it
+too. Its only legacy is a persisted draft still holding an already-recorded
+key, which the `409` path catches on the next submit with the same
+"submit again" guidance.
 
 **The client-side draft that carries the key across a reload is keyed on
 `(slug, instance)`, not slug alone.** The runtime persists `{ submission_key,
@@ -292,18 +330,36 @@ to a journal — so the outcome is stated, never implied:
 | state | what the submitter sees |
 | --- | --- |
 | submitting | button disabled, "Submitting… Do not close this page yet." |
-| logged | "✓ Recorded" + exactly what was written (entry or item, by ULID) |
-| already logged | "✓ Recorded — already recorded earlier; nothing was written twice" |
+| logged | "✓ Recorded" + the result listing below |
+| already logged | "✓ Recorded — already recorded earlier; nothing was written twice" + the **original** result listing |
+| key conflict (`409`) | "✗ Not recorded" + the server's message, and a **Submit as new** button: the numbers are still here, and the next tap records them under a fresh key |
 | write failed | "✗ Not recorded" + the server's error, a **Retry** button, and "Your numbers are still here. Retrying is safe — it cannot double-log." |
 | no sink wired | "✗ Not recorded" + "The journal write did NOT happen." |
+
+**The result listing states everything the write did and did not do**, in
+the same panel, so the submitter never has to open another surface to learn
+whether stock moved:
+
+- the entry (or item) written — its label, the computed totals, and its ULID;
+- **each decrement applied** — component, quantity, and the item it came off;
+- **each decrement NOT applied, with its reason** — component, item, and the
+  module's own refusal text (a missing mass basis, an item since closed, …).
+
+The last line is the load-bearing one. The information already existed in
+the sink's return value and in the entry's note; neither is a surface the
+submitter looks at, so a meal logged with none of its stock moved looked
+exactly like one logged correctly — a failure found only days later by
+counting the physical items. The page is where the person is standing when
+the decrement is refused, so the page is where the refusal is stated.
 
 The failure panel is persistent — it never auto-clears — and the inputs are never
 cleared, so the numbers survive to be retried.
 
 **The HTTP status carries the same distinction**, so no other consumer has to
-read the body to know: `201` recorded (including an idempotent replay), `502`
-appended but the cook-mode write failed, `503` no sink is wired. A green check
-can never appear over an unwritten log.
+read the body to know: `201` recorded (including an idempotent replay), `409`
+the key has already recorded a different payload (nothing appended, nothing
+written), `502` appended but the cook-mode write failed, `503` no sink is
+wired. A green check can never appear over an unwritten log.
 
 ### Interaction with the restore affordance
 
@@ -365,7 +421,19 @@ from a domain module's decorated surface — the same pattern as every other
 cross-module seam in the toolkit, so the packages never import each other. The
 request carries plain strings and numbers (`ulid`, `disposition`, `label`,
 `totals`, `components`, `unit`, `at?`, `note?`, `packed?`); the outcome is
-`{ kind: 'entry' | 'item', ulid, created }`.
+`{ kind: 'entry' | 'item', ulid, created, decrements? }`, where `decrements`
+is `{ applied: [{ component, item_ulid, quantity, unit }], unapplied:
+[{ component, item_ulid, quantity, reason }] }` — what the write moved and
+what it refused to move, in the sink's own words. The pages module stores
+that result on the processed response row and renders it (§ What the
+submitter sees); it does not interpret it.
+
+**A sink that finds its key already written to a different payload refuses
+with a conflict**, distinguishable from an ordinary write failure, and the
+pages module answers `409` rather than `502`. This is the second line of
+defence behind § Idempotency's payload check — it covers the one case the
+pages module cannot see, a write that landed but whose response row never
+got marked processed — and the submitter sees the same message either way.
 
 **Validating `totals` keys against a real domain panel is the sink's job**, and it
 rejects an unknown key rather than dropping it — a silently-ignored field would
@@ -380,17 +448,21 @@ landing in the queue as though it had been logged.
 Cook mode maps each disposition to **exactly one atomic domain write**, so there
 is no "half of it landed" state to explain. The sequence is:
 
+0. **Check the key** (§ Idempotency). A key that has already recorded a
+   *different* payload stops here with `409`; nothing below runs.
 1. **Append the response row.** The submitted numbers become durable first.
 2. **Call the sink.**
 3. **On success, mark the response processed** (`processed_by` =
-   `cook-mode:<kind>:<ulid>`).
+   `cook-mode:<kind>:<ulid>`), storing the sink's result on the row so a
+   later replay can answer with it.
 
 Each failure point has a stated outcome:
 
 | fails | ledger holds | submitter sees | retry |
 | --- | --- | --- | --- |
+| step 0 | nothing new anywhere | `409` + which key collided | the runtime mints a fresh key — the next tap is a new write |
 | step 1 | nothing anywhere | `4xx`/`5xx`, "not recorded" | safe (nothing written) |
-| step 2 | the response row, **unprocessed** | `502` + the error | safe — the sink is idempotent on the key |
+| step 2 | the response row, **unprocessed** | `502` + the error (`409` when the sink reports a key conflict) | safe — the sink is idempotent on the key |
 | step 3 | the domain write **and** the response row, unprocessed | `201`, recorded | n/a |
 
 Step 2's outcome is the important one: **a cook-mode failure degrades exactly to

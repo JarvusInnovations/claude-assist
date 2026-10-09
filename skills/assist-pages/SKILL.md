@@ -110,7 +110,12 @@ vocabulary belongs to the module that consumes it. Read the consuming module's s
   payload is never altered.
 - A cook-mode submission arrives **already processed** (the write happened) — its
   `processed_by` records which sink handled it, so don't re-log it by hand. Doing so
-  double-counts.
+  double-counts. Its `result` carries what the sink wrote and which decrements it
+  applied or refused (with reasons) — read that before touching stock by hand.
+- Every submission carries its own `submission_key`; a reused sheet is the normal
+  case, not an error. A resubmission under a key that already recorded *different*
+  numbers is refused with `409` and nothing appended — the page tells the submitter
+  to submit again under a fresh key, so there is nothing for an agent to recover.
 
 ## Commands
 

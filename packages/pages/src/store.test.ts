@@ -117,6 +117,39 @@ describe('PagesStore responses: append-only + processed semantics', () => {
     expect(stored!.payload).toEqual({ vote: 'yes' });
     expect(stored!.anchor).toBe('#section-2');
     expect(stored!.note).toBe('looks good');
+    // No result was recorded, so none is stored.
+    expect(stored!.result).toBeNull();
+  });
+
+  it('markProcessed stores what processing produced, so a replay can answer with it', async () => {
+    const store = new MemoryPagesStore();
+    await store.publish({ slug: 'p', title: 'P', html: '<html/>' });
+    const { response } = (await store.addResponse('p', { payload: { kind: 'worksheet' } }))!;
+
+    const result = { status: 'logged', decrements: { applied: [{ component: 'a' }], unapplied: [] } };
+    await store.markProcessed('p', response.id, 'cook-mode:entry:x', result);
+
+    const [stored] = (await store.listResponses('p', {}))!;
+    expect(stored!.result).toEqual(result);
+  });
+
+  it('findBySubmissionKey returns the rows carrying that key, newest first, and only those', async () => {
+    const store = new MemoryPagesStore();
+    await store.publish({ slug: 'p', title: 'P', html: '<html/>' });
+    await store.publish({ slug: 'q', title: 'Q', html: '<html/>' });
+    const KEY = '01JAAAAAAAAAAAAAAAAAAAAAAA';
+
+    const { response: first } = (await store.addResponse('p', { payload: { kind: 'worksheet', submission_key: KEY } }))!;
+    await store.addResponse('p', { payload: { kind: 'worksheet', submission_key: '01JZZZZZZZZZZZZZZZZZZZZZZZ' } });
+    await store.addResponse('p', { payload: { kind: 'comment', text: 'no key here' } });
+    // Same key on ANOTHER page is a different page's business.
+    await store.addResponse('q', { payload: { kind: 'worksheet', submission_key: KEY } });
+    const { response: second } = (await store.addResponse('p', { payload: { kind: 'worksheet', submission_key: KEY } }))!;
+
+    const found = (await store.findBySubmissionKey('p', KEY))!;
+    expect(found.map((r) => r.id)).toEqual([second.id, first.id]);
+    expect(await store.findBySubmissionKey('p', '01JNNNNNNNNNNNNNNNNNNNNNNN')).toEqual([]);
+    expect(await store.findBySubmissionKey('missing', KEY)).toBeNull();
   });
 
   it('markProcessed returns null for an unknown response id or slug', async () => {
