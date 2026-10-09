@@ -1,10 +1,11 @@
 ---
-status: in-progress
+status: done
 depends: [worksheet-draft-scoped-to-instance]
 specs:
   - specs/modules/pages.md
   - specs/modules/kitchen.md
 issues: [263, 228, 219]
+pr: 269
 ---
 
 # Plan: a cook sheet's idempotency key is minted per submission, and the submit response says what moved
@@ -99,20 +100,20 @@ ingest, compare the existing record's nutrition fields with
 
 ## Validation
 
-- [ ] Two submissions from one sheet with different weights and different
+- [x] Two submissions from one sheet with different weights and different
       keys write two entries and two decrement sets (pages route, kitchen
       sink against the real inventory pipeline).
-- [ ] A network-retry replay of an identical submission writes one entry and
+- [x] A network-retry replay of an identical submission writes one entry and
       reports `already-logged` with the original decrements.
-- [ ] Same key, different payload → `409`, nothing appended, the sink not
+- [x] Same key, different payload → `409`, nothing appended, the sink not
       called; the sink's own conflict error also surfaces as `409`.
-- [ ] A refused decrement appears in the submit response's
+- [x] A refused decrement appears in the submit response's
       `cook_mode.decrements.unapplied` with its reason, and the runtime
       renders it.
-- [ ] After a confirmed write the runtime's draft no longer carries the key:
+- [x] After a confirmed write the runtime's draft no longer carries the key:
       a reload of the same instance and a second submit post a fresh key.
-- [ ] A `409` renders its message and the next tap submits under a new key.
-- [ ] `packages/pages` and `packages/kitchen` suites green; package builds and
+- [x] A `409` renders its message and the next tap submits under a new key.
+- [x] `packages/pages` and `packages/kitchen` suites green; package builds and
       `type-check:axi` pass.
 
 ## Risks / unknowns
@@ -131,8 +132,37 @@ ingest, compare the existing record's nutrition fields with
 
 ## Notes
 
-(populated at closeout)
+- **The "fixed per page" key was the persisted draft, not a publish-time
+  field.** Nothing in the worksheet definition or the `prep` publisher mints
+  a ULID; `cook_mode.ulid` exists only in the stored payload and equals the
+  submission key. The runtime's `settled` flag (mint a fresh key on the next
+  tap after success) was in-memory only, so a reload lost it while the draft
+  kept the key. Because the runtime is served live from `/pages/_helper.js`,
+  already-published sheets pick up the fix with no republish.
+- **No payload-hash column.** The normalized payload is stored on the row, so
+  the fingerprint is computed from it on both sides of the comparison; the
+  one migration adds `pages.responses.result` (the cook report) and a lookup
+  index on `payload->>'submission_key'`.
+- **The fingerprint deliberately excludes per-basis references and the cook
+  directive** — those come from the published definition, not the submitter.
+- **The kitchen sink's conflict check covers `eaten` only.** `convert`'s
+  replay return carries no comparable panel; the pages-side check covers
+  packed sheets, and the sink-side one is the second line of defence for the
+  landed-but-unmarked case.
+- **The fake DOM in `helper-script.test.ts` now clears children on
+  `textContent` assignment**, as a browser does; without that the status
+  panel's history accumulated and every assertion on it read the first
+  render. The flush helper drains macrotasks rather than three microtasks.
 
 ## Follow-ups
 
-(populated at closeout)
+- **Issue** — #228 (second suggestion): refuse a gram-bound component whose
+  product has no mass basis at publish time, where the failure is recoverable
+  before the food is gone. Still open; this plan made the submit-time refusal
+  visible.
+- **Issue** — #219: a publish-time note (once per sheet) when no component on
+  a `--cook` sheet is stock-bound. The confirmation's "No stock was
+  decremented" line now covers the symptom at submit time; the publish-time
+  signal is still worth adding.
+- **None** — #174 (`entry_ulid`-less stated-weight replay) is untouched by
+  design and remains tracked on its own issue.
