@@ -14,7 +14,12 @@
  */
 
 import type { FastifyPluginAsync } from 'fastify';
-import type { WorksheetCookRequest, WorksheetCookSink } from '@jarvus/claude-assist-core';
+import {
+  isWorksheetCookConflict,
+  type WorksheetCookDecrements,
+  type WorksheetCookRequest,
+  type WorksheetCookSink,
+} from '@jarvus/claude-assist-core';
 import { SLUG_PATTERN } from '../types.js';
 import type { PagesStore } from '../store.js';
 import { pageUrl } from '../url.js';
@@ -26,9 +31,11 @@ import {
   summarizeWorksheet,
   validateWorksheetDefinition,
   validateWorksheetSubmission,
+  worksheetSubmissionFingerprint,
   type WorksheetDefinition,
   type WorksheetResponsePayload,
 } from '../worksheet.js';
+import type { PageResponseRecord } from '../types.js';
 
 export interface PagesApiRoutesConfig {
   store: PagesStore;
@@ -86,24 +93,61 @@ export function formatResponseNotifyBody(note?: string | null, anchor?: string |
  *
  * - `logged` — the write happened on this submission.
  * - `already-logged` — an idempotent replay; the row already existed, nothing
- *   was written twice.
+ *   was written twice. `decrements` are the ORIGINAL write's, read back from
+ *   the response row that recorded it (null when that row predates storing
+ *   them).
+ * - `conflict` — the key has already recorded a DIFFERENT payload; nothing
+ *   was written, and the submitter must submit again under a fresh key.
  * - `failed` — the response is recorded but the domain write did NOT happen.
  * - `unavailable` — no sink is wired, so nothing could be written.
  */
-export type CookModeStatus = 'logged' | 'already-logged' | 'failed' | 'unavailable';
+export type CookModeStatus = 'logged' | 'already-logged' | 'conflict' | 'failed' | 'unavailable';
 
 export interface CookModeReport {
   disposition: string;
+  /** The entry / item name the directive declared — what the page shows was logged. */
+  label: string;
   status: CookModeStatus;
   kind: 'entry' | 'item' | null;
   ulid: string;
   created: boolean;
+  /** What the write moved and what it refused to move; null when unknown. */
+  decrements: WorksheetCookDecrements | null;
   error: string | null;
 }
 
 /** The marker written into `processed_by` once cook mode closes the loop. */
 export function cookModeProcessedBy(outcome: { kind: string; ulid: string }): string {
   return `cook-mode:${outcome.kind}:${outcome.ulid}`;
+}
+
+const COOK_MODE_PROCESSED_PREFIX = 'cook-mode:';
+
+/**
+ * The response row (if any) through which this key has ALREADY written —
+ * i.e. one cook mode marked processed. An unprocessed row with the same key
+ * is a failed attempt, not a write, and is not a conflict with anything.
+ */
+function priorCookModeWrite(rows: PageResponseRecord[]): PageResponseRecord | null {
+  return rows.find((r) => r.processedBy?.startsWith(COOK_MODE_PROCESSED_PREFIX)) ?? null;
+}
+
+/** The decrements a processed row stored with its result, when it stored any. */
+function storedDecrements(row: PageResponseRecord): WorksheetCookDecrements | null {
+  const result = row.result as { decrements?: unknown } | null;
+  if (!result || typeof result !== 'object') return null;
+  const d = result.decrements as WorksheetCookDecrements | undefined;
+  return d && Array.isArray(d.applied) && Array.isArray(d.unapplied) ? d : null;
+}
+
+/** What a reused key's message must say: which key, and what to do about it. */
+export function submissionKeyConflictMessage(key: string, recordedAt: Date): string {
+  return (
+    `submission_key ${key} already recorded a different submission on this page ` +
+    `(at ${recordedAt.toISOString()}), so these numbers were NOT recorded. ` +
+    'Each submission needs its own key: submit again to record them as a new entry, ' +
+    'or republish the sheet if this keeps happening.'
+  );
 }
 
 /** Build the sink request from a validated worksheet + its normalized payload. */
@@ -280,6 +324,33 @@ export const registerPagesApiRoutes: FastifyPluginAsync<PagesApiRoutesConfig> = 
         note = note ?? summarizeWorksheet(definition, worksheetPayload);
       }
 
+      // Step 0 (§ Order of writes): a cook-mode key that has ALREADY written
+      // must be asking for the same write. The runtime mints one key per
+      // submission, so a reused key with different numbers is a second real
+      // event wearing the first one's identity — a stale draft, typically —
+      // and letting it through would dedupe a real meal into nothing while
+      // the page shows a checkmark. Refused loudly, with nothing appended;
+      // the runtime mints a fresh key and the next tap records it.
+      let priorWrite: PageResponseRecord | null = null;
+      if (worksheetPayload && definition?.cook_mode) {
+        const key = worksheetPayload.submission_key;
+        priorWrite = priorCookModeWrite((await store.findBySubmissionKey(slug, key)) ?? []);
+        if (priorWrite) {
+          const prior = priorWrite.payload as WorksheetResponsePayload;
+          if (worksheetSubmissionFingerprint(prior) !== worksheetSubmissionFingerprint(worksheetPayload)) {
+            reply.status(409);
+            return {
+              error: submissionKeyConflictMessage(key, priorWrite.createdAt),
+              conflict: {
+                submission_key: key,
+                recorded_at: priorWrite.createdAt,
+                processed_by: priorWrite.processedBy,
+              },
+            };
+          }
+        }
+      }
+
       // The response row is appended FIRST, before any cook-mode write. If the
       // write then fails, the submitted numbers are already durable and the row
       // sits UNPROCESSED — which is exactly the pre-cook-mode signal that an
@@ -301,10 +372,12 @@ export const registerPagesApiRoutes: FastifyPluginAsync<PagesApiRoutesConfig> = 
         if (!worksheetCookSink) {
           cookReport = {
             disposition: directive.disposition,
+            label: directive.label,
             status: 'unavailable',
             kind: null,
             ulid: worksheetPayload.submission_key,
             created: false,
+            decrements: null,
             error: 'no cook-mode sink is configured on this instance',
           };
         } else {
@@ -314,16 +387,23 @@ export const registerPagesApiRoutes: FastifyPluginAsync<PagesApiRoutesConfig> = 
             );
             cookReport = {
               disposition: directive.disposition,
+              label: directive.label,
               status: outcome.created ? 'logged' : 'already-logged',
               kind: outcome.kind,
               ulid: outcome.ulid,
               created: outcome.created,
+              // A replay answers with the ORIGINAL write's decrements: the sink
+              // moved nothing this time, and the row that recorded the first
+              // write is where that result lives.
+              decrements:
+                outcome.decrements ?? (priorWrite ? storedDecrements(priorWrite) : null),
               error: null,
             };
             // Cook mode closed the loop, so the response is born handled — it
             // never enters the backlog an agent is expected to work through.
+            // The result rides on the row so a later replay can answer with it.
             await store
-              .markProcessed(slug, response.id, cookModeProcessedBy(outcome))
+              .markProcessed(slug, response.id, cookModeProcessedBy(outcome), cookReport)
               .catch((error: unknown) => {
                 // The write landed; only the bookkeeping didn't. Leaving the row
                 // unprocessed costs a duplicate REVIEW, never a duplicate write
@@ -334,15 +414,26 @@ export const registerPagesApiRoutes: FastifyPluginAsync<PagesApiRoutesConfig> = 
                 );
               });
           } catch (error) {
+            // A conflict is not a write failure: the sink found this key
+            // already written to a different panel (the case step 0 cannot
+            // see — a write that landed but whose row never got marked). The
+            // row stays unprocessed and the status says 409, not 502.
+            const conflict = isWorksheetCookConflict(error);
             cookReport = {
               disposition: directive.disposition,
-              status: 'failed',
+              label: directive.label,
+              status: conflict ? 'conflict' : 'failed',
               kind: null,
               ulid: worksheetPayload.submission_key,
               created: false,
+              decrements: null,
               error: error instanceof Error ? error.message : String(error),
             };
-            fastify.log.error({ error, slug }, 'Cook mode write failed');
+            if (conflict) {
+              fastify.log.warn({ error, slug }, 'Cook mode refused a reused submission key');
+            } else {
+              fastify.log.error({ error, slug }, 'Cook mode write failed');
+            }
           }
         }
       }
@@ -361,9 +452,16 @@ export const registerPagesApiRoutes: FastifyPluginAsync<PagesApiRoutesConfig> = 
 
       // A cook-mode failure is not a success with a footnote: the status code
       // says so, so a green checkmark can never appear over an unwritten log.
-      // 502 = the downstream write failed; 503 = this instance can't write at all.
+      // 409 = the key already means something else; 502 = the downstream
+      // write failed; 503 = this instance can't write at all.
       reply.status(
-        cookReport?.status === 'failed' ? 502 : cookReport?.status === 'unavailable' ? 503 : 201
+        cookReport?.status === 'conflict'
+          ? 409
+          : cookReport?.status === 'failed'
+            ? 502
+            : cookReport?.status === 'unavailable'
+              ? 503
+              : 201
       );
       return {
         id: response.id,
@@ -430,6 +528,7 @@ export const registerPagesApiRoutes: FastifyPluginAsync<PagesApiRoutesConfig> = 
           created_at: r.createdAt,
           processed_by: r.processedBy,
           processed_at: r.processedAt,
+          result: r.result,
         })),
         count: responses.length,
       };
