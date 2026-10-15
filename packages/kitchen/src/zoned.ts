@@ -27,6 +27,21 @@ export interface OwnerTz {
    * silent guess.
    */
   note: string;
+  /**
+   * Hour (owner-local, 0–23) at which the CONSUMPTION day rolls over
+   * (`KITCHEN_DAY_START_HOUR`, default 0 = midnight).
+   *
+   * A late meal belongs to the day it was part of, not to the calendar date the
+   * clock had already turned over to. Setting this to 4 makes a 00:30 snack
+   * count toward the previous day, which is what the eater means by "today".
+   *
+   * This shifts the SUBJECTIVE day only — consumption entries and expenditures,
+   * which must share a boundary or the net line (intake − burns, grouped by
+   * `day`) silently compares two different windows. Inventory clocks and
+   * weigh-ins keep the true calendar date: food expires on calendar days, and a
+   * weigh-in buckets by its own recorded offset.
+   */
+  dayStartHour: number;
 }
 
 /** Thrown at boot when `KITCHEN_OWNER_TZ` names a zone the runtime can't resolve. */
@@ -37,15 +52,32 @@ export class OwnerTzConfigError extends Error {
   }
 }
 
+/** Thrown at boot when `KITCHEN_DAY_START_HOUR` is not an integer hour 0-23. */
+export class DayStartHourConfigError extends Error {
+  constructor(message: string) {
+    super(`KITCHEN_DAY_START_HOUR: ${message}`);
+    this.name = 'DayStartHourConfigError';
+  }
+}
+
 /**
  * Resolve `KITCHEN_OWNER_TZ` once at startup. A blank/absent value falls back
  * to UTC (stated). A present-but-invalid zone fails loudly (same doctrine as
  * the other kitchen config: a misread zone is worse than an announced UTC).
  */
-export function resolveOwnerTz(configured?: string | null): OwnerTz {
+export function resolveOwnerTz(
+  configured?: string | null,
+  dayStart?: string | number | null
+): OwnerTz {
+  const dayStartHour = resolveDayStartHour(dayStart);
   const raw = typeof configured === 'string' ? configured.trim() : '';
   if (raw === '') {
-    return { zone: 'UTC', fallback: true, note: 'UTC (KITCHEN_OWNER_TZ unset)' };
+    return {
+      zone: 'UTC',
+      fallback: true,
+      note: 'UTC (KITCHEN_OWNER_TZ unset)',
+      dayStartHour,
+    };
   }
   // Validate by attempting a format — an unknown zone throws RangeError.
   try {
@@ -53,7 +85,26 @@ export function resolveOwnerTz(configured?: string | null): OwnerTz {
   } catch {
     throw new OwnerTzConfigError(`"${raw}" is not a valid IANA timezone`);
   }
-  return { zone: raw, fallback: false, note: raw };
+  return { zone: raw, fallback: false, note: raw, dayStartHour };
+}
+
+/**
+ * Resolve `KITCHEN_DAY_START_HOUR`. Absent/blank ⇒ 0 (midnight), preserving the
+ * historical behaviour exactly. Present-but-invalid fails loudly, same doctrine
+ * as the zone: a misread boundary is worse than an announced default.
+ */
+export function resolveDayStartHour(configured?: string | number | null): number {
+  if (configured === null || configured === undefined) return 0;
+  const raw = typeof configured === 'number' ? String(configured) : configured.trim();
+  if (raw === '') return 0;
+  if (!/^\d{1,2}$/.test(raw)) {
+    throw new DayStartHourConfigError(`"${raw}" is not an integer hour`);
+  }
+  const hour = Number(raw);
+  if (hour > 23) {
+    throw new DayStartHourConfigError(`"${raw}" is out of range (0-23)`);
+  }
+  return hour;
 }
 
 /**
@@ -81,6 +132,25 @@ export function offsetMinutes(instant: Date, zone: string): number {
 export function localDay(instant: Date, zone: string): string {
   const shifted = new Date(instant.getTime() + offsetMinutes(instant, zone) * 60_000);
   return shifted.toISOString().slice(0, 10);
+}
+
+/**
+ * The owner-local **consumption** day of an instant: the calendar date after
+ * rolling the clock back by `dayStartHour` (§ Timezone & local-day bucketing).
+ *
+ * `localDay` answers "what date was it?" and stays the right call for calendar
+ * facts — an eat-by, a purchase date. This answers "which day did the eater
+ * mean?", which is the question a journal rollup is actually asking. With the
+ * default `dayStartHour` of 0 the two are identical, so nothing moves unless
+ * the boundary is deliberately configured.
+ *
+ * The shift is applied to the already-zone-adjusted wall clock, so it composes
+ * with DST correctly rather than fighting it.
+ */
+export function subjectiveDay(instant: Date, ownerTz: Pick<OwnerTz, 'zone' | 'dayStartHour'>): string {
+  const wall = instant.getTime() + offsetMinutes(instant, ownerTz.zone) * 60_000;
+  const rolled = new Date(wall - ownerTz.dayStartHour * 60 * 60_000);
+  return rolled.toISOString().slice(0, 10);
 }
 
 /**

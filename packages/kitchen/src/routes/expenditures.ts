@@ -21,7 +21,7 @@ import { ULID_PATTERN, generateUlid } from '../ulid.js';
 import { coerceBareDateToLocalNoon } from '../date-coerce.js';
 import type { EntryStore, ExpenditureStore } from '../store.js';
 import type { DailyTargets } from '../daily-targets.js';
-import { localDay, localDisplay, localToday, resolveOwnerTz, type OwnerTz } from '../zoned.js';
+import { localDisplay, localToday, resolveOwnerTz, subjectiveDay, type OwnerTz } from '../zoned.js';
 import { NUTRITION_FIELD_KEYS } from '../types.js';
 import type { EntryRecord } from '../types.js';
 import type { StravaSkippedActivity } from '../services/strava-sync.js';
@@ -100,7 +100,7 @@ function toView(
     // Module-owned local-day fields (§ Timezone & local-day bucketing): `day`
     // is the authoritative owner-tz bucketing key; `occurred_local` renders the
     // instant in the owner zone (never a bare `Z`). Raw `occurred_at` stays for ordering.
-    day: localDay(r.occurred_at, ownerTz.zone),
+    day: subjectiveDay(r.occurred_at, ownerTz),
     occurred_local: localDisplay(r.occurred_at, ownerTz.zone),
     source: r.source,
     label: r.label,
@@ -179,7 +179,7 @@ export function rollupByDay(
   };
 
   for (const e of entries) {
-    const day = localDay(e.logged_at, ownerTz.zone);
+    const day = subjectiveDay(e.logged_at, ownerTz);
     const acc = ensure(day);
     acc.entry_count += 1;
     const mult = typeof e.portion_multiplier === 'number' ? e.portion_multiplier : 1;
@@ -190,7 +190,7 @@ export function rollupByDay(
 
   }
   for (const b of burns) {
-    const day = localDay(b.occurred_at, ownerTz.zone);
+    const day = subjectiveDay(b.occurred_at, ownerTz);
     const acc = ensure(day);
     acc.expenditure_kcal += b.kcal;
     acc.expenditure_count += 1;
@@ -329,7 +329,7 @@ export const registerExpenditureRoutes: FastifyPluginAsync<ExpenditureRoutesConf
       activity_id: a.activity_id,
       label: a.label,
       occurred_at: a.occurred_at ? a.occurred_at.toISOString() : null,
-      day: a.occurred_at ? localDay(a.occurred_at, ownerTz.zone) : null,
+      day: a.occurred_at ? subjectiveDay(a.occurred_at, ownerTz) : null,
       occurred_local: a.occurred_at ? localDisplay(a.occurred_at, ownerTz.zone) : null,
     }));
     return { skipped, count: skipped.length, tz: ownerTz.note };

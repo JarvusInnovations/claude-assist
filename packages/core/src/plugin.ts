@@ -364,6 +364,17 @@ export interface KitchenPluginConfig {
    */
   ownerTz?: string;
   /**
+   * Hour (owner-local, 0-23) at which the CONSUMPTION day rolls over
+   * (`KITCHEN_DAY_START_HOUR`). Unset ⇒ 0, i.e. midnight, the historical
+   * behaviour. A late-night meal belongs to the day it was part of; setting
+   * this to e.g. 4 makes a 00:30 entry count toward the previous day.
+   *
+   * Applies to consumption entries and expenditures ONLY — they share a
+   * boundary so the net line stays coherent. Inventory clocks and weigh-ins
+   * keep the true calendar date.
+   */
+  dayStartHour?: string;
+  /**
    * Strava API application client id (KITCHEN_STRAVA_CLIENT_ID). All three
    * Strava credentials present ⇒ the scheduled activity sync runs; any
    * absent ⇒ the feature is entirely off (§ Strava activity sync).
