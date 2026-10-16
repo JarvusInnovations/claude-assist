@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import type postgres from 'postgres';
-import { getChunkState, writeIngestCycle, type WriteCycleParams } from './chunk-store.js';
-import { EMPTY_CHECKPOINT } from './incremental-parser.js';
+import { applyOpenChainOutput, getChunkState, writeIngestCycle, type WriteCycleParams } from './chunk-store.js';
+import { EMPTY_CHECKPOINT, type ParseCheckpoint } from './incremental-parser.js';
 import { EMPTY_AGGREGATE } from './aggregate-merge.js';
 import type { ToolCall, ContextReading, ContextCompaction } from './types.js';
 
@@ -219,5 +219,90 @@ describe('getChunkState', () => {
     expect(state!.aggregate.userMessages).toEqual(['hi']);
     expect(state!.aggregate.filesTouched.reads).toEqual(['/a.ts']);
     expect(state!.parseCheckpoint.msgIndex).toBe(10);
+  });
+});
+
+// plans/live-session-output-tokens.md — the row reports settled + open-chain
+// output; the parser resumes from settled only.
+describe('open-chain output on the session row', () => {
+  const openCheckpoint: ParseCheckpoint = {
+    ...EMPTY_CHECKPOINT,
+    msgIndex: 7,
+    openChains: [
+      { chainRoot: 'r1', tipUuid: 't1', model: 'claude-x', maxOutput: 40 },
+      { chainRoot: 'r2', tipUuid: 't2', model: undefined, maxOutput: 2 },
+    ],
+  };
+  const settled = {
+    ...EMPTY_AGGREGATE,
+    outputTokens: 100,
+    modelTokens: { 'claude-x': { input: 1, output: 100, cacheRead: 0 } },
+  };
+
+  function sessionRow(overrides: Record<string, unknown>) {
+    return {
+      machine_id: 1,
+      ingested_bytes: '10',
+      parse_checkpoint: openCheckpoint,
+      user_messages: '[]',
+      tools_used: '[]',
+      files_touched: '{}',
+      input_tokens: '1',
+      output_tokens: '142',
+      cache_read_tokens: '0',
+      context_final_tokens: null,
+      context_peak_tokens: null,
+      context_model: null,
+      started_at: null,
+      ended_at: null,
+      message_count: 7,
+      git_branch: null,
+      claude_version: null,
+      project_path: null,
+      models_used: '["claude-x"]',
+      model_tokens: { 'claude-x': { input: 1, output: 140, cacheRead: 0 } },
+      activity_ranges: '[]',
+      session_name: null,
+      ...overrides,
+    };
+  }
+
+  it('adding then removing open-chain output round-trips the aggregate', () => {
+    const reported = applyOpenChainOutput(settled, openCheckpoint, 1);
+    expect(reported.outputTokens).toBe(142);
+    expect(reported.modelTokens['claude-x']!.output).toBe(140);
+    expect(applyOpenChainOutput(reported, openCheckpoint, -1)).toEqual(settled);
+  });
+
+  it('writeIngestCycle stores settled + open output and marks the checkpoint', async () => {
+    const { sql, calls } = recordingSql();
+    await writeIngestCycle(sql, baseParams({ aggregate: settled, checkpoint: openCheckpoint }));
+    const insert = calls.find((c) => c.text.includes('INSERT INTO sessions.sessions'))!;
+    expect(insert.values).toContain(142);
+    expect(insert.values).toContainEqual({ 'claude-x': { input: 1, output: 140, cacheRead: 0 } });
+    expect(insert.values).toContainEqual({ ...openCheckpoint, rowIncludesOpenChains: true });
+  });
+
+  it('getChunkState strips open-chain output from a marked row', async () => {
+    const { sql } = recordingSql({
+      'FROM sessions.sessions': [
+        sessionRow({ parse_checkpoint: { ...openCheckpoint, rowIncludesOpenChains: true } }),
+      ],
+    });
+    const state = await getChunkState(sql, SESSION_ID);
+    expect(state!.aggregate.outputTokens).toBe(100);
+    expect(state!.aggregate.modelTokens['claude-x']!.output).toBe(100);
+    expect(state!.parseCheckpoint).toEqual(openCheckpoint);
+  });
+
+  it('getChunkState loads an unmarked (pre-change) row as settled', async () => {
+    const { sql } = recordingSql({
+      'FROM sessions.sessions': [
+        sessionRow({ output_tokens: '100', model_tokens: { 'claude-x': { input: 1, output: 100, cacheRead: 0 } } }),
+      ],
+    });
+    const state = await getChunkState(sql, SESSION_ID);
+    expect(state!.aggregate.outputTokens).toBe(100);
+    expect(state!.aggregate.modelTokens['claude-x']!.output).toBe(100);
   });
 });

@@ -18,6 +18,7 @@ import postgres from 'postgres';
 import { SyncService } from './sync.js';
 import { TranscriptReader } from './transcript-reader.js';
 import { serializeMessageRange, serializeSince, parseMessages } from './transcript.js';
+import { parseTranscript } from './parser.js';
 
 const DB_URL = process.env.SESSIONS_TEST_DATABASE_URL;
 const maybeDescribe = DB_URL ? describe : describe.skip;
@@ -191,6 +192,58 @@ maybeDescribe('chunked ingest — integration (real Postgres)', () => {
     expect(afterSecond.transcript_hash).toBe(tokenRow!.expected);
     await sync.syncLocal();
     expect((await fetchSession(sessionId)).transcript_hash).toBe(afterSecond.transcript_hash);
+  });
+
+  it('a live session reports open-chain output every cycle, matching a full parse without double counting', async () => {
+    // plans/live-session-output-tokens.md: fewer than MAX_OPEN_CHAINS chains
+    // and no end signal used to leave output_tokens at 0 until the session ended.
+    const mid = machineId('it-live-output');
+    const sync = new SyncService(sql, noopLog, { claudeDir: dir, machineId: mid, minFileSize: 1 });
+    const projectDir = join(dir, 'projects', '-p-live');
+    await Bun.$`mkdir -p ${projectDir}`.quiet();
+    const sessionId = crypto.randomUUID();
+    const filePath = join(projectDir, `${sessionId}.jsonl`);
+    createdSessionIds.push(sessionId);
+
+    const assistant = (uuid: string, parentUuid: string, output: number) =>
+      JSON.stringify({
+        type: 'assistant',
+        uuid,
+        parentUuid,
+        timestamp: new Date().toISOString(),
+        message: { role: 'assistant', model: 'claude-x', content: [{ type: 'text', text: 'ok' }], usage: { input_tokens: 3, output_tokens: output } },
+      }) + '\n';
+    const fullParseOutput = async () => parseTranscript(sessionId, await Bun.file(filePath).text()).outputTokens;
+    const stored = async () => {
+      const row = await fetchSession(sessionId);
+      const modelTokens = typeof row.model_tokens === 'string' ? JSON.parse(row.model_tokens) : row.model_tokens;
+      return { output: Number(row.output_tokens), modelOutput: modelTokens['claude-x']?.output };
+    };
+
+    // Cycle 1: one response chain, still open.
+    const u1 = crypto.randomUUID();
+    const a1 = crypto.randomUUID();
+    await writeFile(filePath, line('turn one', { uuid: u1 }) + assistant(a1, u1, 5));
+    await sync.syncLocal();
+    expect(await stored()).toEqual({ output: 5, modelOutput: 5 });
+    expect(await fullParseOutput()).toBe(5);
+
+    // Cycle 2: the open chain streams further (max 30) and a second chain opens.
+    const u2 = crypto.randomUUID();
+    await appendFile(filePath, assistant(crypto.randomUUID(), a1, 30) + line('turn two', { uuid: u2 }) + assistant(crypto.randomUUID(), u2, 7));
+    await sync.syncLocal();
+    expect(await fullParseOutput()).toBe(37);
+    expect(await stored()).toEqual({ output: 37, modelOutput: 37 });
+
+    // Cycle 3: the session ends; finalize folds the open chains in, once.
+    await appendFile(filePath, line('bye'));
+    await Bun.$`mkdir -p ${join(dir, 'session-signals')}`.quiet();
+    await writeFile(
+      join(dir, 'session-signals', `${sessionId}.ended.json`),
+      JSON.stringify({ session_id: sessionId, transcript_path: filePath, cwd: '/repo', ended_at: String(Date.now() / 1000) })
+    );
+    await sync.syncLocal();
+    expect(await stored()).toEqual({ output: 37, modelOutput: 37 });
   });
 
   it('budgeted catch-up: a file bigger than the ingest budget catches up over multiple cycles', async () => {

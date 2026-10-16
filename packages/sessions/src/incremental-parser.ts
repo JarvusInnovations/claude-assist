@@ -87,6 +87,23 @@ export interface ParseCheckpoint {
   lastActivityEnd: string | null;
 }
 
+/**
+ * Output still held in a checkpoint's open chains — the part of a full
+ * parse's `output_tokens` that hasn't been folded into the settled aggregate
+ * yet. The session row reports settled + open so a live session never reads
+ * as empty (specs/behaviors/session-transcript-storage.md); chunk-store adds
+ * this on write and subtracts it on load.
+ */
+export function openChainOutput(checkpoint: ParseCheckpoint): { total: number; byModel: Record<string, number> } {
+  let total = 0;
+  const byModel: Record<string, number> = {};
+  for (const c of checkpoint.openChains) {
+    total += c.maxOutput;
+    if (c.model) byModel[c.model] = (byModel[c.model] ?? 0) + c.maxOutput;
+  }
+  return { total, byModel };
+}
+
 export const EMPTY_CHECKPOINT: ParseCheckpoint = {
   v: 1,
   msgIndex: 0,
