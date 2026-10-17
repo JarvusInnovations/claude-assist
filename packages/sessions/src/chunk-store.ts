@@ -14,6 +14,7 @@ import type { ParseCheckpoint } from './incremental-parser.js';
 import { EMPTY_CHECKPOINT, applyActivityTimestamps, openChainOutput } from './incremental-parser.js';
 import type { SessionAggregate } from './aggregate-merge.js';
 import { EMPTY_AGGREGATE, boundedSearchText } from './aggregate-merge.js';
+import { contextWindowFor } from './context-window.js';
 
 /**
  * Rows per batched INSERT. Bulk inserts here use `INSERT ... SELECT ... FROM
@@ -346,7 +347,7 @@ export async function writeIngestCycle(sql: postgres.Sql, p: WriteCycleParams): 
           transcript_path, transcript_hash,
           search_text, message_count, user_message_count, claude_version,
           models_used, model_tokens, activity_ranges, session_name,
-          context_final_tokens, context_peak_tokens, context_model,
+          context_final_tokens, context_peak_tokens, context_model, context_limit_tokens,
           ingested_bytes, parse_checkpoint, timeline_backfill_done, prompt_backfill_done
         ) VALUES (
           ${p.sessionId}::uuid, ${p.machineId}, ${p.projectPath}, ${a.gitBranch},
@@ -359,7 +360,7 @@ export async function writeIngestCycle(sql: postgres.Sql, p: WriteCycleParams): 
           ${p.transcriptPath}, ${versionToken ?? ''},
           ${searchText}, ${a.messageCount}, ${a.userMessages.length}, ${a.claudeVersion},
           ${tx.json(a.modelsUsed)}, ${tx.json(a.modelTokens as any)}, ${tx.json(a.activityRanges as any)}, ${a.sessionName},
-          ${a.contextFinalTokens}, ${a.contextPeakTokens}, ${a.contextModel},
+          ${a.contextFinalTokens}, ${a.contextPeakTokens}, ${a.contextModel}, ${contextWindowFor(a.contextModel)},
           ${p.ingestedBytes}, ${tx.json(storedCheckpoint as any)},
           -- A brand-new session has no backlog for either backfill.
           ${true}, ${true}
@@ -393,6 +394,7 @@ export async function writeIngestCycle(sql: postgres.Sql, p: WriteCycleParams): 
           context_final_tokens = ${a.contextFinalTokens},
           context_peak_tokens = ${a.contextPeakTokens},
           context_model = ${a.contextModel},
+          context_limit_tokens = ${contextWindowFor(a.contextModel)},
           ingested_bytes = ${p.ingestedBytes},
           parse_checkpoint = ${tx.json(storedCheckpoint as any)},
           transcript_hash = COALESCE(${versionToken}, transcript_hash),
@@ -608,4 +610,27 @@ export async function insertContextEvents(
       `;
     });
   }
+}
+
+/**
+ * Bring every session's `context_limit_tokens` in line with
+ * `contextWindowFor(context_model)` (specs/behaviors/session-context-window.md).
+ * Repairs rows chunked ingest wrote without a limit before it resolved one,
+ * and fills in older rows whenever a model is added to the limit table.
+ * One UPDATE per distinct model; rows already correct are untouched.
+ */
+export async function reconcileContextLimits(sql: postgres.Sql): Promise<{ updated: number }> {
+  const models = await sql<{ context_model: string }[]>`
+    SELECT DISTINCT context_model FROM sessions.sessions WHERE context_model IS NOT NULL
+  `;
+  let updated = 0;
+  for (const { context_model: model } of models) {
+    const limit = contextWindowFor(model);
+    const result = await sql`
+      UPDATE sessions.sessions SET context_limit_tokens = ${limit}
+      WHERE context_model = ${model} AND context_limit_tokens IS DISTINCT FROM ${limit}::integer
+    `;
+    updated += result.count;
+  }
+  return { updated };
 }
