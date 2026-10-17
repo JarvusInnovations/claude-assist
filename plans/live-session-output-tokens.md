@@ -1,9 +1,10 @@
 ---
-status: in-progress
+status: done
 depends: []
 specs:
   - specs/behaviors/session-transcript-storage.md
 issues: []
+pr: 270
 ---
 
 # Plan: a live session's output tokens include its open chains
@@ -58,13 +59,13 @@ Out of scope:
 
 ## Validation
 
-- [ ] Unit: adding then removing the open-chain output round-trips the
+- [x] Unit: adding then removing the open-chain output round-trips the
       aggregate exactly. A checkpoint without the marker loads unchanged.
-- [ ] Integration (real Postgres): a session that never ends shows nonzero
+- [x] Integration (real Postgres): a session that never ends shows nonzero
       `output_tokens` after its first cycle. After an append that extends an
       open chain and adds a new one, the total equals a full `parseTranscript`
       of the file, with no double counting.
-- [ ] Integration: when the session-ended signal finalizes it, the stored
+- [x] Integration: when the session-ended signal finalizes it, the stored
       total still equals a full parse.
 - [ ] Deployed: the two live sound-transit sessions that were hidden appear
       on `/sessions` without "include empty".
@@ -77,4 +78,15 @@ Out of scope:
 
 ## Notes
 
+- The deployed check runs after merge, since the live server restarts from
+  `main`. Its result is recorded as a comment on PR #270, not by editing this
+  frozen plan.
+- The session row's token columns double as the running aggregate the next
+  cycle resumes from. That's why the open-chain output is removed on load
+  instead of being kept in a separate column.
+- The integration test fails on the pre-fix code (`output_tokens` stays 0
+  for a live session) and passes with the fix.
+
 ## Follow-ups
+
+- None.
