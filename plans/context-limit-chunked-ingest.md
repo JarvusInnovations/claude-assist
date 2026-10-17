@@ -1,9 +1,10 @@
 ---
-status: in-progress
+status: done
 depends: []
 specs:
   - specs/behaviors/session-context-window.md
 issues: []
+pr: 271
 ---
 
 # Plan: chunked ingest records the context limit
@@ -45,8 +46,8 @@ Out of scope:
 
 ## Validation
 
-- [ ] Unit: the INSERT and UPDATE both carry the resolved limit.
-- [ ] Integration (real Postgres): a chunk-ingested session on
+- [x] Unit: the INSERT and UPDATE both carry the resolved limit.
+- [x] Integration (real Postgres): a chunk-ingested session on
       `claude-opus-5-5` stores a 1,000,000 limit. After its limit is nulled,
       reconcile restores it, and a second reconcile changes nothing.
 - [ ] Deployed: after restart, no session with a known model has a null
@@ -59,4 +60,14 @@ Out of scope:
 
 ## Notes
 
+- The deployed check runs after merge, since the live server restarts from
+  `main`. Its result is recorded as a comment on PR #271.
+- Removing the limit write from the INSERT makes the integration test fail
+  (`Expected: 1000000, Received: null`).
+- This regression came in when chunked ingest replaced the full parser.
+  Every derived column the old parser wrote needs a counterpart in
+  `writeIngestCycle`. `context_limit_tokens` was the one that got dropped.
+
 ## Follow-ups
+
+- None.
