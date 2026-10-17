@@ -12,6 +12,7 @@ import {
 } from './classification/index.js';
 import { runTimelineBackfillCycle, DEFAULT_TIMELINE_BACKFILL_BUDGET_BYTES } from './timeline-backfill.js';
 import { runPromptBackfillCycle } from './prompt-backfill.js';
+import { reconcileContextLimits } from './chunk-store.js';
 import { compileAutomatedPromptPatterns } from './prompt-classifier.js';
 
 /**
@@ -134,6 +135,21 @@ export default createPlugin('sessions', async (fastify, options) => {
         fastify.log.warn({ result }, `Nightly verification: ${result.mismatches}/${result.checked} sessions re-ingested`);
       } else {
         fastify.log.info({ result }, `Nightly verification: ${result.checked} sessions clean`);
+      }
+    },
+  });
+
+  // Context limits (specs/behaviors/session-context-window.md): keep each
+  // row's limit equal to its model's window — repairs rows ingested without
+  // one, and picks up models added to the limit table after the fact.
+  fastify.scheduler.register({
+    name: 'sessions:reconcile-context-limits',
+    schedule: '23 4 * * *',
+    runOnStartup: true,
+    handler: async () => {
+      const result = await reconcileContextLimits(fastify.sql);
+      if (result.updated > 0) {
+        fastify.log.info({ result }, `Context limits: ${result.updated} sessions reconciled`);
       }
     },
   });

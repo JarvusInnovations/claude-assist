@@ -19,6 +19,7 @@ import { SyncService } from './sync.js';
 import { TranscriptReader } from './transcript-reader.js';
 import { serializeMessageRange, serializeSince, parseMessages } from './transcript.js';
 import { parseTranscript } from './parser.js';
+import { reconcileContextLimits } from './chunk-store.js';
 
 const DB_URL = process.env.SESSIONS_TEST_DATABASE_URL;
 const maybeDescribe = DB_URL ? describe : describe.skip;
@@ -244,6 +245,38 @@ maybeDescribe('chunked ingest — integration (real Postgres)', () => {
     );
     await sync.syncLocal();
     expect(await stored()).toEqual({ output: 37, modelOutput: 37 });
+  });
+
+  it('chunked ingest records the context limit for the model, and reconcile repairs a row without one', async () => {
+    const mid = machineId('it-context-limit');
+    const sync = new SyncService(sql, noopLog, { claudeDir: dir, machineId: mid, minFileSize: 1 });
+    const projectDir = join(dir, 'projects', '-p-limit');
+    await Bun.$`mkdir -p ${projectDir}`.quiet();
+    const sessionId = crypto.randomUUID();
+    const filePath = join(projectDir, `${sessionId}.jsonl`);
+    createdSessionIds.push(sessionId);
+    const u1 = crypto.randomUUID();
+    const assistant = JSON.stringify({
+      type: 'assistant',
+      uuid: crypto.randomUUID(),
+      parentUuid: u1,
+      timestamp: new Date().toISOString(),
+      message: { role: 'assistant', model: 'claude-opus-5-5', content: [{ type: 'text', text: 'ok' }], usage: { input_tokens: 10, cache_read_input_tokens: 4000, output_tokens: 5 } },
+    }) + '\n';
+    await writeFile(filePath, line('hi', { uuid: u1 }) + assistant);
+    await sync.syncLocal();
+
+    let row = await fetchSession(sessionId);
+    expect(row.context_model).toBe('claude-opus-5-5');
+    expect(row.context_final_tokens).toBe(4010);
+    expect(row.context_limit_tokens).toBe(1_000_000);
+
+    // A row written before ingest resolved limits: reconcile fills it in.
+    await sql`UPDATE sessions.sessions SET context_limit_tokens = NULL WHERE id = ${sessionId}::uuid`;
+    expect((await reconcileContextLimits(sql)).updated).toBeGreaterThanOrEqual(1);
+    row = await fetchSession(sessionId);
+    expect(row.context_limit_tokens).toBe(1_000_000);
+    expect((await reconcileContextLimits(sql)).updated).toBe(0);
   });
 
   it('budgeted catch-up: a file bigger than the ingest budget catches up over multiple cycles', async () => {

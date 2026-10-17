@@ -306,3 +306,16 @@ describe('open-chain output on the session row', () => {
     expect(state!.aggregate.modelTokens['claude-x']!.output).toBe(100);
   });
 });
+
+describe('context limit on the session row', () => {
+  it('writeIngestCycle resolves the limit from the context model on insert and update', async () => {
+    const aggregate = { ...EMPTY_AGGREGATE, contextFinalTokens: 5000, contextPeakTokens: 6000, contextModel: 'claude-opus-4-5-20251101' };
+    for (const isNew of [true, false]) {
+      const { sql, calls } = recordingSql({ timeline_backfill_done: [{ timeline_backfill_done: true, prompt_backfill_done: true, activity_ranges: [] }] });
+      await writeIngestCycle(sql, baseParams({ aggregate, isNew, fresh: isNew }));
+      const write = calls.find((c) => c.text.includes(isNew ? 'INSERT INTO sessions.sessions' : 'UPDATE sessions.sessions SET'))!;
+      expect(write.text).toContain('context_limit_tokens');
+      expect(write.values).toContain(200_000);
+    }
+  });
+});
