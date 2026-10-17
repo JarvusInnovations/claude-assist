@@ -11,7 +11,7 @@ import type postgres from 'postgres';
 import type { ToolCall, ContextReading, ContextCompaction, PromptEvent, ActivityRange } from './types.js';
 import { transcriptVersionToken, type ChunkPiece } from './chunked-ingest.js';
 import type { ParseCheckpoint } from './incremental-parser.js';
-import { EMPTY_CHECKPOINT, applyActivityTimestamps } from './incremental-parser.js';
+import { EMPTY_CHECKPOINT, applyActivityTimestamps, openChainOutput } from './incremental-parser.js';
 import type { SessionAggregate } from './aggregate-merge.js';
 import { EMPTY_AGGREGATE, boundedSearchText } from './aggregate-merge.js';
 
@@ -73,6 +73,36 @@ export interface ChunkState {
  * call signature the transaction object actually has at runtime). */
 type Tx = postgres.Sql;
 
+/**
+ * A stored `parse_checkpoint` carries `rowIncludesOpenChains: true` when the
+ * row's output totals include the checkpoint's open chains (every write since
+ * plans/live-session-output-tokens.md). Rows written before that hold settled
+ * totals only, and load as-is.
+ */
+type StoredCheckpoint = ParseCheckpoint & { rowIncludesOpenChains?: boolean };
+
+/**
+ * Add (`sign = 1`) or remove (`sign = -1`) a checkpoint's open-chain output
+ * on an aggregate's `outputTokens` and per-model `output`. The row stores
+ * settled + open so a live session reports what a full parse would
+ * (specs/behaviors/session-transcript-storage.md); the parser resumes from
+ * settled only, or an open chain would be counted again when it finalizes.
+ */
+export function applyOpenChainOutput(
+  aggregate: SessionAggregate,
+  checkpoint: ParseCheckpoint,
+  sign: 1 | -1
+): SessionAggregate {
+  const open = openChainOutput(checkpoint);
+  if (open.total === 0) return aggregate;
+  const modelTokens = { ...aggregate.modelTokens };
+  for (const [model, output] of Object.entries(open.byModel)) {
+    const mt = modelTokens[model] ?? { input: 0, output: 0, cacheRead: 0 };
+    modelTokens[model] = { ...mt, output: mt.output + sign * output };
+  }
+  return { ...aggregate, outputTokens: aggregate.outputTokens + sign * open.total, modelTokens };
+}
+
 interface ChunkStateRow {
   machine_id: number;
   ingested_bytes: string | number;
@@ -108,11 +138,36 @@ function toChunkState(
     typeof v === 'string' ? JSON.parse(v) : ((v as Record<string, unknown>) ?? {});
 
   const filesTouched = asObj(row.files_touched) as { reads?: string[]; writes?: string[] };
+  const { rowIncludesOpenChains, ...parseCheckpoint } =
+    (row.parse_checkpoint as StoredCheckpoint | null) ?? (EMPTY_CHECKPOINT as StoredCheckpoint);
+
+  const stored: SessionAggregate = {
+    userMessages: asArray(row.user_messages),
+    toolsUsed: asArray(row.tools_used),
+    filesTouched: { reads: filesTouched.reads ?? [], writes: filesTouched.writes ?? [] },
+    inputTokens: Number(row.input_tokens),
+    outputTokens: Number(row.output_tokens),
+    cacheReadTokens: Number(row.cache_read_tokens),
+    contextFinalTokens: row.context_final_tokens,
+    contextPeakTokens: row.context_peak_tokens,
+    contextModel: row.context_model,
+    startedAt: row.started_at,
+    endedAt: row.ended_at,
+    messageCount: row.message_count,
+    gitBranch: row.git_branch,
+    claudeVersion: row.claude_version,
+    cwd: row.project_path,
+    parseErrors: 0,
+    modelsUsed: asArray(row.models_used),
+    modelTokens: asObj(row.model_tokens) as SessionAggregate['modelTokens'],
+    activityRanges: asArray(row.activity_ranges) as unknown as SessionAggregate['activityRanges'],
+    sessionName: row.session_name,
+  };
 
   return {
     exists: true,
     ingestedBytes: Number(row.ingested_bytes),
-    parseCheckpoint: (row.parse_checkpoint as ParseCheckpoint | null) ?? EMPTY_CHECKPOINT,
+    parseCheckpoint,
     transcriptPath: row.transcript_path,
     lastChunk: lastChunk
       ? {
@@ -123,28 +178,9 @@ function toChunkState(
         }
       : null,
     machineId: row.machine_id,
-    aggregate: {
-      userMessages: asArray(row.user_messages),
-      toolsUsed: asArray(row.tools_used),
-      filesTouched: { reads: filesTouched.reads ?? [], writes: filesTouched.writes ?? [] },
-      inputTokens: Number(row.input_tokens),
-      outputTokens: Number(row.output_tokens),
-      cacheReadTokens: Number(row.cache_read_tokens),
-      contextFinalTokens: row.context_final_tokens,
-      contextPeakTokens: row.context_peak_tokens,
-      contextModel: row.context_model,
-      startedAt: row.started_at,
-      endedAt: row.ended_at,
-      messageCount: row.message_count,
-      gitBranch: row.git_branch,
-      claudeVersion: row.claude_version,
-      cwd: row.project_path,
-      parseErrors: 0,
-      modelsUsed: asArray(row.models_used),
-      modelTokens: asObj(row.model_tokens) as SessionAggregate['modelTokens'],
-      activityRanges: asArray(row.activity_ranges) as unknown as SessionAggregate['activityRanges'],
-      sessionName: row.session_name,
-    },
+    // The parser resumes from the settled totals; strip the open chains the
+    // row reports alongside them (see applyOpenChainOutput).
+    aggregate: rowIncludesOpenChains ? applyOpenChainOutput(stored, parseCheckpoint, -1) : stored,
   };
 }
 
@@ -290,7 +326,11 @@ export async function writeIngestCycle(sql: postgres.Sql, p: WriteCycleParams): 
       await tx`DELETE FROM sessions.prompt_events WHERE session_id = ${p.sessionId}::uuid`;
     }
 
-    const a = aggregate;
+    // Report what a full parse of the transcript so far would: settled
+    // output plus every still-open chain, marked so the next load can
+    // separate them again.
+    const a = applyOpenChainOutput(aggregate, checkpoint, 1);
+    const storedCheckpoint: StoredCheckpoint = { ...checkpoint, rowIncludesOpenChains: true };
     const searchText = boundedSearchText(a.userMessages);
     const startedAt = a.startedAt ?? p.startedAtFallback;
 
@@ -320,7 +360,7 @@ export async function writeIngestCycle(sql: postgres.Sql, p: WriteCycleParams): 
           ${searchText}, ${a.messageCount}, ${a.userMessages.length}, ${a.claudeVersion},
           ${tx.json(a.modelsUsed)}, ${tx.json(a.modelTokens as any)}, ${tx.json(a.activityRanges as any)}, ${a.sessionName},
           ${a.contextFinalTokens}, ${a.contextPeakTokens}, ${a.contextModel},
-          ${p.ingestedBytes}, ${tx.json(checkpoint as any)},
+          ${p.ingestedBytes}, ${tx.json(storedCheckpoint as any)},
           -- A brand-new session has no backlog for either backfill.
           ${true}, ${true}
         )
@@ -354,7 +394,7 @@ export async function writeIngestCycle(sql: postgres.Sql, p: WriteCycleParams): 
           context_peak_tokens = ${a.contextPeakTokens},
           context_model = ${a.contextModel},
           ingested_bytes = ${p.ingestedBytes},
-          parse_checkpoint = ${tx.json(checkpoint as any)},
+          parse_checkpoint = ${tx.json(storedCheckpoint as any)},
           transcript_hash = COALESCE(${versionToken}, transcript_hash),
           synced_at = NOW()
         WHERE id = ${p.sessionId}::uuid

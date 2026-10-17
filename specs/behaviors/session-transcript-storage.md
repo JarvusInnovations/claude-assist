@@ -72,6 +72,14 @@ the parser needs to continue, such as open chain roots and running totals. The
 result must equal a full parse of the whole transcript. New tool calls are
 appended to `tool_calls`; existing rows are untouched.
 
+That equality holds after every cycle, not only once a session ends. A full
+parse of the transcript so far counts every response chain, including one that
+is still open. So the session row's output totals (`output_tokens` and each
+model's `output` in `model_tokens`) include the running maximum of every open
+chain. A live session that has produced output never shows zero output and is
+never treated as empty. The checkpoint keeps open chains apart from the settled
+total, so the next cycle can resume without counting a chain twice.
+
 **A content-version token signals change.** `transcript_hash` holds
 `md5("<ingested_bytes>:<last chunk hash>")` and is updated by every ingest
 cycle that appends. It changes whenever the archive grows and stays fixed
