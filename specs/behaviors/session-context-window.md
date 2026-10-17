@@ -65,6 +65,10 @@ Source of truth for new models: the *Context window* row of Anthropic's
 model only once it is listed there.
 An unrecognised model yields a null limit, never a guessed one — the UI then
 shows token counts with no percentage.
+The stored limit always equals the table's value for the session's recorded
+model. That holds for rows written by any ingest path. Changing the table,
+for example adding a model, applies to sessions already stored as well as to
+new ones.
 
 ## Display
 
