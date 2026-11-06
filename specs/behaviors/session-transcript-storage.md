@@ -28,8 +28,14 @@ exactly one path.
   example on first sight, catches up over successive cycles. Memory use is
   bounded by the budget, not by session size.
 - **Readers take ranges.** Every consumer reads the transcript through a range
-  API (all, a message range, head and tail within a budget, or a window around an
-  anchor). None loads a whole transcript to use a part of it.
+  API (all, a message range, a time window, head and tail within a budget, or a
+  window around an anchor). None loads a whole transcript to use a part of it.
+- **Reads hold bounded memory.** A request-path read never holds more than a
+  few chunks of raw transcript at once, however large the range it covers. A
+  read that has to scan a long range (a time window, a search) walks it chunk
+  by chunk in order, carries across chunk boundaries whatever state the result
+  depends on, and keeps only what it will return. A request costs what it
+  returns, plus a bounded number of chunks, never what the session holds.
 
 ## Applies To
 
@@ -93,6 +99,26 @@ a satellite each session's `ingested_bytes` and last-chunk hash. The satellite
 sends only the bytes after that offset, or the whole file if its continuity
 check fails.
 
+**Time windows resolve to chunks.** Messages are appended in time order, so
+a chunk's first message timestamp orders the chunk series. A time-windowed
+read (`after`/`before`) locates the chunks covering its window by searching
+those first timestamps, reading only the head of each probed chunk, and
+reads from one chunk before the window's first to one chunk after its last,
+so a message written slightly out of order at a boundary is still seen. A
+chunk whose head carries no timestamp is treated as possibly inside the
+window: the read widens instead of skipping it. Within the selected chunks
+the per-message timestamp filter trims to the exact window, and the
+serialized result is the same as filtering the whole transcript. Rendering
+state that spans messages (a question and its later answer) carries forward
+across chunks. The output keeps its tail, as an unwindowed read does, so a
+window whose rendering exceeds the cap drops its head.
+
+**Search stops at its limit.** A search (`find`) scans its range chunk by
+chunk, oldest first. Each chunk's messages are matched with enough
+neighbouring messages fetched to build their context windows, and the scan
+stops once it has `limit` matches. A window's "messages remaining" counts
+are relative to the whole session, not to the chunks read.
+
 **Search text is bounded.** Full-text indexing covers the most recent user
 messages up to 256 KiB of text, well under Postgres's 1 MB `tsvector` limit,
 not an ever-growing concatenation. Exact-match search over full content goes
@@ -127,3 +153,8 @@ reader doesn't go looking for a transitional state that no longer exists.
 - **Growth, not size, drives cost.** A 400 MB session that grew by 50 KB must
   cost what a 50 KB append costs. Any design that re-reads, re-parses or
   rewrites unchanged content per cycle violates this.
+- **A read costs what it returns.** Reading the last half hour of a 700 MB
+  session must cost what reading a half-hour session costs. The server runs
+  under a hard memory cap, and one read that materializes a large session
+  freezes every other module on it. When a read's simplicity conflicts with
+  its memory bound, keep the bound: walk chunks, carry state, keep the tail.
