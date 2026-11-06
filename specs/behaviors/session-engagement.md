@@ -69,8 +69,11 @@ decides:
    `<bash-stdout`, `<bash-stderr` (the output of a `!` shell command; the
    `<bash-input` turn is the person typing), `<system-reminder`,
    `[Request interrupted`, `<cross-session-message` (a message another agent
-   session sent into this one). These carry transcripts from client versions
-   that recorded no authorship fields.
+   session sent into this one), `<agent-message` (a background subagent's
+   final report handed back into its parent session; it arrives as a queued
+   command with no origin kind and no queue priority, so only its text marks
+   it). These carry transcripts from client versions that recorded no
+   authorship fields, and turns the client injects without them.
 5. Its leading text matches an instance-configured pattern
    (`SESSIONS_AUTOMATED_PROMPT_PATTERNS`: newline-separated regular
    expressions) → **automated**. The toolkit ships none: which bridged-message
@@ -83,7 +86,7 @@ notifications. The origin kind is the authorship fact.
 
 Each automated event reports which rule decided it (`meta`, `sidechain`,
 `compaction`, `origin`, `task-notification`, `peer`, `scheduled`, `loop`,
-`local-command`, `system`, `interrupt`, `instance`), so a consumer can see why a session reads as zero.
+`local-command`, `system`, `interrupt`, `handback`, `instance`), so a consumer can see why a session reads as zero.
 
 A queued prompt is classified by the same rules as a typed one: queueing says
 when it arrived, not who wrote it.

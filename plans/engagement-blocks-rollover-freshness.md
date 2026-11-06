@@ -49,6 +49,18 @@ In scope:
    (sent only when passed) and prints `complete_through` with the oldest
    source in its header. Rebuild bundles and SKILL.md.
 
+6. **Subagent hand-backs are automated.** A background subagent's final
+   report is delivered into the parent session as a queued command that
+   starts with `<agent-message`, with no origin kind and no queue priority.
+   None of the classification rules catches it today, so each hand-back reads
+   as a human prompt. An orchestrating session that fans out many subagents
+   then reports human engagement for hours in which nobody typed. Add the
+   marker as a built-in rule (`handback`) in `prompt-classifier.ts`.
+   Classification runs when engagement is read, over the stored head, so
+   past windows correct themselves on deploy with no migration. Add a
+   regression test: a session whose only queued prompts
+   are hand-backs and task notifications reports 0 human minutes.
+
 ## Implements
 
 - **specs/behaviors/session-engagement.md**: *Day boundary*, *Time blocks*,
