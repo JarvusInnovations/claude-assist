@@ -1,9 +1,10 @@
 ---
-status: in-progress
+status: done
 depends: [transcript-read-layer]
 specs:
   - specs/behaviors/session-transcript-storage.md
 issues: []
+pr: 273
 ---
 
 # Plan: Bounded-memory transcript reads
