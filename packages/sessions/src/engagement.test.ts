@@ -1,17 +1,21 @@
 import { describe, expect, it } from 'bun:test';
 import {
   buildBlocks,
+  clipBlocks,
+  completeThrough,
   compareOwnership,
   computeEngagement,
   dedupePrompts,
   engagementMargins,
   isValidTimeZone,
   localDays,
+  parseDayStart,
   parseLocalDate,
   startOfLocalDay,
   type EngagementEvent,
   type EngagementSessionMeta,
 } from './engagement.js';
+import { classifyPrompt } from './prompt-classifier.js';
 
 const MIN = 60_000;
 const BLOCK = 15 * MIN;
@@ -46,13 +50,29 @@ const auto = (sessionId: string, ts: string, rule: EngagementEvent['automatedBy'
   automatedBy: rule,
 });
 
-function run(events: EngagementEvent[], sessions: Record<string, string | null>, from: string, to: string, tz = NY, nowMs = FAR_FUTURE) {
+function run(
+  events: EngagementEvent[],
+  sessions: Record<string, string | null>,
+  from: string,
+  to: string,
+  tz = NY,
+  nowMs = FAR_FUTURE,
+  opts: { dayStart?: string; includeBlocks?: boolean } = {}
+) {
   return computeEngagement(
     events,
     new Map(Object.entries(sessions).map(([id, p]) => [id, meta(p)])),
-    { days: localDays(day(from), day(to), tz), blockMs: BLOCK, gapMs: GAP, nowMs }
+    {
+      days: localDays(day(from), day(to), tz, parseDayStart(opts.dayStart ?? '00:00')!),
+      blockMs: BLOCK,
+      gapMs: GAP,
+      nowMs,
+      includeBlocks: opts.includeBlocks,
+    }
   );
 }
+
+const iso = (ms: number): string => new Date(ms).toISOString();
 
 describe('local days', () => {
   it('parses only real calendar dates', () => {
@@ -279,5 +299,181 @@ describe('one prompt, one owner', () => {
       sessions
     );
     expect(kept.map((e) => [e.sessionId, e.uuid])).toEqual([['a', 'x'], ['b', null], ['a', null]]);
+  });
+});
+
+describe('day_start', () => {
+  it('parses only HH:MM from 00:00 to 23:59', () => {
+    expect(parseDayStart('00:00')).toBe(0);
+    expect(parseDayStart('04:30')).toBe(270);
+    expect(parseDayStart('23:59')).toBe(1439);
+    for (const bad of ['24:00', '4:00', 'ab:cd', '04:60', '04:00:00', '']) expect(parseDayStart(bad)).toBeNull();
+  });
+
+  it('a prompt at 01:30 counts toward the previous day with day_start=04:00, the same day by default', () => {
+    // 01:30 EDT on 2026-09-10 = 05:30Z.
+    const events = [human('a', '2026-09-10T05:30:00Z')];
+    const rolled = run(events, { a: '/r/x' }, '2026-09-09', '2026-09-10', NY, FAR_FUTURE, { dayStart: '04:00' });
+    expect(rolled.map((d) => [d.date, d.envelope_minutes, d.human_prompt_count])).toEqual([
+      ['2026-09-09', 15, 1],
+      ['2026-09-10', 0, 0],
+    ]);
+    expect(rolled[0]!.starts_at).toBe('2026-09-09T08:00:00.000Z');
+    expect(rolled[0]!.ends_at).toBe('2026-09-10T08:00:00.000Z');
+    const plain = run(events, { a: '/r/x' }, '2026-09-09', '2026-09-10');
+    expect(plain.map((d) => [d.date, d.envelope_minutes, d.human_prompt_count])).toEqual([
+      ['2026-09-09', 0, 0],
+      ['2026-09-10', 15, 1],
+    ]);
+  });
+
+  it('a block crossing the day_start boundary is split there', () => {
+    // 03:55 EDT = 07:55Z; boundary at 04:00 EDT = 08:00Z.
+    const days = run([human('a', '2026-09-10T07:55:00Z')], { a: null }, '2026-09-09', '2026-09-10', NY, FAR_FUTURE, {
+      dayStart: '04:00',
+      includeBlocks: true,
+    });
+    expect(days.map((d) => d.envelope_minutes)).toEqual([5, 10]);
+    expect(days[0]!.blocks).toEqual([{ start: '2026-09-10T07:55:00.000Z', end: '2026-09-10T08:00:00.000Z' }]);
+    expect(days[1]!.blocks).toEqual([{ start: '2026-09-10T08:00:00.000Z', end: '2026-09-10T08:10:00.000Z' }]);
+  });
+
+  it('spring forward: a day_start inside the skipped hour resolves to the first instant after the gap', () => {
+    // 2026-03-08 02:00 EST jumps to 03:00 EDT; 02:30 does not exist.
+    expect(iso(startOfLocalDay(day('2026-03-08'), NY, 150))).toBe('2026-03-08T07:00:00.000Z');
+    const days = localDays(day('2026-03-07'), day('2026-03-09'), NY, 150);
+    expect(days.map((d) => (d.endMs - d.startMs) / 3_600_000)).toEqual([23.5, 23.5, 24]);
+    // Boundaries chain with no hole and no overlap.
+    expect(days[0]!.endMs).toBe(days[1]!.startMs);
+    expect(days[1]!.endMs).toBe(days[2]!.startMs);
+  });
+
+  it('spring forward: a whole-hour day_start before the gap gives a 23h day', () => {
+    const days = localDays(day('2026-03-07'), day('2026-03-08'), NY, 60);
+    expect(days.map((d) => (d.endMs - d.startMs) / 3_600_000)).toEqual([24, 23]);
+  });
+
+  it('fall back: a day_start inside the repeated hour is its first occurrence', () => {
+    // 2026-11-01 01:30 happens twice; the first is EDT = 05:30Z.
+    expect(iso(startOfLocalDay(day('2026-11-01'), NY, 90))).toBe('2026-11-01T05:30:00.000Z');
+    const days = localDays(day('2026-10-31'), day('2026-11-02'), NY, 90);
+    expect(days.map((d) => (d.endMs - d.startMs) / 3_600_000)).toEqual([24, 25, 24]);
+  });
+
+  it('across a transition every block minute is counted exactly once', () => {
+    // A long run of prompts spanning the fall-back repeated hour.
+    const events: EngagementEvent[] = [];
+    for (let t = at('2026-11-01T03:00:00Z'); t < at('2026-11-01T09:00:00Z'); t += 10 * MIN) {
+      events.push({ sessionId: 'a', uuid: `u${++uuidCounter}`, tsMs: t, automatedBy: null });
+    }
+    const total = (dayStart: string) =>
+      run(events, { a: null }, '2026-10-31', '2026-11-02', NY, FAR_FUTURE, { dayStart }).reduce(
+        (sum, d) => sum + d.envelope_minutes,
+        0
+      );
+    // One merged block: 03:00Z to 08:50Z + 15 min.
+    expect(total('00:00')).toBe(6 * 60 + 5);
+    expect(total('01:30')).toBe(6 * 60 + 5);
+    expect(total('04:00')).toBe(6 * 60 + 5);
+  });
+
+  it("a day's figures do not depend on the window, with a non-default day_start", () => {
+    const events = [human('a', '2026-09-10T07:50:00Z'), human('a', '2026-09-10T08:05:00Z'), human('a', '2026-09-10T12:00:00Z')];
+    const wide = run(events, { a: null }, '2026-09-08', '2026-09-11', NY, FAR_FUTURE, { dayStart: '04:00', includeBlocks: true });
+    for (const date of ['2026-09-09', '2026-09-10']) {
+      const narrow = run(events, { a: null }, date, date, NY, FAR_FUTURE, { dayStart: '04:00', includeBlocks: true });
+      expect(narrow[0]).toEqual(wide.find((d) => d.date === date)!);
+    }
+  });
+});
+
+describe('time blocks', () => {
+  it('clips to the interval and drops empty pieces', () => {
+    const blocks = [
+      { startMs: 0, endMs: 10 },
+      { startMs: 20, endMs: 40 },
+    ];
+    expect(clipBlocks(blocks, 5, 30)).toEqual([
+      { startMs: 5, endMs: 10 },
+      { startMs: 20, endMs: 30 },
+    ]);
+    expect(clipBlocks(blocks, 10, 20)).toEqual([]);
+  });
+
+  it('day blocks are ordered, disjoint, and sum to the envelope; project blocks may overlap across projects', () => {
+    const events = [
+      human('a', '2026-09-17T14:00:00Z'),
+      human('b', '2026-09-17T14:05:00Z'),
+      human('a', '2026-09-17T14:20:00Z'),
+      human('b', '2026-09-17T18:00:00Z'),
+    ];
+    const [d] = run(events, { a: '/r/x', b: '/r/y' }, '2026-09-17', '2026-09-17', NY, FAR_FUTURE, { includeBlocks: true });
+    expect(d!.blocks).toEqual([
+      { start: '2026-09-17T14:00:00.000Z', end: '2026-09-17T14:35:00.000Z' },
+      { start: '2026-09-17T18:00:00.000Z', end: '2026-09-17T18:15:00.000Z' },
+    ]);
+    const sum = d!.blocks!.reduce((s, b) => s + (Date.parse(b.end) - Date.parse(b.start)), 0) / MIN;
+    expect(sum).toBe(d!.envelope_minutes);
+    const x = d!.projects.find((p) => p.project_path === '/r/x')!;
+    const y = d!.projects.find((p) => p.project_path === '/r/y')!;
+    // x: 14:00-14:15 and 14:20-14:35 (gap 5 <= 15 merges) = one block.
+    expect(x.blocks).toEqual([{ start: '2026-09-17T14:00:00.000Z', end: '2026-09-17T14:35:00.000Z' }]);
+    expect(y.blocks).toEqual([
+      { start: '2026-09-17T14:05:00.000Z', end: '2026-09-17T14:20:00.000Z' },
+      { start: '2026-09-17T18:00:00.000Z', end: '2026-09-17T18:15:00.000Z' },
+    ]);
+    // Projects overlap each other (14:05-14:20 sits inside x's block).
+  });
+
+  it('a block crossing midnight appears as two clipped pieces, and none extends past now', () => {
+    // 23:50 EDT on the 17th; "now" is 03:57Z (23:57 local).
+    const nowMs = at('2026-09-18T03:57:00Z');
+    const days = run([human('a', '2026-09-18T03:50:00Z')], { a: null }, '2026-09-17', '2026-09-18', NY, nowMs, {
+      includeBlocks: true,
+    });
+    expect(days[0]!.blocks).toEqual([{ start: '2026-09-18T03:50:00.000Z', end: '2026-09-18T03:57:00.000Z' }]);
+    expect(days[1]!.blocks).toEqual([]);
+
+    const later = run([human('a', '2026-09-18T03:50:00Z')], { a: null }, '2026-09-17', '2026-09-18', NY, FAR_FUTURE, {
+      includeBlocks: true,
+    });
+    expect(later[0]!.blocks![0]!.end).toBe(later[1]!.blocks![0]!.start);
+    expect(later[1]!.blocks![0]!.start).toBe(later[1]!.starts_at);
+  });
+
+  it('omits blocks unless asked', () => {
+    const [d] = run([human('a', '2026-09-17T14:00:00Z')], { a: '/r/x' }, '2026-09-17', '2026-09-17');
+    expect('blocks' in d!).toBe(false);
+    expect('blocks' in d!.projects[0]!).toBe(false);
+  });
+});
+
+describe('hand-backs', () => {
+  it('a session whose only queued prompts are hand-backs and task notifications has 0 human minutes', () => {
+    const rule = (head: string) => classifyPrompt({ head, isMeta: false, isSidechain: false, isCompactSummary: false });
+    const heads = [
+      '<agent-message agent="x">report</agent-message>',
+      '<task-notification>\n<task-id>1</task-id>',
+      '<agent-message agent="y">another</agent-message>',
+    ];
+    const events: EngagementEvent[] = heads.map((h, i) => ({
+      sessionId: 'orch',
+      uuid: `u${++uuidCounter}`,
+      tsMs: at('2026-09-17T14:00:00Z') + i * 20 * MIN,
+      automatedBy: rule(h),
+    }));
+    expect(events.map((e) => e.automatedBy)).toEqual(['handback', 'task-notification', 'handback']);
+    const [d] = run(events, { orch: '/r/x' }, '2026-09-17', '2026-09-17');
+    expect(d!.envelope_minutes).toBe(0);
+    expect(d!.projects).toEqual([]);
+    expect(d!.sessions[0]).toMatchObject({ id: 'orch', human_minutes: 0, automated_by: { handback: 2, 'task-notification': 1 } });
+  });
+});
+
+describe('completeThrough', () => {
+  it('is the earliest clean sync, null when any is null or there are none', () => {
+    expect(completeThrough(['2026-09-17T10:00:00.000Z', '2026-09-16T10:00:00.000Z'])).toBe('2026-09-16T10:00:00.000Z');
+    expect(completeThrough(['2026-09-17T10:00:00.000Z', null])).toBeNull();
+    expect(completeThrough([])).toBeNull();
   });
 });

@@ -23,6 +23,9 @@ import {
   DEFAULT_BLOCK_MINUTES,
   DEFAULT_GAP_MINUTES,
   MAX_ENGAGEMENT_DAYS,
+  SOURCE_LOOKBACK_MS,
+  completeThrough,
+  parseDayStart,
   computeEngagement,
   engagementMargins,
   isValidTimeZone,
@@ -339,7 +342,15 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
   // GET /sessions/engagement - Human hands-on time per local day
   // (specs/behaviors/session-engagement.md)
   fastify.get<{
-    Querystring: { from?: string; to?: string; tz?: string; block_minutes?: string; gap_minutes?: string };
+    Querystring: {
+      from?: string;
+      to?: string;
+      tz?: string;
+      block_minutes?: string;
+      gap_minutes?: string;
+      day_start?: string;
+      include?: string;
+    };
   }>('/sessions/engagement', async (request, reply) => {
     const q = request.query;
     const bad = (param: string, error: string, extra: Record<string, unknown> = {}) =>
@@ -375,9 +386,22 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
       return bad('gap_minutes', 'gap_minutes must be a non-negative number of minutes, at most 1440');
     }
 
+    const dayStart = q.day_start === undefined || q.day_start === '' ? '00:00' : q.day_start;
+    const dayStartMinutes = parseDayStart(dayStart);
+    if (dayStartMinutes === null) {
+      return bad('day_start', 'day_start must be a wall-clock time as HH:MM, from 00:00 to 23:59');
+    }
+
+    const includes = (q.include ?? '').split(',').map((v) => v.trim()).filter((v) => v.length > 0);
+    const unknownInclude = includes.find((v) => v !== 'blocks');
+    if (unknownInclude !== undefined) {
+      return bad('include', `unknown include value: ${unknownInclude}; supported: blocks`);
+    }
+    const includeBlocks = includes.includes('blocks');
+
     const blockMs = blockMinutes * 60_000;
     const gapMs = gapMinutes * 60_000;
-    const days = localDays(fromMs, toMs, tz);
+    const days = localDays(fromMs, toMs, tz, dayStartMinutes);
     const windowStart = days[0]!.startMs;
     const windowEnd = days[days.length - 1]!.endMs;
     const margins = engagementMargins(blockMs, gapMs);
@@ -464,14 +488,43 @@ export const registerRoutes: FastifyPluginAsync<RoutesConfig> = async (
         AND COALESCE(ended_at, started_at) >= ${new Date(windowStart)}
     `;
 
+    // Which machines the figures depend on, and how fresh each is: those with a
+    // session active in the window or in the 30 days before it.
+    const sourceRows = await fastify.sql<
+      { machine_id: string; hostname: string | null; last_clean_sync_at: Date | null; newest_prompt_at: Date | null }[]
+    >`
+      SELECT m.machine_id, m.hostname, m.last_clean_sync_at,
+             (SELECT MAX(pe.ts)
+                FROM sessions.prompt_events pe
+                JOIN sessions.sessions ps ON ps.id = pe.session_id
+               WHERE ps.machine_id = m.id) AS newest_prompt_at
+      FROM sessions.machines m
+      WHERE EXISTS (
+        SELECT 1 FROM sessions.sessions s
+        WHERE s.machine_id = m.id
+          AND s.started_at < ${new Date(windowEnd)}
+          AND COALESCE(s.ended_at, s.started_at) >= ${new Date(windowStart - SOURCE_LOOKBACK_MS)}
+      )
+      ORDER BY m.last_clean_sync_at ASC NULLS FIRST, m.machine_id
+    `;
+    const sources = sourceRows.map((r) => ({
+      machine_id: r.machine_id,
+      name: r.hostname ?? r.machine_id,
+      last_clean_sync_at: r.last_clean_sync_at ? new Date(r.last_clean_sync_at).toISOString() : null,
+      newest_prompt_at: r.newest_prompt_at ? new Date(r.newest_prompt_at).toISOString() : null,
+    }));
+
     return {
       from: q.from,
       to: q.to,
       tz,
       block_minutes: blockMinutes,
       gap_minutes: gapMinutes,
+      day_start: dayStart,
       pending_sessions: pending?.n ?? 0,
-      days: computeEngagement(events, sessionMeta, { days, blockMs, gapMs, nowMs: Date.now() }),
+      complete_through: completeThrough(sources.map((s) => s.last_clean_sync_at)),
+      sources,
+      days: computeEngagement(events, sessionMeta, { days, blockMs, gapMs, nowMs: Date.now(), includeBlocks }),
     };
   });
 
