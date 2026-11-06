@@ -269,11 +269,70 @@ export function serializeTranscriptUntruncated(
   rawTranscript: string,
   options?: SerializeTranscriptOptions
 ): string {
-  const lines = rawTranscript.trim().split('\n');
-  const output: string[] = [];
+  const serializer = new TranscriptSerializer(options);
+  serializer.push(rawTranscript);
+  return serializer.text();
+}
 
+/**
+ * Serializes a transcript fed a batch of raw JSONL at a time, in order, so a
+ * long range can be read chunk by chunk (specs/behaviors/session-transcript-
+ * storage.md, "Reads hold bounded memory"). State that spans messages (a
+ * question awaiting its answer) carries across batches, so the output equals
+ * serializing the concatenated batches at once. Each batch must end at a line
+ * boundary, which chunks do.
+ *
+ * With `keepChars`, only roughly the last `keepChars` characters of output are
+ * held: the head is dropped at a line boundary once the output reaches twice
+ * that, and `earlierOmitted` reports it. A caller that truncates to the tail
+ * anyway (`truncateTranscriptTail`) gets the same result with bounded memory.
+ */
+export class TranscriptSerializer {
+  private output: string[] = [];
+  private chars = 0;
+  private omitted = false;
   // Track pending question tool_use_ids to match with responses
-  const pendingQuestions = new Set<string>();
+  private readonly pendingQuestions = new Set<string>();
+
+  constructor(
+    private readonly options?: SerializeTranscriptOptions,
+    private readonly keepChars?: number
+  ) {}
+
+  /** Whether output was dropped from the head to honour `keepChars`. */
+  get earlierOmitted(): boolean {
+    return this.omitted;
+  }
+
+  /** The serialized output so far. */
+  text(): string {
+    return this.output.join('\n');
+  }
+
+  push(rawTranscript: string): void {
+    const before = this.output.length;
+    this.serializeLines(rawTranscript);
+    if (this.keepChars === undefined) return;
+
+    for (let i = before; i < this.output.length; i++) {
+      this.chars += this.output[i]!.length + 1;
+    }
+    if (this.chars <= 2 * this.keepChars) return;
+
+    const joined = this.text();
+    const tail = joined.slice(joined.length - this.keepChars);
+    const firstBreak = tail.indexOf('\n');
+    const kept = firstBreak >= 0 ? tail.slice(firstBreak + 1) : tail;
+    this.output = [kept];
+    this.chars = kept.length + 1;
+    this.omitted = true;
+  }
+
+  private serializeLines(rawTranscript: string): void {
+  const options = this.options;
+  const output = this.output;
+  const pendingQuestions = this.pendingQuestions;
+  const lines = rawTranscript.trim().split('\n');
 
   for (const line of lines) {
     if (!line.trim()) continue;
@@ -359,8 +418,7 @@ export function serializeTranscriptUntruncated(
       continue;
     }
   }
-
-  return output.join('\n');
+  }
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -612,6 +670,61 @@ export function findInTranscript(rawTranscript: string, opts: FindOptions): Tran
       tool: hit.tool,
       target: hit.target,
       window: buildWindow(msgs, i, context, context, '<- match'),
+    });
+  }
+  return matches;
+}
+
+/** Where a parsed slice of messages sits in its session, for `findInMessageSlice`. */
+export interface MessageSlice {
+  /** Session seq of `msgs[0]`. */
+  base: number;
+  /** Session seq range to match within, inclusive. */
+  from: number;
+  to: number;
+  /** The session's last message seq, for session-relative remaining counts. */
+  lastSeq: number;
+}
+
+/**
+ * `findInTranscript` over a contiguous slice of a session's messages, so a
+ * search can walk a long session a chunk at a time. Only messages whose seq is
+ * in `[from, to]` are matched; the rest of the slice supplies context windows.
+ * Indexes and each window's remaining counts are session-absolute. Ignores
+ * `afterUuid`/`beforeUuid`, which the caller has resolved into the range.
+ */
+export function findInMessageSlice(
+  msgs: TranscriptMessage[],
+  opts: FindOptions,
+  slice: MessageSlice
+): TranscriptMatch[] {
+  const context = opts.context ?? 1;
+  const limit = opts.limit ?? 10;
+  const start = Math.max(0, slice.from - slice.base);
+  const end = Math.min(msgs.length - 1, slice.to - slice.base);
+
+  const matches: TranscriptMatch[] = [];
+  for (let i = start; i <= end && matches.length < limit; i++) {
+    const msg = msgs[i]!;
+    if (!msg.uuid) continue;
+    if (!opts.includeSidechain && msg.isSidechain) continue;
+    const hit = messageMatches(msg, opts);
+    if (!hit) continue;
+    // buildWindow counts remaining messages within the slice: moreBefore is
+    // the window's first local index, moreAfter the messages after its last.
+    const window = buildWindow(msgs, i, context, context, '<- match');
+    const windowEnd = msgs.length - 1 - window.moreAfter;
+    matches.push({
+      anchor: msg.uuid,
+      index: slice.base + i,
+      ts: msg.timestamp ?? null,
+      tool: hit.tool,
+      target: hit.target,
+      window: {
+        ...window,
+        moreBefore: slice.base + window.moreBefore,
+        moreAfter: slice.lastSeq - (slice.base + windowEnd),
+      },
     });
   }
   return matches;
