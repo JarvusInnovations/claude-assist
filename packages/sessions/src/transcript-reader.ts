@@ -482,19 +482,37 @@ export class TranscriptReader {
     const lastSeq = index[index.length - 1]!.msg_seq_end;
     const limit = opts.limit ?? 10;
 
+    // Parsed chunks by index, holding only the current chunk and its
+    // neighbours, so each chunk is fetched and parsed once as the walk slides
+    // forward. Chunks end at line boundaries, so parsing them separately and
+    // concatenating equals parsing their joined text.
+    const parsed = new Map<number, { base: number; msgs: TranscriptMessage[] }>();
+    const parsedChunk = async (i: number) => {
+      let entry = parsed.get(i);
+      if (!entry) {
+        const seq = index[i]!.seq;
+        const [row] = await this.chunkContents(sessionId, seq, seq);
+        entry = { base: row?.msg_seq_start ?? index[i]!.msg_seq_start, msgs: row ? parseMessages(row.content) : [] };
+        parsed.set(i, entry);
+      }
+      return entry;
+    };
+
     const matches: TranscriptMatch[] = [];
     for (const chunk of inRange) {
       if (matches.length >= limit) break;
-      const lo = index[Math.max(0, chunk.i - 1)]!.seq;
-      const hi = index[Math.min(index.length - 1, chunk.i + 1)]!.seq;
-      const rows = await this.chunkContents(sessionId, lo, hi);
-      if (rows.length === 0) continue;
-      const msgs = parseMessages(rows.map((r) => r.content).join(''));
+      for (const held of parsed.keys()) {
+        if (held < chunk.i - 1) parsed.delete(held);
+      }
+      const neighbours: { base: number; msgs: TranscriptMessage[] }[] = [];
+      for (let i = Math.max(0, chunk.i - 1); i <= Math.min(index.length - 1, chunk.i + 1); i++) {
+        neighbours.push(await parsedChunk(i));
+      }
       const found = findInMessageSlice(
-        msgs,
+        neighbours.flatMap((n) => n.msgs),
         { ...opts, limit: limit - matches.length },
         {
-          base: rows[0]!.msg_seq_start,
+          base: neighbours[0]!.base,
           from: Math.max(seqStart, chunk.msg_seq_start),
           to: Math.min(seqEnd, chunk.msg_seq_end),
           lastSeq,

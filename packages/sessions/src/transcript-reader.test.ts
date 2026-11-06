@@ -421,10 +421,15 @@ describe('TranscriptReader — bounded-memory reads', () => {
 
   it('find returns the same matches and windows as a whole-transcript search', async () => {
     const opts = { match: 'needle', in: 'text' as const, context: 2, limit: 50 };
+    queryLog.length = 0;
     const found = await reader.find(KNOWN_ID, opts);
     const expected = findInTranscript(transcript, opts);
     expect(found.matches.length).toBe(expected.length);
     expect(found.matches).toEqual(expected);
+
+    // Each chunk is fetched once as the walk slides, not once per neighbour
+    const fetched = queryLog.flatMap((q) => (q.kind === 'content' ? q.seqs : []));
+    expect(fetched.length).toBe(new Set(fetched).size);
   });
 
   it('find stops reading once it has its limit', async () => {
