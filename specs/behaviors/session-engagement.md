@@ -182,14 +182,26 @@ Without `include=blocks` the response is unchanged from the shape below.
 
 ### Source freshness
 
-Engagement is only as complete as ingest. Every machine that pushes
-sessions has a **clean sync instant**: the start of the most recent push or
-local sync from it that finished with every session ingested and no errors.
-Everything that machine had written before that instant is in. A cycle that errors on
-any session does not advance it. A machine with nothing new still advances it
-by completing an empty cycle; a client that only pushes when it has changes
-cannot be told apart from a stale one, so the sync client completes a cycle
-on its normal cadence whether or not anything changed.
+Engagement is only as complete as ingest. Every machine that sends sessions
+has a **clean sync instant**: the latest moment at which the server knew it
+held everything that machine had written. Two events establish it:
+
+- **A local sync that finished with no errors**, at the instant the sync
+  started. A local sync reads whole files, so a clean one leaves nothing
+  behind.
+- **An inventory check that needs nothing**, at the instant the server
+  received it. The inventory lists every session file the machine has, so a
+  check that asks for none confirms all of them are in.
+
+A push does not establish it on its own, even a push with no errors. A push
+may carry only part of a long session (each push is capped by the ingest
+budget, and the rest follows on later cycles), so "the push succeeded" is not
+"the machine is caught up". The next cycle's inventory check confirms it.
+The satellite client already runs an inventory check every cycle, including
+cycles with nothing to push, so a quiet machine keeps its instant current.
+
+A cycle that errors on any session, or an inventory that still needs
+sessions, leaves the instant where it was. The instant never moves backward.
 
 The response reports, per machine that **covers the window** (it has a
 session active within the window, or within the 30 days before `from`):

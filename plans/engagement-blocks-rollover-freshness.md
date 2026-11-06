@@ -115,8 +115,10 @@ the route, and ship together; 3 and 4 add the migration and the sync change.
   every cycle and returns early when the server needs nothing. So a quiet
   machine still reaches the server each cycle: the inventory handler records
   the clean sync instant when it answers "nothing needed" (the machine's
-  files are all in as of the request), and the push handler records it when a
-  push finishes with no session errors. No client change.
+  files are all in as of the request), and a clean local sync records it. A
+  push never does — it can carry only part of a session under the ingest
+  budget; the next cycle's inventory confirms it (changed at review). No
+  client change.
 - **The 30-day coverage rule** is a heuristic for "this machine is still in
   use". A machine retired inside that window holds `complete_through` back
   until it ages out. Listing it first makes that visible; a manual retire flag

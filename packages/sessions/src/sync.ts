@@ -232,7 +232,10 @@ export class SyncService {
         }
       }
 
-      await this.updateMachineSync(machine.id, result.errors.length === 0, cycleStart);
+      // A push never establishes the clean sync instant: it may carry only part
+      // of a session under the ingest budget. The next inventory check that
+      // needs nothing does (spec: "Source freshness").
+      await this.updateMachineSync(machine.id, false, cycleStart);
     } catch (error) {
       const message = `Push processing failed: ${error}`;
       result.errors.push(message);
@@ -656,7 +659,10 @@ export class SyncService {
     await this.sql`
       UPDATE sessions.machines SET
         last_sync_at = NOW(),
-        last_clean_sync_at = CASE WHEN ${clean} THEN ${cycleStart} ELSE last_clean_sync_at END,
+        last_clean_sync_at = CASE
+          WHEN ${clean} AND (last_clean_sync_at IS NULL OR last_clean_sync_at < ${cycleStart}) THEN ${cycleStart}
+          ELSE last_clean_sync_at
+        END,
         session_count = (
           SELECT COUNT(*) FROM sessions.sessions WHERE machine_id = ${machineId}
         )

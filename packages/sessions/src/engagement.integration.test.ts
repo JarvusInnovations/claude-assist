@@ -568,7 +568,7 @@ maybeDescribe('session engagement — integration (real Postgres)', () => {
     if (body.sources.length === mine.length) expect(body.complete_through).toBe('2025-06-10T20:00:00.000Z');
   });
 
-  it('clean sync: a failing session advances last_sync_at but not last_clean_sync_at; clean and empty cycles advance both; inventory with nothing needed is clean', async () => {
+  it('clean sync: pushes advance last_sync_at but never last_clean_sync_at; only an inventory that needs nothing does, and never backward', async () => {
     const sync = newSync('it-eng-clean');
     const machine = async () =>
       (await sql<{ last_sync_at: Date | null; last_clean_sync_at: Date | null }[]>`
@@ -579,7 +579,8 @@ maybeDescribe('session engagement — integration (real Postgres)', () => {
     expect(empty.errors).toEqual([]);
     const afterEmpty = await machine();
     expect(afterEmpty.last_sync_at).not.toBeNull();
-    expect(afterEmpty.last_clean_sync_at).not.toBeNull();
+    // Even an error-free push doesn't prove the machine is caught up.
+    expect(afterEmpty.last_clean_sync_at).toBeNull();
 
     await Bun.sleep(20);
     const badId = crypto.randomUUID();
@@ -591,7 +592,7 @@ maybeDescribe('session engagement — integration (real Postgres)', () => {
     expect(failed.errors.length).toBe(1);
     const afterFail = await machine();
     expect(afterFail.last_sync_at!.getTime()).toBeGreaterThan(afterEmpty.last_sync_at!.getTime());
-    expect(afterFail.last_clean_sync_at!.getTime()).toBe(afterEmpty.last_clean_sync_at!.getTime());
+    expect(afterFail.last_clean_sync_at).toBeNull();
 
     // A session is pushed; an inventory that lists it at its stored size needs nothing.
     const goodId = crypto.randomUUID();
@@ -601,7 +602,7 @@ maybeDescribe('session engagement — integration (real Postgres)', () => {
       machineId: 'it-eng-clean',
       sessions: [{ sessionId: goodId, transcriptPath: '/r/good.jsonl', transcript: content }],
     });
-    await sql`UPDATE sessions.machines SET last_clean_sync_at = NULL WHERE machine_id = 'it-eng-clean'`;
+    expect((await machine()).last_clean_sync_at).toBeNull();
     const needed = await sync.processInventory({
       machineId: 'it-eng-clean',
       inventory: [{ sessionId: crypto.randomUUID(), transcriptPath: '/r/new.jsonl', size: 10 } as any],
@@ -613,7 +614,15 @@ maybeDescribe('session engagement — integration (real Postgres)', () => {
       inventory: [{ sessionId: goodId, transcriptPath: '/r/good.jsonl', size: Buffer.byteLength(content) } as any],
     });
     expect(upToDate.neededSessionIds).toEqual([]);
-    expect((await machine()).last_clean_sync_at).not.toBeNull();
+    const clean = (await machine()).last_clean_sync_at;
+    expect(clean).not.toBeNull();
+
+    // A later push (even a failing one) leaves the clean instant alone.
+    await sync.processPush({
+      machineId: 'it-eng-clean',
+      sessions: [{ sessionId: badId, transcriptPath: '/r/bad.jsonl', transcript: null as unknown as string }],
+    });
+    expect((await machine()).last_clean_sync_at!.getTime()).toBe(clean!.getTime());
   });
 
   it('rejects bad parameters with a 400 naming the parameter', async () => {
