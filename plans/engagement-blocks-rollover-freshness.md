@@ -110,14 +110,21 @@ the route, and ship together; 3 and 4 add the migration and the sync change.
 
 ## Risks / unknowns
 
-- **Empty pushes.** If the satellite push client only sends when files
-  changed, a quiet machine's clean sync instant never advances and
-  `complete_through` stalls. Item 3 checks this first; the fix is on the
-  client side.
+- **Empty pushes — resolved.** The push client calls the inventory endpoint
+  every cycle and returns early when the server needs nothing. So a quiet
+  machine still reaches the server each cycle: the inventory handler records
+  the clean sync instant when it answers "nothing needed" (the machine's
+  files are all in as of the request), and the push handler records it when a
+  push finishes with no session errors. No client change.
 - **The 30-day coverage rule** is a heuristic for "this machine is still in
   use". A machine retired inside that window holds `complete_through` back
   until it ages out. Listing it first makes that visible; a manual retire flag
   is out of scope until it bites.
+- **Decided at execution:** meeting subtraction stays with the consumer
+  (blocks are returned; no server-side `busy=`), and `day_start` is
+  per-request only (no instance default) — the consumer that needs a
+  rollover always knows it, and an instance default would silently move
+  other consumers' day boundaries.
 - **Payload size with blocks** over a 92-day window is a few thousand small
   objects at most; acceptable, and opt-in.
 
