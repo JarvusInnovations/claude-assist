@@ -602,8 +602,8 @@ var COMMAND_GROUPS = [
         summary: "when sessions had turns of any kind, human or automated \u2014 a timeline feed, not a time measure (default 7 days)"
       },
       {
-        usage: "engagement --from DATE --to DATE [--tz IANA] [--sessions]",
-        summary: 'human hands-on time per local day and project \u2014 automated turns excluded, parallel sessions counted once; the tool for "how much time on X?"'
+        usage: "engagement --from DATE --to DATE [--tz IANA] [--day-start HH:MM] [--blocks] [--sessions]",
+        summary: 'human hands-on time per local day and project \u2014 automated turns excluded, parallel sessions counted once; the tool for "how much time on X?". --day-start moves the day boundary, --blocks adds the time blocks (--json), and the header carries complete_through (how fresh ingest is)'
       }
     ]
   },
@@ -1377,7 +1377,7 @@ async function activityCommand(args) {
 }
 
 // packages/sessions/src/axi/commands/engagement.ts
-var USAGE = "sessions-axi engagement --from YYYY-MM-DD --to YYYY-MM-DD [--tz IANA] [--block-minutes N] [--gap-minutes N] [--sessions] [--json]";
+var USAGE = "sessions-axi engagement --from YYYY-MM-DD --to YYYY-MM-DD [--tz IANA] [--block-minutes N] [--gap-minutes N] [--day-start HH:MM] [--blocks] [--sessions] [--json]";
 var ENGAGEMENT_HELP = `${USAGE}
 
   Human hands-on time per local day and per project \u2014 the figure for "how much
@@ -1388,7 +1388,15 @@ var ENGAGEMENT_HELP = `${USAGE}
   --tz when given, otherwise in the server's SESSIONS_OWNER_TZ; the zone used is
   echoed. Minutes are not additive: project and session minutes can exceed the
   day's envelope when work interleaves. --sessions adds a per-session breakdown,
-  including automated minutes.`;
+  including automated minutes.
+
+  --day-start HH:MM starts each day at that wall-clock time instead of midnight,
+  so work just after midnight counts toward the day that was ending. --blocks
+  adds the merged engagement blocks (UTC instants) to each day and project in
+  --json output, for subtracting time accounted for elsewhere. The header shows
+  complete_through, the instant every contributing machine is known to be in
+  through (with the oldest machine holding it back); null means unknown. A
+  window ending after it may still grow.`;
 var DAY_SCHEMA = [
   field("date"),
   field("envelope_minutes", "envelope_min"),
@@ -1413,7 +1421,7 @@ var SESSION_SCHEMA = [
   field("automated_prompt_count", "auto_prompts")
 ];
 async function engagementCommand(args) {
-  const { flags } = parseArgs(args, ["json", "sessions"]);
+  const { flags } = parseArgs(args, ["json", "sessions", "blocks"]);
   const str = (name) => typeof flags[name] === "string" ? flags[name] : void 0;
   const result = await api.get("/api/sessions/engagement", {
     from: requireFlag(flags, "from", USAGE),
@@ -1422,7 +1430,9 @@ async function engagementCommand(args) {
     // this machine's zone (specs/behaviors/session-engagement.md).
     tz: str("tz"),
     block_minutes: str("block-minutes"),
-    gap_minutes: str("gap-minutes")
+    gap_minutes: str("gap-minutes"),
+    day_start: str("day-start"),
+    include: flags.blocks ? "blocks" : void 0
   });
   if (flags.json) return rawJson(result);
   const days = Array.isArray(result.days) ? result.days : [];
@@ -1430,6 +1440,8 @@ async function engagementCommand(args) {
   const flatten = (key) => days.flatMap((d) => (d[key] ?? []).map((row) => ({ date: d.date, ...row })));
   const projects = flatten("projects");
   const sessions = flags.sessions ? flatten("sessions") : [];
+  const sources = Array.isArray(result.sources) ? result.sources : [];
+  const oldest = sources[0];
   return renderOutput2([
     renderObject({
       from: result.from,
@@ -1437,6 +1449,9 @@ async function engagementCommand(args) {
       tz: result.tz,
       block_minutes: result.block_minutes,
       gap_minutes: result.gap_minutes,
+      ...result.day_start && result.day_start !== "00:00" ? { day_start: result.day_start } : {},
+      complete_through: result.complete_through ?? "unknown (a contributing machine has never synced cleanly)",
+      ...oldest ? { oldest_source: `${oldest.name} (last clean sync ${oldest.last_clean_sync_at ?? "never"})` } : {},
       envelope_hours: Math.round(totalMin / 60 * 10) / 10,
       ...result.pending_sessions > 0 ? { pending_sessions: `${result.pending_sessions} (backfill incomplete \u2014 figures are a lower bound)` } : {}
     }),
@@ -1548,7 +1563,7 @@ async function shareCommand(args) {
 }
 
 // packages/sessions/src/axi/cli.ts
-var VERSION = true ? "88f4607" : "dev";
+var VERSION = true ? "803879d" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [command] [args] [flags]
        ${CLI}                 # no args \u2192 home (recent activity + next steps)

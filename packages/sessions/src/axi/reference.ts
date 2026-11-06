@@ -56,9 +56,9 @@ export const COMMAND_GROUPS: CommandGroup[] = [
         summary: "when sessions had turns of any kind, human or automated — a timeline feed, not a time measure (default 7 days)",
       },
       {
-        usage: "engagement --from DATE --to DATE [--tz IANA] [--sessions]",
+        usage: "engagement --from DATE --to DATE [--tz IANA] [--day-start HH:MM] [--blocks] [--sessions]",
         summary:
-          "human hands-on time per local day and project — automated turns excluded, parallel sessions counted once; the tool for \"how much time on X?\"",
+          "human hands-on time per local day and project — automated turns excluded, parallel sessions counted once; the tool for \"how much time on X?\". --day-start moves the day boundary, --blocks adds the time blocks (--json), and the header carries complete_through (how fresh ingest is)",
       },
     ],
   },

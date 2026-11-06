@@ -491,6 +491,140 @@ maybeDescribe('session engagement — integration (real Postgres)', () => {
     expect(after.days[0].sessions[0].automated_by).toEqual({ instance: 1 });
   });
 
+  it('day_start and include=blocks: rollover, ordered clipped blocks, unchanged shape without them', async () => {
+    const sync = newSync('it-eng-blocks');
+    // 01:30 EDT on the 10th (05:30Z) plus 11:00 EDT (15:00Z).
+    await newSession(
+      '-home-u-repos-site',
+      userLine('late', '2025-06-10T05:30:00Z', { cwd: '/home/u/repos/site' }) +
+        userLine('morning', '2025-06-10T15:00:00Z', { cwd: '/home/u/repos/site' })
+    );
+    await sync.syncLocal();
+    const a = await buildApp({ ownerTz: 'America/New_York' });
+
+    const plain = (await get(a, { from: '2025-06-09', to: '2025-06-10' })).json() as any;
+    expect(plain.day_start).toBe('00:00');
+    expect(plain.days.map((d: any) => d.envelope_minutes)).toEqual([0, 30]);
+    expect(plain.days[0]).toMatchObject({ starts_at: '2025-06-09T04:00:00.000Z', ends_at: '2025-06-10T04:00:00.000Z' });
+    expect('blocks' in plain.days[0]).toBe(false);
+    expect('blocks' in plain.days[1].projects[0]).toBe(false);
+
+    const rolled = (await get(a, { from: '2025-06-09', to: '2025-06-10', day_start: '04:00', include: 'blocks' })).json() as any;
+    expect(rolled.day_start).toBe('04:00');
+    expect(rolled.days.map((d: any) => [d.date, d.envelope_minutes])).toEqual([
+      ['2025-06-09', 15],
+      ['2025-06-10', 15],
+    ]);
+    expect(rolled.days[0].blocks).toEqual([{ start: '2025-06-10T05:30:00.000Z', end: '2025-06-10T05:45:00.000Z' }]);
+    expect(rolled.days[1].blocks).toEqual([{ start: '2025-06-10T15:00:00.000Z', end: '2025-06-10T15:15:00.000Z' }]);
+    expect(rolled.days[0].projects[0].blocks).toEqual(rolled.days[0].blocks);
+
+    // Same day from a narrower window.
+    const narrow = (await get(a, { from: '2025-06-09', to: '2025-06-09', day_start: '04:00', include: 'blocks' })).json() as any;
+    expect(narrow.days[0]).toEqual(rolled.days[0]);
+  });
+
+  it('sources and complete_through: covering machines only, oldest first, null when one never synced cleanly', async () => {
+    const recent = newSync('it-eng-src-recent');
+    const idle = newSync('it-eng-src-idle');
+    const old = newSync('it-eng-src-old');
+    const sessionOn = (ts: string) => userLine('work', ts, { cwd: '/home/u/repos/site' });
+    const push = async (machineId: string, ts: string) => {
+      const sessionId = crypto.randomUUID();
+      createdSessionIds.push(sessionId);
+      createdMachineIds.add(machineId);
+      const result = await recent.processPush({
+        machineId,
+        sessions: [{ sessionId, transcriptPath: `/r/${sessionId}.jsonl`, transcript: sessionOn(ts) }],
+      });
+      expect(result.errors).toEqual([]);
+    };
+    void idle;
+    void old;
+    await push('it-eng-src-recent', '2025-06-10T14:00:00Z');
+    await push('it-eng-src-idle', '2025-06-01T14:00:00Z'); // within 30 days before `from`
+    await push('it-eng-src-old', '2025-03-01T14:00:00Z'); // far outside
+    const a = await buildApp({ ownerTz: 'UTC' });
+    const sources = async () => {
+      const body = (await get(a, { from: '2025-06-10', to: '2025-06-10' })).json() as any;
+      return { body, mine: (body.sources as any[]).filter((s) => s.machine_id.startsWith('it-eng-src-')) };
+    };
+
+    await sql`UPDATE sessions.machines SET last_clean_sync_at = NULL WHERE machine_id LIKE 'it-eng-src-%'`;
+    let { body, mine } = await sources();
+    expect(mine.map((s) => s.machine_id).sort()).toEqual(['it-eng-src-idle', 'it-eng-src-recent']);
+    expect(body.complete_through).toBeNull();
+    expect(mine[0].newest_prompt_at).not.toBeNull();
+
+    await sql`UPDATE sessions.machines SET last_clean_sync_at = '2025-06-11T00:00:00Z' WHERE machine_id = 'it-eng-src-recent'`;
+    await sql`UPDATE sessions.machines SET last_clean_sync_at = '2025-06-10T20:00:00Z' WHERE machine_id = 'it-eng-src-idle'`;
+    ({ body, mine } = await sources());
+    // Ordered oldest first; the old machine's clean sync (still null) is not a source.
+    expect(mine.map((s) => [s.machine_id, s.last_clean_sync_at])).toEqual([
+      ['it-eng-src-idle', '2025-06-10T20:00:00.000Z'],
+      ['it-eng-src-recent', '2025-06-11T00:00:00.000Z'],
+    ]);
+    // Other machines in a shared test database may also cover the window.
+    if (body.sources.length === mine.length) expect(body.complete_through).toBe('2025-06-10T20:00:00.000Z');
+  });
+
+  it('clean sync: pushes advance last_sync_at but never last_clean_sync_at; only an inventory that needs nothing does, and never backward', async () => {
+    const sync = newSync('it-eng-clean');
+    const machine = async () =>
+      (await sql<{ last_sync_at: Date | null; last_clean_sync_at: Date | null }[]>`
+        SELECT last_sync_at, last_clean_sync_at FROM sessions.machines WHERE machine_id = 'it-eng-clean'
+      `)[0]!;
+
+    const empty = await sync.processPush({ machineId: 'it-eng-clean', sessions: [] });
+    expect(empty.errors).toEqual([]);
+    const afterEmpty = await machine();
+    expect(afterEmpty.last_sync_at).not.toBeNull();
+    // Even an error-free push doesn't prove the machine is caught up.
+    expect(afterEmpty.last_clean_sync_at).toBeNull();
+
+    await Bun.sleep(20);
+    const badId = crypto.randomUUID();
+    createdSessionIds.push(badId);
+    const failed = await sync.processPush({
+      machineId: 'it-eng-clean',
+      sessions: [{ sessionId: badId, transcriptPath: '/r/bad.jsonl', transcript: null as unknown as string }],
+    });
+    expect(failed.errors.length).toBe(1);
+    const afterFail = await machine();
+    expect(afterFail.last_sync_at!.getTime()).toBeGreaterThan(afterEmpty.last_sync_at!.getTime());
+    expect(afterFail.last_clean_sync_at).toBeNull();
+
+    // A session is pushed; an inventory that lists it at its stored size needs nothing.
+    const goodId = crypto.randomUUID();
+    createdSessionIds.push(goodId);
+    const content = userLine('hello', '2025-06-10T14:00:00Z');
+    await sync.processPush({
+      machineId: 'it-eng-clean',
+      sessions: [{ sessionId: goodId, transcriptPath: '/r/good.jsonl', transcript: content }],
+    });
+    expect((await machine()).last_clean_sync_at).toBeNull();
+    const needed = await sync.processInventory({
+      machineId: 'it-eng-clean',
+      inventory: [{ sessionId: crypto.randomUUID(), transcriptPath: '/r/new.jsonl', size: 10 } as any],
+    });
+    expect(needed.neededSessionIds.length).toBe(1);
+    expect((await machine()).last_clean_sync_at).toBeNull();
+    const upToDate = await sync.processInventory({
+      machineId: 'it-eng-clean',
+      inventory: [{ sessionId: goodId, transcriptPath: '/r/good.jsonl', size: Buffer.byteLength(content) } as any],
+    });
+    expect(upToDate.neededSessionIds).toEqual([]);
+    const clean = (await machine()).last_clean_sync_at;
+    expect(clean).not.toBeNull();
+
+    // A later push (even a failing one) leaves the clean instant alone.
+    await sync.processPush({
+      machineId: 'it-eng-clean',
+      sessions: [{ sessionId: badId, transcriptPath: '/r/bad.jsonl', transcript: null as unknown as string }],
+    });
+    expect((await machine()).last_clean_sync_at!.getTime()).toBe(clean!.getTime());
+  });
+
   it('rejects bad parameters with a 400 naming the parameter', async () => {
     const noZone = await buildApp();
     const expect400 = async (a: FastifyInstance, query: Record<string, string>, param: string) => {
@@ -509,6 +643,10 @@ maybeDescribe('session engagement — integration (real Postgres)', () => {
     await expect400(noZone, { ...ok, block_minutes: '0' }, 'block_minutes');
     await expect400(noZone, { ...ok, block_minutes: 'abc' }, 'block_minutes');
     await expect400(noZone, { ...ok, gap_minutes: '-1' }, 'gap_minutes');
+    for (const day_start of ['24:00', '4:00', 'ab:cd', '04:60']) await expect400(noZone, { ...ok, day_start }, 'day_start');
+    await expect400(noZone, { ...ok, include: 'sessions' }, 'include');
+    await expect400(noZone, { ...ok, include: 'blocks,bogus' }, 'include');
+    expect((await get(noZone, { ...ok, day_start: '23:59', include: 'blocks' })).statusCode).toBe(200);
     // No tz and no owner zone: a 400, never the host's zone.
     await expect400(noZone, { from: ok.from, to: ok.to }, 'tz');
 

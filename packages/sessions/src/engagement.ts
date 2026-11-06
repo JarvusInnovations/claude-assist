@@ -15,6 +15,17 @@ export const MAX_ENGAGEMENT_DAYS = 92;
 
 const MINUTE_MS = 60_000;
 
+/** How far before the window a machine's last session may end and still be
+ * listed as a source for it (spec: "Source freshness"). */
+export const SOURCE_LOOKBACK_MS = 30 * 86_400_000;
+
+/** `complete_through`: the earliest clean sync instant (ISO strings), or null
+ * when any is null or there are none. */
+export function completeThrough(cleanSyncs: readonly (string | null)[]): string | null {
+  if (cleanSyncs.length === 0 || cleanSyncs.some((c) => c === null)) return null;
+  return (cleanSyncs as string[]).reduce((min, c) => (Date.parse(c) < Date.parse(min) ? c : min));
+}
+
 // ── zones and local days ────────────────────────────────────────────────────
 
 export function isValidTimeZone(tz: string): boolean {
@@ -64,32 +75,40 @@ export function parseLocalDate(value: string): number | null {
 }
 
 /**
- * The instant a local date begins in `tz`: local midnight, or — where a
- * daylight-saving jump skips midnight — the first instant of that date.
- * `dateUtcMs` is the date as a UTC-midnight timestamp (see `parseLocalDate`).
+ * Parse a wall-clock `HH:MM` (`00:00`–`23:59`) into minutes after midnight, or
+ * null if it isn't one.
  */
-export function startOfLocalDay(dateUtcMs: number, tz: string): number {
-  // Two rounds settle the offset when the first guess lands on the other
-  // side of a transition from the true start.
-  let t = dateUtcMs;
-  for (let i = 0; i < 3; i++) {
-    const offset = wallClockAsUtc(t, tz) - t;
-    const next = dateUtcMs - offset;
-    if (next === t) break;
-    t = next;
+export function parseDayStart(value: string): number | null {
+  const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(value);
+  return m ? parseInt(m[1]!, 10) * 60 + parseInt(m[2]!, 10) : null;
+}
+
+/**
+ * The instant a logical day begins in `tz`: the wall-clock `dayStartMinutes`
+ * (default midnight) on the date. Where a daylight-saving jump skips that
+ * wall time the boundary is the first instant after the gap; where it repeats
+ * it, the first occurrence. `dateUtcMs` is the date as a UTC-midnight
+ * timestamp (see `parseLocalDate`).
+ */
+export function startOfLocalDay(dateUtcMs: number, tz: string, dayStartMinutes = 0): number {
+  const target = dateUtcMs + dayStartMinutes * MINUTE_MS;
+  // The zone's offset a day either side brackets any transition near `target`;
+  // each candidate that really reads `target` is an occurrence of it.
+  const offBefore = wallClockAsUtc(target - 86_400_000, tz) - (target - 86_400_000);
+  const offAfter = wallClockAsUtc(target + 86_400_000, tz) - (target + 86_400_000);
+  const hits = [target - offBefore, target - offAfter].filter((c) => wallClockAsUtc(c, tz) === target);
+  if (hits.length > 0) return Math.min(...hits);
+
+  // Skipped: walk to the first instant whose wall clock reaches `target`.
+  const cands = [target - offBefore, target - offAfter];
+  let lo = Math.min(...cands) - 3 * 3_600_000;
+  let hi = Math.max(...cands) + 3 * 3_600_000;
+  while (hi - lo > 1000) {
+    const mid = Math.floor((lo + hi) / 2000) * 1000;
+    if (wallClockAsUtc(mid, tz) < target) lo = mid;
+    else hi = mid;
   }
-  // Midnight skipped: `t` reads as the previous date. Walk to the transition.
-  if (wallClockAsUtc(t, tz) < dateUtcMs) {
-    let lo = t;
-    let hi = t + 3 * 3_600_000;
-    while (hi - lo > 1000) {
-      const mid = Math.floor((lo + hi) / 2000) * 1000;
-      if (wallClockAsUtc(mid, tz) < dateUtcMs) lo = mid;
-      else hi = mid;
-    }
-    t = hi;
-  }
-  return t;
+  return hi;
 }
 
 export interface LocalDay {
@@ -100,13 +119,14 @@ export interface LocalDay {
   endMs: number;
 }
 
-/** Every local day from `fromUtcMs` to `toUtcMs` inclusive (both UTC-midnight
- * date stamps), with its true bounds in `tz`. */
-export function localDays(fromUtcMs: number, toUtcMs: number, tz: string): LocalDay[] {
+/** Every logical day from `fromUtcMs` to `toUtcMs` inclusive (both UTC-midnight
+ * date stamps), with its true bounds in `tz`: each runs from `dayStartMinutes`
+ * on its date to the same wall time on the next. */
+export function localDays(fromUtcMs: number, toUtcMs: number, tz: string, dayStartMinutes = 0): LocalDay[] {
   const days: LocalDay[] = [];
-  let start = startOfLocalDay(fromUtcMs, tz);
+  let start = startOfLocalDay(fromUtcMs, tz, dayStartMinutes);
   for (let d = fromUtcMs; d <= toUtcMs; d += 86_400_000) {
-    const end = startOfLocalDay(d + 86_400_000, tz);
+    const end = startOfLocalDay(d + 86_400_000, tz, dayStartMinutes);
     days.push({ date: new Date(d).toISOString().slice(0, 10), startMs: start, endMs: end });
     start = end;
   }
@@ -150,6 +170,18 @@ export function overlapMs(blocks: readonly Block[], startMs: number, endMs: numb
     total += Math.min(b.endMs, endMs) - Math.max(b.startMs, startMs);
   }
   return total;
+}
+
+/** The parts of `blocks` (sorted, disjoint) inside `[startMs, endMs)`, clipped
+ * to it; empty pieces are dropped. */
+export function clipBlocks(blocks: readonly Block[], startMs: number, endMs: number): Block[] {
+  const out: Block[] = [];
+  for (const b of blocks) {
+    if (b.endMs <= startMs) continue;
+    if (b.startMs >= endMs) break;
+    out.push({ startMs: Math.max(b.startMs, startMs), endMs: Math.min(b.endMs, endMs) });
+  }
+  return out;
 }
 
 /** Whole minutes from an exact duration — rounded once per figure. */
@@ -221,9 +253,17 @@ interface HumanStats {
   last_human_prompt: string | null;
 }
 
+export interface TimeBlock {
+  /** ISO instants (UTC). */
+  start: string;
+  end: string;
+}
+
 export interface EngagementProject extends HumanStats {
   project_path: string | null;
   project_name: string | null;
+  /** Only with `includeBlocks`. */
+  blocks?: TimeBlock[];
 }
 
 export interface EngagementSession extends HumanStats {
@@ -239,7 +279,12 @@ export interface EngagementSession extends HumanStats {
 
 export interface EngagementDay {
   date: string;
+  /** The day's boundaries as ISO instants. */
+  starts_at: string;
+  ends_at: string;
   envelope_minutes: number;
+  /** Only with `includeBlocks`: the envelope's blocks, clipped to the day. */
+  blocks?: TimeBlock[];
   human_prompt_count: number;
   first_human_prompt: string | null;
   last_human_prompt: string | null;
@@ -252,6 +297,8 @@ export interface EngagementParams {
   blockMs: number;
   gapMs: number;
   nowMs: number;
+  /** Return the merged, clipped blocks on each day and project. */
+  includeBlocks?: boolean;
 }
 
 /** How far outside the window prompts can still change a day's figures: a
@@ -263,6 +310,7 @@ export function engagementMargins(blockMs: number, gapMs: number): { beforeMs: n
 }
 
 const iso = (ms: number): string => new Date(ms).toISOString();
+const toTimeBlocks = (blocks: readonly Block[]): TimeBlock[] => blocks.map((b) => ({ start: iso(b.startMs), end: iso(b.endMs) }));
 
 function dayIndexOf(days: readonly LocalDay[], tsMs: number): number {
   let lo = 0;
@@ -312,7 +360,7 @@ export function computeEngagement(
   sessions: ReadonlyMap<string, EngagementSessionMeta>,
   params: EngagementParams
 ): EngagementDay[] {
-  const { days, blockMs, gapMs, nowMs } = params;
+  const { days, blockMs, gapMs, nowMs, includeBlocks = false } = params;
   const events = dedupePrompts(rawEvents, sessions);
   const projectKey = (sessionId: string): string => sessions.get(sessionId)?.projectPath ?? '';
 
@@ -377,6 +425,7 @@ export function computeEngagement(
         project_path: key === '' ? null : key,
         project_name: anySession?.projectName ?? null,
         ...stats,
+        ...(includeBlocks ? { blocks: toTimeBlocks(clipBlocks(blocks, day.startMs, day.endMs)) } : {}),
       });
     }
     projects.sort((a, b) => b.human_minutes - a.human_minutes || (a.project_path ?? '').localeCompare(b.project_path ?? ''));
@@ -411,7 +460,10 @@ export function computeEngagement(
     const t = dayTally[di]!;
     return {
       date: day.date,
+      starts_at: iso(day.startMs),
+      ends_at: iso(day.endMs),
       envelope_minutes: toMinutes(overlapMs(envelope, day.startMs, day.endMs)),
+      ...(includeBlocks ? { blocks: toTimeBlocks(clipBlocks(envelope, day.startMs, day.endMs)) } : {}),
       human_prompt_count: t.count,
       first_human_prompt: t.firstMs !== null ? iso(t.firstMs) : null,
       last_human_prompt: t.lastMs !== null ? iso(t.lastMs) : null,
