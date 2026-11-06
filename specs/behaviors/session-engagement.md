@@ -23,7 +23,15 @@ cross-session dedupe.
   engagement is read.
 - **Engagement is blocks of time after human prompts**, pooled across sessions
   so parallel agents never double-count, and bucketed by local day in a
-  caller-named timezone.
+  caller-named timezone. A day may start at a caller-named wall-clock time
+  instead of midnight.
+- **The blocks themselves are available, not only their totals**, so a
+  consumer can remove time it already accounts for elsewhere (meetings, say)
+  without reconstructing engagement from prompts.
+- **Figures say how complete they are.** Every ingesting machine reports when
+  it last pushed cleanly, and the response states the instant up to which all
+  of them are known to be in. A consumer can refuse a window a stale machine
+  covers instead of reading a quiet machine as an idle person.
 - **Activity ranges stay a timeline feed.** `GET /sessions/activity` keeps its
   meaning (when a session had turns of any kind) and is not an engagement
   measure. No range is ever stored or returned with `end < start`.
@@ -34,7 +42,10 @@ cross-session dedupe.
 - A background backfill for sessions ingested before prompt events existed.
 - `GET /sessions/engagement`, `GET /sessions/activity`.
 - The `sessions-axi` CLI (`engagement` command; `activity` help text). The
-  CLI sends `tz` only when the caller passes one.
+  CLI sends `tz` and `day_start` only when the caller passes them.
+- Session push and local sync, which record each machine's clean sync
+  instant; the sync client, which completes a cycle on its cadence even when
+  nothing changed.
 
 ## Details
 
@@ -101,10 +112,11 @@ days before it existed. An event without a message id is its own prompt.
 - Blocks are merged when the gap between one's end and the next's start is at
   most `gap_minutes`; the merged block covers the gap.
 - A block never extends past the moment of the request.
-- Blocks are split at local midnight in the requested timezone, daylight-saving
-  transitions included. Each piece counts toward the day it falls in.
+- Blocks are split at the day boundary (see *Day boundary*) in the requested
+  timezone, daylight-saving transitions included. Each piece counts toward
+  the day it falls in.
 - **A day's figures do not depend on the requested window.** A block that
-  begins on the day before `from` contributes its after-midnight part to
+  begins on the day before `from` contributes its part after the boundary to
   `from`; a block that runs past the end of `to` contributes nothing beyond
   it.
 
@@ -126,10 +138,81 @@ down to fit the whole.
 A session's `automated_minutes` is the same block computation over its
 automated prompts. It is reported for visibility and enters no other figure.
 
+### Day boundary
+
+A day runs from `day_start` (wall-clock `HH:MM`, default `00:00`) on its date
+to `day_start` on the next date, in the requested zone. With `day_start=04:00`
+the day dated the 9th runs from 04:00 on the 9th to 04:00 on the 10th, so work
+at 01:30 on the 10th counts toward the 9th: late-night work belongs to the day
+that was ending.
+
+- `from`, `to` and every `date` in the response name these logical days.
+- Each boundary is the wall-clock `day_start` on that calendar date. Across a
+  daylight-saving change a day is 23 or 25 hours long; no time is lost or
+  counted twice.
+- When `day_start` falls inside a skipped hour (spring forward), the boundary
+  is the first instant after the gap. When it falls inside a repeated hour
+  (fall back), the boundary is its first occurrence.
+- `day_start` changes only where blocks are cut and which day they count
+  toward. Classification, pooling and merging are unchanged.
+
+### Time blocks
+
+With `include=blocks`, each day carries the merged blocks behind its figures:
+
+- `blocks` on the day: the envelope's blocks, clipped to the day's
+  boundaries, in time order. They never overlap one another, and their
+  lengths sum to `envelope_minutes` before rounding.
+- `blocks` on each project: that project's own merged blocks, clipped the
+  same way. They never overlap each other, but they may overlap other
+  projects' blocks. That is the parallel work the envelope pools.
+- A block that crosses a day boundary appears as one piece on each day: the
+  first ends at the boundary and the second starts there. The response never
+  returns a block that extends outside its day.
+- A block still open at the moment of the request ends at that moment, as the
+  minutes already do.
+- Sessions carry no blocks. A session's minutes stay a figure only.
+
+Blocks are instants (ISO 8601, UTC `Z`), not local wall-clock strings, so a
+consumer intersects them with its own intervals without zone arithmetic.
+Without `include=blocks` the response is unchanged from the shape below.
+
+### Source freshness
+
+Engagement is only as complete as ingest. Every machine that pushes
+sessions has a **clean sync instant**: the start of the most recent push or
+local sync from it that finished with every session ingested and no errors.
+Everything that machine had written before that instant is in. A cycle that errors on
+any session does not advance it. A machine with nothing new still advances it
+by completing an empty cycle; a client that only pushes when it has changes
+cannot be told apart from a stale one, so the sync client completes a cycle
+on its normal cadence whether or not anything changed.
+
+The response reports, per machine that **covers the window** (it has a
+session active within the window, or within the 30 days before `from`):
+
+- `machine_id` and its display name
+- `last_clean_sync_at`: the clean sync instant, `null` when it has never
+  completed one
+- `newest_prompt_at`: the newest prompt event stored from that machine, any
+  date
+
+`complete_through` is the earliest `last_clean_sync_at` among those machines,
+or `null` when any of them has none. Figures for time after
+`complete_through` may still grow when a machine catches up. A consumer
+reconciling a window should require `complete_through` to be at or after the
+window's end.
+
+The server reports freshness. It does not decide that a machine is stale or
+withhold figures because of it: what counts as too old is the consumer's
+policy.
+
 ### `GET /sessions/engagement`
 
 Query: `from` and `to` (local dates, `YYYY-MM-DD`, inclusive), `tz` (IANA
-zone), `block_minutes` (default 15), `gap_minutes` (default 15).
+zone), `block_minutes` (default 15), `gap_minutes` (default 15), `day_start`
+(`HH:MM`, default `00:00`), `include` (comma-separated; `blocks` is the only
+value).
 
 - **The zone is the request's `tz`, else the instance's `SESSIONS_OWNER_TZ`.**
   With neither, the request is a `400`. The server never falls back to its own
@@ -137,8 +220,9 @@ zone), `block_minutes` (default 15), `gap_minutes` (default 15).
   travel, and a drifted zone moves late-evening work to the wrong day without
   any visible error. The response echoes the zone it used.
 - `from` and `to` are required. A missing or malformed value, an unknown zone,
-  `to` before `from`, or a non-positive `block_minutes` / negative
-  `gap_minutes` is a `400` naming the parameter.
+  `to` before `from`, a non-positive `block_minutes` / negative
+  `gap_minutes`, a `day_start` that is not a valid `HH:MM` from `00:00` to
+  `23:59`, or an unknown `include` value is a `400` naming the parameter.
 - A window over 92 days is a `400` whose body states the cap and the span
   requested, so a script can split the request.
 
@@ -146,17 +230,23 @@ Response:
 
 ```
 {
-  from, to, tz, block_minutes, gap_minutes,
+  from, to, tz, block_minutes, gap_minutes, day_start,
   pending_sessions,          // sessions whose prompt events are not yet backfilled
+  complete_through,          // ISO instant every covering machine is in through; null if unknown
+  sources: [{ machine_id, name,
+              last_clean_sync_at, newest_prompt_at }],
   days: [{
-    date,                    // local date
+    date,                    // logical local date (see Day boundary)
+    starts_at, ends_at,      // the day's boundaries as ISO instants
     envelope_minutes,
+    blocks,                  // with include=blocks: [{ start, end }], clipped, ordered
     human_prompt_count,
     first_human_prompt,      // ISO instant, null when none
     last_human_prompt,
     projects: [{ project_path, project_name,
                  human_minutes, human_prompt_count,
-                 first_human_prompt, last_human_prompt }],
+                 first_human_prompt, last_human_prompt,
+                 blocks }],          // with include=blocks
     sessions: [{ id, title, session_name, project_path, project_name,
                  human_minutes, human_prompt_count,
                  first_human_prompt, last_human_prompt,
@@ -179,6 +269,9 @@ Response:
 - `pending_sessions` counts sessions the backfill has not finished and that
   have activity inside the window. While it is non-zero the figures are a
   lower bound.
+- `sources` lists machines covering the window, ordered by
+  `last_clean_sync_at`, oldest (or `null`) first, so the one holding back
+  `complete_through` is listed first.
 
 ### Existing sessions
 
@@ -215,8 +308,8 @@ only ever moves forward.
   — built-in markers are the ones the client itself emits; anything naming a
   particular bot, bridge or command arrives through configuration.
 - [A response code is a claim](../principles.md#a-response-code-is-a-claim) —
-  no guessed timezone, and `pending_sessions` rather than silently low totals:
-  these numbers feed a ledger.
+  no guessed timezone, `pending_sessions` and `complete_through` rather than
+  silently low totals: these numbers feed a ledger.
 
 **Local**
 
@@ -225,6 +318,10 @@ only ever moves forward.
   better marker list or a new instance pattern then corrects every past day at
   once, with no re-ingest. When a derived label and the evidence for it could
   both be stored, store the evidence.
+- **Report completeness; leave the verdict to the consumer.** The server knows
+  when each machine last pushed cleanly; it does not know whether a laptop
+  that has been quiet for two days is asleep or broken. It states the facts
+  and the earliest instant everything is known to be in.
 - **Undercount before overcount.** When a turn's authorship is ambiguous under
   the rules, prefer the reading that claims less human time. The consumer is
   reconciling billable hours; a missed quarter-hour is caught by a person, a
