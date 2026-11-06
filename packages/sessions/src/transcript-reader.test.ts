@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'bun:test';
 import type postgres from 'postgres';
 import { TranscriptReader } from './transcript-reader.js';
+import {
+  findInTranscript,
+  parseMessages,
+  serializeTranscript,
+  serializeTranscriptUntruncated,
+  TranscriptSerializer,
+} from './transcript.js';
 import { feed, EMPTY_CHECKPOINT } from './incremental-parser.js';
 import { chunkLines, splitLinesWithTerminators } from './chunked-ingest.js';
 
@@ -21,6 +28,10 @@ const TRANSCRIPT = [
   userMsg('u2', '2026-07-01T10:01:00Z', 'second task'),
   assistantMsg('u3', '2026-07-01T10:01:05Z', 'done'),
 ].join('\n');
+
+/** What the fake served, so tests can assert a read stayed within its chunks. */
+type QueryLogEntry = { kind: 'index' } | { kind: 'head'; seq: number } | { kind: 'content'; seqs: number[] };
+const queryLog: QueryLogEntry[] = [];
 
 const KNOWN_ID = '00000000-0000-0000-0000-000000000001';
 const MISSING_ID = '00000000-0000-0000-0000-000000000099';
@@ -66,6 +77,21 @@ function fakeSql(
     const [sessionId] = values as [string];
     const chunks = chunksBySession[sessionId] ?? [];
 
+    if (text.includes('SELECT seq, msg_seq_start, msg_seq_end FROM sessions.transcript_chunks')) {
+      // chunkIndex: every chunk's seq and message range, no content.
+      queryLog.push({ kind: 'index' });
+      return Promise.resolve(
+        chunks.map((c) => ({ seq: c.seq, msg_seq_start: c.msgSeqStart, msg_seq_end: c.msgSeqEnd }))
+      );
+    }
+    if (text.includes('AS head')) {
+      // chunkFirstTimestamp: a bounded head of one chunk.
+      // The head length is the query's first parameter, ahead of the session id.
+      const [headChars, headSessionId, seq] = values as [number, string, number];
+      queryLog.push({ kind: 'head', seq });
+      const chunk = (chunksBySession[headSessionId] ?? []).find((c) => c.seq === seq);
+      return Promise.resolve(chunk ? [{ head: chunk.content.slice(0, headChars) }] : []);
+    }
     if (text.includes('ORDER BY seq DESC LIMIT 1') && text.includes('byte_end')) {
       const last = chunks[chunks.length - 1];
       return Promise.resolve(last ? [{ byte_end: last.byteEnd }] : []);
@@ -106,9 +132,12 @@ function fakeSql(
       return Promise.resolve([{ max_seq: chunks.length > 0 ? chunks.length - 1 : null }]);
     }
     if (text.includes('seq BETWEEN')) {
-      // serializeRecent: one backwards batch, returned in ascending seq order.
+      // serializeRecent's backwards batch, or chunkContents: chunks
+      // [low, high] in ascending seq order.
       const [, low, high] = values as [string, number, number];
-      return Promise.resolve(chunks.slice(low, high + 1).map((c) => ({ content: c.content })));
+      const slice = chunks.slice(low, high + 1);
+      queryLog.push({ kind: 'content', seqs: slice.map((c) => c.seq) });
+      return Promise.resolve(slice.map((c) => ({ msg_seq_start: c.msgSeqStart, content: c.content })));
     }
     if (text.includes('SELECT content FROM sessions.transcript_chunks')) {
       // readFullChunked, or find()'s unbounded fallback
@@ -318,5 +347,116 @@ describe('TranscriptReader — multi-chunk ranges', () => {
     const found = await reader.find(KNOWN_ID, { match: 'second', in: 'text' });
     expect(found.sessionFound).toBe(true);
     expect(found.matches).toHaveLength(1);
+  });
+});
+
+/** A long session: one user/assistant exchange per minute for `minutes`
+ * minutes from 2026-07-02T00:00Z, every 7th prompt mentioning "needle", and a
+ * question asked at minute 20 and answered at minute 21. */
+function longTranscript(minutes: number): string {
+  const lines: string[] = [];
+  const at = (m: number, s: number) => new Date(Date.UTC(2026, 6, 2, 0, m, s)).toISOString();
+  for (let m = 0; m < minutes; m++) {
+    lines.push(userMsg(`q${m}`, at(m, 0), m % 7 === 0 ? `needle task ${m}` : `task ${m}`));
+    if (m === 20) {
+      lines.push(line({
+        type: 'assistant', uuid: `a${m}`, parentUuid: null, timestamp: at(m, 5),
+        message: { role: 'assistant', content: [{ type: 'tool_use', id: 'ask1', name: 'AskUserQuestion', input: { questions: [{ question: 'Which way?', options: ['left', 'right'] }] } }] },
+      }));
+    } else if (m === 21) {
+      lines.push(line({
+        type: 'user', uuid: `a${m}`, parentUuid: null, timestamp: at(m, 5),
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'ask1', content: 'left' }] },
+      }));
+    } else {
+      lines.push(assistantMsg(`a${m}`, at(m, 5), `reply ${m}`));
+    }
+  }
+  return lines.join('\n');
+}
+
+function longReader(transcript: string, chunkMaxBytes: number) {
+  const chunks = buildChunks(transcript, chunkMaxBytes);
+  const messages = parseMessages(transcript).map((m, seq) => ({ seq, uuid: m.uuid ?? '' }));
+  const sql = fakeSql(new Set([KNOWN_ID]), { [KNOWN_ID]: chunks }, { [KNOWN_ID]: messages });
+  return { reader: new TranscriptReader(sql), chunks };
+}
+
+describe('TranscriptReader — bounded-memory reads', () => {
+  const transcript = longTranscript(120);
+  // ~600-byte cap: a couple of exchanges per chunk, so ~100 chunks
+  const { reader, chunks } = longReader(transcript, 600);
+  const at = (m: number) => new Date(Date.UTC(2026, 6, 2, 0, m, 0));
+
+  it('splits the fixture into many chunks', () => {
+    expect(chunks.length).toBeGreaterThan(40);
+  });
+
+  it.each([
+    ['start', { after: at(0), before: at(10) }],
+    ['middle', { after: at(55), before: at(65) }],
+    ['end', { after: at(110) }],
+    ['before only', { before: at(5) }],
+    ['spanning the question and answer', { after: at(19), before: at(23) }],
+  ])('a time window at the %s equals filtering the whole transcript, reading only its chunks', async (_, window) => {
+    const opts = { ...window, includeTools: true };
+    queryLog.length = 0;
+    const text = await reader.serialize(KNOWN_ID, opts);
+    expect(text).toBe(serializeTranscript(transcript, opts));
+
+    const read = queryLog.flatMap((q) => (q.kind === 'content' ? q.seqs : []));
+    const probes = queryLog.filter((q) => q.kind === 'head').length;
+    // The window's ~10 minutes fit in well under a fifth of the chunks; a
+    // probe per binary-search step, never a whole-chunk read
+    expect(read.length).toBeLessThan(chunks.length / 5);
+    expect(probes).toBeLessThanOrEqual(2 * Math.ceil(Math.log2(chunks.length)) + 2);
+  });
+
+  it('pairs a question with its answer when they land in different chunks', async () => {
+    const opts = { after: at(19), before: at(23) };
+    const text = await reader.serialize(KNOWN_ID, opts);
+    expect(text).toContain('[?]');
+    expect(text).toContain('[>] left');
+  });
+
+  it('find returns the same matches and windows as a whole-transcript search', async () => {
+    const opts = { match: 'needle', in: 'text' as const, context: 2, limit: 50 };
+    queryLog.length = 0;
+    const found = await reader.find(KNOWN_ID, opts);
+    const expected = findInTranscript(transcript, opts);
+    expect(found.matches.length).toBe(expected.length);
+    expect(found.matches).toEqual(expected);
+
+    // Each chunk is fetched once as the walk slides, not once per neighbour
+    const fetched = queryLog.flatMap((q) => (q.kind === 'content' ? q.seqs : []));
+    expect(fetched.length).toBe(new Set(fetched).size);
+  });
+
+  it('find stops reading once it has its limit', async () => {
+    queryLog.length = 0;
+    const found = await reader.find(KNOWN_ID, { match: 'needle', in: 'text', limit: 2 });
+    expect(found.matches.map((m) => m.anchor)).toEqual(['q0', 'q7']);
+    const read = new Set(queryLog.flatMap((q) => (q.kind === 'content' ? q.seqs : [])));
+    expect(read.size).toBeLessThan(chunks.length / 4);
+  });
+});
+
+describe('TranscriptSerializer', () => {
+  const transcript = longTranscript(60);
+  const parts = buildChunks(transcript, 600).map((c) => c.content);
+
+  it('renders batches fed in order exactly as the concatenation', () => {
+    const serializer = new TranscriptSerializer({ includeTools: true });
+    for (const part of parts) serializer.push(part);
+    expect(serializer.text()).toBe(serializeTranscriptUntruncated(transcript, { includeTools: true }));
+  });
+
+  it('keeps only the tail when bounded, flagging what it dropped', () => {
+    const full = serializeTranscriptUntruncated(transcript);
+    const serializer = new TranscriptSerializer(undefined, 500);
+    for (const part of parts) serializer.push(part);
+    expect(serializer.earlierOmitted).toBe(true);
+    expect(serializer.text().length).toBeLessThanOrEqual(1000);
+    expect(full.endsWith(serializer.text())).toBe(true);
   });
 });

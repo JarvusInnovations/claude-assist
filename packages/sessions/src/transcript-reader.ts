@@ -1,7 +1,7 @@
 import type postgres from 'postgres';
 import {
-  serializeTranscript,
-  findInTranscript,
+  findInMessageSlice,
+  TranscriptSerializer,
   readAround,
   serializeSince,
   serializeMessageRange,
@@ -37,9 +37,12 @@ import type { TranscriptMessage } from './types.js';
  * `messagesSince`, `rawByteLength` — resolves to only the chunks the
  * requested range touches, via the message index (`transcript_messages`) and
  * each chunk's own `[msg_seq_start, msg_seq_end]`, never by concatenating the
- * whole chunk series. `readFull`/`serialize`/`readRawMessages` are the
- * exception: they're inherently whole-transcript operations (a caller asking
- * for everything), so they still concatenate every chunk.
+ * whole chunk series. A time-windowed `serialize` resolves its window to
+ * chunks by their first timestamps, and `find` walks its range a chunk at a
+ * time; both hold a bounded number of chunks ("Reads hold bounded memory").
+ * `readFull` and `readRawMessages` are the exception: they are inherently
+ * whole-transcript operations (a caller asking for everything), so they still
+ * concatenate every chunk.
  *
  * A range read rebases the pure functions in `transcript.ts` (which parse
  * from index 0 = seq 0) onto whatever chunks were actually fetched: it
@@ -58,6 +61,10 @@ const INT4_MAX = 2147483647;
 
 /** Chunks fetched per step when reading a transcript backwards (up to ~32 MB). */
 const RECENT_CHUNK_BATCH = 4;
+
+/** Characters of a chunk's head read to find its first timestamp. A line can be
+ * long (a tool result), so this is generous, but it never pulls a whole chunk. */
+const CHUNK_PROBE_CHARS = 256 * 1024;
 
 export class TranscriptReader {
   constructor(private sql: postgres.Sql) {}
@@ -135,15 +142,125 @@ export class TranscriptReader {
    * not found" from "empty transcript" should use `readFull` directly.
    */
   async serialize(sessionId: string, opts?: SerializeTranscriptOptions): Promise<string> {
-    // A time-windowed request can select messages anywhere in the session, so
-    // it needs the whole transcript. An unwindowed one only ever shows the
-    // most recent MAX_TRANSCRIPT_CHARS, so read chunks backwards from the end
-    // until that much has been serialized.
+    // A time-windowed request reads only the chunks covering its window. An
+    // unwindowed one only ever shows the most recent MAX_TRANSCRIPT_CHARS, so
+    // read chunks backwards from the end until that much has been serialized.
     if (opts?.after || opts?.before) {
-      const raw = await this.readFull(sessionId);
-      return raw ? serializeTranscript(raw, opts) : '';
+      return this.serializeWindow(sessionId, opts);
     }
     return this.serializeRecent(sessionId, opts);
+  }
+
+  /**
+   * A time-windowed serialization holding one chunk at a time
+   * (session-transcript-storage.md, "Time windows resolve to chunks"): binary
+   * search the chunks' first timestamps for the window's first and last
+   * chunk, widen one chunk each side for boundary skew, then stream those
+   * chunks oldest-first through a serializer that keeps only the tail it
+   * will return. Same output as filtering the whole transcript.
+   */
+  private async serializeWindow(sessionId: string, opts: SerializeTranscriptOptions): Promise<string> {
+    const chunks = await this.chunkIndex(sessionId);
+    if (chunks.length === 0) return '';
+
+    const firstTs = new Map<number, number | null>();
+    const probe = async (i: number): Promise<number | null> => {
+      if (!firstTs.has(i)) firstTs.set(i, await this.chunkFirstTimestamp(sessionId, chunks[i]!.seq));
+      return firstTs.get(i)!;
+    };
+
+    // The last chunk starting at or before `after`: the window can't begin
+    // before it. A chunk with no readable timestamp is treated as inside the
+    // window, which only ever widens the read.
+    let low = 0;
+    if (opts.after) {
+      const afterMs = opts.after.getTime();
+      let lo = 0;
+      let hi = chunks.length - 1;
+      while (lo < hi) {
+        const mid = Math.ceil((lo + hi) / 2);
+        const ts = await probe(mid);
+        if (ts !== null && ts <= afterMs) lo = mid;
+        else hi = mid - 1;
+      }
+      low = Math.max(0, lo - 1);
+    }
+
+    // The last chunk starting at or before `before`: nothing after it can be
+    // in the window.
+    let high = chunks.length - 1;
+    if (opts.before) {
+      const beforeMs = opts.before.getTime();
+      let lo = low;
+      let hi = chunks.length - 1;
+      while (lo < hi) {
+        const mid = Math.ceil((lo + hi) / 2);
+        const ts = await probe(mid);
+        if (ts === null || ts <= beforeMs) lo = mid;
+        else hi = mid - 1;
+      }
+      high = Math.min(chunks.length - 1, lo + 1);
+    }
+
+    const serializer = new TranscriptSerializer(opts, MAX_TRANSCRIPT_CHARS);
+    for (let i = low; i <= high; i++) {
+      const [row] = await this.chunkContents(sessionId, chunks[i]!.seq, chunks[i]!.seq);
+      if (row) serializer.push(row.content);
+    }
+    return truncateTranscriptTail(serializer.text(), serializer.earlierOmitted);
+  }
+
+  /** Every chunk's seq and message range, in order, without content. */
+  private async chunkIndex(
+    sessionId: string
+  ): Promise<{ seq: number; msg_seq_start: number; msg_seq_end: number }[]> {
+    return this.sql<{ seq: number; msg_seq_start: number; msg_seq_end: number }[]>`
+      SELECT seq, msg_seq_start, msg_seq_end FROM sessions.transcript_chunks
+      WHERE session_id = ${sessionId}::uuid
+      ORDER BY seq ASC
+    `;
+  }
+
+  /** Chunks `[lowSeq, highSeq]` with content, in order. */
+  private async chunkContents(
+    sessionId: string,
+    lowSeq: number,
+    highSeq: number
+  ): Promise<{ msg_seq_start: number; content: string }[]> {
+    return this.sql<{ msg_seq_start: number; content: string }[]>`
+      SELECT msg_seq_start, content FROM sessions.transcript_chunks
+      WHERE session_id = ${sessionId}::uuid AND seq BETWEEN ${lowSeq} AND ${highSeq}
+      ORDER BY seq ASC
+    `;
+  }
+
+  /**
+   * The first message timestamp in a chunk, read from a bounded head of its
+   * content so a probe never pulls a whole chunk. Complete lines are parsed in
+   * order; a head with no complete timestamped line yields `null`.
+   */
+  private async chunkFirstTimestamp(sessionId: string, seq: number): Promise<number | null> {
+    const [row] = await this.sql<{ head: string }[]>`
+      SELECT left(content, ${CHUNK_PROBE_CHARS}) AS head FROM sessions.transcript_chunks
+      WHERE session_id = ${sessionId}::uuid AND seq = ${seq}
+    `;
+    if (!row) return null;
+    const lines = row.head.split('\n');
+    // The last piece may be cut mid-line unless the head is the whole chunk.
+    const complete = row.head.length < CHUNK_PROBE_CHARS ? lines : lines.slice(0, -1);
+    for (const line of complete) {
+      if (!line.trim()) continue;
+      try {
+        const ts = (JSON.parse(line) as { timestamp?: unknown }).timestamp;
+        if (typeof ts === 'string') {
+          const ms = Date.parse(ts);
+          if (!Number.isNaN(ms)) return ms;
+        }
+      } catch {
+        // malformed line: keep looking
+      }
+    }
+    return null;
   }
 
   /** Whether a session with this id exists. */
@@ -352,17 +469,57 @@ export class TranscriptReader {
       if (row) seqEnd = row.seq - 1;
     }
 
-    const chunkRows = await this.sql<{ msg_seq_start: number; content: string }[]>`
-      SELECT msg_seq_start, content FROM sessions.transcript_chunks
-      WHERE session_id = ${sessionId}::uuid AND msg_seq_end >= ${seqStart} AND msg_seq_start <= ${seqEnd}
-      ORDER BY seq ASC
-    `;
-    if (chunkRows.length === 0) return { sessionFound: true, matches: [] };
-    const chunkBaseSeq = chunkRows[0]!.msg_seq_start;
-    const bounded = chunkRows.map((r) => r.content).join('');
-    // findInTranscript's `.index` is an ordinal into whatever text it's given
-    // — rebase it back to an absolute session seq.
-    const matches = findInTranscript(bounded, opts).map((m) => ({ ...m, index: m.index + chunkBaseSeq }));
+    // Walk the range a chunk at a time, oldest first, stopping at the limit
+    // (session-transcript-storage.md, "Search stops at its limit"). Each
+    // chunk is parsed with one neighbour each side so a match at a chunk edge
+    // still gets its context window; only messages in the chunk itself are
+    // matched, so none is matched twice.
+    const index = await this.chunkIndex(sessionId);
+    const inRange = index
+      .map((c, i) => ({ ...c, i }))
+      .filter((c) => c.msg_seq_end >= seqStart && c.msg_seq_start <= seqEnd);
+    if (inRange.length === 0) return { sessionFound: true, matches: [] };
+    const lastSeq = index[index.length - 1]!.msg_seq_end;
+    const limit = opts.limit ?? 10;
+
+    // Parsed chunks by index, holding only the current chunk and its
+    // neighbours, so each chunk is fetched and parsed once as the walk slides
+    // forward. Chunks end at line boundaries, so parsing them separately and
+    // concatenating equals parsing their joined text.
+    const parsed = new Map<number, { base: number; msgs: TranscriptMessage[] }>();
+    const parsedChunk = async (i: number) => {
+      let entry = parsed.get(i);
+      if (!entry) {
+        const seq = index[i]!.seq;
+        const [row] = await this.chunkContents(sessionId, seq, seq);
+        entry = { base: row?.msg_seq_start ?? index[i]!.msg_seq_start, msgs: row ? parseMessages(row.content) : [] };
+        parsed.set(i, entry);
+      }
+      return entry;
+    };
+
+    const matches: TranscriptMatch[] = [];
+    for (const chunk of inRange) {
+      if (matches.length >= limit) break;
+      for (const held of parsed.keys()) {
+        if (held < chunk.i - 1) parsed.delete(held);
+      }
+      const neighbours: { base: number; msgs: TranscriptMessage[] }[] = [];
+      for (let i = Math.max(0, chunk.i - 1); i <= Math.min(index.length - 1, chunk.i + 1); i++) {
+        neighbours.push(await parsedChunk(i));
+      }
+      const found = findInMessageSlice(
+        neighbours.flatMap((n) => n.msgs),
+        { ...opts, limit: limit - matches.length },
+        {
+          base: neighbours[0]!.base,
+          from: Math.max(seqStart, chunk.msg_seq_start),
+          to: Math.min(seqEnd, chunk.msg_seq_end),
+          lastSeq,
+        }
+      );
+      matches.push(...found);
+    }
     return { sessionFound: true, matches };
   }
 
