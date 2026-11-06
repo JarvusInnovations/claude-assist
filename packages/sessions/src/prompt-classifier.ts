@@ -20,6 +20,8 @@ export type AutomatedRule =
   | 'system'
   | 'interrupt'
   | 'peer'
+  /** A background subagent's final report handed back into its parent. */
+  | 'handback'
   | 'instance';
 
 export interface PromptFacts {
@@ -62,6 +64,9 @@ const BUILT_IN_MARKERS: ReadonlyArray<readonly [prefix: string, rule: AutomatedR
   ['[Request interrupted', 'interrupt'],
   // A message another agent session sent into this one.
   ['<cross-session-message', 'peer'],
+  // A background subagent's final report, queued into its parent session with
+  // no origin kind and no queue priority — only the text marks it.
+  ['<agent-message', 'handback'],
 ];
 
 /** `null` means human; otherwise the rule that marked the prompt automated. */

@@ -27,6 +27,7 @@ describe('classifyPrompt', () => {
     ['<system-reminder>\nnote', 'system'],
     ['[Request interrupted by user]', 'interrupt'],
     ['<cross-session-message from="x">', 'peer'],
+    ['<agent-message agent="x">final report</agent-message>', 'handback'],
     ['<bash-stdout>total 12\ndrwxr-xr-x</bash-stdout>', 'local-command'],
     ['<bash-stderr>ls: no such file</bash-stderr>', 'local-command'],
   ] as const)('marks %p as %s', (head, rule) => {
