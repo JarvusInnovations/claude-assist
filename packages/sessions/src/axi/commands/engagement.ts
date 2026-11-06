@@ -2,7 +2,7 @@ import { api } from "../client.js";
 import { parseArgs, rawJson, requireFlag } from "../args.js";
 import { renderList, renderObject, renderOutput, field, custom, type FieldDef } from "../toon.js";
 
-const USAGE = "sessions-axi engagement --from YYYY-MM-DD --to YYYY-MM-DD [--tz IANA] [--block-minutes N] [--gap-minutes N] [--sessions] [--json]";
+const USAGE = "sessions-axi engagement --from YYYY-MM-DD --to YYYY-MM-DD [--tz IANA] [--block-minutes N] [--gap-minutes N] [--day-start HH:MM] [--blocks] [--sessions] [--json]";
 
 export const ENGAGEMENT_HELP = `${USAGE}
 
@@ -14,7 +14,15 @@ export const ENGAGEMENT_HELP = `${USAGE}
   --tz when given, otherwise in the server's SESSIONS_OWNER_TZ; the zone used is
   echoed. Minutes are not additive: project and session minutes can exceed the
   day's envelope when work interleaves. --sessions adds a per-session breakdown,
-  including automated minutes.`;
+  including automated minutes.
+
+  --day-start HH:MM starts each day at that wall-clock time instead of midnight,
+  so work just after midnight counts toward the day that was ending. --blocks
+  adds the merged engagement blocks (UTC instants) to each day and project in
+  --json output, for subtracting time accounted for elsewhere. The header shows
+  complete_through, the instant every contributing machine is known to be in
+  through (with the oldest machine holding it back); null means unknown. A
+  window ending after it may still grow.`;
 
 const DAY_SCHEMA: FieldDef[] = [
   field("date"),
@@ -43,7 +51,7 @@ const SESSION_SCHEMA: FieldDef[] = [
 ];
 
 export async function engagementCommand(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json", "sessions"]);
+  const { flags } = parseArgs(args, ["json", "sessions", "blocks"]);
   const str = (name: string): string | undefined => (typeof flags[name] === "string" ? (flags[name] as string) : undefined);
 
   const result = await api.get("/api/sessions/engagement", {
@@ -54,6 +62,8 @@ export async function engagementCommand(args: string[]): Promise<string> {
     tz: str("tz"),
     block_minutes: str("block-minutes"),
     gap_minutes: str("gap-minutes"),
+    day_start: str("day-start"),
+    include: flags.blocks ? "blocks" : undefined,
   });
   if (flags.json) return rawJson(result);
 
@@ -64,6 +74,9 @@ export async function engagementCommand(args: string[]): Promise<string> {
   const projects = flatten("projects");
   const sessions = flags.sessions ? flatten("sessions") : [];
 
+  const sources: any[] = Array.isArray(result.sources) ? result.sources : [];
+  const oldest = sources[0];
+
   return renderOutput([
     renderObject({
       from: result.from,
@@ -71,6 +84,9 @@ export async function engagementCommand(args: string[]): Promise<string> {
       tz: result.tz,
       block_minutes: result.block_minutes,
       gap_minutes: result.gap_minutes,
+      ...(result.day_start && result.day_start !== "00:00" ? { day_start: result.day_start } : {}),
+      complete_through: result.complete_through ?? "unknown (a contributing machine has never synced cleanly)",
+      ...(oldest ? { oldest_source: `${oldest.name} (last clean sync ${oldest.last_clean_sync_at ?? "never"})` } : {}),
       envelope_hours: Math.round((totalMin / 60) * 10) / 10,
       ...(result.pending_sessions > 0
         ? { pending_sessions: `${result.pending_sessions} (backfill incomplete — figures are a lower bound)` }
