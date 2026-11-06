@@ -75,16 +75,16 @@ treatment.
 
 ## Validation
 
-- [ ] Windowed `serialize` on a multi-chunk fixture returns exactly what
+- [x] Windowed `serialize` on a multi-chunk fixture returns exactly what
       `serializeTranscript(readFull, opts)` returns, for windows at the start,
       middle and end, and fetches only the window's chunks plus one each side
       and probe heads.
-- [ ] A question and its answer in different chunks render paired.
-- [ ] `find` returns the same matches, windows and remaining counts as the
+- [x] A question and its answer in different chunks render paired.
+- [x] `find` returns the same matches, windows and remaining counts as the
       whole-transcript search on a multi-chunk fixture, and stops fetching
       once `limit` is reached.
-- [ ] `bun test` for the sessions package passes; `bun run build` passes.
-- [ ] Deployed: a `transcript --after` poll and an unbounded `find` against
+- [x] `bun test` for the sessions package passes; `bun run build` passes.
+- [x] Deployed: a `transcript --after` poll and an unbounded `find` against
       the largest live session complete with the server's memory staying far
       below its cap.
 
@@ -97,3 +97,25 @@ treatment.
 - **`left(content, N)` and TOAST.** Postgres may detoast the whole value to
   take a prefix, so probes cost server-side I/O, but the bytes crossing into
   the Node heap stay bounded. Acceptable at log2(chunk count) probes.
+
+## Notes
+
+- Measured on the live archive, server restarted on this branch, against the
+  two largest sessions (~730 and ~770 MB):
+  - Last-30-minutes transcript poll: 0.24 s, memory flat (was ~29 s and
+    ~2.5 GB, and the poll that froze the server).
+  - Last-24-hours window with tools: 1.3 s, 509 KB out, memory flat.
+  - Unbounded `find` with matches spread across the session: 40 s at first
+    (each chunk fetched three times for context), 17.8 s after holding parsed
+    chunks in a sliding window, identical results, memory flat (under 650 MB
+    throughout, from a cap of 3 GB).
+- The fake-SQL query log asserts the bound in tests: a ten-minute window
+  reads under a fifth of a ~60-chunk session, probes stay within two binary
+  searches, and a full search fetches each chunk once.
+
+## Follow-ups
+
+- **Issue (to file):** `readRawMessages`, behind the session detail view's raw
+  messages, still concatenates every chunk. Not polled, so out of scope here,
+  but one request for a large session has the same effect. Page it by
+  message range or cap it to a tail.
