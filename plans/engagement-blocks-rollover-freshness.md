@@ -1,5 +1,6 @@
 ---
-status: planned
+status: done
+pr: 272
 depends: [session-engagement]
 specs:
   - specs/behaviors/session-engagement.md
@@ -86,27 +87,27 @@ the route, and ship together; 3 and 4 add the migration and the sync change.
 
 ## Validation
 
-- [ ] `day_start=04:00`: a prompt at 01:30 on the 10th counts toward the 9th;
+- [x] `day_start=04:00`: a prompt at 01:30 on the 10th counts toward the 9th;
   with the default it counts toward the 10th
-- [ ] Across spring-forward and fall-back, a `day_start` inside the skipped or
+- [x] Across spring-forward and fall-back, a `day_start` inside the skipped or
   repeated hour resolves as specified; the affected days are 23h and 25h and
   every block minute is counted exactly once
-- [ ] The same day returns the same figures from two different windows, with
+- [x] The same day returns the same figures from two different windows, with
   a non-default `day_start`
-- [ ] With `include=blocks`, the day's blocks never overlap and sum to
+- [x] With `include=blocks`, the day's blocks never overlap and sum to
   `envelope_minutes` (before rounding); project blocks may overlap across
   projects, never within one; a block crossing a boundary appears as two
   clipped pieces; no block extends past the request time
-- [ ] Without `include`, the response is byte-identical in shape to today's
+- [x] Without `include`, the response is byte-identical in shape to today's
   apart from the new top-level fields
-- [ ] A push with one failing session advances `last_sync_at` but not
+- [x] A push with one failing session advances `last_sync_at` but not
   `last_clean_sync_at`; a clean empty push advances both
-- [ ] `complete_through` is the oldest covering machine's clean sync, `null`
+- [x] `complete_through` is the oldest covering machine's clean sync, `null`
   when one covering machine has never synced cleanly; a machine whose last
   session ended more than 30 days before `from` is not listed
-- [ ] Bad `day_start` (`24:00`, `4:00`, `ab:cd`) and unknown `include` values
+- [x] Bad `day_start` (`24:00`, `4:00`, `ab:cd`) and unknown `include` values
   are 400s naming the parameter
-- [ ] `bun test`, `bun run check:skills`, `bun run type-check:axi` pass
+- [x] `bun test packages/sessions`, `bun run check:skills`, `bun run type-check:axi` pass
 
 ## Risks / unknowns
 
@@ -135,3 +136,22 @@ the route, and ship together; 3 and 4 add the migration and the sync change.
 - Per-session blocks.
 - Any change to classification or to `GET /sessions/activity`.
 - Alerting on stale machines; the existing coverage heartbeats already page.
+
+## Notes
+
+- Verified by unit tests (`engagement.test.ts`, `prompt-classifier.test.ts`)
+  and integration tests against a throwaway Postgres
+  (`engagement.integration.test.ts`; 11 pass). Whole-repo `bun test` has 18
+  unrelated failures in `packages/kitchen` date-coercion tests.
+- Migration is `packages/sessions/migrations/022-machine-clean-sync.sql`.
+- No leading-margin widening was needed for `day_start`: the window start is
+  already the first day's boundary.
+- The inventory handler records the clean instant only when nothing is needed
+  (as decided in Risks); push and local sync record it on an error-free cycle.
+- Not verified against a live multi-machine deployment.
+
+## Follow-ups
+
+- A manual "retire machine" flag if the 30-day coverage rule holds
+  `complete_through` back in practice.
+- Expose `last_clean_sync_at` on `GET /machines` and `sessions-axi machines`.
