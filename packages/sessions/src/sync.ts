@@ -91,6 +91,7 @@ export class SyncService {
       return { sessionsScanned: 0, sessionsIngested: 0, sessionsUpdated: 0, sessionsSkipped: 0, errors: [] };
     }
 
+    const cycleStart = new Date();
     const result: SyncResult = {
       sessionsScanned: 0,
       sessionsIngested: 0,
@@ -116,7 +117,7 @@ export class SyncService {
         }
       }
 
-      await this.updateMachineSync(machine.id);
+      await this.updateMachineSync(machine.id, result.errors.length === 0, cycleStart);
 
       this.log.info(
         { result },
@@ -204,6 +205,7 @@ export class SyncService {
    * `ingestPushedSession`.
    */
   async processPush(payload: PushPayload): Promise<SyncResult> {
+    const cycleStart = new Date();
     const result: SyncResult = {
       sessionsScanned: payload.sessions.length,
       sessionsIngested: 0,
@@ -230,7 +232,7 @@ export class SyncService {
         }
       }
 
-      await this.updateMachineSync(machine.id);
+      await this.updateMachineSync(machine.id, result.errors.length === 0, cycleStart);
     } catch (error) {
       const message = `Push processing failed: ${error}`;
       result.errors.push(message);
@@ -427,6 +429,7 @@ export class SyncService {
    * only the tail.
    */
   async processInventory(payload: InventoryPayload): Promise<InventoryResponse> {
+    const cycleStart = new Date();
     const machine = await this.ensureMachine(payload.machineId, payload.hostname ?? null, false);
     const forceReparse = payload.forceReparse ?? false;
 
@@ -469,6 +472,16 @@ export class SyncService {
       { machineId: payload.machineId, total: payload.inventory.length, needed: neededSessionIds.length, upToDate: upToDateCount },
       `Inventory processed: ${neededSessionIds.length} sessions needed, ${upToDateCount} up-to-date`
     );
+
+    // Nothing needed: every file the machine listed is already in as of this
+    // request, which is as good as a clean push.
+    if (neededSessionIds.length === 0) {
+      await this.sql`
+        UPDATE sessions.machines SET last_clean_sync_at = ${cycleStart}
+        WHERE id = ${machine.id}
+          AND (last_clean_sync_at IS NULL OR last_clean_sync_at < ${cycleStart})
+      `;
+    }
 
     return { neededSessionIds, upToDateCount, baselines };
   }
@@ -635,12 +648,15 @@ export class SyncService {
   }
 
   /**
-   * Update machine's last sync timestamp and session count
+   * Update machine's last sync timestamp and session count. A clean cycle
+   * (no errors) also records `cycleStart` as the clean sync instant: everything
+   * the machine had written before then is in.
    */
-  private async updateMachineSync(machineId: number): Promise<void> {
+  private async updateMachineSync(machineId: number, clean: boolean, cycleStart: Date): Promise<void> {
     await this.sql`
       UPDATE sessions.machines SET
         last_sync_at = NOW(),
+        last_clean_sync_at = CASE WHEN ${clean} THEN ${cycleStart} ELSE last_clean_sync_at END,
         session_count = (
           SELECT COUNT(*) FROM sessions.sessions WHERE machine_id = ${machineId}
         )
