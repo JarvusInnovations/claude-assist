@@ -1,5 +1,5 @@
 import { App, LogLevel } from '@slack/bolt';
-import { markdownToBlocks } from '@tryfabric/mack';
+import { markdownToBlocks } from '@jarvus/mack';
 import { createPlugin } from '@jarvus/claude-assist-core';
 import { matchCaptureSigil, ulidFromSeed } from '@jarvus/claude-assist-capture';
 import { createAgentHandler } from './agent.js';
