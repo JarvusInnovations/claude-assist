@@ -1,9 +1,10 @@
 ---
-status: in-progress
+status: done
 depends: []
 specs:
   - specs/modules/chat.md
 issues: []
+pr: 276
 ---
 
 # Plan: Slack messages with attachments reach the agent
@@ -50,12 +51,12 @@ Out of scope:
 
 ## Validation
 
-- [ ] Unit: subtype filter. Plain messages and `file_share` pass; edits,
+- [x] Unit: subtype filter. Plain messages and `file_share` pass; edits,
       deletions and bot messages don't.
-- [ ] Unit: prompt building. Text only gives the text unchanged. Text plus
+- [x] Unit: prompt building. Text only gives the text unchanged. Text plus
       files lists each file's path, name, type and size. Files only gives
       just the attachments section. A failed file is listed with its reason.
-- [ ] Unit: download. It saves the file with the bearer token. It reports a
+- [x] Unit: download. It saves the file with the bearer token. It reports a
       Slack HTML login page (the response without `files:read`) as a missing
       scope, and it skips files over the size limit without fetching them.
 - [ ] Deployed: an image sent to Hari in a DM thread gets a reply that
@@ -70,4 +71,13 @@ Out of scope:
 
 ## Notes
 
+- The deployed check runs after merge, and its result is recorded as a
+  comment on PR #276. Seeing an image end to end needs the `files:read`
+  scope, which the owner has to add in the Slack app settings.
+- Files are saved under the OS temp directory, not the agent repo, so the
+  agent's git working tree stays clean.
+
 ## Follow-ups
+
+- Tracked as: add `files:read` to the Slack app's bot scopes and reinstall
+  (an owner action outside this repo; see PR #276).
