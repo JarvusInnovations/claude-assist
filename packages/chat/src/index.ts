@@ -1,9 +1,12 @@
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { App, LogLevel } from '@slack/bolt';
 import { markdownToBlocks } from '@jarvus/mack';
 import { createPlugin } from '@jarvus/claude-assist-core';
 import { matchCaptureSigil, ulidFromSeed } from '@jarvus/claude-assist-capture';
 import { createAgentHandler } from './agent.js';
 import { SessionStore } from './sessions.js';
+import { buildPrompt, downloadAttachments, isHandledSubtype, threadDirName, type SlackFile } from './attachments.js';
 import type { ChatPluginConfig } from '@jarvus/claude-assist-core';
 
 export type { ChatPluginConfig } from '@jarvus/claude-assist-core';
@@ -224,7 +227,7 @@ export default createPlugin('chat', async (fastify, options) => {
   /**
    * Handle a new top-level DM — start a new conversation thread.
    */
-  async function handleNewConversation(channel: string, messageTs: string, text: string) {
+  async function handleNewConversation(channel: string, messageTs: string, text: string, title: string) {
     fastify.log.info({ channel, text: text.slice(0, 50) }, 'New conversation');
 
     // Instant feedback
@@ -243,7 +246,7 @@ export default createPlugin('chat', async (fastify, options) => {
       await sessionStore.upsert(threadKey, result.sessionId);
 
       await postResponse(channel, threadTs, result.text);
-      await setThreadTitle(channel, threadTs, text);
+      await setThreadTitle(channel, threadTs, title);
       // await setSuggestedPrompts(channel, threadTs);
     } catch (err) {
       fastify.log.error({ err }, 'Error in new conversation handler');
@@ -340,30 +343,45 @@ export default createPlugin('chat', async (fastify, options) => {
     }
   }
 
-  // Listen for all DM messages
+  // Listen for all DM messages — plain ones and ones with files attached
+  // (specs/modules/chat.md § Which message events count)
   app.event('message', async ({ event }) => {
-    if ('subtype' in event && event.subtype !== undefined) return;
+    if (!isHandledSubtype('subtype' in event ? event.subtype : undefined)) return;
     if (!shouldProcess(event)) return;
 
-    const { channel, ts, thread_ts: threadTs, text } = event as {
+    const { channel, ts, thread_ts: threadTs, text = '', files = [] } = event as {
       channel: string;
       ts: string;
       thread_ts?: string;
       text?: string;
+      files?: SlackFile[];
     };
 
-    if (!text) return;
+    if (!text && files.length === 0) return;
 
-    const captureText = matchCaptureSigil(text);
-    if (captureText !== null) {
-      await handleCaptureMessage(channel, ts, captureText);
-      return;
+    if (text) {
+      const captureText = matchCaptureSigil(text);
+      if (captureText !== null) {
+        await handleCaptureMessage(channel, ts, captureText);
+        return;
+      }
+    }
+
+    let prompt = text;
+    if (files.length > 0) {
+      const dir = join(tmpdir(), 'claude-assist-chat-files', threadDirName(channel, threadTs ?? ts));
+      const attachments = await downloadAttachments(files, chatConfig.slackBotToken, dir);
+      const failed = attachments.filter((a) => !a.ok);
+      if (failed.length > 0) {
+        fastify.log.warn({ channel, ts, failed }, 'Some Slack attachments could not be downloaded');
+      }
+      prompt = buildPrompt(preprocessMessage(text), attachments);
     }
 
     if (threadTs) {
-      await handleThreadReply(channel, threadTs, ts, text);
+      await handleThreadReply(channel, threadTs, ts, prompt);
     } else {
-      await handleNewConversation(channel, ts, text);
+      await handleNewConversation(channel, ts, prompt, text || files[0]?.name || 'Attachment');
     }
   });
 
