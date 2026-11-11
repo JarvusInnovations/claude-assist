@@ -6,13 +6,29 @@ import { createPlugin } from '@jarvus/claude-assist-core';
 import { matchCaptureSigil, ulidFromSeed } from '@jarvus/claude-assist-capture';
 import { createAgentHandler } from './agent.js';
 import { SessionStore } from './sessions.js';
-import { buildPrompt, downloadAttachments, isHandledSubtype, threadDirName, type SlackFile } from './attachments.js';
+import { buildPrompt, downloadAttachments, threadDirName, type SlackFile } from './attachments.js';
+import { createHandoff, DEFAULT_HANDOFF_TIMEOUT_MS, parseHandoffEvents, type Handoff } from './handoff.js';
+import { createEventRouter, envelopeFromBody } from './router.js';
 import type { ChatPluginConfig } from '@jarvus/claude-assist-core';
 
 export type { ChatPluginConfig } from '@jarvus/claude-assist-core';
 export { buildContextHook, parseContextCommands } from './context.js';
+export { parseHandoffAuthors, parseHandoffEvents } from './handoff.js';
 
 const THREAD_TITLE_MAX = 60;
+
+/** The fields of a Slack message event the direct-message path reads. */
+interface DirectMessageEvent {
+  channel: string;
+  ts: string;
+  thread_ts?: string;
+  text?: string;
+  files?: SlackFile[];
+  subtype?: string;
+  channel_type?: string;
+  user?: string;
+  bot_id?: string;
+}
 
 // TODO: make suggested prompts dynamic based on conversation context
 // const SUGGESTED_PROMPTS = [
@@ -53,12 +69,35 @@ export default createPlugin('chat', async (fastify, options) => {
     }
   })();
 
+  // Event hand-off (specs/modules/chat.md § Event hand-off). Absent config,
+  // nothing here changes the module's behaviour.
+  let handoff: Handoff | null = null;
+  if (config.handoff && config.handoff.command.length > 0) {
+    handoff = createHandoff({
+      config: {
+        command: config.handoff.command,
+        events: config.handoff.events ?? parseHandoffEvents(undefined),
+        authors: config.handoff.authors ?? 'owner',
+        timeoutMs: config.handoff.timeoutMs ?? DEFAULT_HANDOFF_TIMEOUT_MS,
+      },
+      ownerUserId: config.ownerSlackUserId,
+      log: fastify.log,
+    });
+    fastify.log.info(
+      { events: config.handoff.events ?? 'all', authors: config.handoff.authors ?? 'owner' },
+      'Slack event hand-off enabled',
+    );
+  }
+
   const app = new App({
     token: config.slackBotToken,
     appToken: config.slackAppToken,
     signingSecret: config.slackSigningSecret,
     socketMode: true,
     logLevel: boltLogLevel,
+    // The hand-off flags the bot's own posts (is_self), so it must receive
+    // them; the direct-message path ignores every bot message regardless.
+    ignoreSelf: handoff === null,
   });
 
   /**
@@ -215,16 +254,6 @@ export default createPlugin('chat', async (fastify, options) => {
   }
 
   /**
-   * Check if a message should be processed.
-   */
-  function shouldProcess(event: { channel_type?: string; bot_id?: string; user?: string }): boolean {
-    if (event.channel_type !== 'im') return false;
-    if (event.bot_id) return false;
-    if (event.user !== chatConfig.ownerSlackUserId) return false;
-    return true;
-  }
-
-  /**
    * Handle a new top-level DM — start a new conversation thread.
    */
   async function handleNewConversation(channel: string, messageTs: string, text: string, title: string) {
@@ -343,19 +372,12 @@ export default createPlugin('chat', async (fastify, options) => {
     }
   }
 
-  // Listen for all DM messages — plain ones and ones with files attached
-  // (specs/modules/chat.md § Which message events count)
-  app.event('message', async ({ event }) => {
-    if (!isHandledSubtype('subtype' in event ? event.subtype : undefined)) return;
-    if (!shouldProcess(event)) return;
-
-    const { channel, ts, thread_ts: threadTs, text = '', files = [] } = event as {
-      channel: string;
-      ts: string;
-      thread_ts?: string;
-      text?: string;
-      files?: SlackFile[];
-    };
+  /**
+   * An owner's direct message — plain or with files attached — starts or
+   * continues an agent turn (specs/modules/chat.md § Which message events count).
+   */
+  async function handleDirectMessage(event: DirectMessageEvent) {
+    const { channel, ts, thread_ts: threadTs, text = '', files = [] } = event;
 
     if (!text && files.length === 0) return;
 
@@ -383,7 +405,33 @@ export default createPlugin('chat', async (fastify, options) => {
     } else {
       await handleNewConversation(channel, ts, prompt, text || files[0]?.name || 'Attachment');
     }
+  }
+
+  const router = createEventRouter<DirectMessageEvent>({
+    ownerUserId: chatConfig.ownerSlackUserId!,
+    handoff,
+    onDirectMessage: handleDirectMessage,
   });
+
+  // Every message event: the owner's DMs go to the agent; channel, private
+  // channel and group-DM messages go to the hand-off when it is configured.
+  app.event('message', async ({ event, body, context }) => {
+    await router.message(event as DirectMessageEvent, envelopeFromBody(body), {
+      botUserId: context.botUserId,
+      botId: context.botId,
+    });
+  });
+
+  // Mentions and reactions are only ever handed off, so they are only
+  // listened for when the hand-off is configured.
+  if (handoff) {
+    app.event('app_mention', async ({ event, body, context }) => {
+      await router.appMention(event, envelopeFromBody(body), { botUserId: context.botUserId, botId: context.botId });
+    });
+    app.event('reaction_added', async ({ event, body, context }) => {
+      await router.reactionAdded(event, envelopeFromBody(body), { botUserId: context.botUserId, botId: context.botId });
+    });
+  }
 
   // Start Bolt in Socket Mode (non-blocking — don't hold up server boot)
   app.start().then(

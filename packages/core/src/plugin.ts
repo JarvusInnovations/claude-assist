@@ -705,6 +705,21 @@ export interface ChatPluginConfig {
    * longest workflow the agent should finish, not to a chat-length exchange.
    */
   maxTurns?: number;
+  /**
+   * Event hand-off (specs/modules/chat.md § Event hand-off). When set, Slack
+   * events that are not the owner's direct messages are passed as JSON on
+   * stdin to `command`, with no agent run. Absent, behaviour is unchanged.
+   */
+  handoff?: {
+    /** argv; run without a shell. */
+    command: string[];
+    /** Event kinds to hand off; default all (`app_mention`, `message`, `reaction_added`). */
+    events?: Array<'app_mention' | 'message' | 'reaction_added'>;
+    /** `owner` (default): the owner's events plus the bot's own posts. `any`: every author. */
+    authors?: 'owner' | 'any';
+    /** Kill a run after this many milliseconds (default 10000). */
+    timeoutMs?: number;
+  };
 }
 
 /**

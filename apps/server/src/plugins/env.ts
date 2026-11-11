@@ -391,6 +391,14 @@ const schema = {
     // every chat turn (UserPromptSubmit hook). Which commands is instance data.
     CHAT_CONTEXT_COMMANDS: { type: 'string' },
     CHAT_MAX_TURNS: { type: 'number' },
+    // Event hand-off (specs/modules/chat.md § Event hand-off): a JSON argv
+    // array run once per non-DM Slack event with the event as JSON on stdin.
+    CHAT_HANDOFF_COMMAND: { type: 'string' },
+    // Comma-separated kinds: app_mention, message, reaction_added (default all).
+    CHAT_HANDOFF_EVENTS: { type: 'string' },
+    // owner (default) | any
+    CHAT_HANDOFF_AUTHORS: { type: 'string' },
+    CHAT_HANDOFF_TIMEOUT_MS: { type: 'number', default: 10000 },
 
     // Notify module (notification dispatcher + heartbeat registry)
     ENABLE_NOTIFY: { type: 'boolean', default: true },
@@ -685,6 +693,10 @@ declare module 'fastify' {
       CLAUDE_CODE_OAUTH_TOKEN?: string;
       CHAT_CONTEXT_COMMANDS?: string;
       CHAT_MAX_TURNS?: number;
+      CHAT_HANDOFF_COMMAND?: string;
+      CHAT_HANDOFF_EVENTS?: string;
+      CHAT_HANDOFF_AUTHORS?: string;
+      CHAT_HANDOFF_TIMEOUT_MS: number;
 
       // Notify module
       ENABLE_NOTIFY: boolean;
