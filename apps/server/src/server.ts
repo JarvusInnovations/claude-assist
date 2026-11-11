@@ -13,7 +13,7 @@ import kitchenPlugin from '@jarvus/claude-assist-kitchen';
 import trainingPlugin from '@jarvus/claude-assist-training';
 import slackUrgencyPlugin from '@jarvus/claude-assist-slack-urgency';
 import briefingPlugin from '@jarvus/claude-assist-briefing';
-import chatPlugin, { parseContextCommands } from '@jarvus/claude-assist-chat';
+import chatPlugin, { parseContextCommands, parseHandoffAuthors, parseHandoffEvents } from '@jarvus/claude-assist-chat';
 import notifyPlugin from '@jarvus/claude-assist-notify';
 import sessionSpawnPlugin, { parseSpawnCommand } from '@jarvus/claude-assist-session-spawn';
 import pagesPlugin, { registerPagesPublicRoutes } from '@jarvus/claude-assist-pages';
@@ -819,6 +819,11 @@ if (fastify.config.ENABLE_CHAT) {
     );
   } else {
     fastify.log.info('Chat module enabled');
+    const handoffCommand = parseArgvArray(
+      fastify.config.CHAT_HANDOFF_COMMAND,
+      'CHAT_HANDOFF_COMMAND',
+      fastify.log,
+    );
     await fastify.register(chatPlugin, {
       migrationsDir: join(__dirname, '../../../packages/chat/migrations'),
       disableMigrations: fastify.config.DISABLE_MIGRATIONS,
@@ -835,6 +840,20 @@ if (fastify.config.ENABLE_CHAT) {
           fastify.log,
         ),
         maxTurns: fastify.config.CHAT_MAX_TURNS,
+        ...(handoffCommand
+          ? {
+              handoff: {
+                command: handoffCommand,
+                events: parseHandoffEvents(fastify.config.CHAT_HANDOFF_EVENTS, (kind) =>
+                  fastify.log.warn(`CHAT_HANDOFF_EVENTS: unknown event kind "${kind}" — ignoring it`),
+                ),
+                authors: parseHandoffAuthors(fastify.config.CHAT_HANDOFF_AUTHORS, (value) =>
+                  fastify.log.warn(`CHAT_HANDOFF_AUTHORS: unknown value "${value}" — using "owner"`),
+                ),
+                timeoutMs: fastify.config.CHAT_HANDOFF_TIMEOUT_MS,
+              },
+            }
+          : {}),
       },
     });
   }
