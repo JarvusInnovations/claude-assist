@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Shim so the bundled client can be configured as a command: `scripts/screen-check < request.json`.
+exec node "$(dirname "$0")/screen-check.mjs" "$@"
