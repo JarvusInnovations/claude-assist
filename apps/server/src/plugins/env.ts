@@ -308,6 +308,9 @@ const schema = {
     // A session token minted by hand instead. Present ⇒ no credentials are ever
     // sent by this host.
     FINANCE_API_TOKEN: { type: 'string' },
+    // Screen module (specs/modules/screen.md): the shared bearer token every
+    // POST /api/screen must carry. Unset ⇒ the screen route is not registered.
+    SCREEN_API_TOKEN: { type: 'string' },
     // Exporter argv as a JSON array, for FINANCE_SOURCE_MODE=command.
     FINANCE_SOURCE_CMD: { type: 'string' },
     FINANCE_SOURCE_CMD_TIMEOUT_MS: { type: 'number', default: 180000 },
@@ -645,6 +648,7 @@ declare module 'fastify' {
       FINANCE_API_PASSWORD?: string;
       FINANCE_API_TOTP_SECRET?: string;
       FINANCE_API_TOKEN?: string;
+      SCREEN_API_TOKEN?: string;
       FINANCE_SOURCE_CMD?: string;
       FINANCE_SOURCE_CMD_TIMEOUT_MS: number;
       FINANCE_TIMEZONE?: string;

@@ -26,6 +26,16 @@ invoker is the metered side of a boundary; it must never become a route across
 it. A change that lets an interactive workload reach the invoker is a bug even
 if every test passes.
 
+**The line is the shape of the job, not who asked for it.** The draft screen
+(`specs/modules/screen.md`) is often called by a script that an interactive
+agent runs, and it is still an invoker workload. It is a fixed-shape headless
+job: its own fixed system prompt, its own task id and tier, one call, no tools,
+no prior turns, and no caller-supplied system text, model, tier or token
+ceiling. The caller supplies only data that the module's prompt judges. What
+would cross the boundary is a route that lets a caller steer the model: pass
+its own system prompt, continue a conversation, or choose the model. No such
+route exists, and adding one is the bug described above.
+
 ## Tiers, not model ids
 
 A caller names a **tier**, which describes the shape of the work:

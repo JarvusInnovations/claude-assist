@@ -138,6 +138,7 @@ packages/
   pages/          # Publish interactive HTML, collect structured responses
   chat/           # Slack-fronted agent
   slack-urgency/  # Read-only Slack listener; interrupts only when earned
+  screen/         # Isolated check of an outgoing draft against a policy (opt-in)
   session-spawn/  # Warm an interactive session, ping a phone with the link
 apps/
   server/         # Fastify host: env schema, plugin registration order
@@ -182,7 +183,7 @@ POST /api/approvals/:id/resolve     # Approve / deny / answer one
 
 Each module registers its own surface beneath `/api` as well — `/api/sessions`,
 `/api/emails`, `/api/capture`, `/api/kitchen`, `/api/training`, `/api/ledger`,
-`/api/pages`, `/api/finance`. See
+`/api/pages`, `/api/finance`, `/api/screen`. See
 the module's `src/routes.ts` for its endpoints.
 
 ## Docker
