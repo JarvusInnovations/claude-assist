@@ -86,6 +86,7 @@ request:
 - one user turn holding the destination class, the policy and the draft, each
   in its own tag, XML-escaped so no field can close its envelope;
 - no tools, no prior turns, no session, no memory;
+- a 30-second timeout per attempt;
 - no parse-correction turn. A malformed answer fails the request instead of
   buying a second billed attempt (the invoker's own transport retries still
   apply).
@@ -144,7 +145,7 @@ $CLAUDE_ASSIST_SCREEN_TOKEN`, and:
 
 `CLAUDE_ASSIST_SERVER` defaults to `http://localhost:2529`, like every other
 client in this repo. `CLAUDE_ASSIST_SCREEN_TIMEOUT_MS` bounds the whole
-request (default 90 seconds). The client is a self-contained Node script
+request (default 120 seconds, room for the invoker's transport retries). The client is a self-contained Node script
 bundled from `packages/screen/src/client/`, so it runs with only the skill
 installed.
 
