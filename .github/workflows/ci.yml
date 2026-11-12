@@ -82,6 +82,9 @@ jobs:
       - name: Build finance
         run: bun run --filter @jarvus/claude-assist-finance build
 
+      - name: Build screen
+        run: bun run --filter @jarvus/claude-assist-screen build
+
       - name: Build server
         run: bun run --filter @jarvus/claude-assist-server build
 

@@ -124,6 +124,11 @@
 !apps/admin/src/
 !apps/admin/src/**
 
+# packages/screen
+!packages/screen/package.json
+!packages/screen/tsconfig.json
+!packages/screen/src/**
+
 # packages/finance
 !packages/finance/package.json
 !packages/finance/tsconfig.json

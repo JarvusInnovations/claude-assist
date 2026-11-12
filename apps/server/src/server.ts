@@ -21,6 +21,7 @@ import ledgerPlugin from '@jarvus/claude-assist-ledger';
 import approvalsPlugin from '@jarvus/claude-assist-approvals';
 import invokerPlugin from '@jarvus/claude-assist-invoker';
 import financePlugin from '@jarvus/claude-assist-finance';
+import { registerScreenRoutes } from '@jarvus/claude-assist-screen';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import envPlugin from './plugins/env.js';
@@ -798,6 +799,24 @@ await fastify.register(
       });
     } else {
       api.log.info('Briefing module disabled');
+    }
+
+    // Screen module — POST /api/screen, an isolated check of an outgoing draft
+    // against a policy (specs/modules/screen.md). One metered call per request
+    // through the invoker (registered above), behind a shared bearer token:
+    // unset token ⇒ the route does not exist.
+    if (fastify.config.SCREEN_API_TOKEN) {
+      if (!api.invoker) {
+        api.log.warn('Screen: SCREEN_API_TOKEN set but the invoker is absent - skipping');
+      } else {
+        api.log.info('Screen module enabled');
+        await api.register(registerScreenRoutes, {
+          invoker: api.invoker,
+          token: fastify.config.SCREEN_API_TOKEN,
+        });
+      }
+    } else {
+      api.log.info('Screen module disabled (SCREEN_API_TOKEN unset)');
     }
 
     // Chat module is registered outside /api prefix (uses Socket Mode, not webhooks)

@@ -22,6 +22,7 @@ COPY packages/ledger/package.json packages/ledger/package.json
 COPY packages/kitchen/package.json packages/kitchen/package.json
 COPY packages/training/package.json packages/training/package.json
 COPY packages/finance/package.json packages/finance/package.json
+COPY packages/screen/package.json packages/screen/package.json
 COPY apps/server/package.json apps/server/package.json
 COPY apps/admin apps/admin
 RUN bun install --frozen-lockfile
@@ -47,6 +48,7 @@ COPY packages/invoker packages/invoker
 COPY packages/ledger packages/ledger
 COPY packages/kitchen packages/kitchen
 COPY packages/training packages/training
+COPY packages/screen packages/screen
 COPY apps/server apps/server
 COPY apps/admin/package.json apps/admin/package.json
 RUN bun install --frozen-lockfile
@@ -66,6 +68,7 @@ RUN cd packages/ledger && bun run build
 RUN cd packages/kitchen && bun run build
 # After briefing: training imports its calendar-read boundary.
 RUN cd packages/training && bun run build
+RUN cd packages/screen && bun run build
 
 # Production image
 FROM base AS runner
