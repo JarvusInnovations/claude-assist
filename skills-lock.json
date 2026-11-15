@@ -7,6 +7,12 @@
       "skillPath": "skills/axi-skills/SKILL.md",
       "computedHash": "e2798533540313038311b7a69290ba58243c020db875b25f8c943f4cba4b6597"
     },
+    "jarvus-axi": {
+      "source": "JarvusInnovations/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/jarvus-axi/SKILL.md",
+      "computedHash": "129c85079e810aae5b48db5da3fe6534f9d4570ef0ebe0dba3b870ae915d769c"
+    },
     "jarvus-ci": {
       "source": "JarvusInnovations/agent-skills",
       "sourceType": "github",
