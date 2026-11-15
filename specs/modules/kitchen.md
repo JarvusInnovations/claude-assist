@@ -3771,7 +3771,9 @@ bundles it, so any agent session — interactive, chat, or scheduled — can rea
 and write the kitchen without hand-rolled `curl`.
 
 - **`kitchen-axi`** (`packages/kitchen/src/axi/`, bundled per the repo's axi
-  build): TOON-table output, `--json` escape hatch, server resolved from
+  build): TOON-table output, the full JSON to a file on request (`--json-out`),
+  every argument declared and anything else refused
+  (`specs/behaviors/axi-cli-arguments-and-export.md`), server resolved from
   `CLAUDE_ASSIST_SERVER` (default localhost) + bearer auth per the sibling
   CLIs' convention. Invoked bare it prints the **home view**: today's entry
   count + effective totals, pending-estimate count, the top eat-first items,
