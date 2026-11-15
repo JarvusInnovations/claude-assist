@@ -21,9 +21,12 @@ scripts/sessions-axi --help              # full command list
 scripts/sessions-axi <command> --help    # usage for any command
 ```
 
-Output is [TOON](https://toonformat.dev) (compact tables); pass `--json` for raw API
-JSON. The server defaults to `http://localhost:2529`; override with the
-`CLAUDE_ASSIST_SERVER` environment variable.
+Output is always [TOON](https://toonformat.dev) (compact tables). When a script or
+`jq` needs the data, add `--json-out` (or `--json-out=<path>`): the full API JSON goes to
+a file, and stdout stays the same view plus the file's path, its keys and a `jq` command
+to start from. There is no `--json`. An unknown flag is an error that lists the valid
+ones, never a silently unfiltered result. The server defaults to
+`http://localhost:2529`; override with the `CLAUDE_ASSIST_SERVER` environment variable.
 
 ## Choosing the right command: search vs transcript
 
@@ -141,4 +144,5 @@ and return a continuation anchor rather than dumping the whole session.
 - AI outlines/titles are generated asynchronously when `ANTHROPIC_API_KEY` is set; trigger
   manually with `scripts/sessions-axi outlines`.
 - Transcript output is text (`[U]` user, `[A]` assistant, `[T]` tool); everything else is
-  TOON, with `--json` for raw JSON and `details <id> --raw` for full raw messages.
+  TOON, with `--json-out` to write the full JSON to a file and
+  `details <id> --raw --json-out` to include the raw messages in it.

@@ -50,15 +50,15 @@ export const COMMAND_GROUPS: CommandGroup[] = [
         usage: "transcript <session-id> --around <uuid> [--before N] [--after M]",
         summary: "explore a variable range of messages around an anchor (the grep follow-up)",
       },
-      { usage: "details <session-id> [--raw]", summary: "session metadata; --raw adds the parsed raw messages" },
+      { usage: "details <session-id> [--raw --json-out]", summary: "session metadata; --raw adds the parsed raw messages to the --json-out file" },
       {
         usage: "activity [--days N]",
         summary: "when sessions had turns of any kind, human or automated — a timeline feed, not a time measure (default 7 days)",
       },
       {
-        usage: "engagement --from DATE --to DATE [--tz IANA] [--day-start HH:MM] [--blocks] [--sessions]",
+        usage: "engagement --from DATE --to DATE [--tz IANA] [--day-start HH:MM] [--sessions] [--blocks --json-out]",
         summary:
-          "human hands-on time per local day and project — automated turns excluded, parallel sessions counted once; the tool for \"how much time on X?\". --day-start moves the day boundary, --blocks adds the time blocks (--json), and the header carries complete_through (how fresh ingest is)",
+          "human hands-on time per local day and project — automated turns excluded, parallel sessions counted once; the tool for \"how much time on X?\". --day-start moves the day boundary, --blocks adds the time blocks to the --json-out file, and the header carries complete_through (how fresh ingest is)",
       },
     ],
   },

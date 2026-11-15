@@ -1,4 +1,6 @@
 import { runAxiCli, type AxiCliCommand } from "axi-sdk-js";
+import { formatError } from "../../../core/src/axi/errors.js";
+import { withJsonOut } from "../../../core/src/axi/json-out.js";
 import { DESCRIPTION, commandReferenceText } from "./reference.js";
 import { cliInvocation } from "./invocation.js";
 import { homeCommand } from "./commands/home.js";
@@ -24,7 +26,7 @@ commands:
 
 ${commandReferenceText()}
 
-flags: --help, -v/--version, --json (raw output on most commands)
+flags: --help, -v/--version, --json-out[=path] (full JSON to a file; stdout stays TOON)
 
 env: CLAUDE_ASSIST_SERVER (default http://localhost:2529)
 
@@ -36,7 +38,7 @@ examples:
   ${CLI} stats --days 7
 `;
 
-const HOME_HELP = `sessions-axi [home] [--all] [--project NAME] [--recent N] [--json]
+const HOME_HELP = `sessions-axi [home] [--all] [--project NAME] [--recent N] [--json-out[=path]]
 
   The no-arg view. Inside a git repo it leads with that repo's most recent
   sessions (ordered by last activity); otherwise it lists registered machines.
@@ -44,9 +46,10 @@ const HOME_HELP = `sessions-axi [home] [--all] [--project NAME] [--recent N] [--
   --all            force the cross-project (machines) view even inside a repo
   --project NAME   override repo detection with an explicit project substring
   --recent N       how many recent sessions to show (default 5)
-  --json           raw JSON`;
+  --json-out[=path]  write the full JSON to a file (bare: an owner-only temp
+                     file); stdout stays this view`;
 
-const COMMAND_HELP: Record<string, string> = {
+export const COMMAND_HELP: Record<string, string> = {
   home: HOME_HELP,
   search: SEARCH_HELP,
   grep: GREP_HELP,
@@ -61,7 +64,11 @@ const COMMAND_HELP: Record<string, string> = {
   share: SHARE_HELP,
 };
 
-const COMMANDS: Record<string, AxiCliCommand<undefined>> = {
+/**
+ * Every handler is wrapped so a requested `--json-out` export is written after
+ * the view is built (specs/behaviors/axi-cli-arguments-and-export.md).
+ */
+const HANDLERS: Record<string, (args: string[]) => Promise<string>> = {
   // Also exposed as a command so its flags can be passed (the bare invocation
   // hits the same handler via the `home` option below, but the SDK rejects
   // flags that precede a command).
@@ -79,14 +86,19 @@ const COMMANDS: Record<string, AxiCliCommand<undefined>> = {
   share: shareCommand,
 };
 
+export const COMMANDS: Record<string, AxiCliCommand<undefined>> = Object.fromEntries(
+  Object.entries(HANDLERS).map(([name, handler]) => [name, withJsonOut(handler)]),
+);
+
 export async function main(argv?: string[]): Promise<void> {
   await runAxiCli<undefined>({
     description: DESCRIPTION,
     version: VERSION,
     ...(argv ? { argv } : {}),
     topLevelHelp: TOP_HELP,
-    home: homeCommand,
+    home: COMMANDS.home!,
     commands: COMMANDS,
+    formatError,
     getCommandHelp: (command) => COMMAND_HELP[command],
   });
 }

@@ -1,8 +1,9 @@
+import { AxiError } from "axi-sdk-js";
 import { api } from "../client.js";
-import { parseArgs, rawJson, requireFlag } from "../args.js";
+import { parseArgs, captureJson, requireFlag } from "../args.js";
 import { renderList, renderObject, renderOutput, field, custom, type FieldDef } from "../toon.js";
 
-const USAGE = "sessions-axi engagement --from YYYY-MM-DD --to YYYY-MM-DD [--tz IANA] [--block-minutes N] [--gap-minutes N] [--day-start HH:MM] [--blocks] [--sessions] [--json]";
+const USAGE = "sessions-axi engagement --from YYYY-MM-DD --to YYYY-MM-DD [--tz IANA] [--block-minutes N] [--gap-minutes N] [--day-start HH:MM] [--blocks] [--sessions] [--json-out[=path]]";
 
 export const ENGAGEMENT_HELP = `${USAGE}
 
@@ -19,24 +20,26 @@ export const ENGAGEMENT_HELP = `${USAGE}
   --day-start HH:MM starts each day at that wall-clock time instead of midnight,
   so work just after midnight counts toward the day that was ending. --blocks
   adds the merged engagement blocks (UTC instants) to each day and project in
-  --json output, for subtracting time accounted for elsewhere. The header shows
+  the --json-out file, for subtracting time accounted for elsewhere, so it
+  needs --json-out. --json-out[=path] writes the full JSON to a file (bare: an
+  owner-only temp file) and leaves stdout as this view. The header shows
   complete_through, the instant every contributing machine is known to be in
   through (with the oldest machine holding it back); null means unknown. A
   window ending after it may still grow.`;
 
 const DAY_SCHEMA: FieldDef[] = [
   field("date"),
-  field("envelope_minutes", "envelope_min"),
-  field("human_prompt_count", "prompts"),
-  field("first_human_prompt", "first"),
-  field("last_human_prompt", "last"),
+  field("envelope_minutes"),
+  field("human_prompt_count"),
+  field("first_human_prompt"),
+  field("last_human_prompt"),
 ];
 
 const PROJECT_SCHEMA: FieldDef[] = [
   field("date"),
   custom("project", (p) => p.project_name ?? p.project_path ?? "—"),
-  field("human_minutes", "human_min"),
-  field("human_prompt_count", "prompts"),
+  field("human_minutes"),
+  field("human_prompt_count"),
 ];
 
 const SESSION_SCHEMA: FieldDef[] = [
@@ -44,14 +47,20 @@ const SESSION_SCHEMA: FieldDef[] = [
   field("id"),
   custom("project", (s) => s.project_name ?? s.project_path ?? "—"),
   custom("title", (s) => s.title ?? s.session_name ?? null),
-  field("human_minutes", "human_min"),
-  field("human_prompt_count", "prompts"),
-  field("automated_minutes", "auto_min"),
-  field("automated_prompt_count", "auto_prompts"),
+  field("human_minutes"),
+  field("human_prompt_count"),
+  field("automated_minutes"),
+  field("automated_prompt_count"),
 ];
 
 export async function engagementCommand(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json", "sessions", "blocks"]);
+  const { flags, jsonOut } = parseArgs("engagement", args);
+  // The blocks have no TOON form: they only ever go to the file.
+  if (flags.blocks && !jsonOut) {
+    throw new AxiError("--blocks adds the engagement blocks to the JSON export, so it needs --json-out", "VALIDATION_ERROR", [
+      "Add --json-out (or --json-out=<path>) to write them to a file",
+    ]);
+  }
   const str = (name: string): string | undefined => (typeof flags[name] === "string" ? (flags[name] as string) : undefined);
 
   const result = await api.get("/api/sessions/engagement", {
@@ -65,7 +74,7 @@ export async function engagementCommand(args: string[]): Promise<string> {
     day_start: str("day-start"),
     include: flags.blocks ? "blocks" : undefined,
   });
-  if (flags.json) return rawJson(result);
+  captureJson(result);
 
   const days: any[] = Array.isArray(result.days) ? result.days : [];
   const totalMin = days.reduce((sum, d) => sum + (d.envelope_minutes ?? 0), 0);
