@@ -68,7 +68,7 @@ container's healthcheck never goes ready and `wait_for_postgres` times out after
 30s.
 
 **Pin the same major production runs.** Whatever major your prod DB is (Cloud SQL,
-RDS, …), pin that in `_common.sh` so `strip_cloudsql`'d snapshots restore without
+RDS, …), pin that in `_common.sh` so `app_strip_snapshot`'d snapshots restore without
 version-mismatch surprises. That rule cuts both ways: when prod runs 18, you don't
 get to stay on the 17 template default to dodge the mount change. The `_common.sh`
 template carries the mount as `APP_PG_DATA_DIR` — for 18, change **both** lines
@@ -115,6 +115,47 @@ share one Postgres. Don't `docker run` unconditionally — you'll get a name cla
 or orphaned data. If you ever change Postgres image/version, you must `docker rm`
 the old container (and possibly the volume) once, deliberately.
 
+## A container's published address is frozen at creation — changing the bind silently does nothing
+
+`ensure_postgres` reuses a container by name and only ever `docker start`s it
+(that reuse is the whole point — it is what lets many worktrees share one
+Postgres). Docker cannot re-publish an existing container, so **the `-p` address
+is fixed at creation time**. Change `APP_PG_BIND` — or adopt the loopback
+default after the fact — and every container created earlier keeps its old
+publish, forever, with no error and no diff to notice.
+
+This is how a machine ends up serving Postgres on `0.0.0.0` months after the
+code moved to `127.0.0.1`. Seen in the wild: a container created in March still
+published on all interfaces in August, on a box with a public IP, while its
+repo's `_common.sh` had said `${APP_PG_BIND:-127.0.0.1}` the entire time. Every
+code review of that file would pass.
+
+The template now detects the drift and says what to do (normalising docker's
+empty `HostIp`, which means all-interfaces):
+
+```bash
+# one address per line — a container can publish on SEVERAL, and concatenating
+# them yields nonsense like "127.0.0.1100.116.60.123"; empty HostIp = all ifaces
+actual="$(docker inspect \
+  -f '{{range $p, $b := .HostConfig.PortBindings}}{{range $b}}{{if .HostIp}}{{.HostIp}}{{else}}0.0.0.0{{end}}{{"\n"}}{{end}}{{end}}' \
+  "$container" | grep -v '^$' | sort -u | tr '\n' ' ' | sed 's/ *$//')"
+[ -n "$actual" ] || actual="0.0.0.0"
+[ "$actual" = "$bind" ] || echo "WARNING: ${container} publishes on ${actual}, not ${bind}" >&2
+```
+
+It warns rather than auto-recreating: recreating a container is the caller's
+call, not a side effect of `bin/setup`. The fix is one deliberate command, and
+the data is on a named volume so it survives:
+
+```bash
+docker rm -f <container> && bin/setup
+```
+
+The same freeze applies to any other creation-time setting — image/major
+version, volume mount, env. Container reuse (below) is the general case; the
+bind is the one where the silent failure is a *security* regression rather than
+a broken container you would notice immediately.
+
 ## md5 binary differs across platforms
 
 Linux/coreutils has `md5sum`; BSD/macOS has `md5 -q`. The `app_hash` helper
@@ -155,6 +196,56 @@ app_pid_lstart() {          # start time of a live process; empty when gone
 
 The `_common.sh` template carries this as `app_pid_is`; the fullstack `dev` and
 `gc` templates consult it before every kill and every health verdict.
+
+## A single SIGTERM is not a teardown — escalate, then verify
+
+`kill $pid` is a *request*. A process that traps SIGTERM and takes its time, or
+ignores it outright, keeps running — and a stop path that fires one TERM,
+deletes its state file, and returns 0 reports success while leaving a live
+process holding a port and a database open. Observed in the wild: a `bin/dev
+stop` exited 0, cleared `state.env`, and left a backend child alive for days;
+it needed SIGKILL.
+
+Deleting the state file is the part that turns a bug into an incident. That file
+is the only record of the survivor's pid **and start time**, so once it's gone
+the orphan can't be identified — you can't safely kill a bare pid (see pid
+recycling above), so the process becomes unkillable-in-practice until reboot.
+
+Every stop path therefore: TERM → wait → **KILL** → wait → **verify dead**, and
+on survival keeps `state.env` and returns non-zero:
+
+```bash
+if ! app_kill_wait "$pid" "$lstart" TERM 25; then
+  app_kill_wait "$pid" "$lstart" KILL 25 || survivors="${survivors} ${key}(${pid})"
+fi
+[ -n "$survivors" ] && return 1     # and do NOT rm state.env
+```
+
+Callers must honor the non-zero: `bin/cleanup` aborts rather than dropping a
+database out from under a surviving process (the `DROP` would fail with
+"database is being accessed by other users" anyway).
+
+## Derive the child list from `state.env`, don't hardcode it in three places
+
+The fullstack session records one `<NAME>_PID` per child. Early templates then
+spelled that list out **three times** — the writer in `bin/dev`, the liveness
+loop in `app_dev_session_healthy`, and the sweep loop in `app_dev_stop`. A stack
+that grows a third process (an orchestrator, a worker) has to update all three,
+and the failure is asymmetric: forget the *health* list and you get a false
+"healthy"; forget the *sweep* list and every stop silently orphans that process,
+while the other two lists still look correct in review.
+
+Derive it from the state file instead — one list, no drift:
+
+```bash
+app_dev_child_keys() {   # every KEY_PID= in the snapshot, minus the supervisor
+  printf '%s\n' "$1" | sed -n 's/^\([A-Z0-9_]*\)_PID=.*/\1/p' | grep -vx 'DEV' || true
+}
+```
+
+Ports stay explicit: *which* ports must be listening is a real per-project
+assertion, and `state.env` also carries ports that aren't liveness signals (an
+aux container's published port).
 
 ## Commands that read stdin inside `while read` loops silently eat the stream
 

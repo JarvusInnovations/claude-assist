@@ -1,6 +1,6 @@
 ---
-name: agent-dev-workflow
-description: Set up an agent-friendly local dev workflow — a bin/ task-runner (inspired by GitHub's scripts-to-rule-them-all) over a shared Postgres container that gives every git worktree its own isolated database and ports, plus a dedicated test database so tests never clobber dev data. Use this whenever a project needs worktree-isolated local development, when setting up for AI agent orchestrators (Conductor and similar) that spin up a worktree per session and register setup/run/cleanup commands, when multiple copies of a backend must run concurrently on one machine, when replacing a docker-compose-for-local-postgres setup, when deciding whether auxiliary dev services (a validator container, a local OIDC IdP) replicate per worktree or run shared, when merged agent worktrees pile up and need sweeping, or when tests keep wiping local dev/demo data. Triggers on "bin/ scripts", "worktree isolation", "per-worktree database/port", "scripts to rule them all", "agent dev environment", "setup/run/cleanup scripts", "shared auxiliary services", "sweep merged worktrees", or tests clobbering the dev database.
+name: jarvus-dev-flow
+description: Set up an agent-friendly local dev workflow — a bin/ task-runner (inspired by GitHub's scripts-to-rule-them-all) over a shared Postgres container that gives every git worktree its own isolated database and ports, plus a dedicated test database so tests never clobber dev data. Use this whenever a project needs worktree-isolated local development, when setting up for AI agent orchestrators (Conductor and similar) that spin up a worktree per session and register setup/run/cleanup commands, when multiple copies of a backend must run concurrently on one machine, when replacing a docker-compose-for-local-postgres setup, when deciding whether auxiliary dev services (a validator container, a local OIDC IdP) replicate per worktree or run shared, when merged agent worktrees pile up and need sweeping, when idle per-project Postgres containers or leftover dev servers accumulate on a machine and need auditing or shutting down, or when tests keep wiping local dev/demo data. Triggers on "bin/ scripts", "worktree isolation", "per-worktree database/port", "scripts to rule them all", "agent dev environment", "setup/run/cleanup scripts", "shared auxiliary services", "sweep merged worktrees", "stop/shut down the dev database container", "too many docker postgres instances", or tests clobbering the dev database.
 ---
 
 # Agent-friendly dev workflow (bin/ + worktree isolation)
@@ -56,8 +56,10 @@ know which parts you copy verbatim and which you adapt.
 - worktree-aware DB naming (`app_db_name`, `app_db_name_for_root`,
   `is_main_worktree`, `app_hash`)
 - shared-container management (`ensure_postgres`, `wait_for_postgres`, `app_psql`)
-- DB create/recreate helpers; the `setup`/`reset-db`/`db`/`cleanup`/`test` scripts
-  (keep these names — e.g. `db`, not `query` — so the muscle memory transfers across repos)
+  and its machine-scoped counterpart `bin/stop` (below)
+- DB create/recreate helpers; the `setup`/`reset-db`/`db`/`cleanup`/`stop`/`test`
+  scripts (keep these names — e.g. `db`, not `query` — so the muscle memory
+  transfers across repos)
 - port picking (`port_in_use`, `find_available_port`, `app_pick_port`) — **including
   the macOS `lsof`/`ss` split; do not "simplify" it away** (see gotchas)
 - stdout=env / stderr=status discipline
@@ -67,7 +69,11 @@ know which parts you copy verbatim and which you adapt.
   trap, per-child process groups via `set -m` (never `kill 0`), and
   `app_dev_stop`
 - **pid + start-time identity** (`app_pid_lstart`, `app_pid_is`) consulted
-  before every kill and every health verdict (see gotchas — pid recycling)
+  before every kill and every health verdict (see gotchas — pid recycling), and
+  the **TERM → KILL → verify** escalation in `app_dev_stop` (see gotchas — a
+  single SIGTERM is not a teardown)
+- deriving the session's child list from `state.env` (`app_dev_child_keys`)
+  rather than hardcoding it per stack (see gotchas)
 - the `bin/gc` proof structure: mandatory gates + at least one containment
   proof, the long-lived-branch denylist, the canonical-DB guard, and the fd-3
   record stream (see gotchas — stdin-slurping loops)
@@ -75,6 +81,10 @@ know which parts you copy verbatim and which you adapt.
 **Project-specific** (the knobs you set):
 
 - the prefix, PG user/password/image, container/volume names
+- the **publish address** (`APP_PG_BIND`, default `127.0.0.1`) — keep it on
+  loopback unless a container genuinely must be reachable off-box. Note this is
+  frozen at container creation: changing it later does nothing until the
+  container is re-created, so `ensure_postgres` warns on the drift (see gotchas)
 - the **base port band** — the default PG port plus one worktree range **per
   process kind** (backend HTTP, gRPC, frontend, …). This is the project's claim on
   the machine: worktree isolation keeps a project's *own* copies apart, but the
@@ -139,6 +149,82 @@ run from a SessionStart hook. Worktrees created *outside* `.claude/worktrees/`
 escape the sweep entirely — that's the trade you make by putting them
 elsewhere.
 
+## Teardown has two scopes — worktree and machine
+
+Every teardown script except one is **worktree-scoped**, and that is deliberate:
+`bin/cleanup` drops one derived database, `bin/dev stop` ends one session,
+`bin/gc` sweeps the worktrees it can prove merged. None of them stops the
+Postgres container, because no single worktree can know whether another still
+needs it.
+
+That leaves a real gap the first version of this skill didn't fill: nothing was
+able to say *"this container is idle machine-wide, stop it."* On a laptop
+running several of these repos at once, the containers accumulate and the only
+recourse is `docker stop` by hand — which loses every guard the rest of the
+pattern provides.
+
+`bin/stop` is that one machine-scoped script. It stops the shared container only
+after proving it idle: no live `bin/dev` session in **any** worktree of the repo
+(enumerated from git, so sessions in scratch dirs outside `.claude/worktrees/`
+still count), and no client backends connected to any database in it. Unproven →
+one-line reason, container left running, exit 0. Same prove-then-act shape as
+`bin/gc`; `--dry-run` and `--force` are combinable.
+
+One portability note: the session proof needs the fullstack `dev`'s
+`.dev/state.env` machinery. In single-service repos those helpers don't exist,
+so the proof is **skipped** and the verdict line says so rather than claiming
+"no dev sessions" for a check that never ran. Containment survives, because a
+running single-service dev server holds a database connection and is caught by
+the connection proof.
+
+Two things it deliberately does **not** do. It never removes the container or
+volume — stopping is non-destructive and `bin/setup` restarts it with every
+database intact. And it does not lock other sessions out: a concurrent
+`bin/setup` calling `ensure_postgres` will bring the container right back. That
+race is by design (availability beats shutdown), so a container that keeps
+reappearing is telling you another session is working in the repo — information,
+not a failure.
+
+### `bin/gc` vs `bin/stop` — complementary, not overlapping
+
+They share a shape — prove, act only on what's proven, skip the rest with a
+one-line reason, exit 0 either way — which makes them easy to confuse. They
+prove *different things* about *different scopes*:
+
+| | `bin/gc` | `bin/stop` |
+| --- | --- | --- |
+| Operates on | worktrees, branches, derived databases | the shared container |
+| Proves | **merged-ness** — this work is disposable | **idleness** — nothing is using this now |
+| Proof source | git history (ancestry, `git cherry`, merged PR) | live state (session files, `pg_stat_activity`) |
+| Reversible | no — deletes worktrees, branches, DBs | yes — `bin/setup` restarts it, data intact |
+| Facing a live `bin/dev` session | **kills it** | **refuses to act** |
+
+That last row is the real distinction. `bin/gc` finds a running session in a
+worktree it has *proven merged* and shuts it down — it earned the authority to
+kill by proving the work already landed on the integration branch. `bin/stop`
+has no such proof available, so a live session is a **veto**: someone is
+working, and pulling the database out from under them is never right. One
+treats a live process as garbage to collect; the other treats it as a stop sign.
+
+Their verdicts also age differently. Merged stays merged, so a `bin/gc` verdict
+computed a minute ago is still true. Idleness is a snapshot that can be
+invalidated a second later — hence `bin/stop`'s re-verify immediately before
+acting, and the documented race above.
+
+**The workflow is sequential: `bin/gc`, then `bin/stop`.** `gc` is what *makes*
+`stop` succeed — sweeping merged worktrees stops their sessions and drops their
+databases, which is exactly what turns a busy container into a provably idle
+one. `gc` then leaves the container running because it cannot know whether the
+main checkout still needs it; `stop` is the only thing entitled to answer that.
+Running `stop` first usually just prints a refusal.
+
+One caveat when reading `bin/stop`'s first proof: it enumerates worktrees of
+*this* repo. A **separate clone** of the same project shares the container by
+name but is invisible to `git worktree list`. That's why the connection check
+exists alongside the session check — a second clone running its own stack shows
+up as client backends even though its worktrees are unreachable from here.
+
+
 ## Build order
 
 1. **Read the relevant references first** (below) — they encode hard-won bugs.
@@ -172,6 +258,13 @@ elsewhere.
    `bin/gc --dry-run` reports sane verdicts; `bin/cleanup` in a throwaway
    worktree leaves the main DB intact. `bash -n` every script.
 
+   Two teardown checks are worth doing explicitly, because both failures
+   report success: launch a child that ignores SIGTERM (`trap "" TERM`), then
+   confirm `bin/dev stop` **escalates to SIGKILL and reaps it** instead of
+   exiting 0 with the process still alive; and run `bin/stop --dry-run` both
+   with a live session up (must refuse) and with nothing running (must report
+   idle).
+
 ## Reference files
 
 | File | Read when |
@@ -183,10 +276,10 @@ elsewhere.
 | `references/orchestrator-integration.md` | wiring Conductor/orchestrator setup/run/cleanup; the stdout/stderr contract |
 | `references/snapshots.md` | only if the project has a production DB to snapshot (skip for greenfield) |
 
-## Where this meets `ci-quality-gates`
+## Where this meets `jarvus-ci`
 
-This skill and **`ci-quality-gates`** are complementary and meet at exactly one
-seam: the **`test` script**. `ci-quality-gates` owns the script contract
+This skill and **`jarvus-ci`** are complementary and meet at exactly one
+seam: the **`test` script**. `jarvus-ci` owns the script contract
 (`lint`/`format`/`format:check`/`typecheck`/`test`) and the CI workflow that runs
 `bun run test` against an **ephemeral service-container Postgres** with an explicit
 `DATABASE_URL`. This skill owns what that same `test` script connects to **locally**:
@@ -208,7 +301,7 @@ when Postgres is unreachable instead of failing the run. See
   (`migrations-and-seeds.md`). A bloated `bin/` stops being portable.
 - These are dev-only. **CI keeps its own explicit `DATABASE_URL`** against an
   ephemeral DB (a GitHub Actions service-container Postgres, owned by
-  **`ci-quality-gates`**); the test preload's `??=` defers to it. Verify CI stays
+  **`jarvus-ci`**); the test preload's `??=` defers to it. Verify CI stays
   green; you shouldn't need to touch the CI workflow.
 - Don't drop the canonical dev DB casually — `bin/cleanup` guards it behind
   `--force`; `bin/reset-db` is the intended "start the main DB over" path.

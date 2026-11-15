@@ -9,7 +9,7 @@ When a project *does* have real prod data, this is usually its **seeding
 strategy**: `bin/load-snapshot` (default → latest) replaces hand-written fixtures
 entirely (the "snapshot-as-seed" posture in **`migrations-and-seeds.md`**). One
 caveat for clean restores: pin the **same Postgres major as production** locally, so
-a `strip_cloudsql`'d dump doesn't hit version-mismatch surprises.
+an `app_strip_snapshot`'d dump doesn't hit version-mismatch surprises.
 
 Two scripts, both built on helpers already in `_common.sh`.
 
@@ -37,24 +37,29 @@ local download). Drop → recreate → load → migrate:
 snapshot="${1:-gs://${BUCKET}/latest.sql}"
 app_recreate_db "$(app_db_name)"
 if [[ "$snapshot" == gs://* ]]; then
-  gcloud storage cat "$snapshot" | strip_cloudsql | app_psql -d "$(app_db_name)"
+  gcloud storage cat "$snapshot" | app_strip_snapshot | app_psql -d "$(app_db_name)"
 else
-  strip_cloudsql < "$snapshot" | app_psql -d "$(app_db_name)"
+  app_strip_snapshot < "$snapshot" | app_psql -d "$(app_db_name)"
 fi
 app_migrate "$(app_database_url)"   # applies any migrations newer than the snapshot
 ```
 
 `bin/setup <snapshot>` does the same in one step (see the setup template).
 
-## strip_cloudsql — why it exists
+## app_strip_snapshot — the provider filter hook
 
-Cloud SQL's `pg_dump` wrapper injects directives a vanilla local Postgres chokes
-on: `\restrict`/`\unrestrict` psql meta-commands and `GRANT … TO cloudsqlsuperuser`
-(a role that doesn't exist locally). Add this filter to `_common.sh` and pipe
-dumps through it on load:
+Managed Postgres dumps carry directives a vanilla local Postgres chokes on, so
+`bin/setup` pipes every snapshot through `app_strip_snapshot`. `_common.sh`
+ships it as an **identity filter** (`cat`) — a plain `pg_dump` needs no
+filtering, and shipping it defined is what keeps `bin/setup <snapshot>` from
+dying with a bare `command not found` on a verbatim copy of the template.
+
+Override it per provider. Cloud SQL's wrapper injects `\restrict`/`\unrestrict`
+psql meta-commands and `GRANT … TO cloudsqlsuperuser` (a role that doesn't exist
+locally):
 
 ```bash
-strip_cloudsql() {
+app_strip_snapshot() {
   grep -v -E '^\\(restrict|unrestrict) |cloudsqlsuperuser'
 }
 ```
@@ -62,4 +67,4 @@ strip_cloudsql() {
 Non-GCP equivalents: AWS RDS → `aws rds ...` or `pg_dump` over the wire to S3;
 self-hosted → plain `pg_dump`. The shape is identical (export → object store →
 stream into `app_recreate_db` + load + migrate); only the export command and the
-provider-specific `strip_*` filter change.
+provider-specific `app_strip_snapshot` filter change.

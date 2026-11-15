@@ -161,4 +161,4 @@ credential-free and fork-safe. The token rewrite is scoped to `test.yml` /
   emit their own PR annotations; we don't wrap them in `pre-commit/action`, even on
   multi-linter (SQL/Python/markdown) repos.
 - **No build/publish/deploy here.** Those belong to per-stack build docs and the
-  deploy/sysadmin skills. Release PR automation belongs to `release-flow`.
+  deploy/sysadmin skills. Release PR automation belongs to `jarvus-release-flow`.
