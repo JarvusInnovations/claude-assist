@@ -1,5 +1,5 @@
 import { api } from "../client.js";
-import { parseArgs, rawJson, validateDate } from "../args.js";
+import { parseArgs, captureJson, validateDate } from "../args.js";
 import { renderList, renderOutput, renderHelp, field, count, relativeTime, custom, type FieldDef } from "../toon.js";
 import { cliInvocation } from "../invocation.js";
 
@@ -22,7 +22,8 @@ export const SEARCH_HELP = `sessions-axi search [flags]
   --include-empty          include sessions with no assistant output
   --limit N                max results (default 20, max 100)
   --offset N               pagination offset
-  --json                   raw API JSON`;
+  --json-out[=path]        write the full JSON to a file (bare: an owner-only
+                           temp file); stdout stays this view`;
 
 function shortProject(p: unknown): string {
   if (typeof p !== "string" || !p) return "—";
@@ -31,16 +32,16 @@ function shortProject(p: unknown): string {
 
 const SCHEMA: FieldDef[] = [
   field("id"),
-  relativeTime("started_at", "started"),
+  relativeTime("started_at"),
   custom("project", (s) => shortProject(s.project_path)),
   custom("title", (s) => s.title ?? s.session_name ?? null),
-  field("user_message_count", "user_msgs"),
-  count("tools_used", "tools"),
+  field("user_message_count"),
+  count("tools_used"),
   field("machine"),
 ];
 
 export async function searchCommand(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json", "forever", "include-empty"]);
+  const { flags } = parseArgs("search", args);
 
   const query: Record<string, string> = {};
   if (typeof flags.query === "string") query.search = flags.query;
@@ -59,7 +60,7 @@ export async function searchCommand(args: string[]): Promise<string> {
   if (typeof flags.offset === "string") query.offset = flags.offset;
 
   const rows = await api.get("/api/sessions", query);
-  if (flags.json) return rawJson(rows);
+  captureJson(rows);
   if (!Array.isArray(rows) || rows.length === 0) {
     return "sessions: 0 matching sessions found";
   }

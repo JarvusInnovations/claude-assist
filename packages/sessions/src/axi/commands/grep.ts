@@ -1,7 +1,7 @@
 import { AxiError } from "axi-sdk-js";
 import { api } from "../client.js";
-import { parseArgs, rawJson } from "../args.js";
-import { renderList, renderOutput, renderHelp, field, custom, truncate, formatRelativeTime, type FieldDef } from "../toon.js";
+import { parseArgs, captureJson } from "../args.js";
+import { renderList, renderOutput, renderHelp, field, relativeTime, truncate, formatRelativeTime, type FieldDef } from "../toon.js";
 import { cliInvocation } from "../invocation.js";
 
 export const GREP_HELP = `sessions-axi grep <session-id> [flags]      # within one transcript → windowed matches
@@ -21,21 +21,21 @@ sessions-axi grep [flags]                   # no id → cross-session tool-call 
   --before <uuid>      per-session: stop scanning at this message
   --project PATH       cross-session: filter by project path (substring)
   --days N             cross-session: only the last N days
-  --json               raw API JSON
+  --json-out[=path]    write the full JSON to a file (bare: an owner-only temp file); stdout stays this view
 
   At least one of --tool / --match is required.`;
 
 const CROSS_SCHEMA: FieldDef[] = [
-  field("session_id", "session"),
-  custom("title", (r) => r.title ?? null),
-  custom("when", (r) => formatRelativeTime(r.ts)),
+  field("session_id"),
+  field("title"),
+  relativeTime("ts"),
   field("tool"),
   truncate("target", 60),
   field("anchor"),
 ];
 
 export async function grepCommand(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json", "include-sidechain"]);
+  const { positionals, flags } = parseArgs("grep", args);
   const id = positionals[0];
 
   if (!flags.tool && !flags.match) {
@@ -57,7 +57,7 @@ async function grepSession(id: string, flags: Record<string, string | boolean>):
   if (flags["include-sidechain"]) query.include_sidechain = "true";
 
   const res = await api.get(`/api/sessions/${encodeURIComponent(id)}/find`, query);
-  if (flags.json) return rawJson(res);
+  captureJson(res);
 
   const matches: any[] = res?.matches ?? [];
   if (matches.length === 0) return "grep: 0 matches in this session";
@@ -99,15 +99,15 @@ async function grepCross(flags: Record<string, string | boolean>): Promise<strin
   if (flags["include-sidechain"]) query.include_sidechain = "true";
 
   const rows = await api.get("/api/sessions/find", query);
-  if (flags.json) return rawJson(rows);
+  captureJson(rows);
   if (!Array.isArray(rows) || rows.length === 0) return "grep: 0 matching tool calls found";
 
   return renderOutput([
     `count: ${rows.length}`,
     renderList("matches", rows, CROSS_SCHEMA),
     renderHelp([
-      `Run \`${cli} transcript <session> --around <anchor> --after 20\` to read around a match`,
-      `Run \`${cli} grep <session> --tool … --match …\` to window matches within one session`,
+      `Run \`${cli} transcript <session_id> --around <anchor> --after 20\` to read around a match`,
+      `Run \`${cli} grep <session_id> --tool … --match …\` to window matches within one session`,
     ]),
   ]);
 }

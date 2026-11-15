@@ -3,9 +3,8 @@ import { generateUlid } from "../../ulid.js";
 import { AxiError } from "axi-sdk-js";
 import {
   parseArgs,
-  collectFlag,
   requirePositional,
-  rawJson,
+  captureJson,
   parseJson,
   validateCalendarDate,
   parseNumberFlag,
@@ -21,11 +20,17 @@ import {
   UNIT_SEALS,
 } from "../reference.js";
 
-export const INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json]
+export const INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json-out[=path]]
+
+  --json-out[=path] on any subcommand writes the full JSON response to a file
+  (bare: an owner-only temp file); stdout stays the TOON view.
 
   list [--state S] [--closed] [--limit N]   on-hand items, eat-first (eat_by asc)
   show <ulid>                               one item with derived eat_by/age
   add [flags]                               create an item (manual/verbal/seed)
+       [--raw-label T] [--product-ulid U] [--store S] [--batch-ulid U]
+       [--acquired-at DATE] [--fraction F] [--state S] [--shelf-life C]
+       [--needs-info] [--notes T] [--ulid U]
        [--units-total N] makes it a COUNTED item; omitted stays fraction-modeled
        [--unit-seal individual|shared] what that package seals (needs --units-total)
   event <ulid> <opened|finished|finished-unit|tossed|moved>   explicit event
@@ -252,14 +257,14 @@ export const INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json
 
 const ITEM_ROW_SCHEMA: FieldDef[] = [
   field("ulid"),
-  field("product_name", "name"),
+  field("product_name"),
   field("state"),
-  field("on_hand_fraction", "on_hand"),
+  field("on_hand_fraction"),
   field("units_remaining"),
   field("units_total"),
   field("unit_seal"),
   field("eat_by"),
-  field("days_until_eat_by", "days_left"),
+  field("days_until_eat_by"),
   field("store"),
   { type: "boolYesNo", key: "needs_info" },
   { type: "boolYesNo", key: "needs_nutrition" },
@@ -268,11 +273,11 @@ const ITEM_ROW_SCHEMA: FieldDef[] = [
 const ITEM_DETAIL_SCHEMA: FieldDef[] = [
   field("ulid"),
   field("product_ulid"),
-  field("product_name", "name"),
+  field("product_name"),
   field("raw_label"),
   field("store"),
   field("state"),
-  field("on_hand_fraction", "on_hand"),
+  field("on_hand_fraction"),
   field("units_remaining"),
   field("units_total"),
   field("unit_seal"),
@@ -283,15 +288,15 @@ const ITEM_DETAIL_SCHEMA: FieldDef[] = [
   field("closed_at"),
   field("storage_moved_at"),
   field("eat_by"),
-  field("days_until_eat_by", "days_left"),
+  field("days_until_eat_by"),
   field("age_days"),
-  field("shelf_life_class", "shelf_life"),
+  field("shelf_life_class"),
   field("notes"),
   field("merged_into"),
 ];
 
 const QUESTION_SCHEMA: FieldDef[] = [
-  field("item_ulid", "ulid"),
+  field("item_ulid"),
   field("raw_label"),
   field("store"),
   field("acquired_at"),
@@ -305,14 +310,14 @@ const QUESTION_SCHEMA: FieldDef[] = [
  */
 const WASTE_ROW_SCHEMA: FieldDef[] = [
   field("tossed_at"),
-  field("product_name", "name"),
-  field("amount_fraction", "amount"),
+  field("product_name"),
+  field("amount_fraction"),
   field("units"),
-  field("cost_cents", "cost¢"),
-  field("cost_basis", "basis"),
+  field("cost_cents"),
+  field("cost_basis"),
   field("store"),
   { type: "boolYesNo", key: "terminal" },
-  field("item_ulid", "item"),
+  field("item_ulid"),
 ];
 
 const EVENT_TYPES = ["opened", "finished", "finished-unit", "tossed", "moved"];
@@ -356,7 +361,7 @@ export async function inventoryCommand(args: string[]): Promise<string> {
 }
 
 async function listItems(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json", "closed"], ["state", "limit"]);
+  const { flags } = parseArgs("inventory list", args);
   const state = typeof flags.state === "string" ? flags.state : undefined;
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", INVENTORY_HELP, { min: 1 })) : undefined;
   const result = await api.get("/api/kitchen/inventory", {
@@ -364,7 +369,7 @@ async function listItems(args: string[]): Promise<string> {
     limit,
     include_closed: flags.closed ? "true" : undefined,
   });
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   const items = result?.items ?? [];
   const list = renderList("items", items, ITEM_ROW_SCHEMA);
   // Same disclosure the day rollup uses: name the zone only when it is the UTC
@@ -376,15 +381,15 @@ async function listItems(args: string[]): Promise<string> {
 }
 
 async function showItem(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"], []);
+  const { positionals, flags } = parseArgs("inventory show", args);
   const ulid = requirePositional(positionals, 0, "item ulid", INVENTORY_HELP);
   const item = await api.get(`/api/kitchen/inventory/${encodeURIComponent(ulid)}`);
-  if (flags.json) return rawJson(item);
+  captureJson(item);
   return renderDetail("item", item, ITEM_DETAIL_SCHEMA);
 }
 
 async function addItem(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json", "needs-info"], ["ulid", "product-ulid", "raw-label", "store", "batch-ulid", "acquired-at", "fraction", "units-total", "unit-seal", "state", "shelf-life", "notes"]);
+  const { flags } = parseArgs("inventory add", args);
   const body: Record<string, unknown> = {};
   if (typeof flags.ulid === "string") body.ulid = flags.ulid;
   if (typeof flags["product-ulid"] === "string") body.product_ulid = flags["product-ulid"];
@@ -405,7 +410,7 @@ async function addItem(args: string[]): Promise<string> {
   }
 
   const item = await api.post("/api/kitchen/inventory", body);
-  if (flags.json) return rawJson(item);
+  captureJson(item);
   return renderDetail("item", item, ITEM_DETAIL_SCHEMA);
 }
 
@@ -451,7 +456,7 @@ export function buildDismissBody(flags: Record<string, string | boolean | undefi
 }
 
 async function itemEvent(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"], ["fraction", "to", "at"]);
+  const { positionals, flags } = parseArgs("inventory event", args);
   const ulid = requirePositional(positionals, 0, "item ulid", INVENTORY_HELP);
   const type = requirePositional(positionals, 1, "event type", INVENTORY_HELP);
   assertEventType(type, ulid);
@@ -462,16 +467,12 @@ async function itemEvent(args: string[]): Promise<string> {
   if (typeof flags.at === "string") body.at = validateCalendarDate(flags.at, "--at", INVENTORY_HELP);
 
   const item = await api.post(`/api/kitchen/inventory/${encodeURIComponent(ulid)}/events`, body);
-  if (flags.json) return rawJson(item);
+  captureJson(item);
   return renderDetail("item", item, ITEM_DETAIL_SCHEMA);
 }
 
 async function recountItem(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(
-    args,
-    ["json", "uncounted", "needs-info", "no-needs-info", "unlink-product"],
-    ["fraction", "units-remaining", "units-total", "unit-seal", "state", "opened-at", "shelf-life", "product-ulid", "notes"]
-  );
+  const { positionals, flags } = parseArgs("inventory recount", args);
   const ulid = requirePositional(positionals, 0, "item ulid", INVENTORY_HELP);
   const body: Record<string, unknown> = {};
   if (typeof flags.fraction === "string") body.on_hand_fraction = parseNumberFlag(flags.fraction, "fraction", INVENTORY_HELP, { min: 0, max: 1 });
@@ -506,7 +507,7 @@ async function recountItem(args: string[]): Promise<string> {
   }
 
   const item = await api.patch(`/api/kitchen/inventory/${encodeURIComponent(ulid)}`, body);
-  if (flags.json) return rawJson(item);
+  captureJson(item);
   return renderDetail("item", item, ITEM_DETAIL_SCHEMA);
 }
 
@@ -519,12 +520,12 @@ async function recountItem(args: string[]): Promise<string> {
  * argument.
  */
 async function dismissItem(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json", "non-inventory"], ["at"]);
+  const { positionals, flags } = parseArgs("inventory dismiss", args);
   const ulid = requirePositional(positionals, 0, "item ulid", INVENTORY_HELP);
   const body = buildDismissBody(flags);
 
   const result = await api.post(`/api/kitchen/inventory/${encodeURIComponent(ulid)}/dismiss`, body);
-  if (flags.json) return rawJson(result);
+  captureJson(result);
 
   const cli = cliInvocation();
   return renderOutput([
@@ -543,7 +544,7 @@ async function dismissItem(args: string[]): Promise<string> {
 }
 
 async function mergeItem(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"], ["into"]);
+  const { positionals, flags } = parseArgs("inventory merge", args);
   const ulid = requirePositional(positionals, 0, "item ulid (the duplicate to retire)", INVENTORY_HELP);
   const into = typeof flags.into === "string" ? flags.into : undefined;
   if (!into) {
@@ -551,7 +552,7 @@ async function mergeItem(args: string[]): Promise<string> {
   }
 
   const result = await api.post(`/api/kitchen/inventory/${encodeURIComponent(ulid)}/merge`, { into });
-  if (flags.json) return rawJson(result);
+  captureJson(result);
 
   const relinked = result?.relinked ?? {};
   return renderOutput([
@@ -571,14 +572,14 @@ async function mergeItem(args: string[]): Promise<string> {
 }
 
 async function remark(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"], ["at"]);
+  const { positionals, flags } = parseArgs("inventory remark", args);
   const text = positionals.join(" ").trim();
   if (!text) throw new AxiError("inventory remark needs free text", "VALIDATION_ERROR", [INVENTORY_HELP]);
   const body: Record<string, unknown> = { remark: text };
   if (typeof flags.at === "string") body.at = validateCalendarDate(flags.at, "--at", INVENTORY_HELP);
 
   const result = await api.post("/api/kitchen/inventory/events", body);
-  if (flags.json) return rawJson(result);
+  captureJson(result);
 
   const cli = cliInvocation();
   if (!result?.matched) {
@@ -598,21 +599,21 @@ async function remark(args: string[]): Promise<string> {
 }
 
 async function questions(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json"], ["limit"]);
+  const { flags } = parseArgs("inventory questions", args);
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", INVENTORY_HELP, { min: 1 })) : undefined;
   const result = await api.get("/api/kitchen/inventory/questions", { limit });
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   const q = result?.questions ?? [];
   return renderList("questions", q, QUESTION_SCHEMA);
 }
 
 async function waste(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json"], ["since", "until", "limit"]);
+  const { flags } = parseArgs("inventory waste", args);
   const since = typeof flags.since === "string" ? validateCalendarDate(flags.since, "--since", INVENTORY_HELP) : undefined;
   const until = typeof flags.until === "string" ? validateCalendarDate(flags.until, "--until", INVENTORY_HELP) : undefined;
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", INVENTORY_HELP, { min: 1 })) : undefined;
   const result = await api.get("/api/kitchen/inventory/waste", { since, until, limit });
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   const rows = result?.waste ?? [];
   const totals = result?.totals ?? {};
   return renderOutput([
@@ -644,10 +645,10 @@ function parseSource(raw: string): { item_ulid: string; amount?: number } {
 }
 
 async function convert(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json"], ["from", "to", "at"]);
+  const { flags, multi } = parseArgs("inventory convert", args);
   // --from is optional: with none, this is a source-less conversion that
   // registers a prepared item ("I made this") without decrementing stock.
-  const fromValues = collectFlag(args, "from");
+  const fromValues = multi.from ?? [];
   const toRaw = typeof flags.to === "string" ? flags.to : undefined;
   if (!toRaw) throw new AxiError("convert needs --to '<derived spec json>'", "VALIDATION_ERROR", [INVENTORY_HELP]);
   const derived = parseJson(toRaw, "--to", INVENTORY_HELP);
@@ -667,7 +668,7 @@ async function convert(args: string[]): Promise<string> {
   if (typeof flags.at === "string") body.at = validateCalendarDate(flags.at, "--at", INVENTORY_HELP);
 
   const result = await api.post("/api/kitchen/inventory/convert", body);
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   return renderOutput([
     renderList("sources", result.sources ?? [], ITEM_ROW_SCHEMA),
     renderDetail("derived", result.derived, ITEM_DETAIL_SCHEMA),
@@ -675,7 +676,7 @@ async function convert(args: string[]): Promise<string> {
 }
 
 async function consumeItem(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"], ["quantity", "at", "ulid"]);
+  const { positionals, flags } = parseArgs("inventory consume", args);
   const itemUlid = requirePositional(positionals, 0, "item ulid", INVENTORY_HELP);
 
   const body: Record<string, unknown> = { ulid: typeof flags.ulid === "string" ? flags.ulid : generateUlid() };
@@ -685,7 +686,7 @@ async function consumeItem(args: string[]): Promise<string> {
   if (typeof flags.at === "string") body.at = validateCalendarDate(flags.at, "--at", INVENTORY_HELP);
 
   const result = await api.post(`/api/kitchen/inventory/${encodeURIComponent(itemUlid)}/consume`, body);
-  if (flags.json) return rawJson(result);
+  captureJson(result);
 
   const cli = cliInvocation();
   return renderOutput([
@@ -736,13 +737,13 @@ export function buildEatBody(flags: Record<string, string | boolean | undefined>
 }
 
 async function eatItem(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"], ["grams", "fraction", "entry-ulid", "at"]);
+  const { positionals, flags } = parseArgs("inventory eat", args);
   const itemUlid = requirePositional(positionals, 0, "item ulid", INVENTORY_HELP);
 
   const body = buildEatBody(flags);
 
   const result = await api.post(`/api/kitchen/inventory/${encodeURIComponent(itemUlid)}/consumed`, body);
-  if (flags.json) return rawJson(result);
+  captureJson(result);
 
   const cli = cliInvocation();
   const blocks = [
@@ -849,11 +850,11 @@ export function assertConvertShelfLifeClass(cls: unknown): void {
  * by choosing one, never by a score (§ Near-miss candidates).
  */
 async function lineCandidates(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"], ["limit"]);
+  const { positionals, flags } = parseArgs("inventory candidates", args);
   const ulid = requirePositional(positionals, 0, "item ulid", INVENTORY_HELP);
   const limit = typeof flags.limit === "string" ? flags.limit : undefined;
   const result = await api.get(`/api/kitchen/inventory/${encodeURIComponent(ulid)}/candidates`, { limit });
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   const rows = (result?.candidates ?? []).map((c: any) => ({
     product: c.product_name,
     score: c.score,

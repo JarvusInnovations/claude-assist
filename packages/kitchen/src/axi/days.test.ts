@@ -6,6 +6,12 @@ import { registerKitchenRoutes } from "../routes/kitchen.js";
 import { KitchenPipeline } from "../services/pipeline.js";
 import { resolveOwnerTz } from "../zoned.js";
 import { generateUlid } from "../ulid.js";
+import { AxiError } from "axi-sdk-js";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { COMMANDS } from "./cli.js";
 import { daysCommand } from "./commands/days.js";
 import { homeCommand } from "./commands/home.js";
 
@@ -19,6 +25,8 @@ describe("kitchen-axi days / home render (§ Timezone & local-day bucketing)", (
   let server: FastifyInstance;
   let entries: MemoryEntryStore;
   let prevEnv: string | undefined;
+  let prevTmp: string | undefined;
+  let scratch: string;
 
   const seedEntry = async (loggedAt: string, calories: number, protein: number) => {
     const ulid = generateUlid();
@@ -59,12 +67,19 @@ describe("kitchen-axi days / home render (§ Timezone & local-day bucketing)", (
     const addr = server.server.address();
     const port = typeof addr === "object" && addr ? addr.port : 0;
     prevEnv = process.env.CLAUDE_ASSIST_SERVER;
+    // A bare --json-out writes under <tmpdir>/kitchen-axi; keep that in a scratch dir.
+    prevTmp = process.env.TMPDIR;
+    scratch = mkdtempSync(join(tmpdir(), "kitchen-axi-test-"));
+    process.env.TMPDIR = scratch;
     process.env.CLAUDE_ASSIST_SERVER = `http://127.0.0.1:${port}`;
   });
 
   afterAll(async () => {
     if (prevEnv === undefined) delete process.env.CLAUDE_ASSIST_SERVER;
     else process.env.CLAUDE_ASSIST_SERVER = prevEnv;
+    if (prevTmp === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = prevTmp;
+    rmSync(scratch, { recursive: true, force: true });
     await server.close();
   });
 
@@ -80,12 +95,53 @@ describe("kitchen-axi days / home render (§ Timezone & local-day bucketing)", (
     expect(out).not.toContain("unset");
   });
 
-  it("days --json returns the raw grouped payload with today + tz", async () => {
-    const raw = JSON.parse(await daysCommand(["--json", "--since", "10"]));
+  it("days --json-out writes the raw grouped payload to a file and leaves the view as it was", async () => {
+    const plain = await COMMANDS.days!(["--since", "2026-05-30"], undefined) as string;
+    const out = await COMMANDS.days!(["--since", "2026-05-30", "--json-out"], undefined) as string;
+
+    const wrote = /^wrote: (\S+) \(1 object, \d+ keys\)$/m.exec(out);
+    expect(wrote).not.toBeNull();
+    const path = wrote![1]!;
+    expect(path.startsWith(join(scratch, "kitchen-axi") + "/")).toBe(true);
+    expect(path).toMatch(/-days\.json$/);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+
+    const raw = JSON.parse(readFileSync(path, "utf8"));
     expect(raw.group).toBe("day");
     expect(raw.tz).toBe("America/New_York");
     expect(typeof raw.today).toBe("string");
     expect(Array.isArray(raw.days)).toBe(true);
+
+    // Stdout is the same view plus wrote:, columns: and one more help line.
+    const added = out.split("\n").filter((line) => !plain.split("\n").includes(line));
+    expect(added).toHaveLength(4);
+    expect(added[0]).toMatch(/^wrote: /);
+    expect(added[1]).toMatch(/^columns: .*days\[\d+\]\{day,/);
+    expect(added[2]).toMatch(/^help\[\d+\]:$/);
+    expect(added[3]).toBe(`  Run \`jq '.days[]' ${path}\` to process the full result`);
+    const rows = (text: string) => text.slice(text.indexOf("days["), text.indexOf("help["));
+    expect(rows(out).replace(/wrote: .*\ncolumns: .*\n/, "")).toBe(rows(plain));
+
+    // Every column in the table is a key of the rows in the file, so the first
+    // jq expression an agent writes from the table works.
+    const header = /^days\[\d+\]\{([^}]+)\}:$/m.exec(out)![1]!.split(",");
+    expect(header).toContain("calories");
+    expect(header).toContain("protein_g");
+    for (const column of header) expect(Object.keys(raw.days[0])).toContain(column);
+
+    // The printed hint runs as printed.
+    const jq = spawnSync("sh", ["-c", `jq -c '.days[] | .day' ${path}`], { encoding: "utf8" });
+    expect(jq.status).toBe(0);
+    expect(jq.stdout).toContain("2026-06-01");
+  });
+
+  it("days --json is refused with the --json-out hint, before any request", async () => {
+    const err = await COMMANDS.days!(["--json", "--since", "10"], undefined).then(
+      () => undefined,
+      (e: unknown) => e as AxiError,
+    );
+    expect(err?.code).toBe("UNKNOWN_FLAG");
+    expect(err?.suggestions[0]).toContain("use --json-out");
   });
 
   it("home derives today server-side and suggests the days trend", async () => {

@@ -100,7 +100,8 @@ export const ENTRY_ROW_SCHEMA: FieldDef[] = [
   { type: "field", key: "label" },
   { type: "field", key: "status" },
   { type: "field", key: "source" },
-  { type: "field", key: "portion_multiplier", as: "mult" },
-  custom("kcal", (e) => effectiveMacro(e, "calories")),
-  custom("protein", (e) => effectiveMacro(e, "protein_g")),
+  { type: "field", key: "portion_multiplier" },
+  // Computed (base × multiplier), so named `eff_*`: not keys in the file.
+  custom("eff_kcal", (e) => effectiveMacro(e, "calories")),
+  custom("eff_protein", (e) => effectiveMacro(e, "protein_g")),
 ];

@@ -1,10 +1,13 @@
 import { api } from "../client.js";
 import { AxiError } from "axi-sdk-js";
-import { parseArgs, requireFlag, requirePositional, rawJson, parseNumberFlag, parseJson, splitCsv } from "../args.js";
+import { parseArgs, requireFlag, requirePositional, captureJson, parseNumberFlag, parseJson, splitCsv } from "../args.js";
 import { renderList, renderDetail, renderObject, renderOutput, renderHelp, field, joinArray, type FieldDef } from "../toon.js";
 import { SHELF_LIFE_CLASSES } from "../reference.js";
 
-export const PRODUCTS_HELP = `kitchen-axi products <subcommand> [args] [--json]
+export const PRODUCTS_HELP = `kitchen-axi products <subcommand> [args] [--json-out[=path]]
+
+  --json-out[=path] on any subcommand writes the full JSON response to a file
+  (bare: an owner-only temp file); stdout stays the TOON view.
 
   list [--q TEXT] [--limit N]       products (durable item facts); --q matches
                                       name/aliases (substring). Archived
@@ -115,20 +118,20 @@ export const PRODUCTS_HELP = `kitchen-axi products <subcommand> [args] [--json]
 const PRODUCT_ROW_SCHEMA: FieldDef[] = [
   field("ulid"),
   field("name"),
-  field("shelf_life_class", "shelf_life"),
-  joinArray("aliases", undefined, "aliases"),
-  field("package_size", "pkg"),
-  { type: "boolYesNo", key: "nutrition_negligible", as: "negligible" },
+  field("shelf_life_class"),
+  joinArray("aliases"),
+  field("package_size"),
+  { type: "boolYesNo", key: "nutrition_negligible" },
 ];
 
 const PRODUCT_DETAIL_SCHEMA: FieldDef[] = [
   field("ulid"),
   field("name"),
-  field("shelf_life_class", "shelf_life"),
-  joinArray("aliases", undefined, "aliases"),
-  field("package_size", "pkg"),
-  field("shelf_life_days_unopened", "days_unopened"),
-  field("shelf_life_days_opened", "days_opened"),
+  field("shelf_life_class"),
+  joinArray("aliases"),
+  field("package_size"),
+  field("shelf_life_days_unopened"),
+  field("shelf_life_days_opened"),
   {
     type: "custom",
     as: "nutrition_per_100g",
@@ -136,7 +139,7 @@ const PRODUCT_DETAIL_SCHEMA: FieldDef[] = [
   },
   field("unit_edible_g"),
   field("nutrition_source"),
-  { type: "boolYesNo", key: "nutrition_negligible", as: "negligible" },
+  { type: "boolYesNo", key: "nutrition_negligible" },
   field("ingredients"),
 ];
 
@@ -146,15 +149,15 @@ const PRODUCT_DETAIL_SCHEMA: FieldDef[] = [
  * there is only readable as "no size resolved" when the basis says so.
  */
 const PRICE_POINT_SCHEMA: FieldDef[] = [
-  field("purchased_at", "date"),
+  field("purchased_at"),
   field("store"),
-  field("raw_text", "line"),
-  field("quantity", "qty"),
-  field("price_cents", "price¢"),
-  field("package_price_cents", "per_pkg¢"),
-  field("cents_per_100g", "per_100g¢"),
-  field("cents_per_100ml", "per_100ml¢"),
-  field("unit_basis", "basis"),
+  field("raw_text"),
+  field("quantity"),
+  field("price_cents"),
+  field("package_price_cents"),
+  field("cents_per_100g"),
+  field("cents_per_100ml"),
+  field("unit_basis"),
 ];
 
 const PANEL_BASIS_FINDING_SCHEMA: FieldDef[] = [
@@ -168,27 +171,6 @@ const PANEL_BASIS_FINDING_SCHEMA: FieldDef[] = [
         .map((c: { field: string; stated: number; derived: number; tolerance: number }) => `${c.field}: stated ${c.stated} vs derived ${c.derived} (±${c.tolerance})`)
         .join(" | "),
   },
-];
-
-/** The write flags shared by `add` and `update` (single-sourced so they can't drift). */
-const WRITE_VALUE_FLAGS = [
-  "name",
-  "ulid",
-  "shelf-life",
-  "aliases",
-  "package-size",
-  "nutrition",
-  "nutrition-per-serving",
-  "serving-size-g",
-  "servings-per-container",
-  "net-content-g",
-  "net-content-ml",
-  "unit-model",
-  "unit-edible-g",
-  "nutrition-source",
-  "ingredients",
-  "shelf-life-days-unopened",
-  "shelf-life-days-opened",
 ];
 
 export async function productsCommand(args: string[]): Promise<string> {
@@ -216,11 +198,11 @@ export async function productsCommand(args: string[]): Promise<string> {
 }
 
 async function listProducts(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json"], ["q", "limit"]);
+  const { flags } = parseArgs("products list", args);
   const q = typeof flags.q === "string" ? flags.q : undefined;
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", PRODUCTS_HELP, { min: 1 })) : undefined;
   const result = await api.get("/api/kitchen/products", { q, limit });
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   const products = result?.products ?? [];
   return renderList("products", products, PRODUCT_ROW_SCHEMA);
 }
@@ -280,13 +262,13 @@ export function buildProductWriteBody(flags: Record<string, string | boolean>): 
 }
 
 async function addProduct(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json", "negligible", "no-negligible", "force-negligible"], WRITE_VALUE_FLAGS);
+  const { flags } = parseArgs("products add", args);
   requireFlag(flags, "name", PRODUCTS_HELP);
   const body = buildProductWriteBody(flags);
   if (typeof flags.ulid === "string") body.ulid = flags.ulid;
 
   const { status, body: product } = await api.postWithStatus("/api/kitchen/products", body);
-  if (flags.json) return rawJson(product);
+  captureJson(product);
   const created = status === 201;
   return renderOutput([
     renderDetail(created ? "created" : body.ulid ? "replaced" : "enriched", product, PRODUCT_DETAIL_SCHEMA),
@@ -301,14 +283,14 @@ async function addProduct(args: string[]): Promise<string> {
 }
 
 async function updateProduct(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json", "negligible", "no-negligible", "force-negligible"], WRITE_VALUE_FLAGS);
+  const { positionals, flags } = parseArgs("products update", args);
   const ulid = requirePositional(positionals, 0, "product ulid", PRODUCTS_HELP);
   const body = buildProductWriteBody(flags);
   if (Object.keys(body).length === 0) {
     throw new AxiError("update needs at least one field flag to change", "VALIDATION_ERROR", [PRODUCTS_HELP]);
   }
   const product = await api.patch(`/api/kitchen/products/${encodeURIComponent(ulid)}`, body);
-  if (flags.json) return rawJson(product);
+  captureJson(product);
   return renderOutput([
     renderDetail("updated", product, PRODUCT_DETAIL_SCHEMA),
     renderHelp([
@@ -318,29 +300,29 @@ async function updateProduct(args: string[]): Promise<string> {
 }
 
 async function productPrices(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"], ["store", "limit"]);
+  const { positionals, flags } = parseArgs("products prices", args);
   const ulid = requirePositional(positionals, 0, "product ulid", PRODUCTS_HELP);
   const store = typeof flags.store === "string" ? flags.store : undefined;
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", PRODUCTS_HELP, { min: 1 })) : undefined;
   const result = await api.get(`/api/kitchen/products/${encodeURIComponent(ulid)}/prices`, { store, limit });
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   const points = result?.points ?? [];
   return renderOutput([
     renderObject({ product: result?.product_name, ulid: result?.product_ulid, purchases: result?.count ?? 0 }),
     renderList("prices", points, PRICE_POINT_SCHEMA),
     renderHelp([
-      "Compare per_100g / per_100ml, not price¢ — package sizes differ between purchases and stores",
-      "A null per_100g/per_100ml with basis null means no package size resolved for that purchase; nothing was guessed. Scan the label, or set the size with `products update <ulid> --package-size '16 oz'`",
+      "Compare cents_per_100g / cents_per_100ml, not price_cents — package sizes differ between purchases and stores",
+      "A null cents_per_100g/cents_per_100ml with unit_basis null means no package size resolved for that purchase; nothing was guessed. Scan the label, or set the size with `products update <ulid> --package-size '16 oz'`",
     ]),
   ]);
 }
 
 async function mergeProduct(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"], ["into"]);
+  const { positionals, flags } = parseArgs("products merge", args);
   const ulid = requirePositional(positionals, 0, "duplicate product ulid", PRODUCTS_HELP);
   const into = requireFlag(flags, "into", PRODUCTS_HELP);
   const result = await api.post(`/api/kitchen/products/${encodeURIComponent(ulid)}/merge`, { into });
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   return renderOutput([
     renderDetail("survivor", result?.product ?? {}, PRODUCT_DETAIL_SCHEMA),
     renderObject({
@@ -358,10 +340,10 @@ async function mergeProduct(args: string[]): Promise<string> {
 }
 
 async function archiveProduct(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"], []);
+  const { positionals, flags } = parseArgs("products archive", args);
   const ulid = requirePositional(positionals, 0, "product ulid", PRODUCTS_HELP);
   const archived = await api.delJson(`/api/kitchen/products/${encodeURIComponent(ulid)}`);
-  if (flags.json) return rawJson(archived);
+  captureJson(archived);
   return renderOutput([
     renderObject({ archived: archived?.ulid, name: archived?.name, archived_at: archived?.archived_at }),
     renderHelp([
@@ -378,9 +360,9 @@ async function archiveProduct(args: string[]): Promise<string> {
  * per-100g or the serving basis it disagrees with — is actually right.
  */
 async function panelBasisReport(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json"], []);
+  const { flags } = parseArgs("products panel-basis-report", args);
   const result = await api.get("/api/kitchen/products/panel-basis-report");
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   const findings = result?.findings ?? [];
   if (findings.length === 0) {
     return renderOutput([

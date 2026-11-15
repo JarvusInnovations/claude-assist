@@ -1,9 +1,12 @@
 import { api } from "../client.js";
 import { AxiError } from "axi-sdk-js";
-import { parseArgs, requirePositional } from "../args.js";
+import { parseArgs, requirePositional, captureJson } from "../args.js";
 import { renderObject, renderOutput, renderHelp } from "../toon.js";
 
-export const STORES_HELP = `kitchen-axi stores <subcommand> [args] [--json]
+export const STORES_HELP = `kitchen-axi stores <subcommand> [args] [--json-out[=path]]
+
+  --json-out[=path] on any subcommand writes the full JSON response to a file
+  (bare: an owner-only temp file); stdout stays the TOON view.
 
   list                                  every store string seen, from the
                                           lexicon and inventory items
@@ -43,9 +46,9 @@ export async function storesCommand(args: string[]): Promise<string> {
 }
 
 async function listStores(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json"], []);
+  const { flags } = parseArgs("stores list", args);
   const result = await api.get("/api/kitchen/stores");
-  if (flags.json) return JSON.stringify(result, null, 2);
+  captureJson(result);
   const stores: string[] = result?.stores ?? [];
   return renderOutput([
     renderObject({ stores: stores.length }),
@@ -59,13 +62,13 @@ async function listStores(args: string[]): Promise<string> {
 }
 
 async function mergeStores(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"], ["into"]);
+  const { positionals, flags } = parseArgs("stores merge", args);
   const from = requirePositional(positionals, 0, "source store", STORES_HELP);
   const to = typeof flags.into === "string" ? flags.into : undefined;
   if (!to) throw new AxiError("stores merge needs --into <store>", "VALIDATION_ERROR", [STORES_HELP]);
 
   const result = await api.post("/api/kitchen/stores/merge", { from, to });
-  if (flags.json) return JSON.stringify(result, null, 2);
+  captureJson(result);
   return renderOutput([
     renderObject({
       merged: result.from,

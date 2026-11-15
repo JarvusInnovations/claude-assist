@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { AxiError } from "axi-sdk-js";
 import { DEFAULT_SERVER, resolveServer, buildMultipartForm } from "./client.js";
-import { parseArgs, collectFlag, parseNumberFlag, splitCsv } from "./args.js";
+import { parseArgs, parseNumberFlag, splitCsv } from "./args.js";
 import { sumEffective, effectiveMacro, targetLine, nestedSugarLine } from "./format.js";
 import {
   commandReferenceText,
@@ -34,32 +34,33 @@ describe("resolveServer", () => {
 });
 
 describe("args", () => {
-  it("parses value flags, boolean flags, and positionals", () => {
-    const { positionals, flags } = parseArgs(["show", "01ABC", "--limit", "5", "--json"], ["json"]);
-    expect(positionals).toEqual(["show", "01ABC"]);
-    expect(flags.limit).toBe("5");
-    expect(flags.json).toBe(true);
+  it("parses value flags, switches, and positionals against the command's declaration", () => {
+    const { positionals, flags } = parseArgs("inventory event", ["01ABC", "opened", "--fraction", "0.5"]);
+    expect(positionals).toEqual(["01ABC", "opened"]);
+    expect(flags.fraction).toBe("0.5");
+    expect(parseArgs("inventory list", ["--closed", "--limit=5"]).flags).toEqual({ closed: true, limit: "5" });
   });
 
-  it("rejects unknown flags by name when the command declares its flags (fail loud)", () => {
+  it("rejects unknown flags by name, listing the command's valid flags (fail loud)", () => {
     // A silently dropped flag would hand the agent plausible-looking but
     // unscoped output — e.g. `inventory list --stat closed` must not run
     // the unfiltered query.
-    expect(() => parseArgs(["--stat", "closed"], ["json", "closed"], ["state", "limit"])).toThrow(/Unknown flag --stat/);
+    expect(() => parseArgs("inventory list", ["--stat", "closed"])).toThrow(/unknown flag --stat/);
     try {
-      parseArgs(["--stat", "closed"], ["json", "closed"], ["state", "limit"]);
+      parseArgs("inventory list", ["--stat", "closed"]);
       throw new Error("should have thrown");
     } catch (err) {
-      expect((err as AxiError).suggestions.join(" ")).toContain("--state");
+      expect((err as AxiError).code).toBe("UNKNOWN_FLAG");
+      const hint = (err as AxiError).suggestions.join(" ");
+      expect(hint).toContain("--state");
+      expect(hint).toContain("--json-out");
     }
-    // Known flags still pass, and legacy two-arg calls stay permissive.
-    expect(parseArgs(["--state", "open"], ["json"], ["state"]).flags.state).toBe("open");
-    expect(parseArgs(["--anything", "x"], ["json"]).flags.anything).toBe("x");
+    expect(parseArgs("inventory list", ["--state", "open"]).flags.state).toBe("open");
   });
 
   it("collects a repeatable flag in order", () => {
-    const args = ["--component", "rice=150", "--component", "chicken=120", "--json"];
-    expect(collectFlag(args, "component", ["json"])).toEqual(["rice=150", "chicken=120"]);
+    const { multi } = parseArgs("entries log", ["--component", "rice=150", "--component", "chicken=120"]);
+    expect(multi.component).toEqual(["rice=150", "chicken=120"]);
   });
 
   it("parseNumberFlag enforces bounds and rejects non-numbers", () => {
@@ -168,11 +169,7 @@ describe("receipts scan multipart part-type rule", () => {
 
 describe("entries --at wiring (claude-assist#111)", () => {
   it("buildLogEntryFields carries --at through as logged_at", () => {
-    const { positionals, flags } = parseArgs(
-      ["had", "eggs", "--at", "2026-07-18T08:00:00Z"],
-      ["json"],
-      ["recipe", "component", "at"],
-    );
+    const { positionals, flags } = parseArgs("entries log", ["had", "eggs", "--at", "2026-07-18T08:00:00Z"]);
     const entry = buildLogEntryFields(positionals, flags, []);
     expect(entry.note).toBe("had eggs");
     expect(entry.logged_at).toBe("2026-07-18T08:00:00Z");
@@ -181,7 +178,7 @@ describe("entries --at wiring (claude-assist#111)", () => {
   it("buildLogEntryFields coerces a date-only --at to local noon and omits logged_at when absent", () => {
     // A bare YYYY-MM-DD now backstops to local noon (specs/modules/kitchen.md
     // § Logged-at backdating). Zone-independent assertion: local noon, that day.
-    const withAt = parseArgs(["snack", "--at", "2026-07-18"], ["json"], ["recipe", "component", "at"]);
+    const withAt = parseArgs("entries log", ["snack", "--at", "2026-07-18"]);
     const loggedAt = buildLogEntryFields(withAt.positionals, withAt.flags, []).logged_at as string;
     const d = new Date(loggedAt);
     expect(d.getHours()).toBe(12); // local noon, never midnight UTC
@@ -189,32 +186,24 @@ describe("entries --at wiring (claude-assist#111)", () => {
     expect(d.getMonth()).toBe(6); // July
     expect(d.getDate()).toBe(18);
 
-    const withoutAt = parseArgs(["snack"], ["json"], ["recipe", "component", "at"]);
+    const withoutAt = parseArgs("entries log", ["snack"]);
     expect(buildLogEntryFields(withoutAt.positionals, withoutAt.flags, []).logged_at).toBeUndefined();
   });
 
   it("buildLogEntryFields rejects an unparseable --at before any network call", () => {
-    const { positionals, flags } = parseArgs(["snack", "--at", "not-a-date"], ["json"], ["recipe", "component", "at"]);
+    const { positionals, flags } = parseArgs("entries log", ["snack", "--at", "not-a-date"]);
     expect(() => buildLogEntryFields(positionals, flags, [])).toThrow(AxiError);
   });
 
   it("buildPatchBody carries --at through as logged_at, composable with other fields", () => {
-    const { flags } = parseArgs(
-      ["01ABC", "--multiplier", "0.5", "--at", "2026-07-01T12:00:00Z"],
-      ["json"],
-      ["note", "label", "portion-basis", "calories", "protein", "fat", "sat-fat", "carbs", "sodium", "multiplier", "at"],
-    );
+    const { flags } = parseArgs("entries patch", ["01ABC", "--multiplier", "0.5", "--at", "2026-07-01T12:00:00Z"]);
     const body = buildPatchBody(flags);
     expect(body.logged_at).toBe("2026-07-01T12:00:00Z");
     expect(body.portion_multiplier).toBe(0.5);
   });
 
   it("buildPatchBody with only --at never touches note/label/macro fields (metadata-only edit)", () => {
-    const { flags } = parseArgs(
-      ["01ABC", "--at", "2026-06-15"],
-      ["json"],
-      ["note", "label", "portion-basis", "calories", "protein", "fat", "sat-fat", "carbs", "sodium", "multiplier", "at"],
-    );
+    const { flags } = parseArgs("entries patch", ["01ABC", "--at", "2026-06-15"]);
     const body = buildPatchBody(flags);
     // Only logged_at is present, and the bare date coerces to local noon that
     // day (specs/modules/kitchen.md § Logged-at backdating). Zone-independent.
@@ -228,14 +217,8 @@ describe("entries --at wiring (claude-assist#111)", () => {
 });
 
 describe("entries log — directly-stated panel wiring", () => {
-  const LOG_FLAGS = ["recipe", "component", "at", "label", ...MACRO_PANEL_FLAG_NAMES];
-
   it("builds a macros panel from per-field flags (mirrors patch macro flags)", () => {
-    const { positionals, flags } = parseArgs(
-      ["--calories", "620", "--protein", "41", "--fat", "22", "--sat-fat", "7", "--carbs", "58", "--sugar", "12", "--added-sugar", "4", "--fiber", "9", "--sodium", "880", "--label", "test bowl"],
-      ["json"],
-      LOG_FLAGS,
-    );
+    const { positionals, flags } = parseArgs("entries log", ["--calories", "620", "--protein", "41", "--fat", "22", "--sat-fat", "7", "--carbs", "58", "--sugar", "12", "--added-sugar", "4", "--fiber", "9", "--sodium", "880", "--label", "test bowl"]);
     const entry = buildLogEntryFields(positionals, flags, []);
     expect(entry.macros).toEqual({
       calories: 620,
@@ -255,37 +238,36 @@ describe("entries log — directly-stated panel wiring", () => {
   });
 
   it("omits unstated panel fields (server stores them null, never 0)", () => {
-    const { positionals, flags } = parseArgs(["--calories", "200", "--protein", "15"], ["json"], LOG_FLAGS);
+    const { positionals, flags } = parseArgs("entries log", ["--calories", "200", "--protein", "15"]);
     const entry = buildLogEntryFields(positionals, flags, []);
     expect(entry.macros).toEqual({ calories: 200, protein_g: 15 });
   });
 
   it("rejects a directly-stated panel combined with --recipe or --component", () => {
-    const withRecipe = parseArgs(["--calories", "200", "--recipe", "01ABC"], ["json"], LOG_FLAGS);
+    const withRecipe = parseArgs("entries log", ["--calories", "200", "--recipe", "01ABC"]);
     expect(() => buildLogEntryFields(withRecipe.positionals, withRecipe.flags, [])).toThrow(AxiError);
 
-    const withComponent = parseArgs(["--calories", "200"], ["json"], LOG_FLAGS);
+    const withComponent = parseArgs("entries log", ["--calories", "200"]);
     expect(() => buildLogEntryFields(withComponent.positionals, withComponent.flags, [{ label: "rice", quantity_g: 100 }])).toThrow(AxiError);
   });
 
   it("rejects --label sent without a panel", () => {
-    const { positionals, flags } = parseArgs(["chicken", "salad", "--label", "nope"], ["json"], LOG_FLAGS);
+    const { positionals, flags } = parseArgs("entries log", ["chicken", "salad", "--label", "nope"]);
     expect(() => buildLogEntryFields(positionals, flags, [])).toThrow(AxiError);
   });
 
   it("rejects a non-numeric macro flag before any network call", () => {
-    const { positionals, flags } = parseArgs(["--calories", "lots"], ["json"], LOG_FLAGS);
+    const { positionals, flags } = parseArgs("entries log", ["--calories", "lots"]);
     expect(() => buildLogEntryFields(positionals, flags, [])).toThrow(AxiError);
   });
 
   it("still requires a note, recipe, or panel", () => {
-    const { positionals, flags } = parseArgs([], ["json"], LOG_FLAGS);
+    const { positionals, flags } = parseArgs("entries log", []);
     expect(() => buildLogEntryFields(positionals, flags, [])).toThrow(AxiError);
   });
 });
 
 describe("macro-panel flag parity between entries log and entries patch", () => {
-  const PATCH_FLAGS = ["note", "label", "portion-basis", ...MACRO_PANEL_FLAG_NAMES, "multiplier", "at"];
 
   it("names the full nine-field panel in one place", () => {
     expect(MACRO_PANEL_FLAG_NAMES).toEqual([
@@ -303,7 +285,7 @@ describe("macro-panel flag parity between entries log and entries patch", () => 
 
   it("patch maps every panel flag to its server field — added sugar included", () => {
     const args = MACRO_PANEL_FLAGS.flatMap(([flag], i) => [`--${flag}`, String(i + 1)]);
-    const { flags } = parseArgs(args, ["json"], PATCH_FLAGS);
+    const { flags } = parseArgs("entries patch", args);
     const body = buildPatchBody(flags);
     expect(body).toEqual({
       calories: 1,
@@ -319,18 +301,18 @@ describe("macro-panel flag parity between entries log and entries patch", () => 
   });
 
   it("patches sugar or fiber alone (the correction path that had no flag documented)", () => {
-    expect(buildPatchBody(parseArgs(["--fiber", "12"], ["json"], PATCH_FLAGS).flags)).toEqual({ fiber_g: 12 });
-    expect(buildPatchBody(parseArgs(["--sugar", "3.5"], ["json"], PATCH_FLAGS).flags)).toEqual({ sugar_g: 3.5 });
+    expect(buildPatchBody(parseArgs("entries patch", ["--fiber", "12"]).flags)).toEqual({ fiber_g: 12 });
+    expect(buildPatchBody(parseArgs("entries patch", ["--sugar", "3.5"]).flags)).toEqual({ sugar_g: 3.5 });
   });
 
   it("patches added sugar alone — correcting it in place, never delete + re-log", () => {
     // The entry keeps its ULID (and everything referencing it) while the one
     // wrong number is fixed; a whole-food entry the estimator left null becomes
     // an asserted 0 this way.
-    expect(buildPatchBody(parseArgs(["--added-sugar", "4.5"], ["json"], PATCH_FLAGS).flags)).toEqual({
+    expect(buildPatchBody(parseArgs("entries patch", ["--added-sugar", "4.5"]).flags)).toEqual({
       added_sugar_g: 4.5,
     });
-    expect(buildPatchBody(parseArgs(["--added-sugar", "0"], ["json"], PATCH_FLAGS).flags)).toEqual({
+    expect(buildPatchBody(parseArgs("entries patch", ["--added-sugar", "0"]).flags)).toEqual({
       added_sugar_g: 0,
     });
   });
@@ -700,20 +682,19 @@ describe("command reference covers every product write door", () => {
 
 describe("prep publish — repeatable flags", () => {
   it("collects EVERY --component, not just the last (regression)", () => {
-    // parseArgs' flag map is last-wins; a repeatable flag must be read with
-    // collectFlag off the raw argv. The first live run of `prep publish` with
-    // two --component flags built a one-component sheet and silently dropped
-    // the other, which is exactly the kind of quiet loss the module's null
-    // rules exist to prevent.
-    const args = [
+    // A repeatable flag is declared `multi` and read from `multi`. The first
+    // live run of `prep publish` with two --component flags built a
+    // one-component sheet and silently dropped the other, which is exactly the
+    // kind of quiet loss the module's null rules exist to prevent.
+    const { multi } = parseArgs("prep publish", [
       "--slug", "x", "--label", "y",
       "--component", "01AAA=150",
       "--component", "01BBB=100",
       "--step", "one",
       "--step", "two",
-    ];
-    expect(collectFlag(args, "component")).toEqual(["01AAA=150", "01BBB=100"]);
-    expect(collectFlag(args, "step")).toEqual(["one", "two"]);
+    ]);
+    expect(multi.component).toEqual(["01AAA=150", "01BBB=100"]);
+    expect(multi.step).toEqual(["one", "two"]);
   });
 });
 

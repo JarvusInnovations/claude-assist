@@ -2,11 +2,14 @@ import { existsSync } from "node:fs";
 import { api, buildMultipartForm } from "../client.js";
 import { generateUlid } from "../../ulid.js";
 import { AxiError } from "axi-sdk-js";
-import { parseArgs, requirePositional, rawJson, validateCalendarDate, parseNumberFlag } from "../args.js";
+import { parseArgs, requirePositional, captureJson, validateCalendarDate, parseNumberFlag } from "../args.js";
 import { renderList, renderDetail, renderObject, renderOutput, renderHelp, field, type FieldDef } from "../toon.js";
 import { cliInvocation } from "../invocation.js";
 
-export const RECEIPTS_HELP = `kitchen-axi receipts <subcommand> [args] [--json]
+export const RECEIPTS_HELP = `kitchen-axi receipts <subcommand> [args] [--json-out[=path]]
+
+  --json-out[=path] on any subcommand writes the full JSON response to a file
+  (bare: an owner-only temp file); stdout stays the TOON view.
 
   list [--limit N]                          recent purchase batches + parse status
   show <ulid>                               one batch + parsed line outcomes
@@ -21,20 +24,20 @@ export const RECEIPTS_HELP = `kitchen-axi receipts <subcommand> [args] [--json]
 const BATCH_ROW_SCHEMA: FieldDef[] = [
   field("ulid"),
   field("store"),
-  field("purchased_at", "purchased"),
+  field("purchased_at"),
   field("status"),
   field("total_cents"),
-  field("parse_attempts", "attempts"),
+  field("parse_attempts"),
   field("last_error"),
 ];
 
 const LINE_SCHEMA: FieldDef[] = [
-  field("raw_text", "line"),
-  field("quantity", "qty"),
-  field("price_cents", "price¢"),
-  field("match_outcome", "outcome"),
+  field("raw_text"),
+  field("quantity"),
+  field("price_cents"),
+  field("match_outcome"),
   field("product_ulid"),
-  field("inventory_item_ulid", "item_ulid"),
+  field("inventory_item_ulid"),
 ];
 
 export async function receiptsCommand(args: string[]): Promise<string> {
@@ -54,19 +57,19 @@ export async function receiptsCommand(args: string[]): Promise<string> {
 }
 
 async function listBatches(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json"], ["limit"]);
+  const { flags } = parseArgs("receipts list", args);
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", RECEIPTS_HELP, { min: 1 })) : undefined;
   const result = await api.get("/api/kitchen/receipts", { limit });
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   const batches = result?.batches ?? [];
   return renderList("batches", batches, BATCH_ROW_SCHEMA);
 }
 
 async function showBatch(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"], []);
+  const { positionals, flags } = parseArgs("receipts show", args);
   const ulid = requirePositional(positionals, 0, "batch ulid", RECEIPTS_HELP);
   const result = await api.get(`/api/kitchen/receipts/${encodeURIComponent(ulid)}`);
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   const lines = result?.lines ?? [];
   return renderOutput([
     renderDetail("batch", result?.batch ?? {}, BATCH_ROW_SCHEMA),
@@ -75,7 +78,7 @@ async function showBatch(args: string[]): Promise<string> {
 }
 
 async function scanReceipt(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"], ["store", "purchased-at", "ulid"]);
+  const { positionals, flags } = parseArgs("receipts scan", args);
   const photos = positionals;
   if (photos.length === 0) {
     throw new AxiError("receipts scan needs at least one photo path", "VALIDATION_ERROR", [RECEIPTS_HELP]);
@@ -91,7 +94,7 @@ async function scanReceipt(args: string[]): Promise<string> {
   const form = await buildMultipartForm("receipt", meta, photos);
   const batch = await api.postForm("/api/kitchen/receipts", form);
 
-  if (flags.json) return rawJson(batch);
+  captureJson(batch);
   const cli = cliInvocation();
   return renderOutput([
     renderDetail("batch", batch, BATCH_ROW_SCHEMA),

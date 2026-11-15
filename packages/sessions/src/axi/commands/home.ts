@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { basename } from "node:path";
 import { homedir } from "node:os";
 import { api, resolveServer } from "../client.js";
-import { parseArgs, rawJson } from "../args.js";
+import { parseArgs, captureJson } from "../args.js";
 import { renderOutput, renderHelp, renderObject, renderList, field, relativeTime, custom, formatRelativeTime, type FieldDef } from "../toon.js";
 import { discoveryHelp } from "../reference.js";
 import { cliInvocation } from "../invocation.js";
@@ -27,15 +27,15 @@ const RECENT_SCHEMA: FieldDef[] = [
   field("id"),
   custom("title", (s) => s.title ?? s.session_name ?? null),
   field("machine"),
-  relativeTime("started_at", "started"),
+  relativeTime("started_at"),
   custom("last_activity", (s) => formatRelativeTime(s.ended_at ?? s.started_at)),
 ];
 
 const MACHINE_SCHEMA: FieldDef[] = [
-  field("machine_id", "machine"),
-  { type: "boolYesNo", key: "is_localhost", as: "localhost" },
-  field("session_count", "sessions"),
-  relativeTime("last_sync_at", "last_sync"),
+  field("machine_id"),
+  { type: "boolYesNo", key: "is_localhost" },
+  field("session_count"),
+  relativeTime("last_sync_at"),
 ];
 
 /** Detect the git repo containing the current working directory. */
@@ -58,7 +58,7 @@ function collapseHome(p: string): string {
 }
 
 export async function homeCommand(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json", "all"]);
+  const { flags } = parseArgs("home", args);
   const server = resolveServer();
   const cli = cliInvocation();
   const recentN = typeof flags.recent === "string" ? Math.max(parseInt(flags.recent, 10) || 5, 1) : 5;
@@ -87,7 +87,7 @@ export async function homeCommand(args: string[]): Promise<string> {
       recent = null;
     }
 
-    if (flags.json) return rawJson({ server, project: detected.name, cwd: detected.root, recent });
+    captureJson({ server, project: detected.name, cwd: detected.root, recent });
 
     const header = renderObject({
       server,
@@ -123,7 +123,7 @@ export async function homeCommand(args: string[]): Promise<string> {
     machines = null;
   }
 
-  if (flags.json) return rawJson({ server, machines });
+  captureJson({ server, machines });
 
   const blocks: string[] = [renderObject({ server })];
   if (machines === null) {

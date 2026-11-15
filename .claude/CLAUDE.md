@@ -113,6 +113,8 @@ bun run check:skills   # drift guard — fails if a committed bundle or SKILL.md
 bun run type-check:axi  # type-check the CLI sources (excluded from each package's tsc build)
 ```
 
+The strict flag parser and the `--json-out[=path]` writer are shared: `packages/core/src/axi/`, imported by relative path so esbuild inlines them. Each CLI declares every command's arguments in its `flag-specs.ts`; `specs/behaviors/axi-cli-arguments-and-export.md` is the contract (`sessions-axi` and `kitchen-axi` conform; the others still print `--json`).
+
 CLIs default to `http://localhost:2529` and honor `CLAUDE_ASSIST_SERVER`. They emit TOON via `axi-sdk-js`, lead with a content-first home view, and surface structured errors (exit 2 validation / 1 runtime). Distribution is via the `skills` CLI (`npx skills add -g JarvusInnovations/claude-assist`), not a Claude Code plugin/marketplace.
 
 ## Commits

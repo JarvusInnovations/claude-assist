@@ -1,6 +1,6 @@
 import { AxiError } from "axi-sdk-js";
 import { api } from "../client.js";
-import { parseArgs, rawJson, validateDate } from "../args.js";
+import { parseArgs, captureJson, validateDate } from "../args.js";
 import { cliInvocation } from "../invocation.js";
 
 export const TRANSCRIPT_HELP = `sessions-axi transcript <session-id> [flags]                 # one session
@@ -22,11 +22,19 @@ sessions-axi transcript <session-id> --around <uuid> [--before N] [--after M]   
   --around <uuid>          read a window of messages around this message uuid
   --before N / --after M   in --around mode these are message COUNTS (not dates);
                            the result lists head/tail anchors + how much remains,
-                           so you can keep walking outward. --json for raw.`;
+                           so you can keep walking outward.
+  --json-out[=path]        --around mode only: write the window as JSON to a
+                           file (bare: an owner-only temp file)`;
 
 export async function transcriptCommand(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["include-tools", "json"]);
+  const { positionals, flags, jsonOut } = parseArgs("transcript", args);
   const id = positionals[0];
+  // A transcript is text; only the --around window has a JSON form.
+  if (jsonOut && typeof flags.around !== "string") {
+    throw new AxiError("--json-out: a transcript is plain text and has no JSON export", "VALIDATION_ERROR", [
+      "It works with --around <uuid>, which returns a window of messages. Redirect stdout to keep the text",
+    ]);
+  }
 
   // Anchor-exploration mode (#48): read a variable range around a message uuid.
   // Here --before/--after are message counts, not dates.
@@ -39,7 +47,7 @@ export async function transcriptCommand(args: string[]): Promise<string> {
       before: typeof flags.before === "string" ? flags.before : undefined,
       after: typeof flags.after === "string" ? flags.after : undefined,
     });
-    if (flags.json) return rawJson(window);
+    captureJson(window);
     const cli = cliInvocation();
     const out: string[] = [
       `around ${flags.around}:`,

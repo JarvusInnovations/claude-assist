@@ -566,6 +566,261 @@ function mergeHomeHeader(header, output) {
   };
 }
 
+// packages/core/src/axi/errors.ts
+var USAGE_CODES = /* @__PURE__ */ new Set(["VALIDATION_ERROR", "UNKNOWN_FLAG", "USAGE"]);
+function renderFailure(message, code, suggestions = []) {
+  return `${encode({ error: message, code, ...suggestions.length > 0 ? { help: suggestions } : {} })}
+`;
+}
+function formatError(error) {
+  if (error instanceof AxiError) {
+    return {
+      output: renderFailure(error.message, error.code, error.suggestions),
+      exitCode: USAGE_CODES.has(error.code) ? 2 : exitCodeForError(error)
+    };
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return { output: renderFailure(message, "UNKNOWN"), exitCode: 1 };
+}
+
+// packages/core/src/axi/json-out.ts
+import {
+  accessSync,
+  chmodSync,
+  closeSync,
+  constants,
+  fchmodSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  rmSync,
+  statSync,
+  writeSync
+} from "node:fs";
+import { homedir as homedir2, tmpdir } from "node:os";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+var pending;
+function refuse(message, hint) {
+  throw new AxiError(`--json-out: ${message}`, "VALIDATION_ERROR", [hint]);
+}
+var BARE_HINT = "Pass a bare --json-out for an owner-only file in the temp directory";
+function ownedByCaller(st) {
+  return typeof process.getuid !== "function" || st.uid === process.getuid();
+}
+function expandPath(path) {
+  const expanded = path === "~" ? homedir2() : path.startsWith("~/") ? join(homedir2(), path.slice(2)) : path;
+  return isAbsolute(expanded) ? expanded : resolve(expanded);
+}
+function privateDir(tool) {
+  const dir = join(tmpdir(), tool);
+  const explicit = `Pass a path you own instead: --json-out=<path>`;
+  try {
+    mkdirSync(dir, { recursive: true, mode: 448 });
+  } catch (err) {
+    refuse(`cannot create ${dir} (${err.code ?? "error"})`, explicit);
+  }
+  const st = lstatSync(dir);
+  if (!st.isDirectory()) refuse(`${dir} is not a directory (a symlink?)`, explicit);
+  if (!ownedByCaller(st)) refuse(`${dir} belongs to another user`, explicit);
+  chmodSync(dir, 448);
+  return dir;
+}
+function validateExplicit(given) {
+  const path = expandPath(given);
+  const parent = dirname(path);
+  let dir;
+  try {
+    dir = statSync(parent);
+  } catch {
+    dir = void 0;
+  }
+  if (!dir?.isDirectory()) {
+    refuse(`${path} cannot be written: the directory ${parent} does not exist`, `Create it first, or: ${BARE_HINT}`);
+  }
+  let st;
+  try {
+    st = lstatSync(path);
+  } catch {
+    st = void 0;
+  }
+  const hint = `Name a new file or one of your own regular files, or: ${BARE_HINT}`;
+  if (st?.isSymbolicLink()) refuse(`${path} is a symlink`, hint);
+  if (st?.isDirectory()) refuse(`${path} is a directory`, hint);
+  if (st && !st.isFile()) refuse(`${path} is not a regular file`, hint);
+  if (st && !ownedByCaller(st)) refuse(`${path} belongs to another user`, hint);
+  try {
+    accessSync(st ? path : parent, constants.W_OK);
+  } catch {
+    refuse(`${path} cannot be written: permission denied`, hint);
+  }
+  return path;
+}
+function requestJsonOut(tool, command, value, now = /* @__PURE__ */ new Date()) {
+  let target;
+  if (value === true) {
+    const stamp = now.toISOString().replace(/[:.]/g, "-");
+    const slug = command.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "home";
+    target = { tool, command, path: join(privateDir(tool), `${stamp}-${slug}.json`), auto: true };
+  } else {
+    if (value === "") refuse("--json-out= needs a path after the =", `--json-out=out.json writes there. ${BARE_HINT}`);
+    target = { tool, command, path: validateExplicit(value), auto: false };
+  }
+  pending = { target, captured: false, payload: void 0 };
+  return target;
+}
+function takePending() {
+  const request = pending;
+  pending = void 0;
+  return request;
+}
+function captureJson(payload) {
+  if (!pending) return;
+  pending.captured = true;
+  pending.payload = payload;
+}
+function isRecord(v) {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+function unionKeys(rows) {
+  const seen = /* @__PURE__ */ new Set();
+  for (const row of rows) if (isRecord(row)) for (const key of Object.keys(row)) seen.add(key);
+  return [...seen];
+}
+var MAX_NESTED_KEYS = 24;
+function nested(keys) {
+  const shown = keys.slice(0, MAX_NESTED_KEYS);
+  const more = keys.length - shown.length;
+  return `{${shown.join(",")}${more > 0 ? `,\u2026+${more}` : ""}}`;
+}
+function describePayload(payload) {
+  if (Array.isArray(payload)) {
+    const columns = unionKeys(payload);
+    return {
+      size: columns.length ? `${payload.length} row${payload.length === 1 ? "" : "s"}, ${columns.length} col${columns.length === 1 ? "" : "s"}` : `${payload.length} item${payload.length === 1 ? "" : "s"}`,
+      columns,
+      filter: ".[]"
+    };
+  }
+  if (isRecord(payload)) {
+    const keys = Object.keys(payload);
+    let primary;
+    const columns = keys.map((key) => {
+      const value = payload[key];
+      if (Array.isArray(value)) {
+        const rowKeys = unionKeys(value);
+        if (primary === void 0 && (rowKeys.length > 0 || value.length === 0)) primary = key;
+        return `${key}[${value.length}]${rowKeys.length ? nested(rowKeys) : ""}`;
+      }
+      if (isRecord(value)) return `${key}${nested(Object.keys(value))}`;
+      return key;
+    });
+    const safe = primary !== void 0 && /^[A-Za-z_][A-Za-z0-9_]*$/.test(primary);
+    return {
+      size: `1 object, ${keys.length} key${keys.length === 1 ? "" : "s"}`,
+      columns,
+      filter: primary === void 0 ? "." : safe ? `.${primary}[]` : `.[${JSON.stringify(primary)}][]`
+    };
+  }
+  return { size: payload === null || payload === void 0 ? "null" : typeof payload, columns: [], filter: "." };
+}
+function quotePath(path) {
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(path) ? path : `'${path.replace(/'/g, `'\\''`)}'`;
+}
+function writeTarget(target, body) {
+  const dot = target.path.lastIndexOf(".");
+  let created;
+  try {
+    if (target.auto) {
+      for (let n = 1; n < 100; n++) {
+        const candidate = n === 1 ? target.path : `${target.path.slice(0, dot)}-${n}${target.path.slice(dot)}`;
+        let fd2;
+        try {
+          fd2 = openSync(candidate, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 384);
+        } catch (err) {
+          if (err.code === "EEXIST") continue;
+          throw err;
+        }
+        created = candidate;
+        try {
+          fchmodSync(fd2, 384);
+          writeSync(fd2, body);
+        } finally {
+          closeSync(fd2);
+        }
+        return { ok: true, path: candidate, overwrote: false };
+      }
+      return { ok: false, path: target.path, reason: "no free file name in the temp directory" };
+    }
+    let existed = false;
+    try {
+      existed = lstatSync(target.path).isFile();
+    } catch {
+      existed = false;
+    }
+    const fd = openSync(target.path, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 384);
+    if (!existed) created = target.path;
+    try {
+      fchmodSync(fd, 384);
+      writeSync(fd, body);
+    } finally {
+      closeSync(fd);
+    }
+    return { ok: true, path: target.path, overwrote: existed };
+  } catch (err) {
+    if (created) rmSync(created, { force: true });
+    const code = err.code;
+    const reason = code === "ELOOP" ? "the path is a symlink" : code === "ENOENT" ? "its directory does not exist" : code === "EACCES" ? "permission denied" : code ?? err.message;
+    return { ok: false, path: created ?? target.path, reason };
+  }
+}
+var HELP_BLOCK = /(^|\n)help\[(\d+)\]:\n((?: {2}.*(?:\n|$))+)$/;
+function appendBlock(text, lines, hint) {
+  const body = text.replace(/\n+$/, "");
+  const m = HELP_BLOCK.exec(body);
+  if (!m) return [body, ...lines, "help[1]:", `  ${hint}`].filter((l) => l !== "").join("\n");
+  const head = body.slice(0, m.index);
+  const helpLines = m[3].replace(/\n$/, "");
+  return [head, ...lines, `help[${Number(m[2]) + 1}]:`, helpLines, `  ${hint}`].filter((l) => l !== "").join("\n");
+}
+function withJsonOut(handler) {
+  return async (...args) => {
+    takePending();
+    let text;
+    let request;
+    try {
+      text = await handler(...args);
+    } finally {
+      request = takePending();
+    }
+    if (!request) return text;
+    const { target } = request;
+    if (!request.captured) {
+      throw new AxiError(`--json-out: \`${target.command}\` produced no JSON payload`, "INTERNAL_ERROR", [
+        "Nothing was written. Run the command without --json-out"
+      ]);
+    }
+    const result = writeTarget(target, `${JSON.stringify(request.payload ?? null, null, 2)}
+`);
+    if (!result.ok) {
+      process.exitCode = 1;
+      return appendBlock(
+        text,
+        [`export_error: could not write ${result.path}: ${result.reason}`],
+        target.auto ? "Nothing was written; pass a path you can write: --json-out=<path>" : "Nothing was written; fix the path, or pass a bare --json-out for a file in the temp directory"
+      );
+    }
+    const shape = describePayload(request.payload ?? null);
+    return appendBlock(
+      text,
+      [
+        `${result.overwrote ? "overwrote" : "wrote"}: ${result.path} (${shape.size})`,
+        shape.columns.length ? `columns: ${shape.columns.join(", ")}` : ""
+      ],
+      `Run \`jq '${shape.filter}' ${quotePath(result.path)}\` to process the full result`
+    );
+  };
+}
+
 // packages/kitchen/src/axi/reference.ts
 var DESCRIPTION = "Read and write the kitchen consumption journal and inventory \u2014 log meals, adjust portions, track stock, scan receipts, and seed products/lexicon.";
 var MACRO_PANEL_FLAGS = [
@@ -811,8 +1066,8 @@ var PACKAGE_DURABLE_SHELF_LIFE_CLASSES = [
 ];
 
 // packages/kitchen/src/axi/invocation.ts
-import { accessSync, constants } from "node:fs";
-import { homedir as homedir2 } from "node:os";
+import { accessSync as accessSync2, constants as constants2 } from "node:fs";
+import { homedir as homedir3 } from "node:os";
 import { fileURLToPath } from "node:url";
 var cached;
 function cliInvocation() {
@@ -826,7 +1081,7 @@ function cliInvocation() {
   const shim = bundle.replace(/\.mjs$/, "");
   try {
     if (shim !== bundle) {
-      accessSync(shim, constants.X_OK);
+      accessSync2(shim, constants2.X_OK);
       cached = quote(collapseHome(shim));
       return cached;
     }
@@ -836,7 +1091,7 @@ function cliInvocation() {
   return cached;
 }
 function collapseHome(p) {
-  const home = homedir2();
+  const home = homedir3();
   return home && p.startsWith(`${home}/`) ? `~${p.slice(home.length)}` : p;
 }
 function quote(p) {
@@ -1002,45 +1257,308 @@ function coerceBareDateToLocalNoon(value) {
   return `${value}T12:00:00${sign}${offH}:${offM}`;
 }
 
-// packages/kitchen/src/axi/args.ts
-function parseArgs(args, booleanFlags = [], valueFlags) {
+// packages/core/src/axi/flags.ts
+var LONG_FLAG = /^--[A-Za-z]/;
+var SHORT_FLAG = /^-[A-Za-z]$/;
+function createParser(tool) {
+  return (command, argv, spec) => parseFlags(tool, command, argv, spec);
+}
+function parseFlags(tool, command, argv, spec) {
+  const valueFlags = new Set(spec.value ?? []);
+  const boolFlags = new Set(spec.boolean ?? []);
+  const multiFlags = new Set(spec.multi ?? []);
+  const deprecated = spec.deprecated ?? {};
+  const offersJsonOut = spec.jsonOut === true;
+  const label = command || "home";
+  const known = [...valueFlags, ...boolFlags, ...multiFlags, ...offersJsonOut ? ["json-out"] : []].sort().map((f) => `--${f}`);
   const positionals = [];
   const flags = {};
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg.startsWith("--")) {
-      const name = arg.slice(2);
-      if (booleanFlags.includes(name)) {
-        flags[name] = true;
-      } else if (valueFlags !== void 0 && !valueFlags.includes(name)) {
-        const valid = [...valueFlags, ...booleanFlags].map((f) => `--${f}`).join(", ");
-        throw new AxiError(`Unknown flag --${name}`, "VALIDATION_ERROR", [
-          valid ? `Valid flags here: ${valid}` : "This command takes no flags besides --json"
-        ]);
-      } else {
-        const value = args[++i];
-        if (value === void 0) {
-          throw new AxiError(`Flag --${name} requires a value`, "VALIDATION_ERROR");
-        }
-        flags[name] = value;
-      }
+  const multi = {};
+  let jsonOutValue;
+  let afterBareJsonOut;
+  const spaceFormHint = "--json-out takes its path with =: --json-out=<path> (a bare --json-out writes a temp file)";
+  const unknown = (typed) => {
+    let hint;
+    if (deprecated[typed]) {
+      hint = deprecated[typed];
+    } else if (typed === "--json") {
+      hint = offersJsonOut ? "--json is not supported; use --json-out to write the JSON to a file (--json-out=<path> to choose where)" : `--json is not supported, and \`${label}\` has no JSON export${typeof spec.jsonOut === "string" ? `: ${spec.jsonOut}` : ""}`;
+    } else if (typed === "--json-out") {
+      hint = `\`${label}\` has no JSON export${typeof spec.jsonOut === "string" ? `: ${spec.jsonOut}` : ""}`;
+    } else if (SHORT_FLAG.test(typed)) {
+      hint = `${typed} is not a flag of ${tool}; short flags are not supported. ${validList()}`;
     } else {
-      positionals.push(arg);
+      hint = validList();
     }
+    throw new AxiError(`unknown flag ${typed} for \`${label}\``, "UNKNOWN_FLAG", [hint]);
+  };
+  const validList = () => known.length > 0 ? `valid flags for \`${label}\`: ${known.join(", ")} (--help always allowed)` : `\`${label}\` takes no flags (--help always allowed)`;
+  const takeValue = (name, inline, i) => {
+    if (inline !== void 0) return { value: inline, next: i };
+    const next = argv[i + 1];
+    if (next === void 0 || LONG_FLAG.test(next)) {
+      throw new AxiError(`--${name} requires a value`, "USAGE", [
+        `Pass \`--${name} <value>\`, or \`--${name}=<value>\` when the value itself starts with --`
+      ]);
+    }
+    return { value: next, next: i + 1 };
+  };
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--") {
+      positionals.push(...argv.slice(i + 1));
+      break;
+    }
+    if (SHORT_FLAG.test(arg)) unknown(arg);
+    if (!LONG_FLAG.test(arg)) {
+      if (i > 0 && argv[i - 1] === "--json-out" && jsonOutValue === true) {
+        if (/\.json$/i.test(arg)) throw new AxiError(`--json-out does not take a separate value (got ${arg})`, "USAGE", [spaceFormHint]);
+        afterBareJsonOut = positionals.length;
+      }
+      positionals.push(arg);
+      continue;
+    }
+    const eq = arg.indexOf("=");
+    const typed = eq === -1 ? arg : arg.slice(0, eq);
+    const name = typed.slice(2);
+    const inline = eq === -1 ? void 0 : arg.slice(eq + 1);
+    if (name === "help") continue;
+    if (name === "json-out") {
+      if (!offersJsonOut) unknown(typed);
+      if (jsonOutValue !== void 0) throw new AxiError("--json-out was given more than once", "USAGE", ["Pass it once"]);
+      jsonOutValue = inline === void 0 ? true : inline;
+      continue;
+    }
+    if (boolFlags.has(name)) {
+      if (inline !== void 0) {
+        throw new AxiError(`--${name} is a switch and takes no value`, "USAGE", [`Pass \`--${name}\` on its own`]);
+      }
+      flags[name] = true;
+      continue;
+    }
+    if (valueFlags.has(name)) {
+      if (name in flags) {
+        throw new AxiError(`--${name} was given more than once`, "USAGE", [`\`${label}\` takes one --${name}`]);
+      }
+      const taken = takeValue(name, inline, i);
+      flags[name] = taken.value;
+      i = taken.next;
+      continue;
+    }
+    if (multiFlags.has(name)) {
+      const taken = takeValue(name, inline, i);
+      (multi[name] ??= []).push(taken.value);
+      i = taken.next;
+      continue;
+    }
+    unknown(typed);
   }
-  return { positionals, flags };
+  const max = spec.positionals ?? 0;
+  if (max !== "many" && positionals.length > max) {
+    const extra = positionals.slice(max);
+    const takes = max === 0 ? `\`${label}\` takes no positional arguments` : `\`${label}\` takes ${max} positional argument${max > 1 ? "s" : ""}`;
+    const hints = [`${takes}${spec.usage ? `. Usage: ${spec.usage}` : ""}`];
+    if (afterBareJsonOut !== void 0 && afterBareJsonOut >= max) hints.unshift(spaceFormHint);
+    throw new AxiError(`unexpected argument${extra.length > 1 ? "s" : ""} for \`${label}\`: ${extra.join(" ")}`, "USAGE", hints);
+  }
+  const parsed = { positionals, flags, multi };
+  if (jsonOutValue !== void 0) parsed.jsonOut = requestJsonOut(tool, command, jsonOutValue);
+  return parsed;
 }
-function collectFlag(args, name, booleanFlags = []) {
-  const values = [];
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (!arg.startsWith("--")) continue;
-    const key = arg.slice(2);
-    if (booleanFlags.includes(key)) continue;
-    const value = args[++i];
-    if (key === name && value !== void 0) values.push(value);
-  }
-  return values;
+
+// packages/kitchen/src/axi/flag-specs.ts
+var PRODUCT_WRITE_VALUE_FLAGS = [
+  "name",
+  "ulid",
+  "shelf-life",
+  "aliases",
+  "package-size",
+  "nutrition",
+  "nutrition-per-serving",
+  "serving-size-g",
+  "servings-per-container",
+  "net-content-g",
+  "net-content-ml",
+  "unit-model",
+  "unit-edible-g",
+  "nutrition-source",
+  "ingredients",
+  "shelf-life-days-unopened",
+  "shelf-life-days-opened"
+];
+var PRODUCT_WRITE_SWITCHES = ["negligible", "no-negligible", "force-negligible"];
+var FLAG_SPECS = {
+  home: { value: ["eat-first"], jsonOut: true },
+  days: { value: ["since"], jsonOut: true },
+  "entries list": { value: ["since", "limit"], jsonOut: true },
+  "entries questions": { value: ["limit"], jsonOut: true },
+  "entries review": { positionals: 1, usage: "kitchen-axi entries review <ulid>", jsonOut: true },
+  "entries show": { positionals: 1, usage: "kitchen-axi entries show <ulid>", jsonOut: true },
+  "entries log": {
+    value: ["recipe", "at", "label", ...MACRO_PANEL_FLAG_NAMES],
+    multi: ["component"],
+    positionals: "many",
+    jsonOut: true
+  },
+  "entries patch": {
+    value: ["note", "label", "portion-basis", ...MACRO_PANEL_FLAG_NAMES, "multiplier", "at"],
+    positionals: 1,
+    usage: "kitchen-axi entries patch <ulid> [flags]",
+    jsonOut: true
+  },
+  "entries delete": { positionals: 1, usage: "kitchen-axi entries delete <ulid>", jsonOut: true },
+  "expenditure log": {
+    value: ["kcal", "duration", "avg-hr", "at", "source", "ulid"],
+    positionals: "many",
+    jsonOut: true
+  },
+  "expenditure list": { value: ["since", "limit"], boolean: ["include-skipped"], jsonOut: true },
+  "expenditure delete": { positionals: 1, usage: "kitchen-axi expenditure delete <ulid>", jsonOut: true },
+  "inventory list": { value: ["state", "limit"], boolean: ["closed"], jsonOut: true },
+  "inventory show": { positionals: 1, usage: "kitchen-axi inventory show <ulid>", jsonOut: true },
+  "inventory add": {
+    value: [
+      "ulid",
+      "product-ulid",
+      "raw-label",
+      "store",
+      "batch-ulid",
+      "acquired-at",
+      "fraction",
+      "units-total",
+      "unit-seal",
+      "state",
+      "shelf-life",
+      "notes"
+    ],
+    boolean: ["needs-info"],
+    jsonOut: true
+  },
+  "inventory event": {
+    value: ["fraction", "to", "at"],
+    positionals: 2,
+    usage: "kitchen-axi inventory event <ulid> <type> [--fraction F] [--to C] [--at DATE]",
+    jsonOut: true
+  },
+  "inventory recount": {
+    value: ["fraction", "units-remaining", "units-total", "unit-seal", "state", "opened-at", "shelf-life", "product-ulid", "notes"],
+    boolean: ["uncounted", "needs-info", "no-needs-info", "unlink-product"],
+    positionals: 1,
+    usage: "kitchen-axi inventory recount <ulid> [flags]",
+    jsonOut: true
+  },
+  "inventory dismiss": {
+    value: ["at"],
+    boolean: ["non-inventory"],
+    positionals: 1,
+    usage: "kitchen-axi inventory dismiss <ulid> [--non-inventory] [--at DATE]",
+    jsonOut: true
+  },
+  "inventory merge": {
+    value: ["into"],
+    positionals: 1,
+    usage: "kitchen-axi inventory merge <ulid> --into <ulid>",
+    jsonOut: true
+  },
+  "inventory remark": { value: ["at"], positionals: "many", jsonOut: true },
+  "inventory candidates": {
+    value: ["limit"],
+    positionals: 1,
+    usage: "kitchen-axi inventory candidates <ulid> [--limit N]",
+    jsonOut: true
+  },
+  "inventory questions": { value: ["limit"], jsonOut: true },
+  "inventory waste": { value: ["since", "until", "limit"], jsonOut: true },
+  "inventory convert": { value: ["to", "at"], multi: ["from"], jsonOut: true },
+  "inventory consume": {
+    value: ["quantity", "at", "ulid"],
+    positionals: 1,
+    usage: "kitchen-axi inventory consume <ulid> [--quantity N] [--at DATE]",
+    jsonOut: true
+  },
+  "inventory eat": {
+    value: ["grams", "fraction", "entry-ulid", "at"],
+    positionals: 1,
+    usage: "kitchen-axi inventory eat <ulid> --grams N | --fraction F",
+    jsonOut: true
+  },
+  "lexicon list": { value: ["store", "limit"], jsonOut: true },
+  "lexicon add": { value: ["store", "line-text", "product-ulid", "package-size", "shelf-life"], jsonOut: true },
+  "prep publish": {
+    value: [
+      "slug",
+      "label",
+      "title",
+      "heading",
+      "intro",
+      "recipe",
+      "yields-recipe",
+      "cook",
+      "units",
+      "shelf-life",
+      "submit-label",
+      "components-per"
+    ],
+    multi: ["component", "component-item", "component-unit", "step", "source"],
+    boolean: ["digest-optin"],
+    jsonOut: true
+  },
+  "products list": { value: ["q", "limit"], jsonOut: true },
+  "products add": { value: PRODUCT_WRITE_VALUE_FLAGS, boolean: PRODUCT_WRITE_SWITCHES, jsonOut: true },
+  "products update": {
+    value: PRODUCT_WRITE_VALUE_FLAGS,
+    boolean: PRODUCT_WRITE_SWITCHES,
+    positionals: 1,
+    usage: "kitchen-axi products update <ulid> [flags]",
+    jsonOut: true
+  },
+  "products prices": {
+    value: ["store", "limit"],
+    positionals: 1,
+    usage: "kitchen-axi products prices <ulid> [--store S] [--limit N]",
+    jsonOut: true
+  },
+  "products merge": {
+    value: ["into"],
+    positionals: 1,
+    usage: "kitchen-axi products merge <ulid> --into <ulid>",
+    jsonOut: true
+  },
+  "products archive": { positionals: 1, usage: "kitchen-axi products archive <ulid>", jsonOut: true },
+  "products panel-basis-report": { jsonOut: true },
+  "receipts list": { value: ["limit"], jsonOut: true },
+  "receipts show": { positionals: 1, usage: "kitchen-axi receipts show <ulid>", jsonOut: true },
+  "receipts scan": { value: ["store", "purchased-at", "ulid"], positionals: "many", jsonOut: true },
+  "recipes list": { value: ["q", "limit"], jsonOut: true },
+  "recipes push": {
+    value: ["ulid"],
+    positionals: 1,
+    usage: "kitchen-axi recipes push '<recipe json>' [--ulid U]",
+    jsonOut: true
+  },
+  "recipes delete": { positionals: 1, usage: "kitchen-axi recipes delete <ulid>", jsonOut: true },
+  "recipes promote": {
+    value: ["name"],
+    positionals: 1,
+    usage: "kitchen-axi recipes promote <entry-ulid> [--name NAME]",
+    jsonOut: true
+  },
+  "stores list": { jsonOut: true },
+  "stores merge": {
+    value: ["into"],
+    positionals: 1,
+    usage: 'kitchen-axi stores merge "<from>" --into "<to>"',
+    jsonOut: true
+  },
+  "weigh-ins log": { value: ["weight", "body-fat", "at"], jsonOut: true },
+  "weigh-ins list": { value: ["since", "limit"], jsonOut: true },
+  "weight trend": { value: ["days"], jsonOut: true }
+};
+
+// packages/kitchen/src/axi/args.ts
+var parse = createParser("kitchen-axi");
+function parseArgs(command, args) {
+  return parse(command, args, FLAG_SPECS[command]);
 }
 function requireFlag(flags, name, usage) {
   const v = flags[name];
@@ -1094,9 +1612,6 @@ function parseJson(value, label, usage) {
 }
 function splitCsv(value) {
   return value.split(",").map((s) => s.trim()).filter(Boolean);
-}
-function rawJson(data) {
-  return JSON.stringify(data, null, 2);
 }
 
 // packages/kitchen/src/axi/toon.ts
@@ -1249,13 +1764,14 @@ var ENTRY_ROW_SCHEMA = [
   { type: "field", key: "label" },
   { type: "field", key: "status" },
   { type: "field", key: "source" },
-  { type: "field", key: "portion_multiplier", as: "mult" },
-  custom("kcal", (e) => effectiveMacro(e, "calories")),
-  custom("protein", (e) => effectiveMacro(e, "protein_g"))
+  { type: "field", key: "portion_multiplier" },
+  // Computed (base × multiplier), so named `eff_*`: not keys in the file.
+  custom("eff_kcal", (e) => effectiveMacro(e, "calories")),
+  custom("eff_protein", (e) => effectiveMacro(e, "protein_g"))
 ];
 
 // packages/kitchen/src/axi/commands/home.ts
-var HOME_HELP = `kitchen-axi [--eat-first N] [--json]
+var HOME_HELP = `kitchen-axi [--eat-first N] [--json-out[=path]]
 
   The no-arg view: today's entries + effective macro totals, pending-estimate
   count, the top eat-first inventory items, and the open needs-info question
@@ -1266,16 +1782,17 @@ var HOME_HELP = `kitchen-axi [--eat-first N] [--json]
   multi-day trend use \`kitchen-axi days\`.
 
   --eat-first N   how many eat-first items to show (default 3)
-  --json          raw JSON`;
+  --json-out[=path]  write the full JSON to a file (bare: an owner-only temp
+                     file); stdout stays this view`;
 var EAT_FIRST_SCHEMA = [
-  field("product_name", "name"),
+  field("product_name"),
   field("state"),
   field("eat_by"),
-  field("days_until_eat_by", "days_left"),
-  field("on_hand_fraction", "on_hand")
+  field("days_until_eat_by"),
+  field("on_hand_fraction")
 ];
 async function homeCommand(args) {
-  const { flags } = parseArgs(args, ["json"], ["eat-first"]);
+  const { flags } = parseArgs("home", args);
   const server = resolveServer();
   const cli = cliInvocation();
   const eatFirstN = typeof flags["eat-first"] === "string" ? Math.max(parseInt(flags["eat-first"], 10) || 3, 1) : 3;
@@ -1306,18 +1823,16 @@ async function homeCommand(args) {
   } catch {
     reachable = false;
   }
-  if (flags.json) {
-    return rawJson({
-      server,
-      today: summary?.today,
-      summary,
-      entries,
-      eat_first: items,
-      questions: questionCount + noteQuestionCount,
-      inventory_questions: questionCount,
-      note_questions: noteQuestionCount
-    });
-  }
+  captureJson({
+    server,
+    today: summary?.today,
+    summary,
+    entries,
+    eat_first: items,
+    questions: questionCount + noteQuestionCount,
+    inventory_questions: questionCount,
+    note_questions: noteQuestionCount
+  });
   if (!reachable || entries === null) {
     return renderOutput2([
       renderObject({ server }),
@@ -1327,7 +1842,7 @@ async function homeCommand(args) {
   }
   const today = (summary && typeof summary.today === "string" ? summary.today : void 0) ?? (entries[0] && typeof entries[0].day === "string" ? entries[0].day : void 0);
   const todayEntries = today ? entries.filter((e) => e.day === today) : [];
-  const pending = todayEntries.filter((e) => e.status === "estimating").length;
+  const pending2 = todayEntries.filter((e) => e.status === "estimating").length;
   const failed = todayEntries.filter((e) => e.status === "failed").length;
   const todayRow = (summary && Array.isArray(summary.days) ? summary.days.find((d) => d.day === today) : null) ?? {};
   const totalOf = (key) => typeof todayRow[key] === "number" ? todayRow[key] : 0;
@@ -1345,9 +1860,9 @@ async function homeCommand(args) {
     ...fallbackTz ? { tz: fallbackTz } : {},
     date: today ?? "unknown",
     entries: todayEntries.length,
-    pending_estimates: pending,
+    pending_estimates: pending2,
     ...failed ? { failed } : {},
-    kcal: vsTarget("calories"),
+    calories: vsTarget("calories"),
     protein_g: vsTarget("protein_g"),
     fat_g: vsTarget("fat_g"),
     sat_fat_g: vsTarget("sat_fat_g"),
@@ -1419,7 +1934,10 @@ function generateUlid(timeMs = Date.now()) {
 }
 
 // packages/kitchen/src/axi/commands/entries.ts
-var ENTRIES_HELP = `kitchen-axi entries <subcommand> [args] [--json]
+var ENTRIES_HELP = `kitchen-axi entries <subcommand> [args] [--json-out[=path]]
+
+  --json-out[=path] on any subcommand writes the full JSON response to a file
+  (bare: an owner-only temp file); stdout stays the TOON view.
 
   list [--since DATE] [--limit N]      newest-first consumption entries
   show <ulid>                          one entry, full nutrition/source/status
@@ -1430,10 +1948,12 @@ var ENTRIES_HELP = `kitchen-axi entries <subcommand> [args] [--json]
                                           YYYY-MM-DD backstops to local noon that day
        [--calories N] [--protein N]\u2026     directly-stated panel: born-manual, terminal,
        [--label T]                        NO estimation (mutually exclusive with --recipe/--component)
-  patch <ulid> [flags]                 edit note/label (re-queue), macro override
-                                         (terminal \u2014 ANY of the nine panel flags),
-                                         --multiplier M (post-hoc rescale),
-                                         or --at TIME (backdate logged_at)
+  patch <ulid> [flags]                 edit --note T / --label T (re-queue), macro
+                                         override (terminal \u2014 ANY of the nine panel
+                                         flags, with --portion-basis T to say what
+                                         the figures describe), --multiplier M
+                                         (post-hoc rescale), or --at TIME (backdate
+                                         logged_at)
   questions [--limit N]                entries whose HUMAN note nobody has reconciled
                                          against the panel \u2014 a condiment, a splash of
                                          oil, an extra the components never covered
@@ -1458,12 +1978,16 @@ var DETAIL_SCHEMA = [
   // `day` = owner-tz calendar date (authoritative bucketing key); `logged`
   // renders the instant in the owner zone (§ Timezone & local-day bucketing).
   field("day"),
-  field("logged_local", "logged"),
+  field("logged_local"),
   field("note"),
   field("label"),
   field("status"),
   field("source"),
-  field("portion_multiplier", "mult"),
+  field("portion_multiplier"),
+  // The stored macros keep a `base_` name here, the one place a column is not
+  // its data key: they sit beside the `eff_*` columns, and the prefix is what
+  // stops a base figure being read as what was eaten
+  // (specs/behaviors/axi-cli-arguments-and-export.md § Column names).
   field("calories", "base_kcal"),
   field("protein_g", "base_protein"),
   field("fat_g", "base_fat"),
@@ -1516,19 +2040,19 @@ async function entriesCommand(args) {
   }
 }
 async function listEntries(args) {
-  const { flags } = parseArgs(args, ["json"], ["since", "limit"]);
+  const { flags } = parseArgs("entries list", args);
   const since = typeof flags.since === "string" ? validateDate(flags.since, "--since", ENTRIES_HELP) : void 0;
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", ENTRIES_HELP, { min: 1 })) : void 0;
   const result = await api.get("/api/kitchen/entries", { since, limit });
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   const entries = result?.entries ?? [];
   return renderList("entries", entries, ENTRY_ROW_SCHEMA);
 }
 async function listNoteQuestions(args) {
-  const { flags } = parseArgs(args, ["json"], ["limit"]);
+  const { flags } = parseArgs("entries questions", args);
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", ENTRIES_HELP, { min: 1 })) : void 0;
   const result = await api.get("/api/kitchen/entries/questions", { limit });
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   const entries = result?.entries ?? [];
   if (entries.length === 0) {
     return renderList("unreviewed_notes", [], ENTRY_ROW_SCHEMA);
@@ -1543,10 +2067,10 @@ async function listNoteQuestions(args) {
   ].join("\n");
 }
 async function reviewNote(args) {
-  const { positionals, flags } = parseArgs(args, ["json"], []);
+  const { positionals, flags } = parseArgs("entries review", args);
   const ulid = requirePositional(positionals, 0, "entry ulid", ENTRIES_HELP);
   const entry = await api.post(`/api/kitchen/entries/${encodeURIComponent(ulid)}/review`, {});
-  if (flags.json) return rawJson(entry);
+  captureJson(entry);
   return [
     renderDetail("reviewed", entry, DETAIL_SCHEMA),
     renderHelp(
@@ -1555,10 +2079,10 @@ async function reviewNote(args) {
   ].join("\n");
 }
 async function showEntry(args) {
-  const { positionals, flags } = parseArgs(args, ["json"], []);
+  const { positionals, flags } = parseArgs("entries show", args);
   const ulid = requirePositional(positionals, 0, "entry ulid", ENTRIES_HELP);
   const entry = await api.get(`/api/kitchen/entries/${encodeURIComponent(ulid)}`);
-  if (flags.json) return rawJson(entry);
+  captureJson(entry);
   return renderDetail("entry", entry, DETAIL_SCHEMA);
 }
 function parseComponent(raw) {
@@ -1607,17 +2131,13 @@ function buildLogEntryFields(positionals, flags, components) {
   return entry;
 }
 async function logEntry(args) {
-  const { positionals, flags } = parseArgs(
-    args,
-    ["json"],
-    ["recipe", "component", "at", "label", ...MACRO_PANEL_FLAG_NAMES]
-  );
-  const components = collectFlag(args, "component").map(parseComponent);
+  const { positionals, flags, multi } = parseArgs("entries log", args);
+  const components = (multi.component ?? []).map(parseComponent);
   const entry = { ulid: generateUlid(), ...buildLogEntryFields(positionals, flags, components) };
   const form = new FormData();
   form.append("entry", JSON.stringify(entry));
   const record = await api.postForm("/api/kitchen/entries", form);
-  if (flags.json) return rawJson(record);
+  captureJson(record);
   const cli = cliInvocation();
   return renderOutput2([
     renderDetail("logged", record, DETAIL_SCHEMA),
@@ -1646,23 +2166,23 @@ function buildPatchBody(flags) {
   return body;
 }
 async function patchEntry(args) {
-  const { positionals, flags } = parseArgs(args, ["json"], ["note", "label", "portion-basis", ...MACRO_PANEL_FLAG_NAMES, "multiplier", "at"]);
+  const { positionals, flags } = parseArgs("entries patch", args);
   const ulid = requirePositional(positionals, 0, "entry ulid", ENTRIES_HELP);
   const body = buildPatchBody(flags);
   const updated = await api.patch(`/api/kitchen/entries/${encodeURIComponent(ulid)}`, body);
-  if (flags.json) return rawJson(updated);
+  captureJson(updated);
   return renderDetail("entry", updated, DETAIL_SCHEMA);
 }
 async function deleteEntry(args) {
-  const { positionals, flags } = parseArgs(args, ["json"], []);
+  const { positionals, flags } = parseArgs("entries delete", args);
   const ulid = requirePositional(positionals, 0, "entry ulid", ENTRIES_HELP);
   await api.del(`/api/kitchen/entries/${encodeURIComponent(ulid)}`);
-  if (flags.json) return rawJson({ deleted: ulid });
+  captureJson({ deleted: ulid });
   return renderObject({ deleted: ulid });
 }
 
 // packages/kitchen/src/axi/commands/days.ts
-var DAYS_HELP = `kitchen-axi days [--since <n|date>] [--json]
+var DAYS_HELP = `kitchen-axi days [--since <n|date>] [--json-out[=path]]
 
   Per-owner-local-day rollup: one row per day over the window, each with the
   nine-field nutrition panel + calories (EFFECTIVE totals) and \u2014 when the
@@ -1674,28 +2194,29 @@ var DAYS_HELP = `kitchen-axi days [--since <n|date>] [--json]
 
   --since <n|date>   window start: a day count (e.g. 7 or 7d = last 7 days) or a
                      date (YYYY-MM-DD). Default: last 7 days.
-  --json             raw JSON
+  --json-out[=path]  write the full JSON to a file (bare: an owner-only temp
+                     file); stdout stays this view
 
   Days bucket by the instance's OWNER timezone, server-side \u2014 you never supply or
   compute an offset. Use this for any multi-day/weekly total; never hand-sum
   \`entries list\` rows by their timestamp.`;
 var DAY_SCHEMA = [
   field("day"),
-  field("calories", "kcal"),
-  field("protein_g", "protein"),
-  field("fat_g", "fat"),
-  field("sat_fat_g", "sat_fat"),
-  field("carbs_g", "carbs"),
-  field("sugar_g", "sugar"),
+  field("calories"),
+  field("protein_g"),
+  field("fat_g"),
+  field("sat_fat_g"),
+  field("carbs_g"),
+  field("sugar_g"),
   // Total sugar and its added share, side by side and unjudged: `days` is a
   // table, not the home view's nested figure, and NEITHER column carries a
   // verdict here (§ Display: only added sugar has a threshold at all).
-  field("added_sugar_g", "added_sugar"),
-  field("fiber_g", "fiber"),
-  field("sodium_mg", "sodium"),
-  field("entry_count", "entries"),
-  field("expenditure_kcal", "burned"),
-  field("net_kcal", "net")
+  field("added_sugar_g"),
+  field("fiber_g"),
+  field("sodium_mg"),
+  field("entry_count"),
+  field("expenditure_kcal"),
+  field("net_kcal")
 ];
 function resolveSince(raw) {
   const m = /^(\d+)d?$/.exec(raw.trim());
@@ -1709,10 +2230,10 @@ function resolveSince(raw) {
 async function daysCommand(args) {
   const sub = args[0];
   if (sub === "--help") throw new AxiError(DAYS_HELP, "VALIDATION_ERROR", [DAYS_HELP]);
-  const { flags } = parseArgs(args, ["json"], ["since"]);
+  const { flags } = parseArgs("days", args);
   const since = typeof flags.since === "string" ? resolveSince(flags.since) : void 0;
   const result = await api.get("/api/kitchen/summary", { group: "day", since });
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   const days = Array.isArray(result?.days) ? result.days : [];
   const cli = cliInvocation();
   const blocks = [];
@@ -1732,11 +2253,17 @@ async function daysCommand(args) {
 }
 
 // packages/kitchen/src/axi/commands/inventory.ts
-var INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json]
+var INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json-out[=path]]
+
+  --json-out[=path] on any subcommand writes the full JSON response to a file
+  (bare: an owner-only temp file); stdout stays the TOON view.
 
   list [--state S] [--closed] [--limit N]   on-hand items, eat-first (eat_by asc)
   show <ulid>                               one item with derived eat_by/age
   add [flags]                               create an item (manual/verbal/seed)
+       [--raw-label T] [--product-ulid U] [--store S] [--batch-ulid U]
+       [--acquired-at DATE] [--fraction F] [--state S] [--shelf-life C]
+       [--needs-info] [--notes T] [--ulid U]
        [--units-total N] makes it a COUNTED item; omitted stays fraction-modeled
        [--unit-seal individual|shared] what that package seals (needs --units-total)
   event <ulid> <opened|finished|finished-unit|tossed|moved>   explicit event
@@ -1962,14 +2489,14 @@ var INVENTORY_HELP = `kitchen-axi inventory <subcommand> [args] [--json]
   409 naming where it went.`;
 var ITEM_ROW_SCHEMA = [
   field("ulid"),
-  field("product_name", "name"),
+  field("product_name"),
   field("state"),
-  field("on_hand_fraction", "on_hand"),
+  field("on_hand_fraction"),
   field("units_remaining"),
   field("units_total"),
   field("unit_seal"),
   field("eat_by"),
-  field("days_until_eat_by", "days_left"),
+  field("days_until_eat_by"),
   field("store"),
   { type: "boolYesNo", key: "needs_info" },
   { type: "boolYesNo", key: "needs_nutrition" }
@@ -1977,11 +2504,11 @@ var ITEM_ROW_SCHEMA = [
 var ITEM_DETAIL_SCHEMA = [
   field("ulid"),
   field("product_ulid"),
-  field("product_name", "name"),
+  field("product_name"),
   field("raw_label"),
   field("store"),
   field("state"),
-  field("on_hand_fraction", "on_hand"),
+  field("on_hand_fraction"),
   field("units_remaining"),
   field("units_total"),
   field("unit_seal"),
@@ -1992,14 +2519,14 @@ var ITEM_DETAIL_SCHEMA = [
   field("closed_at"),
   field("storage_moved_at"),
   field("eat_by"),
-  field("days_until_eat_by", "days_left"),
+  field("days_until_eat_by"),
   field("age_days"),
-  field("shelf_life_class", "shelf_life"),
+  field("shelf_life_class"),
   field("notes"),
   field("merged_into")
 ];
 var QUESTION_SCHEMA = [
-  field("item_ulid", "ulid"),
+  field("item_ulid"),
   field("raw_label"),
   field("store"),
   field("acquired_at"),
@@ -2007,14 +2534,14 @@ var QUESTION_SCHEMA = [
 ];
 var WASTE_ROW_SCHEMA = [
   field("tossed_at"),
-  field("product_name", "name"),
-  field("amount_fraction", "amount"),
+  field("product_name"),
+  field("amount_fraction"),
   field("units"),
-  field("cost_cents", "cost\xA2"),
-  field("cost_basis", "basis"),
+  field("cost_cents"),
+  field("cost_basis"),
   field("store"),
   { type: "boolYesNo", key: "terminal" },
-  field("item_ulid", "item")
+  field("item_ulid")
 ];
 var EVENT_TYPES = ["opened", "finished", "finished-unit", "tossed", "moved"];
 async function inventoryCommand(args) {
@@ -2055,7 +2582,7 @@ async function inventoryCommand(args) {
   }
 }
 async function listItems(args) {
-  const { flags } = parseArgs(args, ["json", "closed"], ["state", "limit"]);
+  const { flags } = parseArgs("inventory list", args);
   const state = typeof flags.state === "string" ? flags.state : void 0;
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", INVENTORY_HELP, { min: 1 })) : void 0;
   const result = await api.get("/api/kitchen/inventory", {
@@ -2063,7 +2590,7 @@ async function listItems(args) {
     limit,
     include_closed: flags.closed ? "true" : void 0
   });
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   const items = result?.items ?? [];
   const list = renderList("items", items, ITEM_ROW_SCHEMA);
   if (typeof result?.tz === "string" && result.tz.includes("unset")) {
@@ -2072,14 +2599,14 @@ async function listItems(args) {
   return list;
 }
 async function showItem(args) {
-  const { positionals, flags } = parseArgs(args, ["json"], []);
+  const { positionals, flags } = parseArgs("inventory show", args);
   const ulid = requirePositional(positionals, 0, "item ulid", INVENTORY_HELP);
   const item = await api.get(`/api/kitchen/inventory/${encodeURIComponent(ulid)}`);
-  if (flags.json) return rawJson(item);
+  captureJson(item);
   return renderDetail("item", item, ITEM_DETAIL_SCHEMA);
 }
 async function addItem(args) {
-  const { flags } = parseArgs(args, ["json", "needs-info"], ["ulid", "product-ulid", "raw-label", "store", "batch-ulid", "acquired-at", "fraction", "units-total", "unit-seal", "state", "shelf-life", "notes"]);
+  const { flags } = parseArgs("inventory add", args);
   const body = {};
   if (typeof flags.ulid === "string") body.ulid = flags.ulid;
   if (typeof flags["product-ulid"] === "string") body.product_ulid = flags["product-ulid"];
@@ -2098,7 +2625,7 @@ async function addItem(args) {
     throw new AxiError("inventory add needs at least one field (e.g. --raw-label)", "VALIDATION_ERROR", [INVENTORY_HELP]);
   }
   const item = await api.post("/api/kitchen/inventory", body);
-  if (flags.json) return rawJson(item);
+  captureJson(item);
   return renderDetail("item", item, ITEM_DETAIL_SCHEMA);
 }
 function assertEventType(type, ulid = "<ulid>") {
@@ -2127,7 +2654,7 @@ function buildDismissBody(flags) {
   return body;
 }
 async function itemEvent(args) {
-  const { positionals, flags } = parseArgs(args, ["json"], ["fraction", "to", "at"]);
+  const { positionals, flags } = parseArgs("inventory event", args);
   const ulid = requirePositional(positionals, 0, "item ulid", INVENTORY_HELP);
   const type = requirePositional(positionals, 1, "event type", INVENTORY_HELP);
   assertEventType(type, ulid);
@@ -2137,15 +2664,11 @@ async function itemEvent(args) {
   if (typeof flags.to === "string") body.to = flags.to;
   if (typeof flags.at === "string") body.at = validateCalendarDate(flags.at, "--at", INVENTORY_HELP);
   const item = await api.post(`/api/kitchen/inventory/${encodeURIComponent(ulid)}/events`, body);
-  if (flags.json) return rawJson(item);
+  captureJson(item);
   return renderDetail("item", item, ITEM_DETAIL_SCHEMA);
 }
 async function recountItem(args) {
-  const { positionals, flags } = parseArgs(
-    args,
-    ["json", "uncounted", "needs-info", "no-needs-info", "unlink-product"],
-    ["fraction", "units-remaining", "units-total", "unit-seal", "state", "opened-at", "shelf-life", "product-ulid", "notes"]
-  );
+  const { positionals, flags } = parseArgs("inventory recount", args);
   const ulid = requirePositional(positionals, 0, "item ulid", INVENTORY_HELP);
   const body = {};
   if (typeof flags.fraction === "string") body.on_hand_fraction = parseNumberFlag(flags.fraction, "fraction", INVENTORY_HELP, { min: 0, max: 1 });
@@ -2179,15 +2702,15 @@ async function recountItem(args) {
     throw new AxiError("recount needs at least one correction (e.g. --fraction 0.75)", "VALIDATION_ERROR", [INVENTORY_HELP]);
   }
   const item = await api.patch(`/api/kitchen/inventory/${encodeURIComponent(ulid)}`, body);
-  if (flags.json) return rawJson(item);
+  captureJson(item);
   return renderDetail("item", item, ITEM_DETAIL_SCHEMA);
 }
 async function dismissItem(args) {
-  const { positionals, flags } = parseArgs(args, ["json", "non-inventory"], ["at"]);
+  const { positionals, flags } = parseArgs("inventory dismiss", args);
   const ulid = requirePositional(positionals, 0, "item ulid", INVENTORY_HELP);
   const body = buildDismissBody(flags);
   const result = await api.post(`/api/kitchen/inventory/${encodeURIComponent(ulid)}/dismiss`, body);
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   const cli = cliInvocation();
   return renderOutput2([
     renderObject({
@@ -2202,14 +2725,14 @@ async function dismissItem(args) {
   ]);
 }
 async function mergeItem(args) {
-  const { positionals, flags } = parseArgs(args, ["json"], ["into"]);
+  const { positionals, flags } = parseArgs("inventory merge", args);
   const ulid = requirePositional(positionals, 0, "item ulid (the duplicate to retire)", INVENTORY_HELP);
   const into = typeof flags.into === "string" ? flags.into : void 0;
   if (!into) {
     throw new AxiError("inventory merge needs --into <survivor ulid>", "VALIDATION_ERROR", [INVENTORY_HELP]);
   }
   const result = await api.post(`/api/kitchen/inventory/${encodeURIComponent(ulid)}/merge`, { into });
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   const relinked = result?.relinked ?? {};
   return renderOutput2([
     renderObject({
@@ -2227,13 +2750,13 @@ async function mergeItem(args) {
   ]);
 }
 async function remark(args) {
-  const { positionals, flags } = parseArgs(args, ["json"], ["at"]);
+  const { positionals, flags } = parseArgs("inventory remark", args);
   const text = positionals.join(" ").trim();
   if (!text) throw new AxiError("inventory remark needs free text", "VALIDATION_ERROR", [INVENTORY_HELP]);
   const body = { remark: text };
   if (typeof flags.at === "string") body.at = validateCalendarDate(flags.at, "--at", INVENTORY_HELP);
   const result = await api.post("/api/kitchen/inventory/events", body);
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   const cli = cliInvocation();
   if (!result?.matched) {
     return renderOutput2([
@@ -2251,20 +2774,20 @@ async function remark(args) {
   ]);
 }
 async function questions(args) {
-  const { flags } = parseArgs(args, ["json"], ["limit"]);
+  const { flags } = parseArgs("inventory questions", args);
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", INVENTORY_HELP, { min: 1 })) : void 0;
   const result = await api.get("/api/kitchen/inventory/questions", { limit });
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   const q = result?.questions ?? [];
   return renderList("questions", q, QUESTION_SCHEMA);
 }
 async function waste(args) {
-  const { flags } = parseArgs(args, ["json"], ["since", "until", "limit"]);
+  const { flags } = parseArgs("inventory waste", args);
   const since = typeof flags.since === "string" ? validateCalendarDate(flags.since, "--since", INVENTORY_HELP) : void 0;
   const until = typeof flags.until === "string" ? validateCalendarDate(flags.until, "--until", INVENTORY_HELP) : void 0;
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", INVENTORY_HELP, { min: 1 })) : void 0;
   const result = await api.get("/api/kitchen/inventory/waste", { since, until, limit });
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   const rows = result?.waste ?? [];
   const totals = result?.totals ?? {};
   return renderOutput2([
@@ -2293,8 +2816,8 @@ function parseSource(raw) {
   return { item_ulid, amount };
 }
 async function convert(args) {
-  const { flags } = parseArgs(args, ["json"], ["from", "to", "at"]);
-  const fromValues = collectFlag(args, "from");
+  const { flags, multi } = parseArgs("inventory convert", args);
+  const fromValues = multi.from ?? [];
   const toRaw = typeof flags.to === "string" ? flags.to : void 0;
   if (!toRaw) throw new AxiError("convert needs --to '<derived spec json>'", "VALIDATION_ERROR", [INVENTORY_HELP]);
   const derived = parseJson(toRaw, "--to", INVENTORY_HELP);
@@ -2308,14 +2831,14 @@ async function convert(args) {
   };
   if (typeof flags.at === "string") body.at = validateCalendarDate(flags.at, "--at", INVENTORY_HELP);
   const result = await api.post("/api/kitchen/inventory/convert", body);
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   return renderOutput2([
     renderList("sources", result.sources ?? [], ITEM_ROW_SCHEMA),
     renderDetail("derived", result.derived, ITEM_DETAIL_SCHEMA)
   ]);
 }
 async function consumeItem(args) {
-  const { positionals, flags } = parseArgs(args, ["json"], ["quantity", "at", "ulid"]);
+  const { positionals, flags } = parseArgs("inventory consume", args);
   const itemUlid = requirePositional(positionals, 0, "item ulid", INVENTORY_HELP);
   const body = { ulid: typeof flags.ulid === "string" ? flags.ulid : generateUlid() };
   if (typeof flags.quantity === "string") {
@@ -2323,7 +2846,7 @@ async function consumeItem(args) {
   }
   if (typeof flags.at === "string") body.at = validateCalendarDate(flags.at, "--at", INVENTORY_HELP);
   const result = await api.post(`/api/kitchen/inventory/${encodeURIComponent(itemUlid)}/consume`, body);
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   const cli = cliInvocation();
   return renderOutput2([
     renderObject({ created: result?.created ?? null }),
@@ -2355,11 +2878,11 @@ function buildEatBody(flags) {
   return body;
 }
 async function eatItem(args) {
-  const { positionals, flags } = parseArgs(args, ["json"], ["grams", "fraction", "entry-ulid", "at"]);
+  const { positionals, flags } = parseArgs("inventory eat", args);
   const itemUlid = requirePositional(positionals, 0, "item ulid", INVENTORY_HELP);
   const body = buildEatBody(flags);
   const result = await api.post(`/api/kitchen/inventory/${encodeURIComponent(itemUlid)}/consumed`, body);
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   const cli = cliInvocation();
   const blocks = [
     renderObject({ linked: result?.linked ?? false }),
@@ -2434,11 +2957,11 @@ function assertConvertShelfLifeClass(cls) {
   }
 }
 async function lineCandidates(args) {
-  const { positionals, flags } = parseArgs(args, ["json"], ["limit"]);
+  const { positionals, flags } = parseArgs("inventory candidates", args);
   const ulid = requirePositional(positionals, 0, "item ulid", INVENTORY_HELP);
   const limit = typeof flags.limit === "string" ? flags.limit : void 0;
   const result = await api.get(`/api/kitchen/inventory/${encodeURIComponent(ulid)}/candidates`, { limit });
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   const rows = (result?.candidates ?? []).map((c) => ({
     product: c.product_name,
     score: c.score,
@@ -2466,7 +2989,10 @@ async function lineCandidates(args) {
 }
 
 // packages/kitchen/src/axi/commands/prep.ts
-var PREP_HELP = `kitchen-axi prep <subcommand> [args] [--json]
+var PREP_HELP = `kitchen-axi prep <subcommand> [args] [--json-out[=path]]
+
+  --json-out[=path] on any subcommand writes the full JSON response to a file
+  (bare: an owner-only temp file); stdout stays the TOON view.
 
   publish --slug S --label T            build a prep WORKSHEET from the catalog and
        [--component <product-ulid>=<g>]\u2026  publish it. Components resolve to the
@@ -2491,7 +3017,7 @@ var PREP_HELP = `kitchen-axi prep <subcommand> [args] [--json]
        [--components-per batch|unit]       (packed only) do the component
                                             quantities describe ONE unit or the
                                             whole batch? default batch
-       [--title T] [--digest-optin]
+       [--title T] [--submit-label T] [--digest-optin]
 
   A worksheet's per_basis blocks are reference values this module already stores.
   Assembling them by hand re-derives numbers the catalog holds \u2014 the same
@@ -2545,34 +3071,12 @@ function parseRef(raw, flag) {
   return { ulid, quantity };
 }
 async function publishPrep(args) {
-  const componentArgs = collectFlag(args, "component");
-  const componentItemArgs = collectFlag(args, "component-item");
-  const componentUnitArgs = collectFlag(args, "component-unit");
-  const stepArgs = collectFlag(args, "step");
-  const sourceArgs = collectFlag(args, "source");
-  const { flags } = parseArgs(
-    args,
-    ["json", "digest-optin"],
-    [
-      "slug",
-      "label",
-      "title",
-      "heading",
-      "intro",
-      "component",
-      "component-item",
-      "component-unit",
-      "recipe",
-      "yields-recipe",
-      "step",
-      "cook",
-      "units",
-      "shelf-life",
-      "source",
-      "submit-label",
-      "components-per"
-    ]
-  );
+  const { flags, multi } = parseArgs("prep publish", args);
+  const componentArgs = multi.component ?? [];
+  const componentItemArgs = multi["component-item"] ?? [];
+  const componentUnitArgs = multi["component-unit"] ?? [];
+  const stepArgs = multi.step ?? [];
+  const sourceArgs = multi.source ?? [];
   const slug = typeof flags.slug === "string" ? flags.slug : void 0;
   const label = typeof flags.label === "string" ? flags.label : void 0;
   if (!slug || !label) {
@@ -2660,7 +3164,7 @@ async function publishPrep(args) {
     ...flags["digest-optin"] ? { digest_optin: true } : {}
   };
   const result = await api.post("/api/kitchen/prep", body);
-  if (flags.json) return JSON.stringify(result, null, 2);
+  captureJson(result);
   const totals = result?.planned_totals ?? {};
   const unknown = result?.unknown_fields ?? [];
   const untracked = result?.untracked_components ?? [];
@@ -2691,7 +3195,10 @@ async function publishPrep(args) {
 }
 
 // packages/kitchen/src/axi/commands/stores.ts
-var STORES_HELP = `kitchen-axi stores <subcommand> [args] [--json]
+var STORES_HELP = `kitchen-axi stores <subcommand> [args] [--json-out[=path]]
+
+  --json-out[=path] on any subcommand writes the full JSON response to a file
+  (bare: an owner-only temp file); stdout stays the TOON view.
 
   list                                  every store string seen, from the
                                           lexicon and inventory items
@@ -2729,9 +3236,9 @@ async function storesCommand(args) {
   }
 }
 async function listStores(args) {
-  const { flags } = parseArgs(args, ["json"], []);
+  const { flags } = parseArgs("stores list", args);
   const result = await api.get("/api/kitchen/stores");
-  if (flags.json) return JSON.stringify(result, null, 2);
+  captureJson(result);
   const stores = result?.stores ?? [];
   return renderOutput2([
     renderObject({ stores: stores.length }),
@@ -2744,12 +3251,12 @@ async function listStores(args) {
   ]);
 }
 async function mergeStores(args) {
-  const { positionals, flags } = parseArgs(args, ["json"], ["into"]);
+  const { positionals, flags } = parseArgs("stores merge", args);
   const from = requirePositional(positionals, 0, "source store", STORES_HELP);
   const to = typeof flags.into === "string" ? flags.into : void 0;
   if (!to) throw new AxiError("stores merge needs --into <store>", "VALIDATION_ERROR", [STORES_HELP]);
   const result = await api.post("/api/kitchen/stores/merge", { from, to });
-  if (flags.json) return JSON.stringify(result, null, 2);
+  captureJson(result);
   return renderOutput2([
     renderObject({
       merged: result.from,
@@ -2765,7 +3272,10 @@ async function mergeStores(args) {
 }
 
 // packages/kitchen/src/axi/commands/expenditures.ts
-var EXPENDITURE_HELP = `kitchen-axi expenditure <subcommand> [args] [--json]
+var EXPENDITURE_HELP = `kitchen-axi expenditure <subcommand> [args] [--json-out[=path]]
+
+  --json-out[=path] on any subcommand writes the full JSON response to a file
+  (bare: an owner-only temp file); stdout stays the TOON view.
 
   log "<label>" --kcal N [--duration M] [--avg-hr H] [--at TIME] [--source S] [--ulid U]
                                        record a stated burn (default source: manual;
@@ -2799,7 +3309,7 @@ var ROW_SCHEMA = [
   // `day` = owner-tz calendar date (authoritative bucketing key); `occurred`
   // renders the instant in the owner zone (§ Timezone & local-day bucketing).
   field("day"),
-  field("occurred_local", "occurred"),
+  field("occurred_local"),
   field("label"),
   field("source"),
   field("kcal"),
@@ -2809,7 +3319,7 @@ var ROW_SCHEMA = [
 var SKIPPED_SCHEMA = [
   field("activity_id"),
   field("day"),
-  field("occurred_local", "occurred"),
+  field("occurred_local"),
   field("label")
 ];
 var SOURCES = ["strava", "health_connect", "garmin", "manual"];
@@ -2829,7 +3339,7 @@ async function expenditureCommand(args) {
   }
 }
 async function logExpenditure(args) {
-  const { positionals, flags } = parseArgs(args, ["json"], ["kcal", "duration", "avg-hr", "at", "source", "ulid"]);
+  const { positionals, flags } = parseArgs("expenditure log", args);
   const label = positionals.join(" ").trim();
   if (!label) throw new AxiError("expenditure log needs a label", "VALIDATION_ERROR", [EXPENDITURE_HELP]);
   if (typeof flags.kcal !== "string") {
@@ -2853,22 +3363,22 @@ async function logExpenditure(args) {
   }
   if (typeof flags.ulid === "string") body.ulid = flags.ulid;
   const row = await api.post("/api/kitchen/expenditures", body);
-  if (flags.json) return rawJson(row);
+  captureJson(row);
   return renderDetail("expenditure", row, ROW_SCHEMA);
 }
 async function listExpenditures(args) {
-  const { flags } = parseArgs(args, ["json", "include-skipped"], ["since", "limit"]);
+  const { flags } = parseArgs("expenditure list", args);
   const result = await api.get("/api/kitchen/expenditures", {
     since: typeof flags.since === "string" ? validateDate(flags.since, "--since", EXPENDITURE_HELP) : void 0,
     limit: typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", EXPENDITURE_HELP, { min: 1 })) : void 0
   });
   if (!flags["include-skipped"]) {
-    if (flags.json) return rawJson(result);
+    captureJson(result);
     return renderList("expenditures", result?.expenditures ?? [], ROW_SCHEMA);
   }
   const skippedResult = await api.get("/api/kitchen/expenditures/skipped");
   const skipped = skippedResult?.skipped ?? [];
-  if (flags.json) return rawJson({ ...result, skipped });
+  captureJson({ ...result, skipped });
   const sections = [renderList("expenditures", result?.expenditures ?? [], ROW_SCHEMA)];
   sections.push(renderList("skipped_strava_activities", skipped, SKIPPED_SCHEMA));
   if (skipped.length > 0) {
@@ -2882,15 +3392,18 @@ async function listExpenditures(args) {
   return sections.join("\n");
 }
 async function deleteExpenditure(args) {
-  const { positionals, flags } = parseArgs(args, ["json"], []);
+  const { positionals, flags } = parseArgs("expenditure delete", args);
   const ulid = requirePositional(positionals, 0, "expenditure ulid", EXPENDITURE_HELP);
   await api.del(`/api/kitchen/expenditures/${encodeURIComponent(ulid)}`);
-  if (flags.json) return rawJson({ deleted: ulid });
+  captureJson({ deleted: ulid });
   return renderObject({ deleted: ulid });
 }
 
 // packages/kitchen/src/axi/commands/weigh-ins.ts
-var WEIGH_INS_HELP = `kitchen-axi weigh-ins <subcommand> [args] [--json]
+var WEIGH_INS_HELP = `kitchen-axi weigh-ins <subcommand> [args] [--json-out[=path]]
+
+  --json-out[=path] on any subcommand writes the full JSON response to a file
+  (bare: an owner-only temp file); stdout stays the TOON view.
 
   log --weight KG [--body-fat PCT] [--at TIME]
                                        record a manual weigh-in (source: manual;
@@ -2905,7 +3418,10 @@ var WEIGH_INS_HELP = `kitchen-axi weigh-ins <subcommand> [args] [--json]
   (daily median), never by rewriting observations. For the derived daily/
   trend view, use \`weight trend\`. The trend is context for the OWNER'S
   judgment: nothing auto-tunes the TDEE base or targets from it.`;
-var WEIGHT_HELP = `kitchen-axi weight <subcommand> [args] [--json]
+var WEIGHT_HELP = `kitchen-axi weight <subcommand> [args] [--json-out[=path]]
+
+  --json-out[=path] on any subcommand writes the full JSON response to a file
+  (bare: an owner-only temp file); stdout stays the TOON view.
 
   trend [--days N]                     derived view over the last N days
                                        (default 30): one line per local day
@@ -2921,7 +3437,7 @@ var ROW_SCHEMA2 = [
   // `day` = owner-tz calendar date (the module-wide bucketing key, § Timezone &
   // local-day bucketing); `occurred` renders the instant in the owner zone.
   field("day"),
-  field("occurred_local", "occurred"),
+  field("occurred_local"),
   field("weight_kg"),
   field("body_fat_pct"),
   field("source")
@@ -2967,7 +3483,7 @@ async function weightCommand(args) {
   }
 }
 async function logWeighIn(args) {
-  const { flags } = parseArgs(args, ["json"], ["weight", "body-fat", "at"]);
+  const { flags } = parseArgs("weigh-ins log", args);
   if (typeof flags.weight !== "string") {
     throw new AxiError("weigh-ins log needs --weight (kg)", "VALIDATION_ERROR", [WEIGH_INS_HELP]);
   }
@@ -2983,24 +3499,24 @@ async function logWeighIn(args) {
     body.body_fat_pct = parseNumberFlag(flags["body-fat"], "body-fat", WEIGH_INS_HELP, { min: 0, max: 100 });
   }
   const row = await api.post("/api/kitchen/weigh-ins", body);
-  if (flags.json) return rawJson(row);
+  captureJson(row);
   return renderDetail("weigh_in", row, ROW_SCHEMA2);
 }
 async function listWeighIns(args) {
-  const { flags } = parseArgs(args, ["json"], ["since", "limit"]);
+  const { flags } = parseArgs("weigh-ins list", args);
   const result = await api.get("/api/kitchen/weigh-ins", {
     since: typeof flags.since === "string" ? validateDate(flags.since, "--since", WEIGH_INS_HELP) : void 0,
     limit: typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", WEIGH_INS_HELP, { min: 1 })) : void 0
   });
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   return renderList("weigh_ins", result?.weigh_ins ?? [], ROW_SCHEMA2);
 }
 async function weightTrend(args) {
-  const { flags } = parseArgs(args, ["json"], ["days"]);
+  const { flags } = parseArgs("weight trend", args);
   const result = await api.get("/api/kitchen/weight", {
     days: typeof flags.days === "string" ? String(parseNumberFlag(flags.days, "days", WEIGHT_HELP, { min: 1, max: 366 })) : void 0
   });
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   return renderOutput2([
     renderList("daily", result?.daily ?? [], DAILY_SCHEMA),
     renderList("trend_7d", result?.trend ?? [], TREND_SCHEMA)
@@ -3009,7 +3525,10 @@ async function weightTrend(args) {
 
 // packages/kitchen/src/axi/commands/receipts.ts
 import { existsSync } from "node:fs";
-var RECEIPTS_HELP = `kitchen-axi receipts <subcommand> [args] [--json]
+var RECEIPTS_HELP = `kitchen-axi receipts <subcommand> [args] [--json-out[=path]]
+
+  --json-out[=path] on any subcommand writes the full JSON response to a file
+  (bare: an owner-only temp file); stdout stays the TOON view.
 
   list [--limit N]                          recent purchase batches + parse status
   show <ulid>                               one batch + parsed line outcomes
@@ -3023,19 +3542,19 @@ var RECEIPTS_HELP = `kitchen-axi receipts <subcommand> [args] [--json]
 var BATCH_ROW_SCHEMA = [
   field("ulid"),
   field("store"),
-  field("purchased_at", "purchased"),
+  field("purchased_at"),
   field("status"),
   field("total_cents"),
-  field("parse_attempts", "attempts"),
+  field("parse_attempts"),
   field("last_error")
 ];
 var LINE_SCHEMA = [
-  field("raw_text", "line"),
-  field("quantity", "qty"),
-  field("price_cents", "price\xA2"),
-  field("match_outcome", "outcome"),
+  field("raw_text"),
+  field("quantity"),
+  field("price_cents"),
+  field("match_outcome"),
   field("product_ulid"),
-  field("inventory_item_ulid", "item_ulid")
+  field("inventory_item_ulid")
 ];
 async function receiptsCommand(args) {
   const sub = args[0];
@@ -3053,18 +3572,18 @@ async function receiptsCommand(args) {
   }
 }
 async function listBatches(args) {
-  const { flags } = parseArgs(args, ["json"], ["limit"]);
+  const { flags } = parseArgs("receipts list", args);
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", RECEIPTS_HELP, { min: 1 })) : void 0;
   const result = await api.get("/api/kitchen/receipts", { limit });
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   const batches = result?.batches ?? [];
   return renderList("batches", batches, BATCH_ROW_SCHEMA);
 }
 async function showBatch(args) {
-  const { positionals, flags } = parseArgs(args, ["json"], []);
+  const { positionals, flags } = parseArgs("receipts show", args);
   const ulid = requirePositional(positionals, 0, "batch ulid", RECEIPTS_HELP);
   const result = await api.get(`/api/kitchen/receipts/${encodeURIComponent(ulid)}`);
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   const lines = result?.lines ?? [];
   return renderOutput2([
     renderDetail("batch", result?.batch ?? {}, BATCH_ROW_SCHEMA),
@@ -3072,7 +3591,7 @@ async function showBatch(args) {
   ]);
 }
 async function scanReceipt(args) {
-  const { positionals, flags } = parseArgs(args, ["json"], ["store", "purchased-at", "ulid"]);
+  const { positionals, flags } = parseArgs("receipts scan", args);
   const photos = positionals;
   if (photos.length === 0) {
     throw new AxiError("receipts scan needs at least one photo path", "VALIDATION_ERROR", [RECEIPTS_HELP]);
@@ -3085,7 +3604,7 @@ async function scanReceipt(args) {
   if (typeof flags["purchased-at"] === "string") meta.purchased_at = validateCalendarDate(flags["purchased-at"], "--purchased-at", RECEIPTS_HELP);
   const form = await buildMultipartForm("receipt", meta, photos);
   const batch = await api.postForm("/api/kitchen/receipts", form);
-  if (flags.json) return rawJson(batch);
+  captureJson(batch);
   const cli = cliInvocation();
   return renderOutput2([
     renderDetail("batch", batch, BATCH_ROW_SCHEMA),
@@ -3094,7 +3613,10 @@ async function scanReceipt(args) {
 }
 
 // packages/kitchen/src/axi/commands/recipes.ts
-var RECIPES_HELP = `kitchen-axi recipes <subcommand> [args] [--json]
+var RECIPES_HELP = `kitchen-axi recipes <subcommand> [args] [--json-out[=path]]
+
+  --json-out[=path] on any subcommand writes the full JSON response to a file
+  (bare: an owner-only temp file); stdout stays the TOON view.
 
   list [--q TEXT] [--limit N]       the reselect strip: merged sheet + pushed +
                                       promoted recipes, plus recent logged items.
@@ -3122,14 +3644,14 @@ var RECIPE_SCHEMA = [
   field("ulid"),
   field("name"),
   field("source"),
-  count("components", "n_components")
+  count("components")
 ];
 var RECENT_SCHEMA = [
   field("label"),
-  field("log_count", "logged"),
-  field("calories", "kcal"),
-  field("protein_g", "protein"),
-  { type: "dateOnly", key: "last_logged_at", as: "last" }
+  field("log_count"),
+  field("calories"),
+  field("protein_g"),
+  { type: "dateOnly", key: "last_logged_at" }
 ];
 async function recipesCommand(args) {
   const sub = args[0];
@@ -3149,11 +3671,11 @@ async function recipesCommand(args) {
   }
 }
 async function listRecipes(args) {
-  const { flags } = parseArgs(args, ["json"], ["q", "limit"]);
+  const { flags } = parseArgs("recipes list", args);
   const q = typeof flags.q === "string" ? flags.q : void 0;
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", RECIPES_HELP, { min: 1 })) : void 0;
   const strip = await api.get("/api/kitchen/reselect", { q, limit });
-  if (flags.json) return rawJson(strip);
+  captureJson(strip);
   const recipes = strip?.recipes ?? [];
   const recent = strip?.recent ?? [];
   return renderOutput2([
@@ -3162,7 +3684,7 @@ async function listRecipes(args) {
   ]);
 }
 async function pushRecipe(args) {
-  const { positionals, flags } = parseArgs(args, ["json"], ["ulid"]);
+  const { positionals, flags } = parseArgs("recipes push", args);
   const jsonArg = positionals[0];
   if (!jsonArg) {
     throw new AxiError("recipes push needs a recipe JSON body", "VALIDATION_ERROR", [RECIPES_HELP]);
@@ -3179,7 +3701,7 @@ async function pushRecipe(args) {
     body.ulid = flags.ulid;
   }
   const { status, body: recipe } = await api.postWithStatus("/api/kitchen/recipes", body);
-  if (flags.json) return rawJson(recipe);
+  captureJson(recipe);
   const created = status === 201;
   const cli = cliInvocation();
   return renderOutput2([
@@ -3194,10 +3716,10 @@ async function pushRecipe(args) {
   ]);
 }
 async function deleteRecipe(args) {
-  const { positionals, flags } = parseArgs(args, ["json"], []);
+  const { positionals, flags } = parseArgs("recipes delete", args);
   const ulid = requirePositional(positionals, 0, "recipe ulid", RECIPES_HELP);
   const archived = await api.delJson(`/api/kitchen/recipes/${encodeURIComponent(ulid)}`);
-  if (flags.json) return rawJson(archived);
+  captureJson(archived);
   return renderOutput2([
     renderObject({ archived: archived?.ulid, name: archived?.name, archived_at: archived?.archived_at }),
     renderHelp([
@@ -3206,16 +3728,19 @@ async function deleteRecipe(args) {
   ]);
 }
 async function promote(args) {
-  const { positionals, flags } = parseArgs(args, ["json"], ["name"]);
+  const { positionals, flags } = parseArgs("recipes promote", args);
   const ulid = requirePositional(positionals, 0, "entry ulid", RECIPES_HELP);
   const name = requireFlag(flags, "name", RECIPES_HELP);
   const recipe = await api.post(`/api/kitchen/entries/${encodeURIComponent(ulid)}/promote`, { name });
-  if (flags.json) return rawJson(recipe);
+  captureJson(recipe);
   return renderDetail("recipe", recipe, RECIPE_SCHEMA);
 }
 
 // packages/kitchen/src/axi/commands/products.ts
-var PRODUCTS_HELP = `kitchen-axi products <subcommand> [args] [--json]
+var PRODUCTS_HELP = `kitchen-axi products <subcommand> [args] [--json-out[=path]]
+
+  --json-out[=path] on any subcommand writes the full JSON response to a file
+  (bare: an owner-only temp file); stdout stays the TOON view.
 
   list [--q TEXT] [--limit N]       products (durable item facts); --q matches
                                       name/aliases (substring). Archived
@@ -3325,19 +3850,19 @@ var PRODUCTS_HELP = `kitchen-axi products <subcommand> [args] [--json]
 var PRODUCT_ROW_SCHEMA = [
   field("ulid"),
   field("name"),
-  field("shelf_life_class", "shelf_life"),
-  joinArray("aliases", void 0, "aliases"),
-  field("package_size", "pkg"),
-  { type: "boolYesNo", key: "nutrition_negligible", as: "negligible" }
+  field("shelf_life_class"),
+  joinArray("aliases"),
+  field("package_size"),
+  { type: "boolYesNo", key: "nutrition_negligible" }
 ];
 var PRODUCT_DETAIL_SCHEMA = [
   field("ulid"),
   field("name"),
-  field("shelf_life_class", "shelf_life"),
-  joinArray("aliases", void 0, "aliases"),
-  field("package_size", "pkg"),
-  field("shelf_life_days_unopened", "days_unopened"),
-  field("shelf_life_days_opened", "days_opened"),
+  field("shelf_life_class"),
+  joinArray("aliases"),
+  field("package_size"),
+  field("shelf_life_days_unopened"),
+  field("shelf_life_days_opened"),
   {
     type: "custom",
     as: "nutrition_per_100g",
@@ -3345,19 +3870,19 @@ var PRODUCT_DETAIL_SCHEMA = [
   },
   field("unit_edible_g"),
   field("nutrition_source"),
-  { type: "boolYesNo", key: "nutrition_negligible", as: "negligible" },
+  { type: "boolYesNo", key: "nutrition_negligible" },
   field("ingredients")
 ];
 var PRICE_POINT_SCHEMA = [
-  field("purchased_at", "date"),
+  field("purchased_at"),
   field("store"),
-  field("raw_text", "line"),
-  field("quantity", "qty"),
-  field("price_cents", "price\xA2"),
-  field("package_price_cents", "per_pkg\xA2"),
-  field("cents_per_100g", "per_100g\xA2"),
-  field("cents_per_100ml", "per_100ml\xA2"),
-  field("unit_basis", "basis")
+  field("raw_text"),
+  field("quantity"),
+  field("price_cents"),
+  field("package_price_cents"),
+  field("cents_per_100g"),
+  field("cents_per_100ml"),
+  field("unit_basis")
 ];
 var PANEL_BASIS_FINDING_SCHEMA = [
   field("ulid"),
@@ -3367,25 +3892,6 @@ var PANEL_BASIS_FINDING_SCHEMA = [
     as: "contradictions",
     fn: (f) => (Array.isArray(f.contradictions) ? f.contradictions : []).map((c) => `${c.field}: stated ${c.stated} vs derived ${c.derived} (\xB1${c.tolerance})`).join(" | ")
   }
-];
-var WRITE_VALUE_FLAGS = [
-  "name",
-  "ulid",
-  "shelf-life",
-  "aliases",
-  "package-size",
-  "nutrition",
-  "nutrition-per-serving",
-  "serving-size-g",
-  "servings-per-container",
-  "net-content-g",
-  "net-content-ml",
-  "unit-model",
-  "unit-edible-g",
-  "nutrition-source",
-  "ingredients",
-  "shelf-life-days-unopened",
-  "shelf-life-days-opened"
 ];
 async function productsCommand(args) {
   const sub = args[0];
@@ -3411,11 +3917,11 @@ async function productsCommand(args) {
   }
 }
 async function listProducts(args) {
-  const { flags } = parseArgs(args, ["json"], ["q", "limit"]);
+  const { flags } = parseArgs("products list", args);
   const q = typeof flags.q === "string" ? flags.q : void 0;
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", PRODUCTS_HELP, { min: 1 })) : void 0;
   const result = await api.get("/api/kitchen/products", { q, limit });
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   const products = result?.products ?? [];
   return renderList("products", products, PRODUCT_ROW_SCHEMA);
 }
@@ -3461,12 +3967,12 @@ function buildProductWriteBody(flags) {
   return body;
 }
 async function addProduct(args) {
-  const { flags } = parseArgs(args, ["json", "negligible", "no-negligible", "force-negligible"], WRITE_VALUE_FLAGS);
+  const { flags } = parseArgs("products add", args);
   requireFlag(flags, "name", PRODUCTS_HELP);
   const body = buildProductWriteBody(flags);
   if (typeof flags.ulid === "string") body.ulid = flags.ulid;
   const { status, body: product } = await api.postWithStatus("/api/kitchen/products", body);
-  if (flags.json) return rawJson(product);
+  captureJson(product);
   const created = status === 201;
   return renderOutput2([
     renderDetail(created ? "created" : body.ulid ? "replaced" : "enriched", product, PRODUCT_DETAIL_SCHEMA),
@@ -3476,14 +3982,14 @@ async function addProduct(args) {
   ]);
 }
 async function updateProduct(args) {
-  const { positionals, flags } = parseArgs(args, ["json", "negligible", "no-negligible", "force-negligible"], WRITE_VALUE_FLAGS);
+  const { positionals, flags } = parseArgs("products update", args);
   const ulid = requirePositional(positionals, 0, "product ulid", PRODUCTS_HELP);
   const body = buildProductWriteBody(flags);
   if (Object.keys(body).length === 0) {
     throw new AxiError("update needs at least one field flag to change", "VALIDATION_ERROR", [PRODUCTS_HELP]);
   }
   const product = await api.patch(`/api/kitchen/products/${encodeURIComponent(ulid)}`, body);
-  if (flags.json) return rawJson(product);
+  captureJson(product);
   return renderOutput2([
     renderDetail("updated", product, PRODUCT_DETAIL_SCHEMA),
     renderHelp([
@@ -3492,28 +3998,28 @@ async function updateProduct(args) {
   ]);
 }
 async function productPrices(args) {
-  const { positionals, flags } = parseArgs(args, ["json"], ["store", "limit"]);
+  const { positionals, flags } = parseArgs("products prices", args);
   const ulid = requirePositional(positionals, 0, "product ulid", PRODUCTS_HELP);
   const store = typeof flags.store === "string" ? flags.store : void 0;
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", PRODUCTS_HELP, { min: 1 })) : void 0;
   const result = await api.get(`/api/kitchen/products/${encodeURIComponent(ulid)}/prices`, { store, limit });
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   const points = result?.points ?? [];
   return renderOutput2([
     renderObject({ product: result?.product_name, ulid: result?.product_ulid, purchases: result?.count ?? 0 }),
     renderList("prices", points, PRICE_POINT_SCHEMA),
     renderHelp([
-      "Compare per_100g / per_100ml, not price\xA2 \u2014 package sizes differ between purchases and stores",
-      "A null per_100g/per_100ml with basis null means no package size resolved for that purchase; nothing was guessed. Scan the label, or set the size with `products update <ulid> --package-size '16 oz'`"
+      "Compare cents_per_100g / cents_per_100ml, not price_cents \u2014 package sizes differ between purchases and stores",
+      "A null cents_per_100g/cents_per_100ml with unit_basis null means no package size resolved for that purchase; nothing was guessed. Scan the label, or set the size with `products update <ulid> --package-size '16 oz'`"
     ])
   ]);
 }
 async function mergeProduct(args) {
-  const { positionals, flags } = parseArgs(args, ["json"], ["into"]);
+  const { positionals, flags } = parseArgs("products merge", args);
   const ulid = requirePositional(positionals, 0, "duplicate product ulid", PRODUCTS_HELP);
   const into = requireFlag(flags, "into", PRODUCTS_HELP);
   const result = await api.post(`/api/kitchen/products/${encodeURIComponent(ulid)}/merge`, { into });
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   return renderOutput2([
     renderDetail("survivor", result?.product ?? {}, PRODUCT_DETAIL_SCHEMA),
     renderObject({
@@ -3530,10 +4036,10 @@ async function mergeProduct(args) {
   ]);
 }
 async function archiveProduct(args) {
-  const { positionals, flags } = parseArgs(args, ["json"], []);
+  const { positionals, flags } = parseArgs("products archive", args);
   const ulid = requirePositional(positionals, 0, "product ulid", PRODUCTS_HELP);
   const archived = await api.delJson(`/api/kitchen/products/${encodeURIComponent(ulid)}`);
-  if (flags.json) return rawJson(archived);
+  captureJson(archived);
   return renderOutput2([
     renderObject({ archived: archived?.ulid, name: archived?.name, archived_at: archived?.archived_at }),
     renderHelp([
@@ -3543,9 +4049,9 @@ async function archiveProduct(args) {
   ]);
 }
 async function panelBasisReport(args) {
-  const { flags } = parseArgs(args, ["json"], []);
+  const { flags } = parseArgs("products panel-basis-report", args);
   const result = await api.get("/api/kitchen/products/panel-basis-report");
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   const findings = result?.findings ?? [];
   if (findings.length === 0) {
     return renderOutput2([
@@ -3580,7 +4086,10 @@ function validateNutritionSource(value) {
 }
 
 // packages/kitchen/src/axi/commands/lexicon.ts
-var LEXICON_HELP = `kitchen-axi lexicon <subcommand> [args] [--json]
+var LEXICON_HELP = `kitchen-axi lexicon <subcommand> [args] [--json-out[=path]]
+
+  --json-out[=path] on any subcommand writes the full JSON response to a file
+  (bare: an owner-only temp file); stdout stays the TOON view.
 
   list [--store S] [--limit N]              receipt-line \u2192 product mappings
   add --store S --line-text T               map a store's receipt line to a
@@ -3590,10 +4099,10 @@ var LEXICON_HELP = `kitchen-axi lexicon <subcommand> [args] [--json]
   shelf-life classes: ${SHELF_LIFE_CLASSES.join(", ")}`;
 var LEXICON_SCHEMA = [
   field("store"),
-  field("line_text", "line"),
+  field("line_text"),
   field("product_ulid"),
-  field("package_size", "pkg"),
-  field("shelf_life_class", "shelf_life")
+  field("package_size"),
+  field("shelf_life_class")
 ];
 async function lexiconCommand(args) {
   const sub = args[0];
@@ -3609,16 +4118,16 @@ async function lexiconCommand(args) {
   }
 }
 async function listLexicon(args) {
-  const { flags } = parseArgs(args, ["json"], ["store", "limit"]);
+  const { flags } = parseArgs("lexicon list", args);
   const store = typeof flags.store === "string" ? flags.store : void 0;
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", LEXICON_HELP, { min: 1 })) : void 0;
   const result = await api.get("/api/kitchen/lexicon", { store, limit });
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   const lines = result?.lines ?? [];
   return renderList("lexicon", lines, LEXICON_SCHEMA);
 }
 async function addLexicon(args) {
-  const { flags } = parseArgs(args, ["json"], ["store", "line-text", "product-ulid", "package-size", "shelf-life"]);
+  const { flags } = parseArgs("lexicon add", args);
   const body = {
     store: requireFlag(flags, "store", LEXICON_HELP),
     line_text: requireFlag(flags, "line-text", LEXICON_HELP),
@@ -3627,7 +4136,7 @@ async function addLexicon(args) {
   if (typeof flags["package-size"] === "string") body.package_size = flags["package-size"];
   if (typeof flags["shelf-life"] === "string") body.shelf_life_class = validateShelfLife3(flags["shelf-life"]);
   const line = await api.post("/api/kitchen/lexicon", body);
-  if (flags.json) return rawJson(line);
+  captureJson(line);
   return renderDetail("lexicon", line, LEXICON_SCHEMA);
 }
 function validateShelfLife3(value) {
@@ -3638,7 +4147,7 @@ function validateShelfLife3(value) {
 }
 
 // packages/kitchen/src/axi/cli.ts
-var VERSION = true ? "1ffe73e" : "dev";
+var VERSION = true ? "cbdd302" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [group] [subcommand] [args] [flags]
        ${CLI}                 # no args \u2192 home (today's totals + eat-first + questions)
@@ -3647,7 +4156,7 @@ commands:
 
 ${commandReferenceText()}
 
-flags: --help, -v/--version, --json (raw output on most commands)
+flags: --help, -v/--version, --json-out[=path] (full JSON to a file; stdout stays TOON)
 
 env: CLAUDE_ASSIST_SERVER (default http://localhost:2529)
 
@@ -3673,7 +4182,7 @@ var COMMAND_HELP = {
   prep: PREP_HELP,
   stores: STORES_HELP
 };
-var COMMANDS = {
+var HANDLERS = {
   home: (args) => homeCommand(args),
   entries: (args) => entriesCommand(args),
   days: (args) => daysCommand(args),
@@ -3688,14 +4197,18 @@ var COMMANDS = {
   prep: (args) => prepCommand(args),
   stores: (args) => storesCommand(args)
 };
+var COMMANDS = Object.fromEntries(
+  Object.entries(HANDLERS).map(([name, handler]) => [name, withJsonOut(handler)])
+);
 async function main(argv) {
   await runAxiCli({
     description: DESCRIPTION,
     version: VERSION,
     ...argv ? { argv } : {},
     topLevelHelp: TOP_HELP,
-    home: (args) => homeCommand(args),
+    home: COMMANDS.home,
     commands: COMMANDS,
+    formatError,
     getCommandHelp: (command) => COMMAND_HELP[command]
   });
 }

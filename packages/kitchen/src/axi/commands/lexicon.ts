@@ -1,10 +1,13 @@
 import { api } from "../client.js";
 import { AxiError } from "axi-sdk-js";
-import { parseArgs, requireFlag, rawJson, parseNumberFlag } from "../args.js";
+import { parseArgs, requireFlag, captureJson, parseNumberFlag } from "../args.js";
 import { renderList, renderDetail, field, type FieldDef } from "../toon.js";
 import { SHELF_LIFE_CLASSES } from "../reference.js";
 
-export const LEXICON_HELP = `kitchen-axi lexicon <subcommand> [args] [--json]
+export const LEXICON_HELP = `kitchen-axi lexicon <subcommand> [args] [--json-out[=path]]
+
+  --json-out[=path] on any subcommand writes the full JSON response to a file
+  (bare: an owner-only temp file); stdout stays the TOON view.
 
   list [--store S] [--limit N]              receipt-line → product mappings
   add --store S --line-text T               map a store's receipt line to a
@@ -15,10 +18,10 @@ export const LEXICON_HELP = `kitchen-axi lexicon <subcommand> [args] [--json]
 
 const LEXICON_SCHEMA: FieldDef[] = [
   field("store"),
-  field("line_text", "line"),
+  field("line_text"),
   field("product_ulid"),
-  field("package_size", "pkg"),
-  field("shelf_life_class", "shelf_life"),
+  field("package_size"),
+  field("shelf_life_class"),
 ];
 
 export async function lexiconCommand(args: string[]): Promise<string> {
@@ -36,17 +39,17 @@ export async function lexiconCommand(args: string[]): Promise<string> {
 }
 
 async function listLexicon(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json"], ["store", "limit"]);
+  const { flags } = parseArgs("lexicon list", args);
   const store = typeof flags.store === "string" ? flags.store : undefined;
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", LEXICON_HELP, { min: 1 })) : undefined;
   const result = await api.get("/api/kitchen/lexicon", { store, limit });
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   const lines = result?.lines ?? [];
   return renderList("lexicon", lines, LEXICON_SCHEMA);
 }
 
 async function addLexicon(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json"], ["store", "line-text", "product-ulid", "package-size", "shelf-life"]);
+  const { flags } = parseArgs("lexicon add", args);
   const body: Record<string, unknown> = {
     store: requireFlag(flags, "store", LEXICON_HELP),
     line_text: requireFlag(flags, "line-text", LEXICON_HELP),
@@ -56,7 +59,7 @@ async function addLexicon(args: string[]): Promise<string> {
   if (typeof flags["shelf-life"] === "string") body.shelf_life_class = validateShelfLife(flags["shelf-life"]);
 
   const line = await api.post("/api/kitchen/lexicon", body);
-  if (flags.json) return rawJson(line);
+  captureJson(line);
   return renderDetail("lexicon", line, LEXICON_SCHEMA);
 }
 

@@ -1,35 +1,19 @@
 import { AxiError } from "axi-sdk-js";
+import { createParser, type Parsed } from "../../../core/src/axi/flags.js";
+import { FLAG_SPECS, type CommandName } from "./flag-specs.js";
 
-export interface ParsedArgs {
-  positionals: string[];
-  flags: Record<string, string | boolean>;
-}
+export { captureJson } from "../../../core/src/axi/json-out.js";
+export type { Parsed };
+
+const parse = createParser("sessions-axi");
 
 /**
- * Minimal flag parser. Flags are `--name value`, except those listed in
- * `booleanFlags`, which are bare `--name`. Everything else is a positional.
+ * Parse one command's argv against its declaration in `flag-specs.ts`. Unknown
+ * flags and extra positionals fail here, before any network call
+ * (specs/behaviors/axi-cli-arguments-and-export.md).
  */
-export function parseArgs(args: string[], booleanFlags: string[] = []): ParsedArgs {
-  const positionals: string[] = [];
-  const flags: Record<string, string | boolean> = {};
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i]!;
-    if (arg.startsWith("--")) {
-      const name = arg.slice(2);
-      if (booleanFlags.includes(name)) {
-        flags[name] = true;
-      } else {
-        const value = args[++i];
-        if (value === undefined) {
-          throw new AxiError(`Flag --${name} requires a value`, "VALIDATION_ERROR");
-        }
-        flags[name] = value;
-      }
-    } else {
-      positionals.push(arg);
-    }
-  }
-  return { positionals, flags };
+export function parseArgs(command: CommandName, args: string[]): Parsed {
+  return parse(command, args, FLAG_SPECS[command]);
 }
 
 /** Read a string flag, or throw a validation error if missing. */
@@ -66,9 +50,4 @@ export function validateDate(value: string, flag: string, usage: string): string
     ]);
   }
   return value;
-}
-
-/** Pretty-printed raw JSON, for the `--json` escape hatch. */
-export function rawJson(data: unknown): string {
-  return JSON.stringify(data, null, 2);
 }

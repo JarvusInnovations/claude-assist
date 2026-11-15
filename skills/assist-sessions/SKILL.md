@@ -21,9 +21,12 @@ scripts/sessions-axi --help              # full command list
 scripts/sessions-axi <command> --help    # usage for any command
 ```
 
-Output is [TOON](https://toonformat.dev) (compact tables); pass `--json` for raw API
-JSON. The server defaults to `http://localhost:2529`; override with the
-`CLAUDE_ASSIST_SERVER` environment variable.
+Output is always [TOON](https://toonformat.dev) (compact tables). When a script or
+`jq` needs the data, add `--json-out` (or `--json-out=<path>`): the full API JSON goes to
+a file, and stdout stays the same view plus the file's path, its keys and a `jq` command
+to start from. There is no `--json`. An unknown flag is an error that lists the valid
+ones, never a silently unfiltered result. The server defaults to
+`http://localhost:2529`; override with the `CLAUDE_ASSIST_SERVER` environment variable.
 
 ## Choosing the right command: search vs transcript
 
@@ -105,9 +108,9 @@ and return a continuation anchor rather than dumping the whole session.
 - `scripts/sessions-axi grep <session-id> --tool Bash --match "text" [--in target|text|tool] [--context N]` — find tool calls / text within a transcript — windowed matches + anchors
 - `scripts/sessions-axi grep --tool Edit --match routes.ts [--project P] [--days N]` — no id → cross-session tool-call discovery over the index
 - `scripts/sessions-axi transcript <session-id> --around <uuid> [--before N] [--after M]` — explore a variable range of messages around an anchor (the grep follow-up)
-- `scripts/sessions-axi details <session-id> [--raw]` — session metadata; --raw adds the parsed raw messages
+- `scripts/sessions-axi details <session-id> [--raw --json-out]` — session metadata; --raw adds the parsed raw messages to the --json-out file
 - `scripts/sessions-axi activity [--days N]` — when sessions had turns of any kind, human or automated — a timeline feed, not a time measure (default 7 days)
-- `scripts/sessions-axi engagement --from DATE --to DATE [--tz IANA] [--day-start HH:MM] [--blocks] [--sessions]` — human hands-on time per local day and project — automated turns excluded, parallel sessions counted once; the tool for "how much time on X?". --day-start moves the day boundary, --blocks adds the time blocks (--json), and the header carries complete_through (how fresh ingest is)
+- `scripts/sessions-axi engagement --from DATE --to DATE [--tz IANA] [--day-start HH:MM] [--sessions] [--blocks --json-out]` — human hands-on time per local day and project — automated turns excluded, parallel sessions counted once; the tool for "how much time on X?". --day-start moves the day boundary, --blocks adds the time blocks to the --json-out file, and the header carries complete_through (how fresh ingest is)
 
 ### Overview
 
@@ -141,4 +144,5 @@ and return a continuation anchor rather than dumping the whole session.
 - AI outlines/titles are generated asynchronously when `ANTHROPIC_API_KEY` is set; trigger
   manually with `scripts/sessions-axi outlines`.
 - Transcript output is text (`[U]` user, `[A]` assistant, `[T]` tool); everything else is
-  TOON, with `--json` for raw JSON and `details <id> --raw` for full raw messages.
+  TOON, with `--json-out` to write the full JSON to a file and
+  `details <id> --raw --json-out` to include the raw messages in it.

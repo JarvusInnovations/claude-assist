@@ -1,10 +1,13 @@
 import { api } from "../client.js";
 import { AxiError } from "axi-sdk-js";
-import { parseArgs, requirePositional, requireFlag, rawJson, parseNumberFlag, parseJson } from "../args.js";
+import { parseArgs, requirePositional, requireFlag, captureJson, parseNumberFlag, parseJson } from "../args.js";
 import { renderList, renderDetail, renderObject, renderOutput, renderHelp, count, field, custom, type FieldDef } from "../toon.js";
 import { cliInvocation } from "../invocation.js";
 
-export const RECIPES_HELP = `kitchen-axi recipes <subcommand> [args] [--json]
+export const RECIPES_HELP = `kitchen-axi recipes <subcommand> [args] [--json-out[=path]]
+
+  --json-out[=path] on any subcommand writes the full JSON response to a file
+  (bare: an owner-only temp file); stdout stays the TOON view.
 
   list [--q TEXT] [--limit N]       the reselect strip: merged sheet + pushed +
                                       promoted recipes, plus recent logged items.
@@ -33,15 +36,15 @@ const RECIPE_SCHEMA: FieldDef[] = [
   field("ulid"),
   field("name"),
   field("source"),
-  count("components", "n_components"),
+  count("components"),
 ];
 
 const RECENT_SCHEMA: FieldDef[] = [
   field("label"),
-  field("log_count", "logged"),
-  field("calories", "kcal"),
-  field("protein_g", "protein"),
-  { type: "dateOnly", key: "last_logged_at", as: "last" },
+  field("log_count"),
+  field("calories"),
+  field("protein_g"),
+  { type: "dateOnly", key: "last_logged_at" },
 ];
 
 export async function recipesCommand(args: string[]): Promise<string> {
@@ -63,11 +66,11 @@ export async function recipesCommand(args: string[]): Promise<string> {
 }
 
 async function listRecipes(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json"], ["q", "limit"]);
+  const { flags } = parseArgs("recipes list", args);
   const q = typeof flags.q === "string" ? flags.q : undefined;
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", RECIPES_HELP, { min: 1 })) : undefined;
   const strip = await api.get("/api/kitchen/reselect", { q, limit });
-  if (flags.json) return rawJson(strip);
+  captureJson(strip);
   const recipes = strip?.recipes ?? [];
   const recent = strip?.recent ?? [];
   return renderOutput([
@@ -77,7 +80,7 @@ async function listRecipes(args: string[]): Promise<string> {
 }
 
 async function pushRecipe(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"], ["ulid"]);
+  const { positionals, flags } = parseArgs("recipes push", args);
   const jsonArg = positionals[0];
   if (!jsonArg) {
     throw new AxiError("recipes push needs a recipe JSON body", "VALIDATION_ERROR", [RECIPES_HELP]);
@@ -97,7 +100,7 @@ async function pushRecipe(args: string[]): Promise<string> {
   }
 
   const { status, body: recipe } = await api.postWithStatus("/api/kitchen/recipes", body);
-  if (flags.json) return rawJson(recipe);
+  captureJson(recipe);
   const created = status === 201;
   const cli = cliInvocation();
   return renderOutput([
@@ -115,10 +118,10 @@ async function pushRecipe(args: string[]): Promise<string> {
 }
 
 async function deleteRecipe(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"], []);
+  const { positionals, flags } = parseArgs("recipes delete", args);
   const ulid = requirePositional(positionals, 0, "recipe ulid", RECIPES_HELP);
   const archived = await api.delJson(`/api/kitchen/recipes/${encodeURIComponent(ulid)}`);
-  if (flags.json) return rawJson(archived);
+  captureJson(archived);
   return renderOutput([
     renderObject({ archived: archived?.ulid, name: archived?.name, archived_at: archived?.archived_at }),
     renderHelp([
@@ -128,10 +131,10 @@ async function deleteRecipe(args: string[]): Promise<string> {
 }
 
 async function promote(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"], ["name"]);
+  const { positionals, flags } = parseArgs("recipes promote", args);
   const ulid = requirePositional(positionals, 0, "entry ulid", RECIPES_HELP);
   const name = requireFlag(flags, "name", RECIPES_HELP);
   const recipe = await api.post(`/api/kitchen/entries/${encodeURIComponent(ulid)}/promote`, { name });
-  if (flags.json) return rawJson(recipe);
+  captureJson(recipe);
   return renderDetail("recipe", recipe, RECIPE_SCHEMA);
 }
