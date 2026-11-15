@@ -34,8 +34,8 @@ proposing a design). Query the DAG:
 ## House skills
 
 Vendored under `.agents/skills/` alongside specops: **jarvus-fastify**
-(backend conventions for this exact stack), **agent-dev-workflow** (worktree-
-isolated local dev), **ci-quality-gates** (pre-merge CI), **axi-skills**
+(backend conventions for this exact stack), **jarvus-dev-flow** (worktree-
+isolated local dev), **jarvus-ci** (pre-merge CI), **axi-skills**
 (packaging an AXI CLI inside a skill). Reach for the relevant one before
 improvising — they carry conventions this repo is expected to follow.
 

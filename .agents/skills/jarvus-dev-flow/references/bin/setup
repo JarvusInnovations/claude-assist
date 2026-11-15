@@ -40,9 +40,9 @@ url="$(app_database_url)"
 if [ -n "$snapshot" ]; then
   echo "Loading snapshot: ${snapshot}..." >&2
   if [[ "$snapshot" == gs://* ]]; then
-    gcloud storage cat "$snapshot" | strip_cloudsql | app_psql -d "$db" >/dev/null 2>&1
+    gcloud storage cat "$snapshot" | app_strip_snapshot | app_psql -d "$db" >/dev/null
   else
-    strip_cloudsql < "$snapshot" | app_psql -d "$db" >/dev/null 2>&1
+    app_strip_snapshot < "$snapshot" | app_psql -d "$db" >/dev/null
   fi
 fi
 

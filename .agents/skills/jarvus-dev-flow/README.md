@@ -1,4 +1,4 @@
-# agent-dev-workflow
+# jarvus-dev-flow
 
 Scaffolds an **agent-friendly local dev workflow**: a `bin/` task-runner (modeled on GitHub's
 *scripts-to-rule-them-all*) over a shared Postgres container that gives **every git worktree its own
@@ -15,6 +15,9 @@ A Postgres-backed project where you want any of:
   subcommands, on-disk `.dev/logs/`) instead of double-booting,
 - a `bin/gc` that **sweeps merged agent worktrees** — proof-based (ancestry / `git cherry` / merged
   PR), stopping their dev sessions and dropping their derived databases along the way,
+- a `bin/stop` that **shuts the shared Postgres container down** once it proves nothing is using it
+  — no live dev session in any worktree, no client connections — for when idle project containers
+  pile up on one machine,
 - an end to tests clobbering local dev/demo data,
 - a replacement for a docker-compose-just-for-local-Postgres setup.
 
@@ -23,11 +26,13 @@ is small.
 
 ## Install
 
-**Recommended scope: global.** You reach for this to *bootstrap* a project's dev workflow, often
-before the repo has any skills wired up — so it's most useful installed once for all your projects.
+**Recommended scope: per-project.** The workflow is set up once, but it is how work gets done in the
+repo every day, and the practices behind it keep improving. Installed in the repo, the skill is how
+those updates reach the project. Each one arrives as a diff, and the agent can apply it to the
+repo's tooling.
 
 ```bash
-npx skills add --global JarvusInnovations/agent-skills --skill agent-dev-workflow
+npx skills add JarvusInnovations/agent-skills --skill jarvus-dev-flow
 ```
 
 Then ask your agent to set up the bin/ workflow. See `SKILL.md` for the full scaffold and

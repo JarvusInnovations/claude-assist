@@ -1,7 +1,7 @@
 ---
-name: ci-quality-gates
+name: jarvus-ci
 description: >-
-  Stand up the pre-merge CI quality gates a repo runs before code lands on develop — tool provisioning (asdf + .tool-versions + cache), lockfile-frozen installs, path-filtered GitHub Actions, and the lint / format:check / typecheck / test gate set with Jarvus's standard linters (oxlint + oxfmt for TypeScript, ruff for Python, tofu fmt/validate for IaC). Use when setting up CI for a new repo, adding a lint/format/type-check/test gate to an existing one, wiring GitHub Actions for code quality, choosing or standardizing linters/formatters, fixing CI that re-installs tools slowly, or noticing a repo runs tests but no linter. Scope stops at merge — Release-PR automation belongs to release-flow; build/publish/deploy to per-stack build + deploy skills. Triggers: "set up CI", "add linting/CI", "GitHub Actions checks", "oxlint", "oxfmt", "ruff", "format check", "type-check in CI", "quality gate", "lint isn't running in CI", "asdf in CI".
+  Stand up the pre-merge CI quality gates a repo runs before code lands on develop — tool provisioning (asdf + .tool-versions + cache), lockfile-frozen installs, path-filtered GitHub Actions, and the lint / format:check / typecheck / test gate set with Jarvus's standard linters (oxlint + oxfmt for TypeScript, ruff for Python, tofu fmt/validate for IaC). Use when setting up CI for a new repo, adding a lint/format/type-check/test gate to an existing one, wiring GitHub Actions for code quality, choosing or standardizing linters/formatters, fixing CI that re-installs tools slowly, or noticing a repo runs tests but no linter. Scope stops at merge — Release-PR automation belongs to jarvus-release-flow; build/publish/deploy to per-stack build + deploy skills. Triggers: "set up CI", "add linting/CI", "GitHub Actions checks", "oxlint", "oxfmt", "ruff", "format check", "type-check in CI", "quality gate", "lint isn't running in CI", "asdf in CI".
 ---
 
 # CI quality gates (pre-merge checks)
@@ -21,7 +21,7 @@ re-deciding — or skipping it.
 
 | In scope (gates a PR before merge) | Out of scope (hand off) |
 | --- | --- |
-| asdf provisioning + tool caching | Release-PR automation → **`release-flow`** |
+| asdf provisioning + tool caching | Release-PR automation → **`jarvus-release-flow`** |
 | lint, format-check, type-check, test | Container build / image publish → per-stack build docs |
 | IaC `fmt` + `validate` (credential-free) | Deploy / `tofu apply` → **`sysadmin`** / deploy skill |
 | docs `build --strict` (optional) | `tofu plan` & integration tests needing secrets (later gate) |
@@ -99,7 +99,7 @@ across packages and only calls `bun run <name>`. Details + the naming caveat in
 `pytest` suite that hits Postgres is still fork-safe (no secrets), so it belongs
 here: give CI an **ephemeral service-container Postgres** and an explicit
 `DATABASE_URL`. Locally, that same `test` script gets an isolated DB from
-**`agent-dev-workflow`**'s `bin/test` + test preload, whose `??=` defers to CI's
+**`jarvus-dev-flow`**'s `bin/test` + test preload, whose `??=` defers to CI's
 `DATABASE_URL`. (Integration tests that need *secrets* are the separate later gate
 in the scope table above.)
 
