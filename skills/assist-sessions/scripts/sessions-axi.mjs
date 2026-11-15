@@ -566,6 +566,261 @@ function mergeHomeHeader(header, output) {
   };
 }
 
+// packages/core/src/axi/errors.ts
+var USAGE_CODES = /* @__PURE__ */ new Set(["VALIDATION_ERROR", "UNKNOWN_FLAG", "USAGE"]);
+function renderFailure(message, code, suggestions = []) {
+  return `${encode({ error: message, code, ...suggestions.length > 0 ? { help: suggestions } : {} })}
+`;
+}
+function formatError(error) {
+  if (error instanceof AxiError) {
+    return {
+      output: renderFailure(error.message, error.code, error.suggestions),
+      exitCode: USAGE_CODES.has(error.code) ? 2 : exitCodeForError(error)
+    };
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return { output: renderFailure(message, "UNKNOWN"), exitCode: 1 };
+}
+
+// packages/core/src/axi/json-out.ts
+import {
+  accessSync,
+  chmodSync,
+  closeSync,
+  constants,
+  fchmodSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  rmSync,
+  statSync,
+  writeSync
+} from "node:fs";
+import { homedir as homedir2, tmpdir } from "node:os";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+var pending;
+function refuse(message, hint) {
+  throw new AxiError(`--json-out: ${message}`, "VALIDATION_ERROR", [hint]);
+}
+var BARE_HINT = "Pass a bare --json-out for an owner-only file in the temp directory";
+function ownedByCaller(st) {
+  return typeof process.getuid !== "function" || st.uid === process.getuid();
+}
+function expandPath(path) {
+  const expanded = path === "~" ? homedir2() : path.startsWith("~/") ? join(homedir2(), path.slice(2)) : path;
+  return isAbsolute(expanded) ? expanded : resolve(expanded);
+}
+function privateDir(tool) {
+  const dir = join(tmpdir(), tool);
+  const explicit = `Pass a path you own instead: --json-out=<path>`;
+  try {
+    mkdirSync(dir, { recursive: true, mode: 448 });
+  } catch (err) {
+    refuse(`cannot create ${dir} (${err.code ?? "error"})`, explicit);
+  }
+  const st = lstatSync(dir);
+  if (!st.isDirectory()) refuse(`${dir} is not a directory (a symlink?)`, explicit);
+  if (!ownedByCaller(st)) refuse(`${dir} belongs to another user`, explicit);
+  chmodSync(dir, 448);
+  return dir;
+}
+function validateExplicit(given) {
+  const path = expandPath(given);
+  const parent = dirname(path);
+  let dir;
+  try {
+    dir = statSync(parent);
+  } catch {
+    dir = void 0;
+  }
+  if (!dir?.isDirectory()) {
+    refuse(`${path} cannot be written: the directory ${parent} does not exist`, `Create it first, or: ${BARE_HINT}`);
+  }
+  let st;
+  try {
+    st = lstatSync(path);
+  } catch {
+    st = void 0;
+  }
+  const hint = `Name a new file or one of your own regular files, or: ${BARE_HINT}`;
+  if (st?.isSymbolicLink()) refuse(`${path} is a symlink`, hint);
+  if (st?.isDirectory()) refuse(`${path} is a directory`, hint);
+  if (st && !st.isFile()) refuse(`${path} is not a regular file`, hint);
+  if (st && !ownedByCaller(st)) refuse(`${path} belongs to another user`, hint);
+  try {
+    accessSync(st ? path : parent, constants.W_OK);
+  } catch {
+    refuse(`${path} cannot be written: permission denied`, hint);
+  }
+  return path;
+}
+function requestJsonOut(tool, command, value, now = /* @__PURE__ */ new Date()) {
+  let target;
+  if (value === true) {
+    const stamp = now.toISOString().replace(/[:.]/g, "-");
+    const slug = command.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "home";
+    target = { tool, command, path: join(privateDir(tool), `${stamp}-${slug}.json`), auto: true };
+  } else {
+    if (value === "") refuse("--json-out= needs a path after the =", `--json-out=out.json writes there. ${BARE_HINT}`);
+    target = { tool, command, path: validateExplicit(value), auto: false };
+  }
+  pending = { target, captured: false, payload: void 0 };
+  return target;
+}
+function takePending() {
+  const request = pending;
+  pending = void 0;
+  return request;
+}
+function captureJson(payload) {
+  if (!pending) return;
+  pending.captured = true;
+  pending.payload = payload;
+}
+function isRecord(v) {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+function unionKeys(rows) {
+  const seen = /* @__PURE__ */ new Set();
+  for (const row of rows) if (isRecord(row)) for (const key of Object.keys(row)) seen.add(key);
+  return [...seen];
+}
+var MAX_NESTED_KEYS = 24;
+function nested(keys) {
+  const shown = keys.slice(0, MAX_NESTED_KEYS);
+  const more = keys.length - shown.length;
+  return `{${shown.join(",")}${more > 0 ? `,\u2026+${more}` : ""}}`;
+}
+function describePayload(payload) {
+  if (Array.isArray(payload)) {
+    const columns = unionKeys(payload);
+    return {
+      size: columns.length ? `${payload.length} row${payload.length === 1 ? "" : "s"}, ${columns.length} col${columns.length === 1 ? "" : "s"}` : `${payload.length} item${payload.length === 1 ? "" : "s"}`,
+      columns,
+      filter: ".[]"
+    };
+  }
+  if (isRecord(payload)) {
+    const keys = Object.keys(payload);
+    let primary;
+    const columns = keys.map((key) => {
+      const value = payload[key];
+      if (Array.isArray(value)) {
+        const rowKeys = unionKeys(value);
+        if (primary === void 0 && (rowKeys.length > 0 || value.length === 0)) primary = key;
+        return `${key}[${value.length}]${rowKeys.length ? nested(rowKeys) : ""}`;
+      }
+      if (isRecord(value)) return `${key}${nested(Object.keys(value))}`;
+      return key;
+    });
+    const safe = primary !== void 0 && /^[A-Za-z_][A-Za-z0-9_]*$/.test(primary);
+    return {
+      size: `1 object, ${keys.length} key${keys.length === 1 ? "" : "s"}`,
+      columns,
+      filter: primary === void 0 ? "." : safe ? `.${primary}[]` : `.[${JSON.stringify(primary)}][]`
+    };
+  }
+  return { size: payload === null || payload === void 0 ? "null" : typeof payload, columns: [], filter: "." };
+}
+function quotePath(path) {
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(path) ? path : `'${path.replace(/'/g, `'\\''`)}'`;
+}
+function writeTarget(target, body) {
+  const dot = target.path.lastIndexOf(".");
+  let created;
+  try {
+    if (target.auto) {
+      for (let n = 1; n < 100; n++) {
+        const candidate = n === 1 ? target.path : `${target.path.slice(0, dot)}-${n}${target.path.slice(dot)}`;
+        let fd2;
+        try {
+          fd2 = openSync(candidate, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 384);
+        } catch (err) {
+          if (err.code === "EEXIST") continue;
+          throw err;
+        }
+        created = candidate;
+        try {
+          fchmodSync(fd2, 384);
+          writeSync(fd2, body);
+        } finally {
+          closeSync(fd2);
+        }
+        return { ok: true, path: candidate, overwrote: false };
+      }
+      return { ok: false, path: target.path, reason: "no free file name in the temp directory" };
+    }
+    let existed = false;
+    try {
+      existed = lstatSync(target.path).isFile();
+    } catch {
+      existed = false;
+    }
+    const fd = openSync(target.path, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 384);
+    if (!existed) created = target.path;
+    try {
+      fchmodSync(fd, 384);
+      writeSync(fd, body);
+    } finally {
+      closeSync(fd);
+    }
+    return { ok: true, path: target.path, overwrote: existed };
+  } catch (err) {
+    if (created) rmSync(created, { force: true });
+    const code = err.code;
+    const reason = code === "ELOOP" ? "the path is a symlink" : code === "ENOENT" ? "its directory does not exist" : code === "EACCES" ? "permission denied" : code ?? err.message;
+    return { ok: false, path: created ?? target.path, reason };
+  }
+}
+var HELP_BLOCK = /(^|\n)help\[(\d+)\]:\n((?: {2}.*(?:\n|$))+)$/;
+function appendBlock(text, lines, hint) {
+  const body = text.replace(/\n+$/, "");
+  const m = HELP_BLOCK.exec(body);
+  if (!m) return [body, ...lines, "help[1]:", `  ${hint}`].filter((l) => l !== "").join("\n");
+  const head = body.slice(0, m.index);
+  const helpLines = m[3].replace(/\n$/, "");
+  return [head, ...lines, `help[${Number(m[2]) + 1}]:`, helpLines, `  ${hint}`].filter((l) => l !== "").join("\n");
+}
+function withJsonOut(handler) {
+  return async (...args) => {
+    takePending();
+    let text;
+    let request;
+    try {
+      text = await handler(...args);
+    } finally {
+      request = takePending();
+    }
+    if (!request) return text;
+    const { target } = request;
+    if (!request.captured) {
+      throw new AxiError(`--json-out: \`${target.command}\` produced no JSON payload`, "INTERNAL_ERROR", [
+        "Nothing was written. Run the command without --json-out"
+      ]);
+    }
+    const result = writeTarget(target, `${JSON.stringify(request.payload ?? null, null, 2)}
+`);
+    if (!result.ok) {
+      process.exitCode = 1;
+      return appendBlock(
+        text,
+        [`export_error: could not write ${result.path}: ${result.reason}`],
+        target.auto ? "Nothing was written; pass a path you can write: --json-out=<path>" : "Nothing was written; fix the path, or pass a bare --json-out for a file in the temp directory"
+      );
+    }
+    const shape = describePayload(request.payload ?? null);
+    return appendBlock(
+      text,
+      [
+        `${result.overwrote ? "overwrote" : "wrote"}: ${result.path} (${shape.size})`,
+        shape.columns.length ? `columns: ${shape.columns.join(", ")}` : ""
+      ],
+      `Run \`jq '${shape.filter}' ${quotePath(result.path)}\` to process the full result`
+    );
+  };
+}
+
 // packages/sessions/src/axi/reference.ts
 var DESCRIPTION = "Search and recall context from past Claude Code sessions across machines \u2014 by topic (full-text search), by time period (cross-session transcripts), and by activity.";
 var COMMAND_GROUPS = [
@@ -596,14 +851,14 @@ var COMMAND_GROUPS = [
         usage: "transcript <session-id> --around <uuid> [--before N] [--after M]",
         summary: "explore a variable range of messages around an anchor (the grep follow-up)"
       },
-      { usage: "details <session-id> [--raw]", summary: "session metadata; --raw adds the parsed raw messages" },
+      { usage: "details <session-id> [--raw --json-out]", summary: "session metadata; --raw adds the parsed raw messages to the --json-out file" },
       {
         usage: "activity [--days N]",
         summary: "when sessions had turns of any kind, human or automated \u2014 a timeline feed, not a time measure (default 7 days)"
       },
       {
-        usage: "engagement --from DATE --to DATE [--tz IANA] [--day-start HH:MM] [--blocks] [--sessions]",
-        summary: 'human hands-on time per local day and project \u2014 automated turns excluded, parallel sessions counted once; the tool for "how much time on X?". --day-start moves the day boundary, --blocks adds the time blocks (--json), and the header carries complete_through (how fresh ingest is)'
+        usage: "engagement --from DATE --to DATE [--tz IANA] [--day-start HH:MM] [--sessions] [--blocks --json-out]",
+        summary: 'human hands-on time per local day and project \u2014 automated turns excluded, parallel sessions counted once; the tool for "how much time on X?". --day-start moves the day boundary, --blocks adds the time blocks to the --json-out file, and the header carries complete_through (how fresh ingest is)'
       }
     ]
   },
@@ -637,8 +892,8 @@ function discoveryHelp(invocation) {
 }
 
 // packages/sessions/src/axi/invocation.ts
-import { accessSync, constants } from "node:fs";
-import { homedir as homedir2 } from "node:os";
+import { accessSync as accessSync2, constants as constants2 } from "node:fs";
+import { homedir as homedir3 } from "node:os";
 import { fileURLToPath } from "node:url";
 var cached;
 function cliInvocation() {
@@ -652,7 +907,7 @@ function cliInvocation() {
   const shim = bundle.replace(/\.mjs$/, "");
   try {
     if (shim !== bundle) {
-      accessSync(shim, constants.X_OK);
+      accessSync2(shim, constants2.X_OK);
       cached = quote(collapseHome(shim));
       return cached;
     }
@@ -662,7 +917,7 @@ function cliInvocation() {
   return cached;
 }
 function collapseHome(p) {
-  const home = homedir2();
+  const home = homedir3();
   return home && p.startsWith(`${home}/`) ? `~${p.slice(home.length)}` : p;
 }
 function quote(p) {
@@ -672,7 +927,7 @@ function quote(p) {
 // packages/sessions/src/axi/commands/home.ts
 import { execSync } from "node:child_process";
 import { basename as basename2 } from "node:path";
-import { homedir as homedir3 } from "node:os";
+import { homedir as homedir4 } from "node:os";
 
 // packages/sessions/src/axi/client.ts
 var DEFAULT_SERVER = "http://localhost:2529";
@@ -766,28 +1021,174 @@ var api = {
   }
 };
 
-// packages/sessions/src/axi/args.ts
-function parseArgs(args, booleanFlags = []) {
+// packages/core/src/axi/flags.ts
+var LONG_FLAG = /^--[A-Za-z]/;
+var SHORT_FLAG = /^-[A-Za-z]$/;
+function createParser(tool) {
+  return (command, argv, spec) => parseFlags(tool, command, argv, spec);
+}
+function parseFlags(tool, command, argv, spec) {
+  const valueFlags = new Set(spec.value ?? []);
+  const boolFlags = new Set(spec.boolean ?? []);
+  const multiFlags = new Set(spec.multi ?? []);
+  const deprecated = spec.deprecated ?? {};
+  const offersJsonOut = spec.jsonOut === true;
+  const label = command || "home";
+  const known = [...valueFlags, ...boolFlags, ...multiFlags, ...offersJsonOut ? ["json-out"] : []].sort().map((f) => `--${f}`);
   const positionals = [];
   const flags = {};
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg.startsWith("--")) {
-      const name = arg.slice(2);
-      if (booleanFlags.includes(name)) {
-        flags[name] = true;
-      } else {
-        const value = args[++i];
-        if (value === void 0) {
-          throw new AxiError(`Flag --${name} requires a value`, "VALIDATION_ERROR");
-        }
-        flags[name] = value;
-      }
+  const multi = {};
+  let jsonOutValue;
+  let afterBareJsonOut;
+  const spaceFormHint = "--json-out takes its path with =: --json-out=<path> (a bare --json-out writes a temp file)";
+  const unknown = (typed) => {
+    let hint;
+    if (deprecated[typed]) {
+      hint = deprecated[typed];
+    } else if (typed === "--json") {
+      hint = offersJsonOut ? "--json is not supported; use --json-out to write the JSON to a file (--json-out=<path> to choose where)" : `--json is not supported, and \`${label}\` has no JSON export${typeof spec.jsonOut === "string" ? `: ${spec.jsonOut}` : ""}`;
+    } else if (typed === "--json-out") {
+      hint = `\`${label}\` has no JSON export${typeof spec.jsonOut === "string" ? `: ${spec.jsonOut}` : ""}`;
+    } else if (SHORT_FLAG.test(typed)) {
+      hint = `${typed} is not a flag of ${tool}; short flags are not supported. ${validList()}`;
     } else {
-      positionals.push(arg);
+      hint = validList();
     }
+    throw new AxiError(`unknown flag ${typed} for \`${label}\``, "UNKNOWN_FLAG", [hint]);
+  };
+  const validList = () => known.length > 0 ? `valid flags for \`${label}\`: ${known.join(", ")} (--help always allowed)` : `\`${label}\` takes no flags (--help always allowed)`;
+  const takeValue = (name, inline, i) => {
+    if (inline !== void 0) return { value: inline, next: i };
+    const next = argv[i + 1];
+    if (next === void 0 || LONG_FLAG.test(next)) {
+      throw new AxiError(`--${name} requires a value`, "USAGE", [
+        `Pass \`--${name} <value>\`, or \`--${name}=<value>\` when the value itself starts with --`
+      ]);
+    }
+    return { value: next, next: i + 1 };
+  };
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--") {
+      positionals.push(...argv.slice(i + 1));
+      break;
+    }
+    if (SHORT_FLAG.test(arg)) unknown(arg);
+    if (!LONG_FLAG.test(arg)) {
+      if (i > 0 && argv[i - 1] === "--json-out" && jsonOutValue === true) {
+        if (/\.json$/i.test(arg)) throw new AxiError(`--json-out does not take a separate value (got ${arg})`, "USAGE", [spaceFormHint]);
+        afterBareJsonOut = positionals.length;
+      }
+      positionals.push(arg);
+      continue;
+    }
+    const eq = arg.indexOf("=");
+    const typed = eq === -1 ? arg : arg.slice(0, eq);
+    const name = typed.slice(2);
+    const inline = eq === -1 ? void 0 : arg.slice(eq + 1);
+    if (name === "help") continue;
+    if (name === "json-out") {
+      if (!offersJsonOut) unknown(typed);
+      if (jsonOutValue !== void 0) throw new AxiError("--json-out was given more than once", "USAGE", ["Pass it once"]);
+      jsonOutValue = inline === void 0 ? true : inline;
+      continue;
+    }
+    if (boolFlags.has(name)) {
+      if (inline !== void 0) {
+        throw new AxiError(`--${name} is a switch and takes no value`, "USAGE", [`Pass \`--${name}\` on its own`]);
+      }
+      flags[name] = true;
+      continue;
+    }
+    if (valueFlags.has(name)) {
+      if (name in flags) {
+        throw new AxiError(`--${name} was given more than once`, "USAGE", [`\`${label}\` takes one --${name}`]);
+      }
+      const taken = takeValue(name, inline, i);
+      flags[name] = taken.value;
+      i = taken.next;
+      continue;
+    }
+    if (multiFlags.has(name)) {
+      const taken = takeValue(name, inline, i);
+      (multi[name] ??= []).push(taken.value);
+      i = taken.next;
+      continue;
+    }
+    unknown(typed);
   }
-  return { positionals, flags };
+  const max = spec.positionals ?? 0;
+  if (max !== "many" && positionals.length > max) {
+    const extra = positionals.slice(max);
+    const takes = max === 0 ? `\`${label}\` takes no positional arguments` : `\`${label}\` takes ${max} positional argument${max > 1 ? "s" : ""}`;
+    const hints = [`${takes}${spec.usage ? `. Usage: ${spec.usage}` : ""}`];
+    if (afterBareJsonOut !== void 0 && afterBareJsonOut >= max) hints.unshift(spaceFormHint);
+    throw new AxiError(`unexpected argument${extra.length > 1 ? "s" : ""} for \`${label}\`: ${extra.join(" ")}`, "USAGE", hints);
+  }
+  const parsed = { positionals, flags, multi };
+  if (jsonOutValue !== void 0) parsed.jsonOut = requestJsonOut(tool, command, jsonOutValue);
+  return parsed;
+}
+
+// packages/sessions/src/axi/flag-specs.ts
+var FLAG_SPECS = {
+  home: { value: ["project", "recent"], boolean: ["all"], jsonOut: true },
+  search: {
+    value: [
+      "query",
+      "project",
+      "days",
+      "since",
+      "until",
+      "tools",
+      "files-read",
+      "files-written",
+      "machine",
+      "min-user-messages",
+      "limit",
+      "offset"
+    ],
+    boolean: ["forever", "include-empty"],
+    jsonOut: true
+  },
+  grep: {
+    value: ["tool", "match", "in", "context", "limit", "after", "before", "project", "days"],
+    boolean: ["include-sidechain"],
+    positionals: 1,
+    usage: "sessions-axi grep [<session-id>] --tool SUBSTR | --match SUBSTR [flags]",
+    jsonOut: true
+  },
+  transcript: {
+    value: ["after", "before", "group", "project", "min-user-messages", "around"],
+    boolean: ["include-tools"],
+    positionals: 1,
+    usage: "sessions-axi transcript [<session-id>] [flags]",
+    // Offered in --around mode only; the handler refuses it for plain text.
+    jsonOut: true
+  },
+  details: {
+    boolean: ["raw"],
+    positionals: 1,
+    usage: "sessions-axi details <session-id> [--raw --json-out[=path]]",
+    jsonOut: true
+  },
+  activity: { value: ["days"], jsonOut: true },
+  engagement: {
+    value: ["from", "to", "tz", "block-minutes", "gap-minutes", "day-start"],
+    boolean: ["sessions", "blocks"],
+    jsonOut: true
+  },
+  stats: { value: ["days", "machine"], jsonOut: true },
+  machines: { jsonOut: true },
+  outlines: { positionals: "many", jsonOut: true },
+  sync: { boolean: ["force"], jsonOut: true },
+  share: { positionals: 1, usage: "sessions-axi share <session-id>", jsonOut: true }
+};
+
+// packages/sessions/src/axi/args.ts
+var parse = createParser("sessions-axi");
+function parseArgs(command, args) {
+  return parse(command, args, FLAG_SPECS[command]);
 }
 function requireFlag(flags, name, usage) {
   const v = flags[name];
@@ -813,13 +1214,13 @@ function validateDate(value, flag, usage) {
   }
   return value;
 }
-function rawJson(data) {
-  return JSON.stringify(data, null, 2);
-}
 
 // packages/sessions/src/axi/toon.ts
 function field(key, as) {
   return { type: "field", key, as };
+}
+function joinArray(key, subkey, as, empty = "none") {
+  return { type: "joinArray", key, subkey, as, empty };
 }
 function count(key, as) {
   return { type: "count", key, as };
@@ -945,14 +1346,14 @@ var RECENT_SCHEMA = [
   field("id"),
   custom("title", (s) => s.title ?? s.session_name ?? null),
   field("machine"),
-  relativeTime("started_at", "started"),
+  relativeTime("started_at"),
   custom("last_activity", (s) => formatRelativeTime(s.ended_at ?? s.started_at))
 ];
 var MACHINE_SCHEMA = [
-  field("machine_id", "machine"),
-  { type: "boolYesNo", key: "is_localhost", as: "localhost" },
-  field("session_count", "sessions"),
-  relativeTime("last_sync_at", "last_sync")
+  field("machine_id"),
+  { type: "boolYesNo", key: "is_localhost" },
+  field("session_count"),
+  relativeTime("last_sync_at")
 ];
 function detectGitProject() {
   try {
@@ -967,11 +1368,11 @@ function detectGitProject() {
   }
 }
 function collapseHome2(p) {
-  const home = homedir3();
+  const home = homedir4();
   return home && p.startsWith(`${home}/`) ? `~${p.slice(home.length)}` : p;
 }
 async function homeCommand(args) {
-  const { flags } = parseArgs(args, ["json", "all"]);
+  const { flags } = parseArgs("home", args);
   const server = resolveServer();
   const cli = cliInvocation();
   const recentN = typeof flags.recent === "string" ? Math.max(parseInt(flags.recent, 10) || 5, 1) : 5;
@@ -990,7 +1391,7 @@ async function homeCommand(args) {
     } catch {
       recent = null;
     }
-    if (flags.json) return rawJson({ server, project: detected.name, cwd: detected.root, recent });
+    captureJson({ server, project: detected.name, cwd: detected.root, recent });
     const header = renderObject({
       server,
       project: detected.name,
@@ -1022,7 +1423,7 @@ async function homeCommand(args) {
   } catch {
     machines = null;
   }
-  if (flags.json) return rawJson({ server, machines });
+  captureJson({ server, machines });
   const blocks = [renderObject({ server })];
   if (machines === null) {
     blocks.push("The server is not reachable. Set CLAUDE_ASSIST_SERVER or start it (cd apps/server && docker-compose up -d).");
@@ -1062,22 +1463,23 @@ var SEARCH_HELP = `sessions-axi search [flags]
   --include-empty          include sessions with no assistant output
   --limit N                max results (default 20, max 100)
   --offset N               pagination offset
-  --json                   raw API JSON`;
+  --json-out[=path]        write the full JSON to a file (bare: an owner-only
+                           temp file); stdout stays this view`;
 function shortProject(p) {
   if (typeof p !== "string" || !p) return "\u2014";
   return p.split("/").filter(Boolean).pop() ?? p;
 }
 var SCHEMA = [
   field("id"),
-  relativeTime("started_at", "started"),
+  relativeTime("started_at"),
   custom("project", (s) => shortProject(s.project_path)),
   custom("title", (s) => s.title ?? s.session_name ?? null),
-  field("user_message_count", "user_msgs"),
-  count("tools_used", "tools"),
+  field("user_message_count"),
+  count("tools_used"),
   field("machine")
 ];
 async function searchCommand(args) {
-  const { flags } = parseArgs(args, ["json", "forever", "include-empty"]);
+  const { flags } = parseArgs("search", args);
   const query = {};
   if (typeof flags.query === "string") query.search = flags.query;
   if (typeof flags.project === "string") query.project = flags.project;
@@ -1094,7 +1496,7 @@ async function searchCommand(args) {
   if (typeof flags.limit === "string") query.limit = flags.limit;
   if (typeof flags.offset === "string") query.offset = flags.offset;
   const rows = await api.get("/api/sessions", query);
-  if (flags.json) return rawJson(rows);
+  captureJson(rows);
   if (!Array.isArray(rows) || rows.length === 0) {
     return "sessions: 0 matching sessions found";
   }
@@ -1126,10 +1528,17 @@ sessions-axi transcript <session-id> --around <uuid> [--before N] [--after M]   
   --around <uuid>          read a window of messages around this message uuid
   --before N / --after M   in --around mode these are message COUNTS (not dates);
                            the result lists head/tail anchors + how much remains,
-                           so you can keep walking outward. --json for raw.`;
+                           so you can keep walking outward.
+  --json-out[=path]        --around mode only: write the window as JSON to a
+                           file (bare: an owner-only temp file)`;
 async function transcriptCommand(args) {
-  const { positionals, flags } = parseArgs(args, ["include-tools", "json"]);
+  const { positionals, flags, jsonOut } = parseArgs("transcript", args);
   const id = positionals[0];
+  if (jsonOut && typeof flags.around !== "string") {
+    throw new AxiError("--json-out: a transcript is plain text and has no JSON export", "VALIDATION_ERROR", [
+      "It works with --around <uuid>, which returns a window of messages. Redirect stdout to keep the text"
+    ]);
+  }
   if (typeof flags.around === "string") {
     if (!id) {
       throw new AxiError("--around needs a <session-id>", "VALIDATION_ERROR", [TRANSCRIPT_HELP]);
@@ -1139,7 +1548,7 @@ async function transcriptCommand(args) {
       before: typeof flags.before === "string" ? flags.before : void 0,
       after: typeof flags.after === "string" ? flags.after : void 0
     });
-    if (flags.json) return rawJson(window);
+    captureJson(window);
     const cli = cliInvocation();
     const out = [
       `around ${flags.around}:`,
@@ -1208,19 +1617,19 @@ sessions-axi grep [flags]                   # no id \u2192 cross-session tool-ca
   --before <uuid>      per-session: stop scanning at this message
   --project PATH       cross-session: filter by project path (substring)
   --days N             cross-session: only the last N days
-  --json               raw API JSON
+  --json-out[=path]    write the full JSON to a file (bare: an owner-only temp file); stdout stays this view
 
   At least one of --tool / --match is required.`;
 var CROSS_SCHEMA = [
-  field("session_id", "session"),
-  custom("title", (r) => r.title ?? null),
-  custom("when", (r) => formatRelativeTime(r.ts)),
+  field("session_id"),
+  field("title"),
+  relativeTime("ts"),
   field("tool"),
   truncate("target", 60),
   field("anchor")
 ];
 async function grepCommand(args) {
-  const { positionals, flags } = parseArgs(args, ["json", "include-sidechain"]);
+  const { positionals, flags } = parseArgs("grep", args);
   const id = positionals[0];
   if (!flags.tool && !flags.match) {
     throw new AxiError("Provide --tool and/or --match", "VALIDATION_ERROR", [GREP_HELP]);
@@ -1239,7 +1648,7 @@ async function grepSession(id, flags) {
   if (typeof flags.before === "string") query.before_uuid = flags.before;
   if (flags["include-sidechain"]) query.include_sidechain = "true";
   const res = await api.get(`/api/sessions/${encodeURIComponent(id)}/find`, query);
-  if (flags.json) return rawJson(res);
+  captureJson(res);
   const matches = res?.matches ?? [];
   if (matches.length === 0) return "grep: 0 matches in this session";
   const blocks = [`count: ${matches.length} match${matches.length === 1 ? "" : "es"}`];
@@ -1276,47 +1685,52 @@ async function grepCross(flags) {
   if (typeof flags.limit === "string") query.limit = flags.limit;
   if (flags["include-sidechain"]) query.include_sidechain = "true";
   const rows = await api.get("/api/sessions/find", query);
-  if (flags.json) return rawJson(rows);
+  captureJson(rows);
   if (!Array.isArray(rows) || rows.length === 0) return "grep: 0 matching tool calls found";
   return renderOutput2([
     `count: ${rows.length}`,
     renderList("matches", rows, CROSS_SCHEMA),
     renderHelp([
-      `Run \`${cli} transcript <session> --around <anchor> --after 20\` to read around a match`,
-      `Run \`${cli} grep <session> --tool \u2026 --match \u2026\` to window matches within one session`
+      `Run \`${cli} transcript <session_id> --around <anchor> --after 20\` to read around a match`,
+      `Run \`${cli} grep <session_id> --tool \u2026 --match \u2026\` to window matches within one session`
     ])
   ]);
 }
 
 // packages/sessions/src/axi/commands/detail.ts
-var DETAILS_HELP = `sessions-axi details <session-id> [--raw] [--json]
+var DETAILS_HELP = `sessions-axi details <session-id> [--raw] [--json-out[=path]]
 
-  Session metadata (tokens, tools, files, models). --raw includes the parsed
-  raw message array (large); --json returns the raw API object.
+  Session metadata (tokens, tools, files, models).
+
+  --json-out[=path]  write the full API object to a file (bare: an owner-only
+                     temp file); stdout stays this view
+  --raw              add the parsed raw message array (large) to that file;
+                     needs --json-out
+
   A windowed session (specs/behaviors/session-outlines.md) also shows its
   per-window summaries, and \u2014 once it's grown enough windows \u2014 the chapter
   rollups summarizing groups of them.`;
 var SCHEMA2 = [
   field("id"),
   field("machine"),
-  field("project_path", "project"),
-  field("git_branch", "branch"),
-  field("started_at", "started"),
-  field("ended_at", "ended"),
-  field("user_message_count", "user_msgs"),
-  field("message_count", "messages"),
+  field("project_path"),
+  field("git_branch"),
+  field("started_at"),
+  field("ended_at"),
+  field("user_message_count"),
+  field("message_count"),
   field("input_tokens"),
   field("output_tokens"),
   field("cache_read_tokens"),
-  custom("tools", (s) => Array.isArray(s.tools_used) ? s.tools_used.join(",") : "none"),
+  joinArray("tools_used"),
   custom("files_read", (s) => Array.isArray(s.files_touched?.reads) ? s.files_touched.reads.length : 0),
   custom("files_written", (s) => Array.isArray(s.files_touched?.writes) ? s.files_touched.writes.length : 0),
-  custom("models", (s) => Array.isArray(s.models_used) ? s.models_used.join(",") : "none"),
+  joinArray("models_used"),
   field("title"),
   field("outline")
 ];
 var WINDOW_SCHEMA = [
-  field("window_index", "window"),
+  field("window_index"),
   custom("range", (w) => `${w.from_seq}-${w.to_seq}`),
   custom("state", (w) => w.closed ? "closed" : "open"),
   field("status"),
@@ -1324,19 +1738,24 @@ var WINDOW_SCHEMA = [
 ];
 var ROLLUP_SCHEMA = [
   field("level"),
-  field("rollup_index", "chapter"),
+  field("rollup_index"),
   custom("range", (r) => `${r.from_seq}-${r.to_seq}`),
   field("status"),
   truncate("summary", 200)
 ];
 async function detailsCommand(args) {
-  const { positionals, flags } = parseArgs(args, ["json", "raw"]);
+  const { positionals, flags, jsonOut } = parseArgs("details", args);
   const id = requirePositional(positionals, 0, "session id", DETAILS_HELP);
+  const cli = cliInvocation();
+  if (flags.raw && !jsonOut) {
+    throw new AxiError("--raw adds the raw messages to the JSON export, so it needs --json-out", "VALIDATION_ERROR", [
+      `Run \`${cli} details ${id} --raw --json-out\` to write them to a file`
+    ]);
+  }
   const session = await api.get(`/api/sessions/${encodeURIComponent(id)}`, {
     with_raw_messages: flags.raw ? "true" : void 0
   });
-  if (flags.json || flags.raw) return rawJson(session);
-  const cli = cliInvocation();
+  captureJson(session);
   const blocks = [renderDetail("session", session, SCHEMA2)];
   if (Array.isArray(session.outline_windows) && session.outline_windows.length > 0) {
     blocks.push(renderList("outline_windows", session.outline_windows, WINDOW_SCHEMA));
@@ -1349,25 +1768,27 @@ async function detailsCommand(args) {
 }
 
 // packages/sessions/src/axi/commands/activity.ts
-var ACTIVITY_HELP = `sessions-axi activity [--days N] [--json]
+var ACTIVITY_HELP = `sessions-axi activity [--days N] [--json-out[=path]]
 
   When sessions had turns \u2014 contiguous time blocks per session (segmented by a
   30-minute gap). Turns of any kind count, including loop firings and task
   notifications, so this is a timeline feed and not a measure of time worked:
-  for "how much time on X?" use \`engagement\`. Default look-back is 7 days.`;
+  for "how much time on X?" use \`engagement\`. Default look-back is 7 days.
+  --json-out[=path] writes the full JSON to a file (bare: an owner-only temp
+  file); stdout stays this view.`;
 var SCHEMA3 = [
   field("id"),
   custom("project", (s) => s.project_name ?? s.project_path ?? "\u2014"),
   custom("title", (s) => s.title ?? s.session_name ?? null),
-  field("total_active_minutes", "active_min"),
-  custom("ranges", (s) => Array.isArray(s.activity_ranges) ? s.activity_ranges.length : 0)
+  field("total_active_minutes"),
+  count("activity_ranges")
 ];
 async function activityCommand(args) {
-  const { flags } = parseArgs(args, ["json"]);
+  const { flags } = parseArgs("activity", args);
   const rows = await api.get("/api/sessions/activity", {
     days: typeof flags.days === "string" ? flags.days : void 0
   });
-  if (flags.json) return rawJson(rows);
+  captureJson(rows);
   if (!Array.isArray(rows) || rows.length === 0) return "activity: no active sessions in range";
   const totalMin = rows.reduce((sum, r) => sum + (r.total_active_minutes ?? 0), 0);
   return renderOutput2([
@@ -1377,7 +1798,7 @@ async function activityCommand(args) {
 }
 
 // packages/sessions/src/axi/commands/engagement.ts
-var USAGE = "sessions-axi engagement --from YYYY-MM-DD --to YYYY-MM-DD [--tz IANA] [--block-minutes N] [--gap-minutes N] [--day-start HH:MM] [--blocks] [--sessions] [--json]";
+var USAGE = "sessions-axi engagement --from YYYY-MM-DD --to YYYY-MM-DD [--tz IANA] [--block-minutes N] [--gap-minutes N] [--day-start HH:MM] [--blocks] [--sessions] [--json-out[=path]]";
 var ENGAGEMENT_HELP = `${USAGE}
 
   Human hands-on time per local day and per project \u2014 the figure for "how much
@@ -1393,35 +1814,42 @@ var ENGAGEMENT_HELP = `${USAGE}
   --day-start HH:MM starts each day at that wall-clock time instead of midnight,
   so work just after midnight counts toward the day that was ending. --blocks
   adds the merged engagement blocks (UTC instants) to each day and project in
-  --json output, for subtracting time accounted for elsewhere. The header shows
+  the --json-out file, for subtracting time accounted for elsewhere, so it
+  needs --json-out. --json-out[=path] writes the full JSON to a file (bare: an
+  owner-only temp file) and leaves stdout as this view. The header shows
   complete_through, the instant every contributing machine is known to be in
   through (with the oldest machine holding it back); null means unknown. A
   window ending after it may still grow.`;
 var DAY_SCHEMA = [
   field("date"),
-  field("envelope_minutes", "envelope_min"),
-  field("human_prompt_count", "prompts"),
-  field("first_human_prompt", "first"),
-  field("last_human_prompt", "last")
+  field("envelope_minutes"),
+  field("human_prompt_count"),
+  field("first_human_prompt"),
+  field("last_human_prompt")
 ];
 var PROJECT_SCHEMA = [
   field("date"),
   custom("project", (p) => p.project_name ?? p.project_path ?? "\u2014"),
-  field("human_minutes", "human_min"),
-  field("human_prompt_count", "prompts")
+  field("human_minutes"),
+  field("human_prompt_count")
 ];
 var SESSION_SCHEMA = [
   field("date"),
   field("id"),
   custom("project", (s) => s.project_name ?? s.project_path ?? "\u2014"),
   custom("title", (s) => s.title ?? s.session_name ?? null),
-  field("human_minutes", "human_min"),
-  field("human_prompt_count", "prompts"),
-  field("automated_minutes", "auto_min"),
-  field("automated_prompt_count", "auto_prompts")
+  field("human_minutes"),
+  field("human_prompt_count"),
+  field("automated_minutes"),
+  field("automated_prompt_count")
 ];
 async function engagementCommand(args) {
-  const { flags } = parseArgs(args, ["json", "sessions", "blocks"]);
+  const { flags, jsonOut } = parseArgs("engagement", args);
+  if (flags.blocks && !jsonOut) {
+    throw new AxiError("--blocks adds the engagement blocks to the JSON export, so it needs --json-out", "VALIDATION_ERROR", [
+      "Add --json-out (or --json-out=<path>) to write them to a file"
+    ]);
+  }
   const str = (name) => typeof flags[name] === "string" ? flags[name] : void 0;
   const result = await api.get("/api/sessions/engagement", {
     from: requireFlag(flags, "from", USAGE),
@@ -1434,7 +1862,7 @@ async function engagementCommand(args) {
     day_start: str("day-start"),
     include: flags.blocks ? "blocks" : void 0
   });
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   const days = Array.isArray(result.days) ? result.days : [];
   const totalMin = days.reduce((sum, d) => sum + (d.envelope_minutes ?? 0), 0);
   const flatten = (key) => days.flatMap((d) => (d[key] ?? []).map((row) => ({ date: d.date, ...row })));
@@ -1462,26 +1890,27 @@ async function engagementCommand(args) {
 }
 
 // packages/sessions/src/axi/commands/stats.ts
-var STATS_HELP = `sessions-axi stats [--days N] [--machine ID] [--json]
+var STATS_HELP = `sessions-axi stats [--days N] [--machine ID] [--json-out[=path]]
 
   Usage statistics over the last N days (default 30): session/message/token
-  totals, top tools, top models, and per-machine counts.`;
+  totals, top tools, top models, and per-machine counts. --json-out[=path] writes the
+  full JSON to a file (bare: an owner-only temp file); stdout stays this view.`;
 var TOOL_SCHEMA = [field("tool"), field("count")];
 var MODEL_SCHEMA = [
   field("model"),
-  field("session_count", "sessions"),
-  field("input_tokens", "in"),
-  field("output_tokens", "out"),
-  field("cache_read_tokens", "cache_read")
+  field("session_count"),
+  field("input_tokens"),
+  field("output_tokens"),
+  field("cache_read_tokens")
 ];
-var MACHINE_SCHEMA2 = [field("machine_id", "machine"), field("session_count", "sessions")];
+var MACHINE_SCHEMA2 = [field("machine_id"), field("session_count")];
 async function statsCommand(args) {
-  const { flags } = parseArgs(args, ["json"]);
+  const { flags } = parseArgs("stats", args);
   const stats = await api.get("/api/sessions/stats", {
     days: typeof flags.days === "string" ? flags.days : void 0,
     machine: typeof flags.machine === "string" ? flags.machine : void 0
   });
-  if (flags.json) return rawJson(stats);
+  captureJson(stats);
   return renderOutput2([
     renderObject({
       period_days: stats.period_days,
@@ -1489,81 +1918,86 @@ async function statsCommand(args) {
       active_days: stats.active_days,
       total_messages: stats.total_messages,
       avg_messages: stats.avg_messages,
-      input_tokens: stats.total_input_tokens,
-      output_tokens: stats.total_output_tokens,
+      total_input_tokens: stats.total_input_tokens,
+      total_output_tokens: stats.total_output_tokens,
       unique_projects: stats.unique_projects
     }),
     Array.isArray(stats.top_tools) && stats.top_tools.length ? renderList("top_tools", stats.top_tools, TOOL_SCHEMA) : "",
     Array.isArray(stats.top_models) && stats.top_models.length ? renderList("top_models", stats.top_models, MODEL_SCHEMA) : "",
-    Array.isArray(stats.sessions_per_machine) && stats.sessions_per_machine.length ? renderList("per_machine", stats.sessions_per_machine, MACHINE_SCHEMA2) : ""
+    Array.isArray(stats.sessions_per_machine) && stats.sessions_per_machine.length ? renderList("sessions_per_machine", stats.sessions_per_machine, MACHINE_SCHEMA2) : ""
   ]);
 }
 
 // packages/sessions/src/axi/commands/machines.ts
-var MACHINES_HELP = `sessions-axi machines [--json]
+var MACHINES_HELP = `sessions-axi machines [--json-out[=path]]
 
-  Registered machines and their sync status.`;
+  Registered machines and their sync status. --json-out[=path] writes the full
+  JSON to a file (bare: an owner-only temp file); stdout stays this view.`;
 var SCHEMA4 = [
-  field("machine_id", "machine"),
+  field("machine_id"),
   field("hostname"),
-  { type: "boolYesNo", key: "is_localhost", as: "localhost" },
-  field("session_count", "sessions"),
-  relativeTime("last_sync_at", "last_sync")
+  { type: "boolYesNo", key: "is_localhost" },
+  field("session_count"),
+  relativeTime("last_sync_at")
 ];
 async function machinesCommand(args) {
-  const { flags } = parseArgs(args, ["json"]);
+  const { flags } = parseArgs("machines", args);
   const rows = await api.get("/api/machines");
-  if (flags.json) return rawJson(rows);
+  captureJson(rows);
   if (!Array.isArray(rows) || rows.length === 0) return "machines: none registered";
   return renderOutput2([`count: ${rows.length}`, renderList("machines", rows, SCHEMA4)]);
 }
 
 // packages/sessions/src/axi/commands/manage.ts
-var OUTLINES_HELP = `sessions-axi outlines [<session-id>...] [--json]
-sessions-axi outlines progress [--json]
+var OUTLINES_HELP = `sessions-axi outlines [<session-id>...] [--json-out[=path]]
+sessions-axi outlines progress [--json-out[=path]]
 
   Generate AI outlines for sessions missing or with stale ones (needs the
   server's model invoker). With no ids, processes all pending.
-  \`outlines progress\` reports background generation status.`;
+  \`outlines progress\` reports background generation status.
+  --json-out[=path] writes the API response to a file (bare: an owner-only
+  temp file); stdout stays this view.`;
 async function outlinesCommand(args) {
-  const { positionals, flags } = parseArgs(args, ["json"]);
+  const { positionals } = parseArgs("outlines", args);
   if (positionals[0] === "progress") {
     const progress = await api.get("/api/sessions/outlines/progress");
-    if (flags.json) return rawJson(progress);
+    captureJson(progress);
     return renderObject(progress ?? { status: "no progress data" });
   }
   const sessionIds = positionals.filter(Boolean);
   const result = await api.post("/api/sessions/outlines", sessionIds.length ? { sessionIds } : {});
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   const cli = cliInvocation();
   return renderOutput2([
     renderObject(result ?? { status: "queued" }),
     renderHelp([`Run \`${cli} outlines progress\` to watch generation`])
   ]);
 }
-var SYNC_HELP = `sessions-axi sync [--force] [--json]
+var SYNC_HELP = `sessions-axi sync [--force] [--json-out[=path]]
 
   Trigger an immediate sync of local (~/.claude) sessions. --force re-parses all
-  sessions even when the content hash is unchanged (use after a parser upgrade).`;
+  sessions even when the content hash is unchanged (use after a parser upgrade).
+  --json-out[=path] writes the API response to a file.`;
 async function syncCommand(args) {
-  const { flags } = parseArgs(args, ["json", "force"]);
+  const { flags } = parseArgs("sync", args);
   const result = await api.post("/api/sessions/sync", void 0, flags.force ? { force: "true" } : void 0);
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   return renderObject(result ?? { status: "done" });
 }
-var SHARE_HELP = `sessions-axi share <session-id> [--json]
+var SHARE_HELP = `sessions-axi share <session-id> [--json-out[=path]]
 
-  Mint a shareable auth code granting read access to a session's transcript.`;
+  Mint a shareable auth code granting read access to a session's transcript.
+  --json-out[=path] writes the API response to a file.`;
 async function shareCommand(args) {
-  const { positionals, flags } = parseArgs(args, ["json"]);
+  const { positionals } = parseArgs("share", args);
   const id = requirePositional(positionals, 0, "session id", SHARE_HELP);
   const result = await api.post(`/api/sessions/${encodeURIComponent(id)}/share`);
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   return renderObject({ session: id, auth_code: result?.auth_code ?? null });
 }
 
 // packages/sessions/src/axi/cli.ts
-var VERSION = true ? "803879d" : "dev";
+var VERSION = true ? "cbdd302" : "dev";
 var CLI = cliInvocation();
 var TOP_HELP = `usage: ${CLI} [command] [args] [flags]
        ${CLI}                 # no args \u2192 home (recent activity + next steps)
@@ -1572,7 +2006,7 @@ commands:
 
 ${commandReferenceText()}
 
-flags: --help, -v/--version, --json (raw output on most commands)
+flags: --help, -v/--version, --json-out[=path] (full JSON to a file; stdout stays TOON)
 
 env: CLAUDE_ASSIST_SERVER (default http://localhost:2529)
 
@@ -1583,7 +2017,7 @@ examples:
   ${CLI} search --tools mcp__plugin_slack --files-written routes.ts
   ${CLI} stats --days 7
 `;
-var HOME_HELP = `sessions-axi [home] [--all] [--project NAME] [--recent N] [--json]
+var HOME_HELP = `sessions-axi [home] [--all] [--project NAME] [--recent N] [--json-out[=path]]
 
   The no-arg view. Inside a git repo it leads with that repo's most recent
   sessions (ordered by last activity); otherwise it lists registered machines.
@@ -1591,7 +2025,8 @@ var HOME_HELP = `sessions-axi [home] [--all] [--project NAME] [--recent N] [--js
   --all            force the cross-project (machines) view even inside a repo
   --project NAME   override repo detection with an explicit project substring
   --recent N       how many recent sessions to show (default 5)
-  --json           raw JSON`;
+  --json-out[=path]  write the full JSON to a file (bare: an owner-only temp
+                     file); stdout stays this view`;
 var COMMAND_HELP = {
   home: HOME_HELP,
   search: SEARCH_HELP,
@@ -1606,7 +2041,7 @@ var COMMAND_HELP = {
   sync: SYNC_HELP,
   share: SHARE_HELP
 };
-var COMMANDS = {
+var HANDLERS = {
   // Also exposed as a command so its flags can be passed (the bare invocation
   // hits the same handler via the `home` option below, but the SDK rejects
   // flags that precede a command).
@@ -1623,14 +2058,18 @@ var COMMANDS = {
   sync: syncCommand,
   share: shareCommand
 };
+var COMMANDS = Object.fromEntries(
+  Object.entries(HANDLERS).map(([name, handler]) => [name, withJsonOut(handler)])
+);
 async function main(argv) {
   await runAxiCli({
     description: DESCRIPTION,
     version: VERSION,
     ...argv ? { argv } : {},
     topLevelHelp: TOP_HELP,
-    home: homeCommand,
+    home: COMMANDS.home,
     commands: COMMANDS,
+    formatError,
     getCommandHelp: (command) => COMMAND_HELP[command]
   });
 }

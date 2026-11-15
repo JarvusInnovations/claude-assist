@@ -108,9 +108,9 @@ and return a continuation anchor rather than dumping the whole session.
 - `scripts/sessions-axi grep <session-id> --tool Bash --match "text" [--in target|text|tool] [--context N]` — find tool calls / text within a transcript — windowed matches + anchors
 - `scripts/sessions-axi grep --tool Edit --match routes.ts [--project P] [--days N]` — no id → cross-session tool-call discovery over the index
 - `scripts/sessions-axi transcript <session-id> --around <uuid> [--before N] [--after M]` — explore a variable range of messages around an anchor (the grep follow-up)
-- `scripts/sessions-axi details <session-id> [--raw]` — session metadata; --raw adds the parsed raw messages
+- `scripts/sessions-axi details <session-id> [--raw --json-out]` — session metadata; --raw adds the parsed raw messages to the --json-out file
 - `scripts/sessions-axi activity [--days N]` — when sessions had turns of any kind, human or automated — a timeline feed, not a time measure (default 7 days)
-- `scripts/sessions-axi engagement --from DATE --to DATE [--tz IANA] [--day-start HH:MM] [--blocks] [--sessions]` — human hands-on time per local day and project — automated turns excluded, parallel sessions counted once; the tool for "how much time on X?". --day-start moves the day boundary, --blocks adds the time blocks (--json), and the header carries complete_through (how fresh ingest is)
+- `scripts/sessions-axi engagement --from DATE --to DATE [--tz IANA] [--day-start HH:MM] [--sessions] [--blocks --json-out]` — human hands-on time per local day and project — automated turns excluded, parallel sessions counted once; the tool for "how much time on X?". --day-start moves the day boundary, --blocks adds the time blocks to the --json-out file, and the header carries complete_through (how fresh ingest is)
 
 ### Overview
 
