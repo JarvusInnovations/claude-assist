@@ -2,9 +2,8 @@ import { api } from "../client.js";
 import { generateUlid } from "../../ulid.js";
 import {
   parseArgs,
-  collectFlag,
   requirePositional,
-  rawJson,
+  captureJson,
   validateDate,
   parseNumberFlag,
 } from "../args.js";
@@ -14,7 +13,10 @@ import { ENTRY_ROW_SCHEMA, effectiveMacro } from "../format.js";
 import { cliInvocation } from "../invocation.js";
 import { discoveryHelp, MACRO_PANEL_FLAGS, MACRO_PANEL_FLAG_NAMES } from "../reference.js";
 
-export const ENTRIES_HELP = `kitchen-axi entries <subcommand> [args] [--json]
+export const ENTRIES_HELP = `kitchen-axi entries <subcommand> [args] [--json-out[=path]]
+
+  --json-out[=path] on any subcommand writes the full JSON response to a file
+  (bare: an owner-only temp file); stdout stays the TOON view.
 
   list [--since DATE] [--limit N]      newest-first consumption entries
   show <ulid>                          one entry, full nutrition/source/status
@@ -25,10 +27,12 @@ export const ENTRIES_HELP = `kitchen-axi entries <subcommand> [args] [--json]
                                           YYYY-MM-DD backstops to local noon that day
        [--calories N] [--protein N]…     directly-stated panel: born-manual, terminal,
        [--label T]                        NO estimation (mutually exclusive with --recipe/--component)
-  patch <ulid> [flags]                 edit note/label (re-queue), macro override
-                                         (terminal — ANY of the nine panel flags),
-                                         --multiplier M (post-hoc rescale),
-                                         or --at TIME (backdate logged_at)
+  patch <ulid> [flags]                 edit --note T / --label T (re-queue), macro
+                                         override (terminal — ANY of the nine panel
+                                         flags, with --portion-basis T to say what
+                                         the figures describe), --multiplier M
+                                         (post-hoc rescale), or --at TIME (backdate
+                                         logged_at)
   questions [--limit N]                entries whose HUMAN note nobody has reconciled
                                          against the panel — a condiment, a splash of
                                          oil, an extra the components never covered
@@ -54,12 +58,16 @@ const DETAIL_SCHEMA: FieldDef[] = [
   // `day` = owner-tz calendar date (authoritative bucketing key); `logged`
   // renders the instant in the owner zone (§ Timezone & local-day bucketing).
   field("day"),
-  field("logged_local", "logged"),
+  field("logged_local"),
   field("note"),
   field("label"),
   field("status"),
   field("source"),
-  field("portion_multiplier", "mult"),
+  field("portion_multiplier"),
+  // The stored macros keep a `base_` name here, the one place a column is not
+  // its data key: they sit beside the `eff_*` columns, and the prefix is what
+  // stops a base figure being read as what was eaten
+  // (specs/behaviors/axi-cli-arguments-and-export.md § Column names).
   field("calories", "base_kcal"),
   field("protein_g", "base_protein"),
   field("fat_g", "base_fat"),
@@ -116,11 +124,11 @@ export async function entriesCommand(args: string[]): Promise<string> {
 }
 
 async function listEntries(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json"], ["since", "limit"]);
+  const { flags } = parseArgs("entries list", args);
   const since = typeof flags.since === "string" ? validateDate(flags.since, "--since", ENTRIES_HELP) : undefined;
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", ENTRIES_HELP, { min: 1 })) : undefined;
   const result = await api.get("/api/kitchen/entries", { since, limit });
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   const entries = result?.entries ?? [];
   return renderList("entries", entries, ENTRY_ROW_SCHEMA);
 }
@@ -132,10 +140,10 @@ async function listEntries(args: string[]): Promise<string> {
  * idea: a human said something the ledger has not accounted for.
  */
 async function listNoteQuestions(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json"], ["limit"]);
+  const { flags } = parseArgs("entries questions", args);
   const limit = typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", ENTRIES_HELP, { min: 1 })) : undefined;
   const result = await api.get("/api/kitchen/entries/questions", { limit });
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   const entries = result?.entries ?? [];
   if (entries.length === 0) {
     return renderList("unreviewed_notes", [], ENTRY_ROW_SCHEMA);
@@ -152,10 +160,10 @@ async function listNoteQuestions(args: string[]): Promise<string> {
 
 /** Mark a note looked at. Touches only the flag — correcting macros is `patch`. */
 async function reviewNote(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"], []);
+  const { positionals, flags } = parseArgs("entries review", args);
   const ulid = requirePositional(positionals, 0, "entry ulid", ENTRIES_HELP);
   const entry = await api.post(`/api/kitchen/entries/${encodeURIComponent(ulid)}/review`, {});
-  if (flags.json) return rawJson(entry);
+  captureJson(entry);
   return [
     renderDetail("reviewed", entry, DETAIL_SCHEMA),
     renderHelp(
@@ -167,10 +175,10 @@ async function reviewNote(args: string[]): Promise<string> {
 }
 
 async function showEntry(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"], []);
+  const { positionals, flags } = parseArgs("entries show", args);
   const ulid = requirePositional(positionals, 0, "entry ulid", ENTRIES_HELP);
   const entry = await api.get(`/api/kitchen/entries/${encodeURIComponent(ulid)}`);
-  if (flags.json) return rawJson(entry);
+  captureJson(entry);
   return renderDetail("entry", entry, DETAIL_SCHEMA);
 }
 
@@ -240,19 +248,15 @@ export function buildLogEntryFields(
 }
 
 async function logEntry(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(
-    args,
-    ["json"],
-    ["recipe", "component", "at", "label", ...MACRO_PANEL_FLAG_NAMES]
-  );
-  const components = collectFlag(args, "component").map(parseComponent);
+  const { positionals, flags, multi } = parseArgs("entries log", args);
+  const components = (multi.component ?? []).map(parseComponent);
   const entry: Record<string, unknown> = { ulid: generateUlid(), ...buildLogEntryFields(positionals, flags, components) };
 
   const form = new FormData();
   form.append("entry", JSON.stringify(entry));
   const record = await api.postForm("/api/kitchen/entries", form);
 
-  if (flags.json) return rawJson(record);
+  captureJson(record);
   const cli = cliInvocation();
   return renderOutput([
     renderDetail("logged", record, DETAIL_SCHEMA),
@@ -296,19 +300,19 @@ export function buildPatchBody(flags: Record<string, string | boolean>): Record<
 }
 
 async function patchEntry(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"], ["note", "label", "portion-basis", ...MACRO_PANEL_FLAG_NAMES, "multiplier", "at"]);
+  const { positionals, flags } = parseArgs("entries patch", args);
   const ulid = requirePositional(positionals, 0, "entry ulid", ENTRIES_HELP);
   const body = buildPatchBody(flags);
 
   const updated = await api.patch(`/api/kitchen/entries/${encodeURIComponent(ulid)}`, body);
-  if (flags.json) return rawJson(updated);
+  captureJson(updated);
   return renderDetail("entry", updated, DETAIL_SCHEMA);
 }
 
 async function deleteEntry(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"], []);
+  const { positionals, flags } = parseArgs("entries delete", args);
   const ulid = requirePositional(positionals, 0, "entry ulid", ENTRIES_HELP);
   await api.del(`/api/kitchen/entries/${encodeURIComponent(ulid)}`);
-  if (flags.json) return rawJson({ deleted: ulid });
+  captureJson({ deleted: ulid });
   return renderObject({ deleted: ulid });
 }

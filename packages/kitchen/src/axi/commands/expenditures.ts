@@ -1,9 +1,12 @@
 import { api } from "../client.js";
 import { AxiError } from "axi-sdk-js";
-import { parseArgs, requirePositional, rawJson, validateDate, parseNumberFlag } from "../args.js";
+import { parseArgs, requirePositional, captureJson, validateDate, parseNumberFlag } from "../args.js";
 import { renderList, renderDetail, renderObject, renderHelp, type FieldDef, field } from "../toon.js";
 
-export const EXPENDITURE_HELP = `kitchen-axi expenditure <subcommand> [args] [--json]
+export const EXPENDITURE_HELP = `kitchen-axi expenditure <subcommand> [args] [--json-out[=path]]
+
+  --json-out[=path] on any subcommand writes the full JSON response to a file
+  (bare: an owner-only temp file); stdout stays the TOON view.
 
   log "<label>" --kcal N [--duration M] [--avg-hr H] [--at TIME] [--source S] [--ulid U]
                                        record a stated burn (default source: manual;
@@ -38,7 +41,7 @@ const ROW_SCHEMA: FieldDef[] = [
   // `day` = owner-tz calendar date (authoritative bucketing key); `occurred`
   // renders the instant in the owner zone (§ Timezone & local-day bucketing).
   field("day"),
-  field("occurred_local", "occurred"),
+  field("occurred_local"),
   field("label"),
   field("source"),
   field("kcal"),
@@ -54,7 +57,7 @@ const ROW_SCHEMA: FieldDef[] = [
 const SKIPPED_SCHEMA: FieldDef[] = [
   field("activity_id"),
   field("day"),
-  field("occurred_local", "occurred"),
+  field("occurred_local"),
   field("label"),
 ];
 
@@ -77,7 +80,7 @@ export async function expenditureCommand(args: string[]): Promise<string> {
 }
 
 async function logExpenditure(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"], ["kcal", "duration", "avg-hr", "at", "source", "ulid"]);
+  const { positionals, flags } = parseArgs("expenditure log", args);
   const label = positionals.join(" ").trim();
   if (!label) throw new AxiError("expenditure log needs a label", "VALIDATION_ERROR", [EXPENDITURE_HELP]);
   if (typeof flags.kcal !== "string") {
@@ -105,19 +108,19 @@ async function logExpenditure(args: string[]): Promise<string> {
   if (typeof flags.ulid === "string") body.ulid = flags.ulid;
 
   const row = await api.post("/api/kitchen/expenditures", body);
-  if (flags.json) return rawJson(row);
+  captureJson(row);
   return renderDetail("expenditure", row, ROW_SCHEMA);
 }
 
 async function listExpenditures(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json", "include-skipped"], ["since", "limit"]);
+  const { flags } = parseArgs("expenditure list", args);
   const result = await api.get("/api/kitchen/expenditures", {
     since: typeof flags.since === "string" ? validateDate(flags.since, "--since", EXPENDITURE_HELP) : undefined,
     limit: typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", EXPENDITURE_HELP, { min: 1 })) : undefined,
   });
 
   if (!flags["include-skipped"]) {
-    if (flags.json) return rawJson(result);
+    captureJson(result);
     return renderList("expenditures", result?.expenditures ?? [], ROW_SCHEMA);
   }
 
@@ -127,7 +130,7 @@ async function listExpenditures(args: string[]): Promise<string> {
   const skippedResult = await api.get("/api/kitchen/expenditures/skipped");
   const skipped = skippedResult?.skipped ?? [];
 
-  if (flags.json) return rawJson({ ...result, skipped });
+  captureJson({ ...result, skipped });
 
   const sections = [renderList("expenditures", result?.expenditures ?? [], ROW_SCHEMA)];
   sections.push(renderList("skipped_strava_activities", skipped, SKIPPED_SCHEMA));
@@ -143,9 +146,9 @@ async function listExpenditures(args: string[]): Promise<string> {
 }
 
 async function deleteExpenditure(args: string[]): Promise<string> {
-  const { positionals, flags } = parseArgs(args, ["json"], []);
+  const { positionals, flags } = parseArgs("expenditure delete", args);
   const ulid = requirePositional(positionals, 0, "expenditure ulid", EXPENDITURE_HELP);
   await api.del(`/api/kitchen/expenditures/${encodeURIComponent(ulid)}`);
-  if (flags.json) return rawJson({ deleted: ulid });
+  captureJson({ deleted: ulid });
   return renderObject({ deleted: ulid });
 }

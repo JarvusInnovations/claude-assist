@@ -1,5 +1,5 @@
 import { api, resolveServer } from "../client.js";
-import { parseArgs, rawJson } from "../args.js";
+import { parseArgs, captureJson } from "../args.js";
 import { renderOutput, renderObject, renderList, renderHelp, field, type FieldDef } from "../toon.js";
 import { targetLine, nestedSugarLine, type MacroKey, type TargetBound } from "../format.js";
 import { discoveryHelp } from "../reference.js";
@@ -20,7 +20,7 @@ import { cliInvocation } from "../invocation.js";
  * "today" figures match `days` for the current day by construction.
  */
 
-export const HOME_HELP = `kitchen-axi [--eat-first N] [--json]
+export const HOME_HELP = `kitchen-axi [--eat-first N] [--json-out[=path]]
 
   The no-arg view: today's entries + effective macro totals, pending-estimate
   count, the top eat-first inventory items, and the open needs-info question
@@ -31,18 +31,19 @@ export const HOME_HELP = `kitchen-axi [--eat-first N] [--json]
   multi-day trend use \`kitchen-axi days\`.
 
   --eat-first N   how many eat-first items to show (default 3)
-  --json          raw JSON`;
+  --json-out[=path]  write the full JSON to a file (bare: an owner-only temp
+                     file); stdout stays this view`;
 
 const EAT_FIRST_SCHEMA: FieldDef[] = [
-  field("product_name", "name"),
+  field("product_name"),
   field("state"),
   field("eat_by"),
-  field("days_until_eat_by", "days_left"),
-  field("on_hand_fraction", "on_hand"),
+  field("days_until_eat_by"),
+  field("on_hand_fraction"),
 ];
 
 export async function homeCommand(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json"], ["eat-first"]);
+  const { flags } = parseArgs("home", args);
   const server = resolveServer();
   const cli = cliInvocation();
   const eatFirstN = typeof flags["eat-first"] === "string" ? Math.max(parseInt(flags["eat-first"], 10) || 3, 1) : 3;
@@ -80,18 +81,16 @@ export async function homeCommand(args: string[]): Promise<string> {
     reachable = false;
   }
 
-  if (flags.json) {
-    return rawJson({
-      server,
-      today: summary?.today,
-      summary,
-      entries,
-      eat_first: items,
-      questions: questionCount + noteQuestionCount,
-      inventory_questions: questionCount,
-      note_questions: noteQuestionCount,
-    });
-  }
+  captureJson({
+    server,
+    today: summary?.today,
+    summary,
+    entries,
+    eat_first: items,
+    questions: questionCount + noteQuestionCount,
+    inventory_questions: questionCount,
+    note_questions: noteQuestionCount,
+  });
 
   if (!reachable || entries === null) {
     return renderOutput([
@@ -143,7 +142,7 @@ export async function homeCommand(args: string[]): Promise<string> {
     entries: todayEntries.length,
     pending_estimates: pending,
     ...(failed ? { failed } : {}),
-    kcal: vsTarget("calories"),
+    calories: vsTarget("calories"),
     protein_g: vsTarget("protein_g"),
     fat_g: vsTarget("fat_g"),
     sat_fat_g: vsTarget("sat_fat_g"),

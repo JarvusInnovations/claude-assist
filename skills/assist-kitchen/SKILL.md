@@ -23,9 +23,13 @@ scripts/kitchen-axi --help              # full command list
 scripts/kitchen-axi <group> --help      # usage for any command group
 ```
 
-Output is [TOON](https://toonformat.dev) (compact tables); pass `--json` for raw API
-JSON. The server defaults to `http://localhost:2529`; override with the
-`CLAUDE_ASSIST_SERVER` environment variable. The full behavioral contract is
+Output is always [TOON](https://toonformat.dev) (compact tables). When a script or
+`jq` needs the data, add `--json-out` (or `--json-out=<path>`): the full API JSON goes to
+a file, and stdout stays the same view plus the file's path, its keys and a `jq` command
+to start from. There is no `--json`. An unknown flag or a stray argument is an error
+that lists what the command accepts. The server defaults to
+`http://localhost:2529`; override with the `CLAUDE_ASSIST_SERVER` environment
+variable. The full behavioral contract is
 `specs/modules/kitchen.md` — the rules below are the ones that decide a write; when
 in doubt, read the spec.
 

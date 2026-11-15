@@ -10,13 +10,15 @@
  * Bun shares one process across a package's test files, so an import-time
  * mutation leaked into every other suite and made their correctness depend on
  * file load order. See bunfig.toml for the full account.
+ *
+ * The CLI-side sites (`--at` on the kitchen-axi flags) are covered beside the
+ * CLI, in `axi/date-coerce.test.ts`: `src/axi/` is outside this package's `tsc`
+ * build, and a test here that imported it would pull it back in.
  */
 
 import { describe, expect, it } from "bun:test";
 import { coerceBareDateToLocalNoon } from "./date-coerce.js";
 import { normalizeNewEntry } from "./store.js";
-import { buildLogEntryFields, buildPatchBody } from "./axi/commands/entries.js";
-import { validateCalendarDate, validateDate } from "./axi/args.js";
 
 describe("coerceBareDateToLocalNoon — the shared choke-point helper", () => {
   it("coerces a bare YYYY-MM-DD to local noon WITH the dated day's offset (EDT)", () => {
@@ -74,36 +76,6 @@ describe("coerceBareDateToLocalNoon — the shared choke-point helper", () => {
   });
 });
 
-describe("CLI --at coercion at every site (validateDate + the entries builders)", () => {
-  it("validateDate coerces a bare date and passes a full timestamp through — this is the expenditure-log site", () => {
-    // `expenditure log --at` calls validateDate(flags.at, ...) directly, so this
-    // covers the third --at site (entries log / entries patch are below).
-    expect(validateDate("2026-07-24", "--at", "usage")).toBe("2026-07-24T12:00:00-04:00");
-    expect(validateDate("2026-07-24T15:00:00-04:00", "--at", "usage")).toBe("2026-07-24T15:00:00-04:00");
-  });
-
-  it("validateDate still rejects a malformed date (coercion does not loosen validation)", () => {
-    expect(() => validateDate("2026-13-99", "--at", "usage")).toThrow();
-    expect(() => validateDate("not-a-date", "--at", "usage")).toThrow();
-  });
-
-  it("entries log --at: bare date → local noon; full timestamp verbatim", () => {
-    const bare = buildLogEntryFields(["party", "dish"], { at: "2026-07-24" }, []);
-    expect(bare.logged_at).toBe("2026-07-24T12:00:00-04:00");
-
-    const full = buildLogEntryFields(["party", "dish"], { at: "2026-07-24T15:00:00-04:00" }, []);
-    expect(full.logged_at).toBe("2026-07-24T15:00:00-04:00");
-  });
-
-  it("entries patch --at: bare date → local noon; full timestamp verbatim", () => {
-    const bare = buildPatchBody({ at: "2026-07-24" });
-    expect(bare.logged_at).toBe("2026-07-24T12:00:00-04:00");
-
-    const full = buildPatchBody({ at: "2026-07-24T15:00:00-04:00" });
-    expect(full.logged_at).toBe("2026-07-24T15:00:00-04:00");
-  });
-});
-
 describe("server-side ingest coercion (normalizeNewEntry)", () => {
   it("coerces a bare-date logged_at to local noon on the intended Eastern day", () => {
     const e = normalizeNewEntry({ ulid: "01ABC", logged_at: "2026-07-24" });
@@ -129,24 +101,3 @@ describe("server-side ingest coercion (normalizeNewEntry)", () => {
  * calendar DAY does NOT get the instant coercion. Which validator a flag calls
  * is the whole contract, so both are asserted side by side.
  */
-describe("validateCalendarDate — inventory flags name a day, not an instant", () => {
-  it("passes a bare YYYY-MM-DD through verbatim where validateDate would coerce it", () => {
-    expect(validateCalendarDate("2026-07-24", "--at", "usage")).toBe("2026-07-24");
-    expect(validateDate("2026-07-24", "--at", "usage")).toBe("2026-07-24T12:00:00-04:00");
-  });
-
-  it("keeps the waste window in the shape its route accepts", () => {
-    // The route pins since/until to ^\d{4}-\d{2}-\d{2}$ and compares them
-    // against bare toss dates as strings. An instant is not merely redundant
-    // there — it is rejected, and before that it excluded same-day tosses.
-    const routePattern = /^\d{4}-\d{2}-\d{2}$/;
-    expect(routePattern.test(validateCalendarDate("2026-07-24", "--since", "usage"))).toBe(true);
-    expect(routePattern.test(validateDate("2026-07-24", "--since", "usage"))).toBe(false);
-  });
-
-  it("still passes a full timestamp through, and still rejects nonsense", () => {
-    expect(validateCalendarDate("2026-07-24T15:00:00-04:00", "--at", "usage")).toBe("2026-07-24T15:00:00-04:00");
-    expect(() => validateCalendarDate("not-a-date", "--at", "usage")).toThrow(/Invalid date for --at/);
-    expect(() => validateCalendarDate("2026-13-45", "--at", "usage")).toThrow(/Invalid date for --at/);
-  });
-});

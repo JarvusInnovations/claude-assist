@@ -1,4 +1,6 @@
 import { runAxiCli, type AxiCliCommand } from "axi-sdk-js";
+import { formatError } from "../../../core/src/axi/errors.js";
+import { withJsonOut } from "../../../core/src/axi/json-out.js";
 import { DESCRIPTION, commandReferenceText } from "./reference.js";
 import { cliInvocation } from "./invocation.js";
 import { homeCommand, HOME_HELP } from "./commands/home.js";
@@ -26,7 +28,7 @@ commands:
 
 ${commandReferenceText()}
 
-flags: --help, -v/--version, --json (raw output on most commands)
+flags: --help, -v/--version, --json-out[=path] (full JSON to a file; stdout stays TOON)
 
 env: CLAUDE_ASSIST_SERVER (default http://localhost:2529)
 
@@ -38,7 +40,7 @@ examples:
   ${CLI} receipts scan ./receipt-front.jpg ./receipt-back.jpg --store "Corner Market"
 `;
 
-const COMMAND_HELP: Record<string, string> = {
+export const COMMAND_HELP: Record<string, string> = {
   home: HOME_HELP,
   entries: ENTRIES_HELP,
   days: DAYS_HELP,
@@ -54,7 +56,11 @@ const COMMAND_HELP: Record<string, string> = {
   stores: STORES_HELP,
 };
 
-const COMMANDS: Record<string, AxiCliCommand<undefined>> = {
+/**
+ * Every handler is wrapped so a requested `--json-out` export is written after
+ * the view is built (specs/behaviors/axi-cli-arguments-and-export.md).
+ */
+const HANDLERS: Record<string, (args: string[]) => Promise<string>> = {
   home: (args) => homeCommand(args),
   entries: (args) => entriesCommand(args),
   days: (args) => daysCommand(args),
@@ -70,14 +76,19 @@ const COMMANDS: Record<string, AxiCliCommand<undefined>> = {
   stores: (args) => storesCommand(args),
 };
 
+export const COMMANDS: Record<string, AxiCliCommand<undefined>> = Object.fromEntries(
+  Object.entries(HANDLERS).map(([name, handler]) => [name, withJsonOut(handler)]),
+);
+
 export async function main(argv?: string[]): Promise<void> {
   await runAxiCli<undefined>({
     description: DESCRIPTION,
     version: VERSION,
     ...(argv ? { argv } : {}),
     topLevelHelp: TOP_HELP,
-    home: (args) => homeCommand(args),
+    home: COMMANDS.home!,
     commands: COMMANDS,
+    formatError,
     getCommandHelp: (command) => COMMAND_HELP[command],
   });
 }

@@ -1,6 +1,6 @@
 import { api } from "../client.js";
 import { AxiError } from "axi-sdk-js";
-import { parseArgs, rawJson, validateDate } from "../args.js";
+import { parseArgs, captureJson, validateDate } from "../args.js";
 import { renderList, renderObject, renderOutput, renderHelp, field, type FieldDef } from "../toon.js";
 import { cliInvocation } from "../invocation.js";
 
@@ -15,7 +15,7 @@ import { cliInvocation } from "../invocation.js";
  * command exists to retire).
  */
 
-export const DAYS_HELP = `kitchen-axi days [--since <n|date>] [--json]
+export const DAYS_HELP = `kitchen-axi days [--since <n|date>] [--json-out[=path]]
 
   Per-owner-local-day rollup: one row per day over the window, each with the
   nine-field nutrition panel + calories (EFFECTIVE totals) and — when the
@@ -27,7 +27,8 @@ export const DAYS_HELP = `kitchen-axi days [--since <n|date>] [--json]
 
   --since <n|date>   window start: a day count (e.g. 7 or 7d = last 7 days) or a
                      date (YYYY-MM-DD). Default: last 7 days.
-  --json             raw JSON
+  --json-out[=path]  write the full JSON to a file (bare: an owner-only temp
+                     file); stdout stays this view
 
   Days bucket by the instance's OWNER timezone, server-side — you never supply or
   compute an offset. Use this for any multi-day/weekly total; never hand-sum
@@ -35,21 +36,21 @@ export const DAYS_HELP = `kitchen-axi days [--since <n|date>] [--json]
 
 const DAY_SCHEMA: FieldDef[] = [
   field("day"),
-  field("calories", "kcal"),
-  field("protein_g", "protein"),
-  field("fat_g", "fat"),
-  field("sat_fat_g", "sat_fat"),
-  field("carbs_g", "carbs"),
-  field("sugar_g", "sugar"),
+  field("calories"),
+  field("protein_g"),
+  field("fat_g"),
+  field("sat_fat_g"),
+  field("carbs_g"),
+  field("sugar_g"),
   // Total sugar and its added share, side by side and unjudged: `days` is a
   // table, not the home view's nested figure, and NEITHER column carries a
   // verdict here (§ Display: only added sugar has a threshold at all).
-  field("added_sugar_g", "added_sugar"),
-  field("fiber_g", "fiber"),
-  field("sodium_mg", "sodium"),
-  field("entry_count", "entries"),
-  field("expenditure_kcal", "burned"),
-  field("net_kcal", "net"),
+  field("added_sugar_g"),
+  field("fiber_g"),
+  field("sodium_mg"),
+  field("entry_count"),
+  field("expenditure_kcal"),
+  field("net_kcal"),
 ];
 
 /** Parse `--since`: a bare day-count (`7`/`7d`) → ISO start; else a date. */
@@ -69,11 +70,11 @@ export async function daysCommand(args: string[]): Promise<string> {
   // typo like `days lst` isn't silently treated as a window.
   if (sub === "--help") throw new AxiError(DAYS_HELP, "VALIDATION_ERROR", [DAYS_HELP]);
 
-  const { flags } = parseArgs(args, ["json"], ["since"]);
+  const { flags } = parseArgs("days", args);
   const since = typeof flags.since === "string" ? resolveSince(flags.since) : undefined;
 
   const result = await api.get("/api/kitchen/summary", { group: "day", since });
-  if (flags.json) return rawJson(result);
+  captureJson(result);
 
   const days = Array.isArray(result?.days) ? result.days : [];
   const cli = cliInvocation();

@@ -1,66 +1,22 @@
 import { AxiError } from "axi-sdk-js";
 import { coerceBareDateToLocalNoon } from "../date-coerce.js";
+import { createParser, type Parsed } from "../../../core/src/axi/flags.js";
+import { FLAG_SPECS, type CommandName } from "./flag-specs.js";
 
-export interface ParsedArgs {
-  positionals: string[];
-  flags: Record<string, string | boolean>;
-}
+export { captureJson } from "../../../core/src/axi/json-out.js";
+export type { Parsed };
+
+const parse = createParser("kitchen-axi");
 
 /**
- * Minimal flag parser. Flags are `--name value`, except those listed in
- * `booleanFlags`, which are bare `--name`. Everything else is a positional.
- * Repeated non-boolean flags keep the last value; use `collectFlag` when a
- * flag may appear multiple times (e.g. `--component`).
- *
- * When `valueFlags` is provided, any flag not in `booleanFlags` ∪ `valueFlags`
- * is **rejected by name** with the command's valid flags listed — a silently
+ * Parse one command's argv against its declaration in `flag-specs.ts`. Unknown
+ * flags and extra positionals fail here, before any network call — a silently
  * dropped flag would hand the agent plausible-looking but unscoped output
- * (AXI doctrine: fail loud on unrecognized input). `--help` never reaches
- * handlers (the SDK intercepts it), so it needs no carve-out here.
+ * (specs/behaviors/axi-cli-arguments-and-export.md). Repeatable flags
+ * (`--component`) come back in `multi`, every occurrence in order.
  */
-export function parseArgs(args: string[], booleanFlags: string[] = [], valueFlags?: string[]): ParsedArgs {
-  const positionals: string[] = [];
-  const flags: Record<string, string | boolean> = {};
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i]!;
-    if (arg.startsWith("--")) {
-      const name = arg.slice(2);
-      if (booleanFlags.includes(name)) {
-        flags[name] = true;
-      } else if (valueFlags !== undefined && !valueFlags.includes(name)) {
-        const valid = [...valueFlags, ...booleanFlags].map((f) => `--${f}`).join(", ");
-        throw new AxiError(`Unknown flag --${name}`, "VALIDATION_ERROR", [
-          valid ? `Valid flags here: ${valid}` : "This command takes no flags besides --json",
-        ]);
-      } else {
-        const value = args[++i];
-        if (value === undefined) {
-          throw new AxiError(`Flag --${name} requires a value`, "VALIDATION_ERROR");
-        }
-        flags[name] = value;
-      }
-    } else {
-      positionals.push(arg);
-    }
-  }
-  return { positionals, flags };
-}
-
-/**
- * Collect every value passed for a repeatable `--name value` flag, in order.
- * Boolean flags in `booleanFlags` are skipped (bare, no value).
- */
-export function collectFlag(args: string[], name: string, booleanFlags: string[] = []): string[] {
-  const values: string[] = [];
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i]!;
-    if (!arg.startsWith("--")) continue;
-    const key = arg.slice(2);
-    if (booleanFlags.includes(key)) continue;
-    const value = args[++i];
-    if (key === name && value !== undefined) values.push(value);
-  }
-  return values;
+export function parseArgs(command: CommandName, args: string[]): Parsed {
+  return parse(command, args, FLAG_SPECS[command]);
 }
 
 /** Read a string flag, or throw a validation error if missing. */
@@ -173,9 +129,4 @@ export function splitCsv(value: string): string[] {
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
-}
-
-/** Pretty-printed raw JSON, for the `--json` escape hatch. */
-export function rawJson(data: unknown): string {
-  return JSON.stringify(data, null, 2);
 }

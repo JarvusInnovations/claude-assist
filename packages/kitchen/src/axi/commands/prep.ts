@@ -1,9 +1,12 @@
 import { api } from "../client.js";
 import { AxiError } from "axi-sdk-js";
-import { parseArgs, collectFlag } from "../args.js";
+import { parseArgs, captureJson } from "../args.js";
 import { renderObject, renderOutput, renderHelp } from "../toon.js";
 
-export const PREP_HELP = `kitchen-axi prep <subcommand> [args] [--json]
+export const PREP_HELP = `kitchen-axi prep <subcommand> [args] [--json-out[=path]]
+
+  --json-out[=path] on any subcommand writes the full JSON response to a file
+  (bare: an owner-only temp file); stdout stays the TOON view.
 
   publish --slug S --label T            build a prep WORKSHEET from the catalog and
        [--component <product-ulid>=<g>]…  publish it. Components resolve to the
@@ -28,7 +31,7 @@ export const PREP_HELP = `kitchen-axi prep <subcommand> [args] [--json]
        [--components-per batch|unit]       (packed only) do the component
                                             quantities describe ONE unit or the
                                             whole batch? default batch
-       [--title T] [--digest-optin]
+       [--title T] [--submit-label T] [--digest-optin]
 
   A worksheet's per_basis blocks are reference values this module already stores.
   Assembling them by hand re-derives numbers the catalog holds — the same
@@ -86,38 +89,15 @@ function parseRef(raw: string, flag: string): { ulid: string; quantity: number }
 }
 
 async function publishPrep(args: string[]): Promise<string> {
-  // REPEATABLE flags must be read with collectFlag off the raw argv: parseArgs'
-  // flag map is last-wins, so `--component a --component b` silently keeps only
-  // `b`. This is the same helper `entries log` uses for its own --component.
-  const componentArgs = collectFlag(args, "component");
-  const componentItemArgs = collectFlag(args, "component-item");
-  const componentUnitArgs = collectFlag(args, "component-unit");
-  const stepArgs = collectFlag(args, "step");
-  const sourceArgs = collectFlag(args, "source");
-
-  const { flags } = parseArgs(
-    args,
-    ["json", "digest-optin"],
-    [
-      "slug",
-      "label",
-      "title",
-      "heading",
-      "intro",
-      "component",
-      "component-item",
-      "component-unit",
-      "recipe",
-      "yields-recipe",
-      "step",
-      "cook",
-      "units",
-      "shelf-life",
-      "source",
-      "submit-label",
-      "components-per",
-    ]
-  );
+  // REPEATABLE flags are declared `multi` (flag-specs.ts) and read from
+  // `multi`, never `flags`: every `--component` is kept, in order. `entries log`
+  // reads its own --component the same way.
+  const { flags, multi } = parseArgs("prep publish", args);
+  const componentArgs = multi.component ?? [];
+  const componentItemArgs = multi["component-item"] ?? [];
+  const componentUnitArgs = multi["component-unit"] ?? [];
+  const stepArgs = multi.step ?? [];
+  const sourceArgs = multi.source ?? [];
 
   const slug = typeof flags.slug === "string" ? flags.slug : undefined;
   const label = typeof flags.label === "string" ? flags.label : undefined;
@@ -219,7 +199,7 @@ async function publishPrep(args: string[]): Promise<string> {
   };
 
   const result = await api.post("/api/kitchen/prep", body);
-  if (flags.json) return JSON.stringify(result, null, 2);
+  captureJson(result);
 
   const totals = result?.planned_totals ?? {};
   const unknown: string[] = result?.unknown_fields ?? [];

@@ -1,10 +1,13 @@
 import { api } from "../client.js";
 import { AxiError } from "axi-sdk-js";
-import { parseArgs, rawJson, validateDate, parseNumberFlag } from "../args.js";
+import { parseArgs, captureJson, validateDate, parseNumberFlag } from "../args.js";
 import { renderList, renderDetail, renderOutput, type FieldDef, field } from "../toon.js";
 import { generateUlid } from "../../ulid.js";
 
-export const WEIGH_INS_HELP = `kitchen-axi weigh-ins <subcommand> [args] [--json]
+export const WEIGH_INS_HELP = `kitchen-axi weigh-ins <subcommand> [args] [--json-out[=path]]
+
+  --json-out[=path] on any subcommand writes the full JSON response to a file
+  (bare: an owner-only temp file); stdout stays the TOON view.
 
   log --weight KG [--body-fat PCT] [--at TIME]
                                        record a manual weigh-in (source: manual;
@@ -20,7 +23,10 @@ export const WEIGH_INS_HELP = `kitchen-axi weigh-ins <subcommand> [args] [--json
   trend view, use \`weight trend\`. The trend is context for the OWNER'S
   judgment: nothing auto-tunes the TDEE base or targets from it.`;
 
-export const WEIGHT_HELP = `kitchen-axi weight <subcommand> [args] [--json]
+export const WEIGHT_HELP = `kitchen-axi weight <subcommand> [args] [--json-out[=path]]
+
+  --json-out[=path] on any subcommand writes the full JSON response to a file
+  (bare: an owner-only temp file); stdout stays the TOON view.
 
   trend [--days N]                     derived view over the last N days
                                        (default 30): one line per local day
@@ -37,7 +43,7 @@ const ROW_SCHEMA: FieldDef[] = [
   // `day` = owner-tz calendar date (the module-wide bucketing key, § Timezone &
   // local-day bucketing); `occurred` renders the instant in the owner zone.
   field("day"),
-  field("occurred_local", "occurred"),
+  field("occurred_local"),
   field("weight_kg"),
   field("body_fat_pct"),
   field("source"),
@@ -97,7 +103,7 @@ export async function weightCommand(args: string[]): Promise<string> {
 }
 
 async function logWeighIn(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json"], ["weight", "body-fat", "at"]);
+  const { flags } = parseArgs("weigh-ins log", args);
   if (typeof flags.weight !== "string") {
     throw new AxiError("weigh-ins log needs --weight (kg)", "VALIDATION_ERROR", [WEIGH_INS_HELP]);
   }
@@ -116,26 +122,26 @@ async function logWeighIn(args: string[]): Promise<string> {
     body.body_fat_pct = parseNumberFlag(flags["body-fat"], "body-fat", WEIGH_INS_HELP, { min: 0, max: 100 });
   }
   const row = await api.post("/api/kitchen/weigh-ins", body);
-  if (flags.json) return rawJson(row);
+  captureJson(row);
   return renderDetail("weigh_in", row, ROW_SCHEMA);
 }
 
 async function listWeighIns(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json"], ["since", "limit"]);
+  const { flags } = parseArgs("weigh-ins list", args);
   const result = await api.get("/api/kitchen/weigh-ins", {
     since: typeof flags.since === "string" ? validateDate(flags.since, "--since", WEIGH_INS_HELP) : undefined,
     limit: typeof flags.limit === "string" ? String(parseNumberFlag(flags.limit, "limit", WEIGH_INS_HELP, { min: 1 })) : undefined,
   });
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   return renderList("weigh_ins", result?.weigh_ins ?? [], ROW_SCHEMA);
 }
 
 async function weightTrend(args: string[]): Promise<string> {
-  const { flags } = parseArgs(args, ["json"], ["days"]);
+  const { flags } = parseArgs("weight trend", args);
   const result = await api.get("/api/kitchen/weight", {
     days: typeof flags.days === "string" ? String(parseNumberFlag(flags.days, "days", WEIGHT_HELP, { min: 1, max: 366 })) : undefined,
   });
-  if (flags.json) return rawJson(result);
+  captureJson(result);
   return renderOutput([
     renderList("daily", result?.daily ?? [], DAILY_SCHEMA),
     renderList("trend_7d", result?.trend ?? [], TREND_SCHEMA),
