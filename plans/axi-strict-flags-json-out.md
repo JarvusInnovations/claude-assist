@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 depends: [kitchen-axi]
 specs:
   - specs/behaviors/axi-cli-arguments-and-export.md
@@ -61,22 +61,25 @@ any API change. The CLIs stay veneers over the same endpoints.
 
 ## Validation
 
-- [ ] Every declared command, run with `--bogus`, exits as `UNKNOWN_FLAG`
+- [x] Every declared command, run with `--bogus`, exits as `UNKNOWN_FLAG`
       listing its flags, with no request sent (table-driven, both CLIs).
-- [ ] `sessions-axi search --querry X` fails and sends no request (#99).
-- [ ] `--json` fails with the `--json-out` hint on every command, including as
+- [x] `sessions-axi search --querry X` fails and sends no request (#99).
+- [x] `--json` fails with the `--json-out` hint on every command, including as
       the last token.
-- [ ] An extra positional fails on every command with a fixed count.
-- [ ] Every declared flag appears in its command's `--help`.
-- [ ] A bare `--json-out` writes a `0600` file in a `0700` `<tmpdir>/<tool>/`
+- [x] An extra positional fails on every command with a fixed count.
+- [x] Every declared flag appears in its command's `--help`. (This found five
+      undocumented kitchen flags: `entries patch --note/--portion-basis`,
+      `inventory add --raw-label/--store/--batch-ulid`,
+      `prep publish --submit-label`. All now documented.)
+- [x] A bare `--json-out` writes a `0600` file in a `0700` `<tmpdir>/<tool>/`
       under a permissive umask; `=path` writes there; the space form, a missing
       directory, a symlink and a directory are refused before any request.
-- [ ] Stdout with `--json-out` is the plain view plus `wrote:`, `columns:` and
+- [x] Stdout with `--json-out` is the plain view plus `wrote:`, `columns:` and
       one hint, and the printed `jq` command runs.
-- [ ] A write that fails after the work keeps the view, prints
+- [x] A write that fails after the work keeps the view, prints
       `export_error:` and exits 1.
-- [ ] The real binary exits 2 for `--json` (spawned, temp `HOME`).
-- [ ] `bun run type-check:axi`, `bun run check:skills` and `bun run test` pass.
+- [x] The real binary exits 2 for `--json` (spawned, temp `HOME`).
+- [x] `bun run type-check:axi`, `bun run check:skills` and `bun run test` pass.
 
 ## Risks / unknowns
 
